@@ -1,0 +1,13 @@
+{
+  "name": "auto-dev-marketplace",
+  "owner": {
+    "name": "hubertursua"
+  },
+  "plugins": [
+    {
+      "name": "auto-dev",
+      "source": "./",
+      "description": "Autonomously drive a coding task from spec to PR through a multi-stage subagent pipeline. Project-agnostic."
+    }
+  ]
+}

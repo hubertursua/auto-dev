@@ -1,0 +1,8 @@
+{
+  "name": "auto-dev",
+  "version": "1.0.0",
+  "description": "Drive a single coding task through the entire development lifecycle autonomously — spec, plan, implement, polish, verify, and ship as a pull request — using purpose-built subagents for each stage. Project-agnostic: discovers the repo's own toolchain, quality gate, and conventions at runtime.",
+  "author": {
+    "name": "hubertursua"
+  }
+}

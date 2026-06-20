@@ -1,0 +1,22 @@
+[
+  {"query": "ok i need the expiry feature done properly — plan it, build it, run the gate, and put up a PR. just take it all the way, i don't want to babysit each step", "should_trigger": true},
+  {"query": "auto-dev: add a supported-value allow-list so creating a record with an unsupported value returns a handled error instead of throwing", "should_trigger": true},
+  {"query": "can you take this from spec to PR for me? the state machine shouldn't allow the illegal transition. i want acceptance criteria, the implementation, tests passing, lint + type checks green, and a pull request at the end", "should_trigger": true},
+  {"query": "build out signature verification end to end and ship it as a PR — full cycle, worktree and all, don't stop to check in with me", "should_trigger": true},
+  {"query": "run the whole dev cycle on adding idempotency keys to record creation. make reasonable calls on anything ambiguous and open the PR yourself", "should_trigger": true},
+  {"query": "i want you to autonomously implement the undo flow on the editor — plan, code, simplify, pass the quality gate, commit and PR", "should_trigger": true},
+  {"query": "take the notification retry logic from idea to a merge-ready PR by yourself", "should_trigger": true},
+  {"query": "do the full feature-dev pipeline on the report export: worktree, the plan, the tests, the gate, and a PR at the end", "should_trigger": true},
+  {"query": "implement this whole thing for me soup to nuts — record revocation with an audit-log entry. PR when done", "should_trigger": true},
+  {"query": "knock out the expiry validation feature for me autonomously and raise a PR — a value in the past should be rejected at creation time", "should_trigger": true},
+  {"query": "review my implementation plan for the undo flow — does it state a clear goal and a way to verify it?", "should_trigger": false},
+  {"query": "run the type checker and linter on my branch and tell me what's failing", "should_trigger": false},
+  {"query": "create a git worktree for a new branch called feature/link-expiry off main", "should_trigger": false},
+  {"query": "open a PR for the changes i already have staged on this branch", "should_trigger": false},
+  {"query": "this module has gotten messy, can you simplify it without changing behavior", "should_trigger": false},
+  {"query": "write a unit test for the allow-list function i just added", "should_trigger": false},
+  {"query": "explain how the state machine works in this codebase and where the transitions are enforced", "should_trigger": false},
+  {"query": "what acceptance criteria should i write for the signature verification feature?", "should_trigger": false},
+  {"query": "fix this one type error in the validation module, the signature on create() is wrong", "should_trigger": false},
+  {"query": "is the precommit hook enough or do i also need to run the type checker separately before merging?", "should_trigger": false}
+]

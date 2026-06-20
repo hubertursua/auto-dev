@@ -1,0 +1,24 @@
+{
+  "skill_name": "auto-dev",
+  "notes": "Each eval runs a FULL autonomous dev cycle (discover conventions -> worktree -> spec -> plan -> code -> gate -> commit -> PR), so runs are slow, costly, and mutate the repo. Run against a throwaway copy of the repo and have runs stop at local commit (no remote/PR) unless explicitly testing the PR step. Prefer small, self-contained tasks whose quality gate can run without heavy external services.",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Auto-dev this: reject creation of a record when the requested value isn't in the allowed set for that context. Return a typed/handled error instead of throwing. Take it all the way to a PR.",
+      "expected_output": "Stage 0 discovers the repo's toolchain and quality gate; a worktree + feature branch; a specification.md with observable acceptance criteria (incl. the rejection behavior and that no default value is assumed) and an implementation-plan.md; an implemented allow-list guard with tests; the project's quality gate green; a commit and PR (or local commit if no remote).",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Run the full dev cycle on this fix: the state machine should reject the illegal transition and surface a handled error instead of allowing it. Plan it, build it, verify it, and open a PR.",
+      "expected_output": "Two planning artifacts; a guard added to the transition logic with a test proving the illegal transition is rejected; the discovered quality gate green; commit + PR.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "auto-dev: add input validation so an entity created with an out-of-range value is rejected at creation time. Self-contained, take it to a PR.",
+      "expected_output": "Spec with acceptance criteria (out-of-range rejected, boundary defined as an assumption), implementation plan, implemented validation + tests, quality gate green, commit + PR.",
+      "files": []
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+# auto-dev pipeline scratch (planning artifacts, never shippable)
+.auto-dev/
+
+# skill-creator eval scratch (workspaces, run outputs)
+*-workspace/
