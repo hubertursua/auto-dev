@@ -64,7 +64,14 @@ Or from a local clone, point at the directory that contains `.claude-plugin/`:
 /plugin install auto-dev@auto-dev-marketplace
 ```
 
-Then, in any project, ask Claude to "auto-dev" a task and the skill triggers.
+Then, in any project you run it on, add the pipeline's scratch directory to that
+project's `.gitignore` so its planning artifacts can never be committed:
+
+```
+echo ".auto-dev/" >> .gitignore
+```
+
+Now ask Claude to "auto-dev" a task and the skill triggers.
 
 ## Dependencies
 
@@ -89,13 +96,10 @@ stages hand off to one another (the specification and implementation plan). This
 is scratch, not part of your project — the pipeline never commits it, and inside
 its own worktree it adds `.auto-dev/` to `.git/info/exclude` automatically.
 
-Even so, **add `.auto-dev/` to your project's `.gitignore`** as a safeguard, so
-the artifacts can never be accidentally committed if you run the pipeline
-outside a dedicated worktree or stage changes by hand:
-
-```
-echo ".auto-dev/" >> .gitignore
-```
+Even so, the [Install](#install) steps have you add `.auto-dev/` to your
+project's `.gitignore` as a safeguard, so the artifacts can never be
+accidentally committed if you run the pipeline outside a dedicated worktree or
+stage changes by hand.
 
 ## Safety
 
