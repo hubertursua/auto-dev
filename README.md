@@ -82,6 +82,21 @@ Both are available in the official Claude Code plugin marketplace
 (`claude-plugins-official`). Nothing else is required — the pipeline degrades
 gracefully to general-purpose agents when a specialized type is missing.
 
+## The `.auto-dev/` scratch directory
+
+Each run creates a `.auto-dev/` directory holding the planning artifacts the
+stages hand off to one another (the specification and implementation plan). This
+is scratch, not part of your project — the pipeline never commits it, and inside
+its own worktree it adds `.auto-dev/` to `.git/info/exclude` automatically.
+
+Even so, **add `.auto-dev/` to your project's `.gitignore`** as a safeguard, so
+the artifacts can never be accidentally committed if you run the pipeline
+outside a dedicated worktree or stage changes by hand:
+
+```
+echo ".auto-dev/" >> .gitignore
+```
+
 ## Safety
 
 The pipeline is fully autonomous but bounded: critique and acceptance-fix loops

@@ -137,11 +137,16 @@ own branch — never work on the repo's default branch.
    ```bash
    mkdir -p .auto-dev
    ```
-   Keep `.auto-dev/` out of the commit (it holds planning scratch, not shippable
-   code). Add it to the worktree's `.git/info/exclude` so it never gets staged:
+   **Never commit anything under `.auto-dev/`** — it holds planning scratch
+   (the spec and plan handed between stages), not shippable code, and must never
+   appear in a commit, a diff you stage, or a PR. Add it to the worktree's
+   `.git/info/exclude` immediately so it can't be staged even by `git add -A`:
    ```bash
    echo ".auto-dev/" >> .git/info/exclude
    ```
+   This is belt-and-suspenders: the exclude entry enforces it mechanically, and
+   the Stage 7 staging step must still add files explicitly rather than blanket
+   `git add`.
 
 All remaining stages run **inside the worktree directory.** Subagents you spawn
 should be told the worktree path explicitly so they operate in the right tree,
@@ -377,9 +382,12 @@ exactly which acceptance criteria are unsatisfied and what was tried.
 
 When the gate is green and the acceptance review passes:
 
-1. Stage the source changes (not `.auto-dev/`) and commit on the feature branch
-   with a clear, conventional message (match the repo's commit-message style).
-   End the commit body with:
+1. Stage **only the source changes** the pipeline produced — name the paths
+   explicitly (`git add <paths>`); never blanket-stage with `git add -A`/`.`,
+   which would sweep in `.auto-dev/`. Before committing, confirm nothing under
+   `.auto-dev/` is staged (`git status` should show none). Then commit on the
+   feature branch with a clear, conventional message (match the repo's
+   commit-message style). End the commit body with:
    ```
    Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
    ```
@@ -419,3 +427,7 @@ criteria — never report success you didn't verify.
 - **Per-stage isolation:** spawn a fresh subagent per stage, hand off through
   `.auto-dev/` files and the git tree, and give each worker the worktree path,
   the Stage 0 project profile, and only the inputs its stage needs.
+- **Never commit `.auto-dev/`.** It is pipeline scratch, not shippable code. It
+  must never land in a commit, a staged diff, or a PR — in this repo or any repo
+  the pipeline runs against. Exclude it in Stage 0 and stage paths explicitly in
+  Stage 7 (never `git add -A`/`.`).
