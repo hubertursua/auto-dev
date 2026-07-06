@@ -2,432 +2,301 @@
 name: auto-dev
 description: >-
   Use this when the user wants you to take an entire coding task off their plate
-  — implement a whole feature or fix and deliver it as a finished pull request,
-  working autonomously without check-ins. It's the right call whenever someone
-  asks you to BUILD something AND ship the PR yourself in one pass: "do it
-  autonomously", "by yourself", "you do it", "raise/open the PR", "take it all
-  the way", "from idea/spec to PR", "run the whole dev cycle", "knock it out",
-  "make the calls on anything ambiguous", "don't make me babysit each step", or
-  an explicit "auto-dev …". Prefer this over ordinary guided feature-development
-  help whenever the user wants the full plan → build → test → ship pipeline run
-  hands-off, not one supervised step. Do NOT use it for a single slice of that
-  work: running or fixing one test/lint/type error, critiquing a plan,
-  explaining how code works, or answering a question. Choose it only when they
-  clearly want the whole task carried autonomously to a PR on their behalf.
+  — implement a whole feature or fix and deliver it as a finished, reviewed pull
+  request, working autonomously through a full plan → build → verify → ship
+  pipeline. It's the right call whenever someone asks you to BUILD something AND
+  ship it yourself in one pass: "do it autonomously", "by yourself", "you do it",
+  "raise/open the PR", "take it all the way", "from ticket/idea/spec to PR", "run
+  the whole dev cycle", "knock it out", "make the calls on anything ambiguous",
+  "don't make me babysit each step", "pick up JIRA-1234 and ship it", or an
+  explicit "auto-dev …". Prefer this over ordinary guided feature-development help
+  whenever the user wants the full pipeline run hands-off, not one supervised
+  step. Do NOT use it for a single slice of that work: running or fixing one
+  test/lint/type error, critiquing a plan, explaining how code works, or answering
+  a question. Choose it only when they clearly want the whole task carried
+  autonomously to a PR on their behalf.
 ---
 
 # auto-dev
 
-Drive a single task through the entire development lifecycle autonomously, using
-purpose-built subagents for each stage and handing structured artifacts between
-them. The orchestrator (you, the main agent) owns the pipeline; each stage runs
-in its own subagent so the main context stays clean and each worker stays
-focused on one job.
+Drive a single task through the entire development lifecycle — from a ticket to a
+merged pull request — using purpose-built subagents for each phase and handing
+structured artifacts between them through `.auto-dev/`. You (the main agent) are
+the **orchestrator**: you own the pipeline, hold the spec, run the human gates,
+and never write implementation code yourself. Each phase runs in its own fresh
+subagent so your context stays clean and each worker stays focused on one job.
 
-This skill is **project-agnostic**. It does not assume any particular language,
-framework, or toolchain. Instead, Stage 0 discovers the repo's own conventions —
-how it builds, tests, and lints; its branching and PR norms; its security and
-contribution rules — and every later stage is told to obey what was discovered.
+This skill is **stack-agnostic**. A **stack profile** (see
+`references/profiles.md`) supplies the concrete setup and quality-gate commands;
+Phase 1 detects the stack, loads the matching `profiles/*.md`, merges in runtime
+discovery, and honors a repo-local `.auto-dev.yml` override. The shipped profile
+is **Elixir**; unknown stacks fall back to `default.md` + runtime discovery. Add a
+stack by dropping in a new profile — no change to this file.
 
-### Tool permissions per agent
+External integrations are **optional and auto-detected**: Jira (status
+transitions only), a CI provider (GitHub Actions / CircleCI / GitLab), and a
+staging branch. Each is used when present and skipped cleanly when not. Details in
+`references/gates-and-jira.md`.
 
-Each agent in this pipeline needs specific tools to do its job. When spawning a
-subagent, pick an agent type that grants the tools listed below. The simplest
-safe choice for every worker is a full-tool type (`claude` / `general-purpose`,
-whose tool set is `*`). The narrow specialized types are the trap: read-only
-blueprint/reviewer types (for example `feature-dev:code-architect` and
-`feature-dev:code-reviewer`) have **no Write, Edit, or Bash**, so they cannot
-create artifacts, implement code, or run the gate. **Never spawn the coding or
-polish worker with a read-only blueprint/reviewer type** — they will silently
-fail to do their job.
+## Reference files (read on demand)
 
-- **Main agent (orchestrator — you):** **TodoWrite** (track the pipeline stages
-  so progress stays visible), **Bash** (Stage 0 `git worktree` + toolchain
-  setup; Stage 6 `git diff`; Stage 7 `git`/`gh`), **Read** (read the artifacts
-  and the diff), **Edit** (Stage 3 — you revise the two artifacts to apply
-  critique), and the **Agent/Task** tool (spawn the worker for every stage).
-- **Spec agent (Stage 1):** **Write** (creates `.auto-dev/specification.md`) plus
-  read-only discovery — **Read, Grep, Glob**.
-- **Implementation plan agent (Stage 2):** **Write** (creates
-  `.auto-dev/implementation-plan.md`) plus **Read, Grep, Glob** to read the spec
-  and explore the codebase.
-- **Reviewer (Stage 3):** **Read, Grep, Glob** only — it returns findings and is
-  explicitly told *not* to rewrite the files, so it needs no Write/Edit.
-- **Coding agent (Stage 4):** **Read, Write, Edit, Bash, Grep, Glob** — Edit to
-  implement and Bash to run tests as it goes are both essential.
-- **Polish agent (Stage 5):** **Read, Edit, Write, Bash** — the quality gate is
-  all shell (the commands discovered in Stage 0) — plus a way to run
-  code-simplifier: either the **Skill** tool, or the **Agent/Task** tool to spawn
-  the `code-simplifier:code-simplifier` agent (whose tool set is `*`).
+Keep this spine in context; open a reference only when you reach the phase that
+needs it.
 
-This skill is **fully autonomous**: it does not pause for user approval between
-stages. It stops early only when it is genuinely blocked (e.g. the task is
-self-contradictory, the worktree can't be created, or the quality gate cannot be
-made green after the bounded retries) — and then it reports clearly what it tried
-and why it stopped.
-
-The project's own rules are binding on every change this pipeline makes.
-Whatever conventions, security constraints, and Definition-of-Done you discover
-in Stage 0 (from `CLAUDE.md`, `CONTRIBUTING`, coding-guideline docs, linter
-configs, etc.) must be passed into every worker's brief and obeyed. Never weaken
-a security control or hardcode a secret to make the task finish.
+- `references/profiles.md` — profile schema, detection precedence, monorepo rules, `.auto-dev.yml` override.
+- `references/artifacts.md` — the `.auto-dev/` layout, the `WORK_LOG.md` ledger, and every artifact's contract.
+- `references/subagent-prompts.md` — the exact brief template + tool requirements for each delegated Task Agent.
+- `references/gates-and-jira.md` — human-gate scripts, Jira transition mapping, CI monitoring policy (timeouts, on-red).
 
 ## Pipeline at a glance
 
 ```
-Stage 0  Setup        → discover repo conventions; create worktree + branch; prep .auto-dev/
-Stage 1  Spec         → spec agent (with Write) writes specification.md
-Stage 2  Plan         → plan agent (with Write) writes implementation-plan.md from the spec
-Stage 3  Critique     → reviewer agent critiques both; orchestrator revises (≤2 rounds)
-Stage 4  Code         → coding agent implements + tests, given ONLY the plan
-Stage 5  Polish+Gate  → simplifier agent runs code-simplifier, then the quality gate green
-Stage 6  Accept       → orchestrator checks build against specification.md (≤2 fix rounds)
-Stage 7  Ship         → commit on the branch, open a PR
+Phase 1  Workspace Setup   → detect repo + stack, resolve ticket, worktree + branch, prep .auto-dev/
+Phase 2  Ticket Evaluation → research + acceptance criteria + testability; SCOPING (decompose if oversized)
+Phase 3  Spec Definition   → spec agent writes SPEC.md; spec reviewer critiques
+Phase 4  Impl Planning     → plan agent writes IMPLEMENTATION.md; plan reviewer critiques   [optional gate]
+Phase 5  Implementation    → coder (plan only) + impl-eval (code vs. plan)
+Phase 6  Evaluation        → spec-eval (code vs. withheld spec); feedback loop → Phase 5
+Phase 7  Clean Up          → simplify + run the profile's quality gate to green
+Phase 8  PR Management      → [GATE] commit + push + open PR + adversarial review + CI monitor
+Phase 9  Staging Review    → [GATE] direct merge to staging + CI monitor   (skip if no staging)
+Phase 10 Close Ticket      → [GATE] merge the PR to main + CI monitor + Jira Done
 ```
 
-Run the stages in order; each depends on the previous. Track them with TodoWrite
-so progress is visible.
+Run phases in order; each depends on the previous. Track them in
+`.auto-dev/WORK_LOG.md` (which is also the resume point) and mirror the status in
+TodoWrite so progress stays visible.
+
+## Task-orchestration layer (decompose & track)
+
+Before committing to a single-PR run, Phase 2 decides whether the ticket fits one
+PR:
+
+- **Fits → single-PR run.** Run Phases 3–10 once. `WORK_LOG.md` records phase
+  progress.
+- **Too big → alert + decompose.** Propose an ordered set of sub-tasks (with
+  dependencies), write them to `WORK_LOG.md`, and **alert the user** with the
+  proposed breakdown. On approval, run Phases 3–10 **per sub-task** — each in its
+  own branch/worktree with its own `.auto-dev/tasks/<id>/` subtree — respecting
+  dependency order and updating the ledger after each. Each sub-task produces its
+  own PR.
+
+`WORK_LOG.md` is the single source of truth across a multi-PR run and the resume
+point if interrupted — read it first when resuming (`references/artifacts.md`).
+
+## Human gates
+
+This skill runs the planning and build unattended, and **pauses for explicit
+approval** (via `AskUserQuestion`) only at these points:
+
+- **Post-plan gate (Phase 4) — OFF by default, enable per run.** If the user asks
+  to review before building (or the task is high-risk), pause after
+  `IMPLEMENTATION.md` to approve SPEC + plan before any code is written.
+- **PR gate (Phase 8).** Pause before opening the PR.
+- **Staging gate (Phase 9).** Pause before the direct merge to staging.
+- **Main gate (Phase 10).** Pause before merging the PR to main.
+
+Everything else runs without check-ins. Jira status transitions ride along with
+these gates (`references/gates-and-jira.md`). Gate scripts and the exact prompts
+live in `references/gates-and-jira.md`.
+
+## Global iteration budget
+
+Instead of separate per-loop caps, the pipeline shares **one budget of revise
+rounds** (default **4**) across all corrective loops — spec review, plan review,
+the Phase 6 → Phase 5 spec-eval feedback loop, and Phase 7 gate fixes. Each
+re-spawn or re-run for correction consumes one round. When the budget is
+exhausted, **stop and report** what remains rather than looping forever. Record
+the remaining budget in `WORK_LOG.md`.
+
+## Tool permissions per agent
+
+Pick an agent type that grants the tools listed. The safe default for any worker
+is a full-tool type (`claude` / `general-purpose`, tool set `*`). The trap is a
+read-only blueprint/reviewer type (`feature-dev:code-architect`,
+`feature-dev:code-reviewer`): **no Write/Edit/Bash**, so it cannot create
+artifacts, implement, or run the gate. **Never spawn the coder or cleanup worker
+with a read-only type** — it will silently fail.
+
+- **Orchestrator (you):** TodoWrite, Bash (git/gh/CI, worktree, setup), Read,
+  Edit (revise artifacts after critique), Write (`WORK_LOG.md`, `profile.md`), the
+  Agent/Task tool (spawn every worker), AskUserQuestion (gates), and the Atlassian
+  MCP Jira tools when a ticket is present.
+- **Ticket-analysis agent (Phase 2):** Write + Read, Grep, Glob (research is
+  read-only; it writes `TICKET.md` / `ACCEPTANCE_CRITERIA.md`).
+- **Spec agent (Phase 3):** Write + Read, Grep, Glob.
+- **Spec reviewer (Phase 3):** Read, Grep, Glob only.
+- **Plan agent (Phase 4):** Write + Read, Grep, Glob.
+- **Plan reviewer (Phase 4):** Read, Grep, Glob only.
+- **Coding agent (Phase 5):** Read, Write, Edit, Bash, Grep, Glob.
+- **Cleanup agent (Phase 7):** Read, Edit, Write, Bash, plus a way to run
+  code-simplifier (Skill tool, or spawn `code-simplifier:code-simplifier`).
+- **PR reviewer (Phase 8):** Read, Grep, Glob, Bash (`git diff`, `gh`) — read-only
+  w.r.t. source; writes `PR_REVIEW.md`.
+
+Per-phase isolation: hand each worker the worktree path, `profile.md`, and only
+the inputs its phase needs. The coder gets the **plan only, never the spec** — the
+independence is what makes Phase 6 a real check.
 
 ---
 
-## Stage 0 — Discover conventions, then set up the isolated worktree
+## Phase 1 — Workspace Setup
 
-**First, discover how this repo works.** You will pass these findings into every
-later worker, so the pipeline adapts to the project instead of assuming a
-toolchain. Read what the repo tells you and record a short "project profile":
+Deterministic, run by the orchestrator.
 
-- **Conventions & rules:** read `CLAUDE.md`/`AGENTS.md` if present, plus
-  `README`, `CONTRIBUTING`, and any coding-guideline / architecture / security
-  docs you find. These define the binding constraints, the Definition-of-Done,
-  and the branch/PR norms.
-- **Toolchain & dependency setup:** detect the ecosystem from manifest and
-  version files (e.g. `package.json`, `pyproject.toml`/`requirements.txt`,
-  `go.mod`, `Cargo.toml`, `Gemfile`, `pom.xml`/`build.gradle`, `mix.exs`,
-  `composer.json`) and any version pin (`.tool-versions`, `.nvmrc`, `mise.toml`,
-  `.python-version`). Note the install command (e.g. `npm ci`, `pnpm install`,
-  `uv sync`, `poetry install`, `go mod download`, `bundle install`, `mix
-  deps.get`) and any toolchain activation step (`mise install`, `nvm use`, etc.).
-- **Quality gate:** find the commands that constitute "done" — test, lint,
-  format-check, type-check, build. Look in CI configs (`.github/workflows`,
-  `.gitlab-ci.yml`), `Makefile`/`Justfile`/`Taskfile`, `package.json` scripts,
-  `pre-commit` config, or a documented precommit/check command. Prefer an
-  aggregate command the repo already defines (e.g. `make check`, `npm run
-  verify`, `mix precommit`) and add the separately-run checks it omits.
-- **Test scope hints:** note anything that affects how tests run — a required
-  database/service, a monorepo with per-package suites, fast vs. slow tiers — so
-  the coding and polish workers run the right scope.
-
-If a check genuinely can't be determined, prefer the conventional default for
-the detected ecosystem and record the assumption rather than skipping verification.
-
-**Then create an isolated worktree.** Every task gets its own git worktree on its
-own branch — never work on the repo's default branch.
-
-1. Derive a short, descriptive slug from the task (e.g. `link-expiry-validation`).
-   Pick the branch prefix by intent: `feature/`, `fix/`, `chore/`, `refactor/`
-   (or match the repo's own convention if it differs).
-2. From the repo root, create a sibling worktree named for the repo and slug,
-   then run the discovered setup:
+1. **Detect the repo & branches.** Canonical repo name from the git remote
+   (`basename -s .git "$(git remote get-url origin)"`); default branch via
+   `gh repo view --json defaultBranchRef`. Resolve `base`, `staging` (optional),
+   and branch `prefix` — from `.auto-dev.yml` if present, else conventional
+   defaults. If there is no `staging` branch, mark Phase 9 as N/A.
+2. **Detect the stack & load the profile.** Match `detect` signals
+   (`references/profiles.md`) → load `profiles/<stack>.md`, else `default.md` +
+   runtime discovery. Merge in repo-doc/CI discovery, apply `.auto-dev.yml`.
+3. **Resolve the ticket.** If the user gave a Jira key/URL, read it via the
+   Atlassian MCP (`getJiraIssue`); detect Jira availability and cache the issue.
+   Otherwise treat the free-form task text as the ticket.
+4. **Read the repo's binding rules** — `CLAUDE.md`/`AGENTS.md`, `CONTRIBUTING`,
+   security/coding-guideline docs, plus the org security directives — and carry
+   them into every worker's brief.
+5. **Create the isolated worktree** on its own branch (never the default branch):
    ```bash
-   git worktree add ../<repo-name>-<slug> -b <prefix>/<slug>
-   cd ../<repo-name>-<slug>
-   # run the toolchain-activation + dependency-install commands discovered above
+   git worktree add ../<repo-name>-<slug> -b <prefix>/<slug> origin/<base>
    ```
-3. Create an artifacts directory the pipeline uses to hand off between stages:
+   Then run the profile's `setup` commands. Derive `<slug>` from the ticket/task.
+6. **Prep `.auto-dev/`** and exclude it from git (see `references/artifacts.md`):
    ```bash
    mkdir -p .auto-dev
-   ```
-   **Never commit anything under `.auto-dev/`** — it holds planning scratch
-   (the spec and plan handed between stages), not shippable code, and must never
-   appear in a commit, a diff you stage, or a PR. Add it to the worktree's
-   `.git/info/exclude` immediately so it can't be staged even by `git add -A`:
-   ```bash
    echo ".auto-dev/" >> .git/info/exclude
    ```
-   This is belt-and-suspenders: the exclude entry enforces it mechanically, and
-   the Stage 7 staging step must still add files explicitly rather than blanket
-   `git add`.
+7. **Write `.auto-dev/profile.md`** (fully-resolved profile) and initialize
+   `.auto-dev/WORK_LOG.md`.
+8. **Jira → In Progress** (if a ticket exists), confirmed with the user as part of
+   starting work (`references/gates-and-jira.md`).
 
-All remaining stages run **inside the worktree directory.** Subagents you spawn
-should be told the worktree path explicitly so they operate in the right tree,
-and should be handed the project profile from this stage.
+All later phases run **inside the worktree directory**.
 
----
+## Phase 2 — Ticket Evaluation + Scoping
 
-## Stage 1 — Specification (spec agent)
+Spawn **one** ticket-analysis agent (brief in `references/subagent-prompts.md`)
+that, in a single pass: researches the ticket against the codebase, drafts the
+**acceptance criteria** (what the ticket asks, stakeholder view), and assesses
+**testability** (can each criterion be observed/tested; flag gaps). It writes
+`TICKET.md` and `ACCEPTANCE_CRITERIA.md`.
 
-Spawn one subagent to write the acceptance criteria. It follows the
-**feature-dev skill's methodology** — explore the codebase enough to write
-accurate, testable criteria — and operates autonomously: never wait for user
-input, resolve every ambiguity with an explicit, recorded assumption instead of
-asking.
+Then run the **scoping check**: does this fit one PR? Estimate by subsystems
+touched, independent deliverables, and rough file count. If it's oversized,
+enter the **decompose & track** path (above) — alert the user and populate
+`WORK_LOG.md` — before proceeding to Phase 3.
 
-**Tools:** spawn it with an agent type that grants the **Write** tool (e.g.
-`claude` / `general-purpose`), because it creates `.auto-dev/specification.md`.
-Do not use an agent type that lacks Write — a read-only blueprint agent (e.g.
-`feature-dev:code-architect`, which has no Write tool) cannot produce the
-artifact and the stage will silently fail.
+## Phase 3 — Spec Definition
 
-```
-You are the SPECIFICATION stage of an autonomous dev pipeline. Work entirely
-inside the worktree at <abs-path>. Do NOT modify any source code. Do NOT ask the
-user anything — this is non-interactive; resolve every ambiguity yourself and
-record the assumption.
+From `ACCEPTANCE_CRITERIA.md`, produce the **testable contract**:
 
-Task: <the user's task, verbatim>
+1. **Problem Breakdown** (orchestrator) — frame the problem for the spec agent.
+2. **Spec Writing agent** → `.auto-dev/SPEC.md` — observable, testable conditions;
+   an `Assumptions` section; a `Security/Compliance criteria` section for
+   sensitive paths.
+3. **Spec Review agent** (read-only) → critique. Apply fixes yourself (you have
+   the context); re-review only if blockers remain. Consumes the shared iteration
+   budget.
 
-Project profile (from Stage 0): <conventions docs, security/contribution rules,
-relevant constraints>. Read those convention docs first — their constraints are
-binding. Explore the relevant code (find similar features, map the architecture)
-enough to write accurate, testable criteria.
+Hold `SPEC.md` — you withhold it from the coder and use it for Phase 6.
 
-Write exactly one file:
+## Phase 4 — Implementation Planning
 
-.auto-dev/specification.md — the ACCEPTANCE CRITERIA only. Observable, testable
-conditions that define "this works," in plain language. NO technical design, no
-file names, no function signatures. Include an "Assumptions" section for every
-ambiguity you resolved. If the task touches a sensitive path (auth, data
-handling, payments, access control, anything the repo's guidelines flag), add a
-"Security/Compliance criteria" section pulling the relevant controls from the
-repo's own security/compliance docs.
+1. **Impl Writing agent** → `.auto-dev/IMPLEMENTATION.md` — the self-contained
+   technical plan; every acceptance criterion maps to a step and a test. Reads
+   `SPEC.md`.
+2. **Impl Review agent** (read-only) → critique; apply fixes; re-review if
+   blockers. Consumes the shared budget.
+3. **Optional post-plan gate** — if enabled for this run, pause here for the user
+   to approve `SPEC.md` + `IMPLEMENTATION.md` before any code is written.
 
-Return a short summary: the slug, the assumptions you made, and the key risks.
-```
+## Phase 5 — Implementation
 
-After it returns, read `specification.md` yourself — you hold it as the
-independent check for Stage 6, and you pass it to the Stage 2 plan agent.
+1. **Steps Breakdown** → `.auto-dev/CODING_TODO.md` — the ordered, checkable task
+   list from the plan.
+2. **Coding agent (TDD)** — spawn with **only the plan + CODING_TODO, never the
+   spec**. Implements code and tests, runs the relevant tests as it goes.
+3. **Impl-Eval agent** → `.auto-dev/IMPLEMENTATION_EVAL.md` — checks the code
+   against `IMPLEMENTATION.md` (plan adherence). Blockers feed back to the coder
+   under the shared budget.
 
----
+## Phase 6 — Evaluation (acceptance)
 
-## Stage 2 — Implementation plan (plan agent)
+**You (the orchestrator)**, holding `SPEC.md` (which the coder never saw), verify
+the build against every acceptance criterion — read the diff
+(`git diff <base>...HEAD`) and the tests. Write `.auto-dev/SPEC_EVAL.md`
+(per-criterion met / partial / unmet, with evidence). For unmet criteria, send the
+coder back with a **specific** correction brief (translate the criterion into
+concrete required behavior; don't quote the spec verbatim), then re-check. This
+**feedback loop into Phase 5** consumes the shared budget; past it, stop-and-report
+the unmet criteria.
 
-Spawn a second subagent to turn the specification into the technical plan. This
-stage **depends on Stage 1**: the plan agent reads `.auto-dev/specification.md`
-and designs to it, so every acceptance criterion maps to concrete plan steps and
-tests. It follows the **feature-dev skill's discovery approach** and operates
-autonomously, recording assumptions instead of asking.
+## Phase 7 — Clean Up (quality gate)
 
-**Tools:** spawn it with an agent type that grants the **Write** tool (e.g.
-`claude` / `general-purpose`), because it creates
-`.auto-dev/implementation-plan.md`. The same read-only caveat as Stage 1 applies.
+Spawn the cleanup agent: first run **code-simplifier** over the branch diff
+(behavior-preserving), then run the profile's `gate` commands (from `profile.md`)
+in order, fixing what they surface, until every command is green. Each check
+writes `.auto-dev/lint/<CHECK>.md` (Elixir: `COMPILE.md`, `FORMAT.md`, `CREDO.md`,
+`DIALYZER.md`, `TEST.md`). If the gate cannot be made green, **stop and report** —
+never ship a red build. Gate fixes consume the shared budget.
 
-```
-You are the IMPLEMENTATION-PLAN stage of an autonomous dev pipeline. Work
-entirely inside the worktree at <abs-path>. Do NOT modify any source code. Do NOT
-ask the user anything — this is non-interactive; resolve every ambiguity yourself
-and record the assumption.
+## Phase 8 — PR Management  **[human gate]**
 
-Task: <the user's task, verbatim>
+1. **Gate:** pause for approval to open the PR (`references/gates-and-jira.md`).
+2. **Commit** — stage source paths **explicitly** (`git add <paths>`, never
+   `-A`/`.`); confirm nothing under `.auto-dev/` is staged. Conventional message
+   ending with `Co-Authored-By: Claude Code <noreply@anthropic.com>`.
+3. **Push** the branch; **open the PR** with `gh pr create` — body includes the
+   acceptance criteria as a checklist, a summary, gate results, and unresolved
+   assumptions; ends with `Generated with [Claude Code](https://claude.com/claude-code)`.
+4. **Adversarial PR Review agent** → `.auto-dev/PR_REVIEW.md` — briefed to *find*
+   problems (correctness, security, scope), not rubber-stamp. Posting inline
+   comments is opt-in.
+5. **CI Monitoring** — poll the PR's checks (detected provider) with a timeout and
+   an on-red policy (surface + stop); see `references/gates-and-jira.md`.
+6. **Jira → In Review.**
 
-Read .auto-dev/specification.md — your plan must satisfy every acceptance
-criterion in it. Then read the project's convention docs (<from Stage 0>) — the
-security constraints and the Definition-of-Done gate (<the discovered quality-gate
-commands>) are binding. Explore the relevant code (use the feature-dev skill's
-discovery approach: find similar features, map the architecture, identify the
-files you'll touch) before designing.
+## Phase 9 — Staging Review  **[human gate]**  (skip if no staging branch)
 
-Write exactly one file:
+Pause for approval, then **directly merge** the branch into `staging` (no PR — per
+project convention) and monitor CI on staging. Skip entirely if the repo has no
+staging branch.
 
-.auto-dev/implementation-plan.md — the technical HOW, sufficient to implement
-from on its own. Include: files to create/modify (paths), the design
-(modules/functions/data structures), data flow, the build sequence in order, the
-test plan (which tests prove which behavior, and where they live), and any
-migration/config. It must be self-contained: a competent engineer who has NOT
-seen the acceptance criteria should be able to build the right thing from this
-plan alone. Ensure every acceptance criterion in the spec maps to a plan step and
-a test.
+## Phase 10 — Close Ticket  **[human gate]**
 
-Return a short summary: the slug, the assumptions you made, and the key risks.
-```
-
-After it returns, read `implementation-plan.md` yourself as well.
-
----
-
-## Stage 3 — Critique the plans (reviewer agent)
-
-Spawn a reviewer subagent to critique **both** artifacts and return structured
-feedback. **Tools:** read-only is correct here (it must not rewrite the files) —
-spawn it as `feature-dev:code-reviewer` if available, else `claude`; **Read,
-Grep, Glob** are all it needs. Brief:
-
-```
-You are the PLAN-REVIEW stage. Read these two files in the worktree at <abs-path>:
-.auto-dev/specification.md and .auto-dev/implementation-plan.md. Also read the
-project's convention docs (<from Stage 0>) for the binding constraints.
-
-Critique against these criteria and return findings grouped by severity
-(blocker / should-fix / nit):
-- Specification: Are the acceptance criteria observable and testable? Is it free
-  of technical leakage (no design detail masquerading as a requirement)? Are the
-  assumptions reasonable and the security/compliance criteria complete for what
-  the task touches?
-- Implementation plan: Is it complete and self-contained (buildable without the
-  spec)? Does every acceptance criterion in the spec map to something in the
-  plan AND to a test? Does it follow repo conventions and the project's security
-  constraints? Are there correctness, security, or scope risks? Is anything
-  over-engineered for the task?
-- Coverage gap: list any acceptance criterion with no corresponding plan step or
-  test, and any plan step that doesn't trace back to a criterion.
-
-Do not rewrite the files. Return the findings only.
-```
-
-Apply the feedback yourself by editing the two artifacts (you have the context;
-this is faster than re-spawning the planner). Re-run the reviewer if a round
-surfaced blockers. **Cap at 2 critique rounds.** If blockers remain after 2
-rounds, record the unresolved items in the plan and proceed — note them in the
-final report rather than looping forever.
-
----
-
-## Stage 4 — Implementation (coding agent)
-
-Spawn the coding subagent with **only the implementation plan plus minimal
-operating instructions — never the specification.** The plan is the contract;
-withholding the spec keeps this worker focused on building exactly what was
-designed, and ensures the Stage 6 acceptance check is made by a context that
-didn't write the code — that independence is the whole point of splitting spec
-from plan.
-
-**Tools:** this worker must implement code and run tests, so it needs a full-tool
-type (`claude` / `general-purpose`): **Read, Write, Edit, Bash, Grep, Glob**.
-Never use a read-only blueprint/reviewer type (`feature-dev:code-architect` /
-`code-reviewer` have no Edit or Bash) — it cannot write code or run the tests.
-
-```
-You are the IMPLEMENTATION stage. Work inside the worktree at <abs-path>.
-
-Implement the change described in .auto-dev/implementation-plan.md. Read that
-file and follow it. Read the project's convention docs (<from Stage 0>) and obey
-them — follow the repo's security and coding guidelines, never log or expose
-sensitive data, never hardcode secrets, and use synthetic/test data only.
-
-Build the code AND the tests called for in the plan's test plan. Follow existing
-codebase conventions and abstractions closely. Run the relevant tests as you go
-and get them passing (test command: <from Stage 0>; test-scope hints: <from
-Stage 0>). Do not open a PR or commit — just leave the working tree with the
-change implemented.
-
-Return a summary: files created/modified, tests added, anything in the plan you
-could not do and why.
-```
-
-Pass the Stage 0 test-scope hints into the brief so the worker runs the right
-scope (e.g. a required database/service, or a single package's suite in a
-monorepo) instead of guessing.
-
----
-
-## Stage 5 — Simplify + quality gate (cleanup agent)
-
-Spawn one subagent to do the cleanup-and-verify pass. It first simplifies, then
-drives the Definition-of-Done gate to green.
-
-**Tools:** the whole quality gate is shell, so this worker needs a full-tool type
-(`claude` / `general-purpose`): **Read, Edit, Write, Bash**, plus a way to run
-code-simplifier — the **Skill** tool, or the **Agent/Task** tool to spawn the
-`code-simplifier:code-simplifier` agent. Never a read-only type — it cannot run
-the gate commands.
-
-```
-You are the POLISH + QUALITY-GATE stage. Work inside the worktree at <abs-path>.
-
-Step 1 — Simplify: Run the code-simplifier skill (the code-simplifier agent) over
-the code changed on this branch (diff against the base branch). Apply
-simplifications that preserve behavior — clarity, DRY, removing dead/over-built
-code. Do not change what the code does.
-
-Step 2 — Quality gate (the project's Definition of Done, from Stage 0). Run each
-of these and make them clean, fixing issues you introduced or surfaced:
-  <the discovered quality-gate commands, e.g. test / lint / format-check /
-  type-check / build — list them explicitly here>
-Re-run until every gate command is green. If a warning must be suppressed,
-suppress it as narrowly as possible and explain why.
-
-Heads-up on tests (from Stage 0): <test-scope hints — required services, monorepo
-scope, slow tiers>. Make sure any prerequisite is available before running the
-suite.
-
-Return: what you simplified, and the final status of each gate command (with the
-tail of any output you had to fix).
-```
-
-If the gate cannot be made green (e.g. a type/lint error that traces to a genuine
-design problem in the plan), stop the pipeline and report — do not commit a red
-build.
-
----
-
-## Stage 6 — Acceptance review against the specification
-
-Now the specification earns its keep. **You (the orchestrator)** — holding
-`specification.md`, which the coding agent never saw — verify the implemented
-change against every acceptance criterion. Read the diff (`git diff
-<base-branch>...HEAD`) and the tests, and check each criterion is actually
-satisfied, including the security/compliance criteria.
-
-For any criterion that is unmet or only partially met, send the coding agent back
-with a **specific** correction brief — name the failing criterion in implementation
-terms (not by quoting the spec verbatim; translate it into concrete required
-behavior), point at the relevant files, and have it fix and re-test. After it
-returns, re-run the relevant part of the Stage 5 gate, then re-check.
-
-**Cap at 2 fix rounds.** If criteria remain unmet after 2 rounds, stop and report
-exactly which acceptance criteria are unsatisfied and what was tried.
-
----
-
-## Stage 7 — Ship (commit + PR)
-
-When the gate is green and the acceptance review passes:
-
-1. Stage **only the source changes** the pipeline produced — name the paths
-   explicitly (`git add <paths>`); never blanket-stage with `git add -A`/`.`,
-   which would sweep in `.auto-dev/`. Before committing, confirm nothing under
-   `.auto-dev/` is staged (`git status` should show none). Then commit on the
-   feature branch with a clear, conventional message (match the repo's
-   commit-message style). End the commit body with:
-   ```
-   Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
-   ```
-2. Push the branch and open a pull request with `gh`. The PR body should include
-   the **acceptance criteria as a checklist** (from `specification.md`), a short
-   summary of the approach, the gate results, and any unresolved assumptions or
-   risks. Follow the repo's PR template if it has one. End the PR body with:
-   ```
-   🤖 Generated with [Claude Code](https://claude.com/claude-code)
-   ```
-   If there is no remote or `gh` isn't configured, commit locally and report that
-   the PR step was skipped and why.
-
-Leave the worktree in place for the user to review — don't merge, and don't remove
-the worktree.
+Pause for approval, then **merge the PR to main** via `gh pr merge` (respects
+branch protection and required reviews — never a local push to main). Monitor CI
+on main, transition **Jira → Done**, and offer to remove the worktree (confirmed,
+not automatic).
 
 ---
 
 ## Final report
 
-Summarize for the user: the branch/worktree path, the PR link (or why it was
-skipped), what was built, the assumptions made during planning, the final gate
-status, and anything left unresolved. Be honest about skipped steps or unmet
-criteria — never report success you didn't verify.
+Summarize: branch/worktree path, PR link(s), what was built, assumptions made,
+final gate status, Jira transitions performed, remaining iteration budget, and
+anything left unresolved. In a multi-PR run, report per sub-task from
+`WORK_LOG.md`. Be honest about skipped steps and unmet criteria — never report
+success you didn't verify.
 
 ## Bounds and guardrails
 
-- **Bounded loops.** Critique ≤2 rounds, acceptance-fix ≤2 rounds. Past the cap,
-  report rather than loop.
-- **Stop-and-report conditions:** worktree can't be created; the task is
+- **One global iteration budget** (default 4 revise rounds) across all corrective
+  loops. Past it, report rather than loop.
+- **Stop-and-report conditions:** worktree can't be created; task is
   self-contradictory or impossible as specified; the quality gate can't be made
-  green; acceptance criteria remain unmet after the fix cap. In each case, leave
-  the work in place and explain.
-- **Never** weaken security to make it pass — no disabled TLS/cert/signature
-  checks, no exposed secrets or credentials, no real/sensitive data or PII in
-  tests or fixtures, no hardcoded secrets. These override "finish the task."
-- **Per-stage isolation:** spawn a fresh subagent per stage, hand off through
-  `.auto-dev/` files and the git tree, and give each worker the worktree path,
-  the Stage 0 project profile, and only the inputs its stage needs.
-- **Never commit `.auto-dev/`.** It is pipeline scratch, not shippable code. It
-  must never land in a commit, a staged diff, or a PR — in this repo or any repo
-  the pipeline runs against. Exclude it in Stage 0 and stage paths explicitly in
-  Stage 7 (never `git add -A`/`.`).
+  green; acceptance criteria remain unmet after the budget; a gate/merge is
+  declined by the user. Leave the work in place and explain.
+- **Never weaken security to finish** — no disabled TLS/cert/signature checks, no
+  exposed or hardcoded secrets, no real/sensitive data or PII in tests/fixtures.
+  Obey the repo's rules and the org security directives. These override "finish
+  the task."
+- **Never commit `.auto-dev/`.** Exclude it in Phase 1; stage explicitly in
+  Phase 8; never `git add -A`/`.` (`references/artifacts.md`).
+- **Promotion safety:** main only via `gh pr merge`; staging via direct merge only
+  where the project uses that convention.
+- **Per-phase isolation:** fresh subagent per phase; hand off via `.auto-dev/`
+  files + the git tree; give each worker only the inputs its phase needs; the
+  coder never sees the spec.

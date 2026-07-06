@@ -1,23 +1,29 @@
 {
   "skill_name": "auto-dev",
-  "notes": "Each eval runs a FULL autonomous dev cycle (discover conventions -> worktree -> spec -> plan -> code -> gate -> commit -> PR), so runs are slow, costly, and mutate the repo. Run against a throwaway copy of the repo and have runs stop at local commit (no remote/PR) unless explicitly testing the PR step. Prefer small, self-contained tasks whose quality gate can run without heavy external services.",
+  "notes": "Each eval runs a FULL autonomous pipeline (detect repo + stack -> worktree -> ticket eval -> spec -> plan -> code -> eval -> gate -> PR), so runs are slow, costly, and mutate the repo. Run against a throwaway copy and have runs stop at the PR gate (no merge) unless explicitly testing promotion. The human gates (PR, staging, main) require approval; the post-plan gate is off by default. Prefer small, self-contained tasks whose quality gate can run without heavy external services.",
   "evals": [
     {
       "id": 1,
       "prompt": "Auto-dev this: reject creation of a record when the requested value isn't in the allowed set for that context. Return a typed/handled error instead of throwing. Take it all the way to a PR.",
-      "expected_output": "Stage 0 discovers the repo's toolchain and quality gate; a worktree + feature branch; a specification.md with observable acceptance criteria (incl. the rejection behavior and that no default value is assumed) and an implementation-plan.md; an implemented allow-list guard with tests; the project's quality gate green; a commit and PR (or local commit if no remote).",
+      "expected_output": "Phase 1 detects the stack (Elixir -> elixir profile) and creates a worktree + feature branch with .auto-dev/ excluded; TICKET.md + ACCEPTANCE_CRITERIA.md (stakeholder view incl. rejection behavior, no default assumed); SPEC.md (testable contract) and IMPLEMENTATION.md; an allow-list guard implemented with tests (given only the plan); IMPLEMENTATION_EVAL.md and SPEC_EVAL.md; the profile's quality gate green with lint/*.md reports; pauses at the PR gate, then a commit + PR (or stops at the gate if declined).",
       "files": []
     },
     {
       "id": 2,
       "prompt": "Run the full dev cycle on this fix: the state machine should reject the illegal transition and surface a handled error instead of allowing it. Plan it, build it, verify it, and open a PR.",
-      "expected_output": "Two planning artifacts; a guard added to the transition logic with a test proving the illegal transition is rejected; the discovered quality gate green; commit + PR.",
+      "expected_output": "Planning artifacts (SPEC.md, IMPLEMENTATION.md); a guard added to the transition logic with a test proving the illegal transition is rejected; spec-eval confirms acceptance criteria met; quality gate green; PR gate prompt then PR.",
       "files": []
     },
     {
       "id": 3,
-      "prompt": "auto-dev: add input validation so an entity created with an out-of-range value is rejected at creation time. Self-contained, take it to a PR.",
-      "expected_output": "Spec with acceptance criteria (out-of-range rejected, boundary defined as an assumption), implementation plan, implemented validation + tests, quality gate green, commit + PR.",
+      "prompt": "Pick up JIRA-1234 and ship it autonomously — take it to a PR.",
+      "expected_output": "Phase 1 reads the Jira issue (getJiraIssue) and, on confirmation, transitions it to In Progress; the ticket becomes TICKET.md/ACCEPTANCE_CRITERIA.md; the full pipeline runs; at the PR gate a PR is opened and Jira moves to In Review. No Jira comments or field edits are made. If Jira is unavailable, it proceeds treating the key as free-form and reports Jira was skipped.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "auto-dev this whole epic: add multi-currency support across the wallet, the ledger, and the payout service. Take it all the way.",
+      "expected_output": "Phase 2 scoping recognizes the task exceeds one PR, alerts the user with a proposed decomposition into ordered sub-tasks, and populates WORK_LOG.md. It does not cram everything onto one branch; on approval it runs the pipeline per sub-task as separate PRs, updating the ledger.",
       "files": []
     }
   ]

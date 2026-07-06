@@ -1,7 +1,7 @@
 {
   "name": "auto-dev",
-  "version": "1.0.0",
-  "description": "Drive a single coding task through the entire development lifecycle autonomously — spec, plan, implement, polish, verify, and ship as a pull request — using purpose-built subagents for each stage. Project-agnostic: discovers the repo's own toolchain, quality gate, and conventions at runtime.",
+  "version": "2.0.0",
+  "description": "Drive a single coding task from ticket to merged pull request autonomously — ticket eval, spec, plan, implement, verify, quality gate, and ship — using purpose-built subagents per phase. Stack-agnostic via editable profiles (Elixir ships), with optional Jira/CI/staging integration and human gates before PR and merges.",
   "author": {
     "name": "hubertursua"
   }

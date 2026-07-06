@@ -1,52 +1,81 @@
 # auto-dev
 
-A minimal orchestration skill for autonomous development.
+An orchestration skill for autonomous development.
 
-It drives a single coding task from spec to pull request hands-off, delegating
-each stage to a purpose-built subagent. Project-agnostic: Stage 0 discovers the
-repo's own toolchain, quality gate, and conventions at runtime, and every later
-stage obeys what was discovered.
+It drives a single coding task from a ticket to a merged pull request hands-off,
+delegating each phase to a purpose-built subagent and handing structured
+artifacts between them through a `.auto-dev/` scratch directory. It is
+**stack-agnostic** via editable profiles (Elixir ships today), and integrates
+optionally with Jira, CI, and a staging branch — each auto-detected and skipped
+when absent.
 
 ## Agent hierarchy
 
 The main agent stays the orchestrator and never writes code itself — it spawns a
-fresh subagent per stage and hands off through files in `.auto-dev/`, never
-shared memory.
+fresh subagent per phase and hands off through files in `.auto-dev/`, never shared
+memory. The specification is deliberately withheld from the coding agent so the
+acceptance check is made by a context that never saw the code being written.
 
 ```
-Orchestrator (main agent) ── owns the pipeline, holds the spec
+Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the gates
 │
-├─ Stage 1  Spec agent ............ writes specification.md
-├─ Stage 2  Plan agent ............ writes implementation-plan.md
-├─ Stage 3  Reviewer agent ........ critiques both artifacts  (≤2 rounds)
-├─ Stage 4  Coding agent .......... implements + tests (given only the plan)
-├─ Stage 5  Cleanup agent ......... runs the quality gate to green
-│            └─ code-simplifier agent ... simplifies the diff first
-├─ Stage 6  (orchestrator) ........ acceptance review vs. spec
-│            └─ Coding agent (re-spawned) ... fixes unmet criteria (≤2 rounds)
-└─ Stage 7  (orchestrator) ........ commit + open PR
+├─ Phase 1  Workspace Setup ....... detect repo + stack, resolve ticket, worktree, .auto-dev/
+├─ Phase 2  Ticket-analysis agent . TICKET.md + ACCEPTANCE_CRITERIA.md; scoping/decompose
+├─ Phase 3  Spec agent → reviewer .. SPEC.md (testable contract)
+├─ Phase 4  Plan agent → reviewer .. IMPLEMENTATION.md            [optional gate]
+├─ Phase 5  Coding agent (TDD) ..... code + tests (given only the plan) → impl-eval
+├─ Phase 6  (orchestrator) ......... acceptance review vs. withheld spec → feedback loop
+├─ Phase 7  Cleanup agent .......... simplify + quality gate to green (lint/*.md)
+├─ Phase 8  (orchestrator) ......... [GATE] commit + PR + adversarial review + CI monitor
+├─ Phase 9  (orchestrator) ......... [GATE] direct merge to staging + CI   (optional)
+└─ Phase 10 (orchestrator) ......... [GATE] merge PR to main + CI + Jira Done
 ```
-
-Stages 0, 3, 6, and 7 run in the orchestrator; 1, 2, 4, and 5 are delegated. The
-specification is deliberately withheld from the coding agent so Stage 6 is an
-independent check by a context that never saw the code being written.
 
 ## What it does
 
 Invoke it when you want a whole task taken off your plate and delivered as a
 finished PR, hands-off — e.g. *"auto-dev this…"*, *"take it all the way to a
-PR"*, *"run the whole dev cycle by yourself"*. The orchestrator runs:
+PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 
-| Stage | Worker | Output |
+| Phase | Worker | Output |
 |-------|--------|--------|
-| 0 Setup | orchestrator | discovers repo conventions; creates an isolated git worktree + branch |
-| 1 Spec | spec agent | `specification.md` — observable acceptance criteria |
-| 2 Plan | plan agent | `implementation-plan.md` — the technical how |
-| 3 Critique | reviewer agent | structured findings; orchestrator revises (≤2 rounds) |
-| 4 Code | coding agent | implementation + tests, given **only** the plan |
-| 5 Polish + Gate | cleanup agent | runs code-simplifier, then the discovered quality gate to green |
-| 6 Accept | orchestrator | verifies the build against the spec it withheld (≤2 fix rounds) |
-| 7 Ship | orchestrator | commit on the branch + open a PR |
+| 1 Workspace Setup | orchestrator | detect repo/stack, load profile, resolve ticket, isolated worktree + branch, `.auto-dev/` |
+| 2 Ticket Evaluation | ticket-analysis agent | `TICKET.md`, `ACCEPTANCE_CRITERIA.md`; scoping (decompose oversized tickets) |
+| 3 Spec Definition | spec agent + reviewer | `SPEC.md` — the testable contract |
+| 4 Impl Planning | plan agent + reviewer | `IMPLEMENTATION.md` — the technical how (optional approval gate) |
+| 5 Implementation | coding agent | code + tests given **only** the plan; plan-adherence eval |
+| 6 Evaluation | orchestrator | acceptance review vs. the withheld spec; feedback loop to Phase 5 |
+| 7 Clean Up | cleanup agent | code-simplifier, then the profile's quality gate to green |
+| 8 PR Management | orchestrator | commit + PR + adversarial review + CI monitor (pauses first) |
+| 9 Staging Review | orchestrator | direct merge to staging + CI (pauses first; skipped if none) |
+| 10 Close Ticket | orchestrator | merge the PR to main + CI + Jira Done (pauses first) |
+
+## Stack profiles
+
+The pipeline is language/framework-agnostic. A **profile** (`skills/auto-dev/profiles/`)
+declares how a stack installs and what its quality gate is; Phase 1 detects the
+stack, loads the profile, merges in runtime discovery, and honors a repo-local
+`.auto-dev.yml` override. Shipped: **Elixir** (`mix compile`/`format`/`credo`/
+`dialyzer`/`test`) plus a generic `default` fallback that discovers commands at
+runtime. Add a stack by dropping in `profiles/<stack>.md` — no skill change. See
+`skills/auto-dev/references/profiles.md`.
+
+## Human gates & integrations
+
+Planning and build run unattended; the pipeline pauses for approval before
+**opening the PR**, before the **staging merge**, and before the **main merge**
+(plus an optional post-plan gate you can enable per run). Main is merged only via
+`gh pr merge` (respecting branch protection); staging is a direct merge where the
+project uses that convention. **Jira** integration is status-transitions-only
+(In Progress → In Review → Done) and is skipped if no ticket is given. **CI** is
+monitored on the PR before merge. See `skills/auto-dev/references/gates-and-jira.md`.
+
+## Decompose & track
+
+If a ticket is too big for one PR, the pipeline alerts you with a proposed
+breakdown into ordered sub-tasks, tracks them in `.auto-dev/WORK_LOG.md`, and
+(on approval) runs the pipeline per sub-task as separate PRs. `WORK_LOG.md` is
+also the resume point if a run is interrupted.
 
 ## Install
 
@@ -64,8 +93,8 @@ Or from a local clone, point at the directory that contains `.claude-plugin/`:
 /plugin install auto-dev@auto-dev-marketplace
 ```
 
-Then, in any project you run it on, add the pipeline's scratch directory to that
-project's `.gitignore` so its planning artifacts can never be committed:
+As a safeguard, add the scratch directory to each project's `.gitignore` so its
+planning artifacts can never be committed:
 
 ```
 echo ".auto-dev/" >> .gitignore
@@ -75,35 +104,27 @@ Now ask Claude to "auto-dev" a task and the skill triggers.
 
 ## Dependencies
 
-This plugin orchestrates other agents and skills. It uses the built-in
-`TodoWrite`, `Task`/`Agent`, `Bash`, `Read`, `Edit`, `Write`, `Grep`, and `Glob`
-tools, plus `gh` on your `PATH` for the PR step. Beyond those it relies on the
-following plugins/skills:
+Built-in tools: `TodoWrite`, `Task`/`Agent`, `Bash`, `Read`, `Edit`, `Write`,
+`Grep`, `Glob`, `AskUserQuestion`, plus `gh` on your `PATH` for PR/merge steps.
+Optional integrations: the Atlassian MCP (Jira transitions) and a CI provider CLI.
+Beyond those:
 
 | Plugin / skill | Used in | Required? |
 |----------------|---------|-----------|
-| `code-simplifier` plugin — provides the `code-simplifier:code-simplifier` agent (and skill) | Stage 5 runs it over the diff before the quality gate | **Recommended.** Without it the simplify step is skipped; the rest of the pipeline still runs. |
-| `feature-dev` plugin — provides the `feature-dev:feature-dev` skill and the `feature-dev:code-architect` / `feature-dev:code-reviewer` / `feature-dev:code-explorer` agents | Stages 1–2 follow the feature-dev methodology; Stage 3 prefers the `code-reviewer` agent | **Optional.** Stages fall back to full-tool agent types (`claude` / `general-purpose`) when these specialized types aren't installed. |
-
-Both are available in the official Claude Code plugin marketplace
-(`claude-plugins-official`). Nothing else is required — the pipeline degrades
-gracefully to general-purpose agents when a specialized type is missing.
+| `code-simplifier` plugin (`code-simplifier:code-simplifier`) | Phase 7 runs it over the diff before the gate | **Recommended.** Without it the simplify step is skipped; the rest still runs. |
+| `feature-dev` plugin (`code-reviewer` etc.) | Phases 3–4 prefer its reviewer types | **Optional.** Falls back to full-tool agent types when absent. |
 
 ## The `.auto-dev/` scratch directory
 
-Each run creates a `.auto-dev/` directory holding the planning artifacts the
-stages hand off to one another (the specification and implementation plan). This
-is scratch, not part of your project — the pipeline never commits it, and inside
-its own worktree it adds `.auto-dev/` to `.git/info/exclude` automatically.
-
-Even so, the [Install](#install) steps have you add `.auto-dev/` to your
-project's `.gitignore` as a safeguard, so the artifacts can never be
-accidentally committed if you run the pipeline outside a dedicated worktree or
-stage changes by hand.
+Each run creates `.auto-dev/` holding the artifacts phases hand off (see
+`skills/auto-dev/references/artifacts.md`). This is scratch, not part of your
+project — the pipeline never commits it and adds `.auto-dev/` to the worktree's
+`.git/info/exclude` automatically. (Note: a committed `.auto-dev.yml` override
+file is separate and is *not* excluded.)
 
 ## Safety
 
-The pipeline is fully autonomous but bounded: critique and acceptance-fix loops
-are capped, and it stops and reports rather than committing a red build or
-weakening any security control. It never merges or removes the worktree — it
-leaves the finished branch in place for you to review.
+Autonomous but bounded: all corrective loops share one iteration budget, and the
+pipeline stops and reports rather than committing a red build or weakening any
+security control. It merges to main only through a PR and only after your
+approval.
