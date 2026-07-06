@@ -5,9 +5,9 @@ requirement for each. The orchestrator fills the `<…>` placeholders and always
 hands the worker: the **worktree absolute path**, `.auto-dev/profile.md`, the
 repo's binding rules (from Phase 1), and only the inputs that phase needs.
 
-> **Status:** Phase 2–4 briefs authored (M1). Phase 5 (coder / impl-eval) and
-> Phase 7 (cleanup) briefs land in **M2**; the Phase 8 adversarial PR-review brief
-> in **M3**.
+> All phase briefs are authored (Phases 2–8). Phase 1 is deterministic
+> orchestrator work (see `SKILL.md`); Phase 6 is an orchestrator check with a
+> coder correction brief; Phases 9–10 are orchestrator git/gh operations.
 
 ## Conventions for every brief
 
@@ -317,6 +317,36 @@ If the gate cannot be made green (e.g. a failure that traces to a genuine design
 problem in the plan), **stop the pipeline and report** — never commit a red build.
 Gate fixes consume the shared budget.
 
-## Phase 8 — Adversarial PR Review agent  *(M3)*
-_Read, Grep, Glob, Bash (`git diff`, `gh`); read-only w.r.t. source; writes
-`PR_REVIEW.md`; briefed to find problems, not rubber-stamp._
+## Phase 8 — Adversarial PR Review agent
+_Tools: Read, Grep, Glob, Bash (`git diff`, `gh`) — read-only w.r.t. source._
+Briefed to **find problems, not rubber-stamp**. Runs after the PR is opened.
+
+```
+You are the ADVERSARIAL PR-REVIEW phase. Work inside the worktree at <abs-path>.
+Your job is to FIND PROBLEMS in the change on this branch — not to approve it.
+Assume there ARE bugs and go looking for them.
+
+Read the diff (`git diff <base>...HEAD`), the changed files, and the tests. Read
+.auto-dev/SPEC.md, .auto-dev/IMPLEMENTATION.md, and the binding rules (<summary>)
+plus the org security directives.
+
+Hunt across these lenses and actively try to break each:
+- Correctness: edge cases, error paths, off-by-one, nil/empty/boundary inputs,
+  concurrency, wrong assumptions. Name an input that breaks it.
+- Security: injection, authz gaps, secret/PII exposure, unsafe deserialization,
+  weakened TLS/crypto — check against the org directives (SEC-*).
+- Scope: anything built beyond the spec, or a spec condition not actually met.
+- Tests: do they PROVE the behavior, or are they tautological / missing the
+  important cases?
+- Conventions: deviations from repo patterns.
+
+Write .auto-dev/PR_REVIEW.md: findings grouped blocker / should-fix / nit, each
+with file:line and a concrete "why this is wrong / how to trigger it." If a lens
+genuinely turns up nothing, say so briefly — but default to skepticism. Do NOT
+modify code. Return the blocker count.
+```
+
+If the review returns blockers: feed them back to the **coding agent** (Phase 5
+correction brief) and re-run the affected Phase 7 gate checks before proceeding —
+this consumes the shared budget. If the budget is exhausted with blockers open,
+surface them to the user at the PR gate rather than merging over them.
