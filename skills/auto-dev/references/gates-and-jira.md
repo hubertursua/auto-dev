@@ -20,19 +20,45 @@ _(Exact prompts and summaries: M3.)_
 
 ## Jira — status transitions only
 
-Never comment or edit fields — transitions only. Availability is detected in
-Phase 1. Milestone → state mapping comes from `.auto-dev.yml`
-(`jira.states`) or defaults (In Progress / In Review / Done).
+Never comment or edit fields — **transitions only**. Availability is detected in
+Phase 1 (a ticket key/URL was supplied and the Atlassian MCP is reachable). If
+either is missing, skip all Jira steps and note it in `WORK_LOG.md`. Milestone →
+state mapping comes from `.auto-dev.yml` (`jira.states`) or the defaults
+In Progress / In Review / Done.
 
-- Read the issue: Atlassian MCP `getJiraIssue`.
-- List valid transitions: `getTransitionsForJiraIssue` (state names vary per
-  board — resolve the target name to its transition id).
-- Apply: `transitionJiraIssue`.
-- Milestones: **In Progress** at start (Phase 1, confirmed), **In Review** when
-  the PR opens (Phase 8), **Done** when the PR merges to main (Phase 10). Writes
-  ride along with the corresponding gate.
+### MCP tools (deferred — fetch schemas via ToolSearch before calling)
 
-_(MCP tools are deferred; fetch schemas via ToolSearch when implementing: M1/M3.)_
+Full names: `mcp__atlassian-gateway__getAccessibleAtlassianResources`,
+`mcp__atlassian-gateway__getJiraIssue`,
+`mcp__atlassian-gateway__getTransitionsForJiraIssue`,
+`mcp__atlassian-gateway__transitionJiraIssue`.
+
+### Procedure (applies to every transition)
+
+1. **Resolve `cloudId` once** (Phase 1): call `getAccessibleAtlassianResources`
+   and cache the site's cloud id. Every Jira call needs it.
+2. **Read the issue** (Phase 1): `getJiraIssue { cloudId, issueIdOrKey,
+   responseContentFormat: "markdown" }` — feeds `TICKET.md` and confirms the
+   current status.
+3. **Transition is by id, resolved from the name.** State names vary per board, so
+   never hardcode an id:
+   - `getTransitionsForJiraIssue { cloudId, issueIdOrKey }` → the list of
+     currently-available transitions, each with an `id` and a target status
+     `name`.
+   - Match the target state name (from `jira.states`, case-insensitive) to a
+     transition; take its `id`.
+   - `transitionJiraIssue { cloudId, issueIdOrKey, transition: { id } }`.
+   - If no available transition matches (e.g. the board has no direct path from
+     the current status), **do not force it** — report the mismatch and continue;
+     the transition is best-effort, not a blocker.
+
+### Milestones
+
+- **In Progress — Phase 1 (wired in M1).** After the worktree is created and the
+  issue read, confirm with the user (part of "start work") and transition to the
+  `in_progress` state. Skip if already in a started state.
+- **In Review — Phase 8 (M3).** Rides along with the PR gate, after the PR opens.
+- **Done — Phase 10 (M3).** Rides along with the main gate, after `gh pr merge`.
 
 ## CI monitoring
 
