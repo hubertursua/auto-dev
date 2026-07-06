@@ -206,12 +206,116 @@ If enabled for this run, pause here (`AskUserQuestion`) for the user to approve
 
 ---
 
-## Phase 5 — Coding agent (TDD) · Impl-Eval agent  *(M2)*
-_Coding: Read, Write, Edit, Bash, Grep, Glob (given the plan + CODING_TODO,
-**never the spec**). Impl-Eval: Read, Grep, Glob, Bash._
+## Phase 5 — Implementation
 
-## Phase 7 — Cleanup agent  *(M2)*
-_Read, Edit, Write, Bash, plus a way to run code-simplifier._
+### Steps Breakdown (orchestrator)
+Before spawning the coder, derive `.auto-dev/CODING_TODO.md` from
+`IMPLEMENTATION.md`: the ordered, checkable list of implementation steps (each a
+small, verifiable unit, in build order, with its test). This is the coder's
+worklist and the visible progress trail. Keep it in sync with the plan — it is a
+projection of the plan, not a new source of truth.
+
+### Coding agent (TDD)
+_Tools: Read, Write, Edit, Bash, Grep, Glob._ Spawn with the **plan +
+CODING_TODO only — never SPEC.md** (that independence is what makes Phase 6 real).
+
+```
+You are the IMPLEMENTATION phase. Work inside the worktree at <abs-path>. Do NOT
+ask the user — record assumptions.
+
+Implement the change in .auto-dev/IMPLEMENTATION.md, working through
+.auto-dev/CODING_TODO.md in order. Read .auto-dev/profile.md for the toolchain and
+test command, and the binding rules (<summary>) — follow the repo's security and
+coding guidelines, never log/expose sensitive data, never hardcode secrets, use
+synthetic/test data only.
+
+Work test-first where practical: for each step, add or extend the test the plan
+calls for, then make it pass. Follow existing codebase conventions and
+abstractions closely. Run the relevant tests as you go and get them green
+(test command: <from profile.md>; scope hints: <profile.md test_notes>). Do NOT
+commit and do NOT open a PR — just leave the working tree with the change
+implemented and CODING_TODO items checked off.
+
+Return: files created/modified, tests added, which CODING_TODO items are done, and
+anything in the plan you could NOT do and why.
+```
+
+### Impl-Eval agent
+_Tools: Read, Grep, Glob, Bash (read-only w.r.t. source — no Edit/Write to code)._
+Checks the code against the **plan**, not the spec.
+
+```
+You are the IMPLEMENTATION-EVAL phase (plan-adherence check). Work inside the
+worktree at <abs-path>. Do NOT modify source.
+
+Read .auto-dev/IMPLEMENTATION.md and .auto-dev/CODING_TODO.md, then inspect what
+was actually built (`git diff <base>...HEAD`, the changed files, the tests).
+
+Write .auto-dev/IMPLEMENTATION_EVAL.md: for each plan step, is it implemented as
+designed? Findings grouped blocker / should-fix / nit, each with file:line.
+Specifically flag: plan steps not implemented (or done differently without an
+assumption), tests the plan required that are missing, and code added that the
+plan didn't call for. Do NOT rewrite code. Return the blocker count.
+```
+
+Blockers feed back to the coding agent with a specific fix brief; consumes the
+shared iteration budget.
+
+## Phase 6 — Evaluation (acceptance) · orchestrator
+
+**You**, holding `SPEC.md` (which the coder never saw), verify the build against
+every acceptance condition. Read the diff (`git diff <base>...HEAD`) and the
+tests. Write `.auto-dev/SPEC_EVAL.md`: per condition, **met / partial / unmet**
+with evidence (file:line or test name); include the security/compliance
+conditions.
+
+For each unmet/partial condition, re-dispatch the **coding agent** with a targeted
+correction brief (this is the feedback loop; it consumes the shared budget):
+
+```
+You are the IMPLEMENTATION phase, applying a correction. Work inside the worktree
+at <abs-path>. The following required behavior is not yet satisfied:
+
+<translate the unmet SPEC condition into CONCRETE required behavior — do NOT quote
+the spec verbatim; describe what the code must do and where>. Relevant files:
+<paths>. Implement the fix and its test, run the relevant tests green, and report
+what changed. Do not commit or open a PR.
+```
+
+After it returns, re-run the affected Phase 7 gate checks, then re-evaluate. If
+conditions remain unmet when the budget is exhausted, **stop and report** exactly
+which conditions are unsatisfied and what was tried.
+
+## Phase 7 — Cleanup agent (simplify + quality gate)
+_Tools: Read, Edit, Write, Bash, plus a way to run code-simplifier (the Skill
+tool, or spawn `code-simplifier:code-simplifier`)._
+
+```
+You are the POLISH + QUALITY-GATE phase. Work inside the worktree at <abs-path>.
+
+Step 1 — Simplify: run code-simplifier over the code changed on this branch (diff
+against <base>). Apply behavior-preserving simplifications only (clarity, DRY,
+remove dead/over-built code). Do NOT change what the code does. If code-simplifier
+is unavailable, skip this step and note it.
+
+Step 2 — Quality gate (the Definition of Done, from .auto-dev/profile.md `gate`).
+Run each command IN ORDER, verbatim, and make it clean, fixing issues you
+introduced or surfaced:
+  <list the profile's gate commands explicitly, with their report filenames>
+For each check, write .auto-dev/lint/<REPORT>.md: the exact command, final status
+(pass/fail), and the tail of any output you had to fix. Re-run until every gate
+command is green. If a warning must be suppressed, suppress it as narrowly as
+possible and explain why in the report.
+
+Heads-up on tests (from profile.md test_notes): <notes — required services,
+umbrella/monorepo scope, slow tiers>. Ensure prerequisites are up before running.
+
+Return: what you simplified, and the final status of each gate command.
+```
+
+If the gate cannot be made green (e.g. a failure that traces to a genuine design
+problem in the plan), **stop the pipeline and report** — never commit a red build.
+Gate fixes consume the shared budget.
 
 ## Phase 8 — Adversarial PR Review agent  *(M3)*
 _Read, Grep, Glob, Bash (`git diff`, `gh`); read-only w.r.t. source; writes
