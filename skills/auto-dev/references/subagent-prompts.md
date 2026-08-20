@@ -108,6 +108,7 @@ call out the sensitive paths. This goes into the spec agent's brief.
 
 ### Spec Writing agent
 _Tools: Write + Read, Grep, Glob._
+_Model: `sonnet` — formalizes an existing artifact, then gets reviewed and edited._
 
 Turns the stakeholder acceptance criteria into the **testable contract**.
 
@@ -242,6 +243,7 @@ anything in the plan you could NOT do and why.
 
 ### Impl-Eval agent
 _Tools: Read, Grep, Glob, Bash (read-only w.r.t. source — no Edit/Write to code)._
+_Model: `sonnet` — closed-form check: match the diff against the plan's steps._
 Checks the code against the **plan**, not the spec.
 
 ```

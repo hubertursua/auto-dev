@@ -109,14 +109,23 @@ re-spawn or re-run for correction consumes one round. When the budget is
 exhausted, **stop and report** what remains rather than looping forever. Record
 the remaining budget in `WORK_LOG.md`.
 
-## Tool permissions per agent
+## Tool permissions & model per agent
 
 Pick an agent type that grants the tools listed. The safe default for any worker
 is a full-tool type (`claude` / `general-purpose`, tool set `*`). The trap is a
 read-only blueprint/reviewer type (`feature-dev:code-architect`,
 `feature-dev:code-reviewer`): **no Write/Edit/Bash**, so it cannot create
-artifacts, implement, or run the gate. **Never spawn the coder or cleanup worker
-with a read-only type** — it will silently fail.
+artifacts, implement, or run the gate — and both also pin `model: sonnet`, so
+they quietly downgrade the phase on top of failing it. **Never spawn the coder or
+cleanup worker with a read-only type** — it will silently fail.
+
+**Models.** Every worker inherits your model unless its brief names one. Two do:
+the spec agent (Phase 3) and the impl-eval agent (Phase 5) run on `sonnet` —
+each generates or checks against an explicit written artifact, with a further
+check downstream. Everything else stays on your model: ticket analysis, the
+planner, the coder (including every correction round), all three reviewers, and
+the cleanup worker. The reviewers keep the strong model deliberately — a weak
+checker returns "no findings" and the miss is invisible.
 
 - **Orchestrator (you):** TodoWrite, Bash (git/gh/CI, worktree, setup), Read,
   Edit (revise artifacts after critique), Write (`WORK_LOG.md`, `profile.md`), the
@@ -124,11 +133,13 @@ with a read-only type** — it will silently fail.
   MCP Jira tools when a ticket is present.
 - **Ticket-analysis agent (Phase 2):** Write + Read, Grep, Glob (research is
   read-only; it writes `TICKET.md` / `ACCEPTANCE_CRITERIA.md`).
-- **Spec agent (Phase 3):** Write + Read, Grep, Glob.
+- **Spec agent (Phase 3):** Write + Read, Grep, Glob. Model: `sonnet`.
 - **Spec reviewer (Phase 3):** Read, Grep, Glob only.
 - **Plan agent (Phase 4):** Write + Read, Grep, Glob.
 - **Plan reviewer (Phase 4):** Read, Grep, Glob only.
 - **Coding agent (Phase 5):** Read, Write, Edit, Bash, Grep, Glob.
+- **Impl-eval agent (Phase 5):** Read, Grep, Glob, Bash — read-only w.r.t.
+  source. Model: `sonnet`.
 - **Cleanup agent (Phase 7):** Read, Edit, Write, Bash, plus a way to run
   code-simplifier (Skill tool, or spawn `code-simplifier:code-simplifier`).
 - **PR reviewer (Phase 8):** Read, Grep, Glob, Bash (`git diff`, `gh`) — read-only
