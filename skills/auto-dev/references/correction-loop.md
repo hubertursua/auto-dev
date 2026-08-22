@@ -1,7 +1,7 @@
 # The correction loop and the iteration budget
 
-Three things send work backwards: an unmet spec condition, a PR-review blocker,
-and a red CI check. They are **one loop entered at three points**, and this file
+Three things send work backwards: an unmet spec condition, a PR-review blocker
+(from `PR_REVIEW.md` or from a human reviewer on the PR), and a red CI check. They are **one loop entered at three points**, and this file
 is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 `references/gates-and-jira.md` point here instead of restating it.
 
@@ -23,12 +23,12 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 Step 4 is the only step that looks different at each entry point, and it differs
 only because the entry points happen at different *times*. The rule is single: a
 correction invalidates the evidence written before it, so rewrite that evidence.
-Earlier in the pipeline there is simply less of it to rewrite.
+Earlier in the pipeline there is less of it to rewrite.
 
 | Entered at | Written by then | Refresh | `/simplify` |
 |---|---|---|---|
 | **Phase 5 — acceptance** (unmet condition) | nothing; the cleanup agent has not run | `SPEC_EVAL.md` only | not yet run — it runs once after this loop settles, so corrective code gets simplified with everything else |
-| **Phase 6a — PR review** (blocker) | `lint/`, the commit, the PR body | the affected `lint/<CHECK>.md`, and the PR body's gate results | **no** — see below |
+| **Phase 6a — PR review** (blocker, adversarial or human) | `lint/`, the commit, the PR body | the affected `lint/<CHECK>.md`, and the PR body's gate results | **no** — see below |
 | **Phase 6a — CI red** (pre-merge) | `lint/`, the commit, the push, the PR body | the affected `lint/<CHECK>.md` and the PR body's gate results, then commit and re-push | **no** |
 
 **Why `/simplify` never re-runs in Phase 6.** A blocker fix is small and targeted;
@@ -46,12 +46,21 @@ code is gate-verified but not simplified.**
   it improved on.
 - **The two review phases (Define, plan).** You apply their findings by editing
   the artifact; no agent is re-dispatched. They still spend a round.
+- **A plan revision the user asks for at the post-plan gate.** You edit
+  `IMPLEMENTATION.md` from their direction and re-fire the gate. Nothing is being
+  corrected and no round is spent (`references/gates-and-jira.md`).
 
 ## The iteration budget
 
 **One budget of revise rounds shared by every corrective loop** — not a cap per
 loop. Default **4**; override with `iteration_budget:` in `.auto-dev.yml`
 (`references/profiles.md`), resolved in Phase 1 and recorded in `profile.md`.
+
+**The budget is per task, and on a multi-PR run that means per sub-task.** Each
+sub-task starts with a fresh `iteration_budget` and tracks what it has left in the
+ledger's `budget` column (`references/artifacts.md`). A single run-wide budget would
+let the first sub-task spend every round and leave the rest with no corrections at
+all — four rounds shared across six sub-tasks bounds nothing useful.
 
 Six things spend it, one round each:
 
@@ -60,9 +69,14 @@ Six things spend it, one round each:
 | 1 | Define review — re-review after fixes | 2 |
 | 2 | Plan review — re-review after fixes | 3 |
 | 3 | Acceptance feedback into the coder | 5 |
-| 4 | Quality-gate fix rounds | 5 |
-| 5 | PR-review blocker corrections | 6a |
+| 4 | Quality-gate fixes — a *re-spawn* of the cleanup agent after its first pass | 5 |
+| 5 | PR-review blocker corrections — adversarial or human | 6a |
 | 6 | CI-red corrections, pre-merge | 6a |
+
+The cleanup agent's own loop to green (Phase 5, step 3) is that phase's first pass
+and spends nothing, however many times it re-runs a gate command internally — it has
+no view of the budget and is never told one. Row 4 is the orchestrator **re-spawning**
+it, or running gate commands itself, after a correction.
 
 **Accounting.** A round is spent by each **re-spawn or re-run for correction**;
 the first pass through a phase is not a round. Decrement **before** dispatching,
@@ -71,8 +85,7 @@ what the round bought. Read the remaining count before every dispatch — at zer
 the loop does not run.
 
 **On exhaustion, stop and report.** Never loop past it and never merge over it.
-Say which loop ran it out, what is still unfixed, and what was tried: a run that
-stops with three unmet conditions named is a better outcome than one that quietly
-spends twenty rounds. Where exhaustion coincides with a gate — blockers still
+Say which loop ran it out, what is still unfixed, and what was tried — naming each
+unmet condition, not summarizing them. Where exhaustion coincides with a gate — blockers still
 open, CI still red — surface it **at that gate** and let the user decide, rather
 than holding silently.

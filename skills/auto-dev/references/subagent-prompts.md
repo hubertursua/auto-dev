@@ -28,11 +28,13 @@ see the model note in `SKILL.md`.
 - State the worktree path and "work entirely inside it; do not touch other trees."
   Where `<artifact-dir>` lies outside that tree (multi-PR runs), say so
   explicitly: it is the one path the worker may read and write outside `<worktree>`.
-- Name the exact artifact file(s) to write and their contract
-  (`references/artifacts.md`).
+- Name the exact artifact file(s) to write, and **paste that artifact's template
+  from `references/artifacts.md` into the brief**. A worker has no path to the
+  reference files and cannot follow a pointer to one.
 - Require a short structured return: what it did, assumptions, risks, and (for
   reviewers) findings grouped **blocker / should-fix / nit**.
-- Pass the binding rules + org security directives; they override "finish."
+- Pass the binding rules and the security directives Phase 1 resolved into
+  `profile.md`; they override "finish."
 - Reviewers are **read-only** and must **not** rewrite files — they return
   findings; the orchestrator applies fixes (it holds the context and this consumes
   the shared iteration budget).
@@ -58,8 +60,8 @@ anything — resolve every ambiguity yourself and record it as an assumption.
 Ticket / task: <the ticket summary + description, or the user's task text, verbatim>
 Ticket source: <JIRA-KEY and link, or "free-form task (no ticket)">
 Project profile: read <artifact-dir>/profile.md for the stack, conventions, and gate.
-Binding rules: <repo CLAUDE.md/CONTRIBUTING/security docs summary + org security
-directives>. These constrain what "done" and "acceptable" mean.
+Binding rules: <repo CLAUDE.md/CONTRIBUTING summary + the security directives named
+in profile.md>. These constrain what "done" and "acceptable" mean.
 
 Explore the relevant code enough to understand what the ticket really asks: find
 the feature area, similar existing features, the modules/flows involved, and any
@@ -81,8 +83,10 @@ Write exactly one file: <artifact-dir>/SPEC.md — the TESTABLE CONTRACT. Sectio
 
 4. "Security/Compliance criteria" — when the task touches a sensitive path (auth,
    data handling, payments, access control, anything the repo's guidelines flag),
-   pull the specific controls from the repo's security docs and the org directives
-   (e.g. parameterized queries, authz checks, no secrets/PII).
+   pull the specific controls from the security-directive sources named in
+   <artifact-dir>/profile.md (e.g. parameterized queries, authz checks, no
+   secrets/PII). If it records "none found", fall back to the repo's coding rules
+   and say so in this section.
 
 Return a structured summary:
 - assumptions: the key ones you made
@@ -145,13 +149,34 @@ Branch on the **SCOPE CALL**:
   1. Write the sub-task table to the control worktree's `.auto-dev/WORK_LOG.md`
      (`Mode: multi-PR`; see `references/artifacts.md`).
   2. **Alert the user** with the proposed breakdown and ask to proceed
-     (`AskUserQuestion`). If they adjust it, update the ledger.
-  3. On approval, run Phases 2–6 **per sub-task** in dependency order — each
-     *building* in its own branch/worktree, with `<artifact-dir>` set to
-     `<control-worktree>/.auto-dev/tasks/<id>` (create it, `lint/` included,
-     before that sub-task's first agent) — updating the ledger after each. Each sub-task re-runs the Define brief scoped to that
-     sub-task, so it gets its own `SPEC.md` **and its own scope call** (a sub-task
-     may well be TRIVIAL).
+     (`AskUserQuestion`). If they adjust it, update the ledger. If they choose
+     `Do it as one PR anyway`, the run becomes STANDARD — and the Define reviewer
+     skipped just above must now run, or the whole PR is built from an unreviewed
+     spec (`references/gates-and-jira.md`).
+  3. On approval, run Phases 2–6 **per sub-task** in dependency order, updating the
+     ledger after each. Each sub-task re-runs the Define brief scoped to itself, so
+     it gets its own `SPEC.md` **and its own scope call** (a sub-task may well be
+     TRIVIAL). Set `<artifact-dir>` to `<control-worktree>/.auto-dev/tasks/<id>`,
+     and create it — `lint/` included — before that sub-task's first agent.
+
+     **Create each sub-task's worktree when that sub-task starts, never all at once
+     up front**, and cut it from a freshly fetched base:
+     ```bash
+     git fetch origin
+     git worktree add ../<repo-name>-<slug>-<id> -b <prefix>/<slug>-<id> origin/<base>
+     ```
+     Cutting them all at the beginning is the bug this avoids: a sub-task that
+     depends on an earlier one would branch from a base predating it, and its PR
+     would conflict with work already merged. Fetching first is what gives the
+     `depends on` column its meaning — by the time a dependent sub-task starts, its
+     dependency is already on `origin/<base>`.
+
+     **A sub-task's own scope call may not be OVERSIZED.** If one comes back that
+     way, the parent decomposition was wrong — and that decomposition is the thing
+     the user approved. Stop, report which sub-task exceeds one PR and why, and
+     offer to re-cut the parent breakdown. Never decompose inside a decomposition:
+     the ledger has no shape for nested sub-tasks, and the recursion has no base
+     case.
 
 Borderline between STANDARD and OVERSIZED? Prefer surfacing the decomposition and
 letting the user choose over silently committing to one giant PR. Borderline
@@ -265,22 +290,19 @@ improved on.
 **You**, holding `SPEC.md` (which the coder never saw), verify the build against
 every condition. Read the diff, the tests, and the coder's DEVIATIONS report.
 
-The coder is told not to commit, so **the change set is the working tree**, and
-`git diff <base>...HEAD` would report nothing — `HEAD` is still at `<base>`. Read
-it this way instead:
+The coder is told not to commit, so **the change set is the working tree**:
 
 ```bash
-git add -N .          # intent-to-add, so newly created files appear in the diff
-git diff <base>
+git add -N .              # intent-to-add, so newly created files appear in the diff
+git diff origin/<base>
 ```
 
-Without the `git add -N`, every file the coder *created* is invisible to
-`git diff` — usually most of the change. (Phase 6's PR reviewer uses the
-three-dot form and is right to: the branch is committed by then.)
+Both halves are load-bearing and both fail silently — `SKILL.md` Phase 5 gives the
+reasoning, including why the base is `origin/<base>` and not the local branch.
 
-Write `<artifact-dir>/SPEC_EVAL.md`: per condition,
-**met / partial / unmet** with evidence (file:line or test name); include the
-security/compliance conditions.
+Write `<artifact-dir>/SPEC_EVAL.md` to the template in `references/artifacts.md`:
+per condition, **met / partial / unmet** with evidence (file:line or test name),
+security/compliance conditions included.
 
 For each unmet/partial condition, re-dispatch the **coding agent** with a targeted
 correction brief (this is the feedback loop; it consumes the shared budget):
@@ -309,23 +331,31 @@ what a correction invalidates at each point, and the budget accounting are in
 ### Cleanup agent (simplify + quality gate)
 _Tools: Read, Edit, Write, Bash, plus the **Skill** tool to run `/simplify`._
 
-Runs after the acceptance loop settles: `/simplify` is behavior-preserving, so it
-cannot affect acceptance, and running it last means corrective code gets
-simplified too.
+Runs after the acceptance loop settles, so corrective code gets simplified too.
+`/simplify` is *meant* to preserve behavior; Step 2's gate is what checks that it
+did.
 
 ```
 You are the POLISH + QUALITY-GATE phase. Work inside the worktree at <worktree>.
 
 Step 1 — Simplify: run /simplify over the code changed on this branch. Nothing
 is committed yet, so the change set is the working tree: run `git add -N .` and
-then `git diff <base>` to see it, new files included (`git diff <base>...HEAD`
-shows nothing at this point). Apply behavior-preserving simplifications only
+then `git diff origin/<base>` to see it, new files included
+(`git diff origin/<base>...HEAD` shows nothing at this point). Apply
+behavior-preserving simplifications only
 (clarity, DRY, remove dead/over-built code). Do NOT change what the code does.
 
 Step 2 — Quality gate (the Definition of Done, from <artifact-dir>/profile.md `gate`).
-Run each command IN ORDER, verbatim, and make it clean, fixing issues you
-introduced or surfaced:
+Run each command IN ORDER, verbatim, and make it clean:
   <list the profile's gate commands explicitly, with their report filenames>
+
+How you fix a failure depends on what caused it:
+- Failure in code YOUR simplification changed — **revert that simplification.** A
+  behavior-preserving change that breaks a check was not behavior-preserving, and
+  editing until the check passes destroys the only signal that it went wrong.
+- Failure that was already there before Step 1, or that Step 1 merely surfaced —
+  fix it forward.
+
 For each check, write <artifact-dir>/lint/<REPORT>.md: the exact command, final status
 (pass/fail), and the tail of any output you had to fix. Re-run until every gate
 command is green. If a warning must be suppressed, suppress it as narrowly as
@@ -334,16 +364,18 @@ possible and explain why in the report.
 Heads-up on tests (from profile.md test_notes): <notes — required services,
 umbrella/monorepo scope, slow tiers>. Ensure prerequisites are up before running.
 
-Return: what you simplified, and the final status of each gate command.
+Return: what you simplified, **any simplification you reverted and which check
+forced it**, the files Step 1 touched, and the final status of each gate command.
 ```
 
 Step 1 is **unconditional** — `/simplify` is a built-in skill, so there is nothing
 to detect and no skip path. If the return says the simplify step was skipped, that
 is a bug in the run, not an expected outcome.
 
-If the gate cannot be made green (e.g. a failure that traces to a genuine design
-problem in the plan), **stop the pipeline and report** — never commit a red build.
-Gate fixes consume the shared budget.
+If the gate cannot be made green (e.g. a failure that traces to a design problem in
+the plan), **stop the pipeline and report** — never commit a red build. This agent's
+loop to green spends **no** iteration budget; only a later *re-spawn* of it does
+(`references/correction-loop.md`).
 
 ---
 
@@ -360,16 +392,16 @@ You are the ADVERSARIAL PR-REVIEW phase. Work inside the worktree at <worktree>.
 Your job is to FIND PROBLEMS in the change on this branch — not to approve it.
 Assume there ARE bugs and go looking for them.
 
-Read the diff (`git diff <base>...HEAD` — the branch is committed by now, so the
-three-dot form is the right one here), the changed files, and the tests. Read
+Read the diff (`git diff origin/<base>...HEAD` — the branch is committed by now, so
+the three-dot form is the right one here), the changed files, and the tests. Read
 <artifact-dir>/SPEC.md, <artifact-dir>/IMPLEMENTATION.md, and the binding rules (<summary>)
-plus the org security directives.
+plus the security directives named in <artifact-dir>/profile.md.
 
 Hunt across these lenses and actively try to break each:
 - Correctness: edge cases, error paths, off-by-one, nil/empty/boundary inputs,
   concurrency, wrong assumptions. Name an input that breaks it.
 - Security: injection, authz gaps, secret/PII exposure, unsafe deserialization,
-  weakened TLS/crypto — check against the org directives (SEC-*).
+  weakened TLS/crypto — check against the security directives in profile.md.
 - Scope: anything built beyond the spec, or a spec condition not actually met.
 - Tests: do they PROVE the behavior, or are they tautological / missing the
   important cases?

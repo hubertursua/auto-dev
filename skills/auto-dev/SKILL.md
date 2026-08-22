@@ -23,10 +23,8 @@ Drive a single task through the entire development lifecycle — from a ticket t
 merged pull request — using purpose-built subagents for each delegated job and handing
 structured artifacts between them through `.auto-dev/`. You (the main agent) are
 the **orchestrator**: you own the pipeline, hold the spec, run the human gates,
-and never write implementation code yourself. Every delegated job runs in its own
-fresh subagent so your context stays clean and each worker stays focused on one
-job. Not every phase delegates: Phase 1 and the Phase 5 acceptance check are
-yours.
+and never write implementation code yourself. Not every phase delegates: Phase 1
+and the Phase 5 acceptance check are yours.
 
 This skill is **stack-agnostic**. A **stack profile** (see
 `references/profiles.md`) supplies the concrete setup and quality-gate commands;
@@ -76,9 +74,8 @@ questions:
 - **`IMPLEMENTATION.md` — did we build it the way we decided?** The technical how.
 
 They fail **independently**. A plan executed faithfully can still miss the
-outcome; an outcome can be delivered by a route the plan never described. One
-merged document collapses both into a single check, and it is the weaker one —
-design detail crowds out the outcome statement.
+outcome; an outcome can be delivered by a route the plan never described. Merging
+them into one document collapses both into a single, weaker check.
 
 **The coder builds from the plan, never the contract.** The plan is *required* to
 cover every condition (Phase 3), so this is not information-hiding — it is
@@ -101,8 +98,14 @@ Phase 2 returns a three-way **scope call**, and the pipeline adapts to it:
   user**. On approval, run Phases 2–6 **per sub-task** — each *building* in its
   own branch/worktree, while its *artifacts* stay in the **control worktree** (the
   one Phase 1 created) under `.auto-dev/tasks/<id>/` — respecting dependency order
-  and updating the ledger after each. Each sub-task gets its
-  **own** scope call, so a sub-task can itself be TRIVIAL. Each produces its own PR.
+  and updating the ledger after each. Each produces its own PR, and each carries its
+  **own iteration budget**. A sub-task's worktree is created when that sub-task
+  starts, from a freshly fetched `origin/<base>`, never all at once up front — that
+  is what keeps a dependent sub-task from branching off a base that predates its
+  dependency. Each sub-task gets its **own** scope call and can itself be TRIVIAL;
+  it may **not** be OVERSIZED — a decomposition inside a decomposition means the
+  parent breakdown was wrong, so stop and offer to re-cut it
+  (`references/subagent-prompts.md`).
 
 > **The scope call thins the planning head, never the verification tail.**
 > Phase 5 (acceptance + simplify + gate) and Phase 6 (adversarial review + CI +
@@ -116,33 +119,30 @@ point if interrupted — read it first when resuming (`references/artifacts.md`)
 This skill runs the planning and build unattended. Four gates pause it for
 explicit approval (via `AskUserQuestion`):
 
-- **Post-plan gate (Phase 3) — OFF by default.** Turn it on for the run when any
-  of these holds: the user asked to see the plan before building; `.auto-dev.yml`
-  sets `gates.post_plan: true`; or the task is **high-risk**, meaning `SPEC.md`
-  carries Security/Compliance criteria, or the change touches auth, payments,
-  access control, or a data migration. Then pause after `IMPLEMENTATION.md` to
-  approve SPEC + plan before any code is written. Record the decision, and the
-  reason, in `WORK_LOG.md`.
-- **PR gate (Phase 6).** Pause before opening the PR.
-- **Staging gate (Phase 6).** Pause before the direct merge to staging.
-- **Main gate (Phase 6).** Pause before merging the PR to main.
+- **Post-plan gate (Phase 3)** — after `IMPLEMENTATION.md`, before any code is
+  written. **OFF by default**; `references/gates-and-jira.md` states when to enable
+  it for a run.
+- **PR gate (Phase 6a)** — before opening the PR.
+- **Staging gate (Phase 6b)** — before the direct merge to staging.
+- **Main gate (Phase 6c)** — before merging the PR to main.
 
-Three further pauses are **conditional**, and are not gates in the sense above —
-they fire only when their situation arises: the **decomposition approval**
-(Phase 2, OVERSIZED only — never start a multi-PR run unapproved), the **Jira
-In Progress confirmation** (Phase 1, only with a ticket), and the **worktree
-cleanup offer** (Phase 6c). Everything else runs without check-ins.
+Three further pauses are **conditional** — not gates, and they fire only when
+their situation arises: the **decomposition approval** (Phase 2, OVERSIZED only —
+never start a multi-PR run unapproved), the **Jira In Progress confirmation**
+(Phase 1, only with a ticket), and the **worktree cleanup offer** (Phase 6c).
+Everything else runs without check-ins.
 
-Jira status transitions ride along with these gates. Every gate and conditional
-pause — its summary, its option set, and the Jira transition it carries — is
-specified in `references/gates-and-jira.md`.
+Jira status transitions ride along with these gates. When each gate is enabled,
+its summary, its option set, **what each option does**, and the Jira transition it
+carries are specified once in `references/gates-and-jira.md`. Record every gate
+decision, and its reason, in `WORK_LOG.md`.
 
 ## Corrections and the iteration budget
 
 An unmet spec condition, a PR-review blocker, and a red CI check are **one
 corrective loop entered at three points**. All of them draw on **a single budget
-of revise rounds** (default **4**, overridable via `.auto-dev.yml`) rather than a
-cap per loop. Each re-spawn or re-run for correction spends a round, decremented
+of revise rounds per task** (default **4**, overridable via `.auto-dev.yml`) rather
+than a cap per loop. On a multi-PR run each sub-task gets its own budget. Each re-spawn or re-run for correction spends a round, decremented
 before dispatch and tracked in `WORK_LOG.md`; at zero, **stop and report** instead
 of looping.
 
@@ -160,13 +160,13 @@ artifacts, implement, or run the gate — and both also pin `model: sonnet`, so
 they quietly downgrade the phase on top of failing it. **Never spawn an artifact
 writer with a read-only type** — it will silently fail. Only the two reviewers
 (Define review, plan review) are genuinely read-only; every other worker writes at
-least one file. The per-worker list below is authoritative.
+least one file. The per-worker list below and the `_Tools:_` line on each brief in
+`references/subagent-prompts.md` state the same requirement — change both together.
 
-**Models.** **Every worker inherits your model** — no brief pins one. There is no
-"mechanical" worker to economize on: Define's contract is what every later phase
-derives from, and a weak reviewer returns "no findings," which is indistinguishable
-from a clean pass. The only model risk is the *accidental* pin in the read-only
-agent types above.
+**Models.** **Every worker inherits your model** — no brief pins one. No worker is
+"mechanical" enough to economize on: a weak reviewer returns "no findings," which is
+indistinguishable from a clean pass. The only model risk is the *accidental* pin in
+the read-only agent types above.
 
 - **Orchestrator (you):** TodoWrite, Bash (git/gh/CI, worktree, setup), Read,
   Edit (revise artifacts after critique), Write (`WORK_LOG.md`, `profile.md`,
@@ -197,15 +197,19 @@ needs. The coder gets the **plan only, never the spec** (see *Why two documents*
 
 Deterministic, run by the orchestrator.
 
-**First: is this a resumed run?** If a `.auto-dev/WORK_LOG.md` for this task
-already exists, do not re-run Phase 1 — read the ledger and continue from it
-(`references/artifacts.md`, *Resuming an interrupted run*).
+**First: is this a resumed run?** You are standing in the main repo, which has no
+`.auto-dev/` — the control worktree is a sibling directory. Scan `git worktree list`
+for one holding a `.auto-dev/WORK_LOG.md` whose header matches this task. If one
+exists, do not re-run Phase 1: read the ledger and continue from it. Full detection
+procedure: `references/artifacts.md`, *Resuming an interrupted run*.
 
 1. **Detect the repo & branches.** Canonical repo name from the git remote
    (`basename -s .git "$(git remote get-url origin)"`); default branch via
    `gh repo view --json defaultBranchRef`. Resolve `base`, `staging` (optional),
    and branch `prefix` — from `.auto-dev.yml` if present, else conventional
-   defaults. If there is no `staging` branch, mark the Phase 6 staging gate as N/A.
+   defaults. Confirm the staging branch exists
+   (`git ls-remote --heads origin <staging>`); if it does not, mark the Phase 6
+   staging gate `n/a` in the ledger.
    **Check `gh` before anything else in this step** — `gh auth status`, and an
    `origin` that is GitHub. Phase 6 cannot open or merge a PR without it, so a
    missing, unauthenticated, or non-GitHub setup is a **stop-and-report now**, not
@@ -219,12 +223,23 @@ already exists, do not re-run Phase 1 — read the ledger and continue from it
    Atlassian MCP (`getJiraIssue`); detect Jira availability and cache the issue.
    Otherwise treat the free-form task text as the ticket.
 4. **Read the repo's binding rules** — `CLAUDE.md`/`AGENTS.md`, `CONTRIBUTING`,
-   security/coding-guideline docs, plus the org security directives — and carry
-   them into every worker's brief.
+   and the repo's coding-guideline docs — and carry them into every worker's brief.
+   **Resolve the security directives** here, taking the first source that exists:
+   the paths listed under `security_docs:` in `.auto-dev.yml`; the repo's own
+   security docs (`SECURITY.md`, `docs/security/*`, a security section in
+   `CONTRIBUTING`); the security section of `CLAUDE.md`/`AGENTS.md`. Record the
+   resolved sources in `profile.md` — or `security directives: none found`, falling
+   back to the repo's coding rules alone. Later phases cite what `profile.md`
+   records; never point a worker at a directive it cannot look up.
 5. **Create the isolated worktree** on its own branch (never the default branch):
    ```bash
    git worktree add ../<repo-name>-<slug> -b <prefix>/<slug> origin/<base>
    ```
+   Then **seed the gitignored files** listed under `worktree_files` by the profile
+   or `.auto-dev.yml` (`.env`, `.env.test`, local config), copying them from the main
+   checkout. A fresh worktree has none of them, and a suite that needs one fails in a
+   way that reads exactly like broken code. Report any listed file that isn't there
+   instead of continuing silently, and record what was seeded in `profile.md`.
    Then run the profile's `setup` commands. Derive `<slug>` from the ticket/task:
    the slug is **yours alone**, since the branch and worktree exist before Phase 2
    runs. No later phase returns or renames one.
@@ -298,22 +313,28 @@ what decides whether the destination was reached.
 
 ## Phase 5 — Verify (acceptance → simplify → gate)
 
-Three steps, in this order. Simplify is behavior-preserving so it cannot affect
-acceptance, and running it after the acceptance loop means corrective code gets
-simplified too.
+Three steps, in this order. Running simplify after the acceptance loop means
+corrective code gets simplified too. Simplify is *meant* to preserve behavior, but
+that is an intention rather than a guarantee — step 3's gate is what actually checks
+it, which is why the two are never reordered.
 
 1. **Acceptance (you, the orchestrator).** Holding `SPEC.md` (which the coder never
    saw), verify the build against every condition — read the diff and the tests.
    The coder does not commit, so read the **working tree**, not a commit range:
    ```bash
-   git add -N .          # intent-to-add, so newly created files show in the diff
-   git diff <base>
+   git add -N .              # intent-to-add, so newly created files show in the diff
+   git diff origin/<base>
    ```
-   `git diff <base>...HEAD` is **wrong here**: nothing is committed yet, so it
-   reports an empty diff. (Phase 6's PR reviewer does use the three-dot form, and
-   is correct to — by then the branch is committed.) Write `.auto-dev/SPEC_EVAL.md`
-   (per-condition met / partial / unmet, with evidence). For unmet conditions, send
-   the coder back with a **specific** correction brief (translate the condition into
+   Both halves matter, and both fail silently. Without `git add -N`, every file the
+   coder *created* is invisible to `git diff` — usually most of the change. And
+   `git diff origin/<base>...HEAD` reports an **empty** diff, because nothing is
+   committed yet. Diff against `origin/<base>` — the ref Phase 1 cut the worktree
+   from — not the local branch, which may be stale. (Phase 6's PR reviewer does use
+   the three-dot form, and is correct to — by then the branch is committed.)
+
+   Write `.auto-dev/SPEC_EVAL.md` (per-condition met / partial / unmet, with
+   evidence; template in `references/artifacts.md`). For unmet conditions, send the
+   coder back with a **specific** correction brief (translate the condition into
    concrete required behavior; don't quote the spec verbatim), then re-check. This
    **feedback loop into Phase 4** consumes the shared budget; past it,
    stop-and-report the unmet conditions.
@@ -321,13 +342,21 @@ simplified too.
    confirm the correction broke nothing. The cleanup agent is spawned **once**,
    after this loop settles, and no correction brings it back. Full protocol:
    `references/correction-loop.md`.
-2. **Simplify + 3. Quality gate.** Spawn the cleanup agent: run **`/simplify`** over
-   the branch diff (behavior-preserving), then run the profile's `gate` commands
-   (from `profile.md`) in order, fixing what they surface, until every command is
-   green. Each check writes `.auto-dev/lint/<CHECK>.md` (Elixir: `COMPILE.md`,
-   `FORMAT.md`, `CREDO.md`, `DIALYZER.md`, `TEST.md`). If the gate cannot be made
-   green, **stop and report** — never ship a red build. Gate fixes consume the
-   shared budget.
+2. **Simplify.** Spawn the cleanup agent to run **`/simplify`** over the branch diff.
+   Behavior-preserving only.
+3. **Quality gate.** The same agent then runs the profile's `gate` commands (from
+   `profile.md`) in order, fixing what they surface, until every command is green.
+   Each check writes `.auto-dev/lint/<CHECK>.md` (Elixir: `COMPILE.md`, `FORMAT.md`,
+   `CREDO.md`, `DIALYZER.md`, `TEST.md`). Reaching green here is the phase's first
+   pass and spends **no** budget; only a *re-spawn* of the cleanup agent after a
+   later correction does (`references/correction-loop.md`). If the gate cannot be
+   made green, **stop and report** — never ship a red build.
+
+   Once it is green, **re-resolve `SPEC_EVAL.md`'s `file:line` evidence**: simplify
+   moves lines, and Phase 6a builds the PR checklist from those citations. Re-verify
+   only the conditions whose cited files simplify actually touched — not all of
+   them. A reverted simplification reported by the cleanup agent is worth a second
+   look at the condition it touched.
 
 ## Phase 6 — Ship  **[three human gates]**
 
@@ -341,7 +370,9 @@ simplified too.
    assumptions; ends with `Generated with [Claude Code](https://claude.com/claude-code)`.
 4. **Adversarial PR Review agent** → `.auto-dev/PR_REVIEW.md` — briefed to *find*
    problems (correctness, security, scope), not rubber-stamp. This is the only
-   check briefed to find what no checklist names. Posting inline comments is opt-in.
+   check briefed to find what no checklist names. Findings stay on disk: post them
+   as inline PR comments **only** if the user asks during the run, or
+   `.auto-dev.yml` sets `pr_review.inline_comments: true`.
 5. **CI Monitoring** — poll the PR's checks (detected provider) with a bounded
    timeout (`references/gates-and-jira.md`). On red pre-merge the response is a
    corrective loop, not an immediate halt: `references/correction-loop.md`.
@@ -353,10 +384,25 @@ project convention) and monitor CI on staging. Skip entirely if the repo has no
 staging branch.
 
 ### 6c — Main  **[gate]**
-Pause for approval, then **merge the PR to main** via `gh pr merge` (respects
-branch protection and required reviews — never a local push to main). Monitor CI
-on main, transition **Jira → Done**, and offer to remove the worktree (confirmed,
-not automatic).
+1. **Read what humans said.** A teammate may have reviewed since the PR gate, and
+   nothing else in this pipeline reads their words:
+   ```bash
+   gh pr view <pr> --json reviewDecision,reviews,comments,mergeable,mergeStateStatus
+   ```
+   Put unresolved review comments and any `CHANGES_REQUESTED` in the gate summary. A
+   human blocker is handled exactly like a `PR_REVIEW.md` blocker — through the
+   correction loop (`references/correction-loop.md`), never merged over.
+2. **Gate:** pause for approval.
+3. **Merge to main** via `gh pr merge` (respects branch protection and required
+   reviews — never a local push to main). If the merge is **refused** — missing
+   approvals, a failing required check, an out-of-date branch, an unresolved
+   conversation — do not work around it. **Report that the PR is unmergeable**, name
+   the specific requirement blocking it, and stop with the PR left open. Merging
+   locally to get past branch protection is never the answer.
+4. Monitor CI on main, transition **Jira → Done**, and offer to remove the worktree
+   (confirmed, not automatic). On a multi-PR run this runs **per sub-task**, and the offer covers
+that sub-task's build worktree only — the control worktree holds the ledger and
+stays until the final report.
 
 ---
 
@@ -370,17 +416,21 @@ never report success you didn't verify.
 
 ## Bounds and guardrails
 
-- **One global iteration budget** (default 4 revise rounds) across all corrective
-  loops. Past it, report rather than loop (`references/correction-loop.md`).
+- **One iteration budget per task** (default 4 revise rounds) across all corrective
+  loops — and per *sub-task* on a multi-PR run. Past it, report rather than loop
+  (`references/correction-loop.md`).
 - **Stop-and-report conditions:** `gh` is missing, unauthenticated, or `origin`
-  isn't GitHub (caught in Phase 1, before any work); the worktree can't be
-  created; the task is self-contradictory or impossible as specified; the quality
-  gate can't be made green; spec conditions remain unmet after the budget; a
-  gate/merge is declined by the user. Leave the work in place and explain.
+  isn't GitHub (caught in Phase 1, before any work); the worktree can't be created;
+  the resolved quality gate has **no test command** (Phase 1 — an empty gate passes
+  Phase 5 by having nothing to check); the task is self-contradictory or impossible
+  as specified; the quality gate can't be made green; spec conditions remain unmet
+  after the budget; `gh pr merge` refuses the merge; a sub-task's scope call comes
+  back OVERSIZED; a gate/merge is declined by the user. Leave the work in place and
+  explain.
 - **Never weaken security to finish** — no disabled TLS/cert/signature checks, no
   exposed or hardcoded secrets, no real/sensitive data or PII in tests/fixtures.
-  Obey the repo's rules and the org security directives. These override "finish
-  the task."
+  Obey the repo's rules and the security directives resolved in Phase 1 (recorded in
+  `profile.md`). These override "finish the task".
 - **Never commit `.auto-dev/`.** Make it self-excluding in Phase 1; stage
   explicitly in Phase 6; never `git add -A`/`.` (`references/artifacts.md`).
 - **Promotion safety:** main only via `gh pr merge`; staging via direct merge only

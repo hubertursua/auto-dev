@@ -57,15 +57,19 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 Phase 2 returns one of three calls, and the pipeline adapts:
 
 - **TRIVIAL** — one subsystem, one behavior, no new abstraction or interface, no
-  migration or config change, and an existing test file covers it. The Define review and the Phase 3 agents are skipped; the
-  orchestrator writes a short plan itself. **4 subagent roles.**
+  migration or config change, and an existing test file covers it. The Define review
+  and the Phase 3 agents are skipped; the orchestrator writes a short plan itself.
+  **4 subagent roles.**
 - **STANDARD** — the full path. **7 subagent roles.** (Roles, not spawns —
   a correction round re-spawns a worker.)
 - **OVERSIZED** — too big for one PR: you get a proposed breakdown into ordered
   sub-tasks, tracked in `.auto-dev/WORK_LOG.md`, and on approval the pipeline runs
   per sub-task as separate PRs. Each sub-task gets its *own* scope call, so the
   cost is **1 role for the parent Define, then 4 or 7 per sub-task** depending on
-  how each one sizes up.
+  how each one sizes up — a number the approval prompt shows you before you agree to
+  it, alongside how many times it will stop for your approval. A sub-task can be
+  TRIVIAL but never OVERSIZED: decomposing inside a decomposition means the
+  breakdown was wrong, so the pipeline stops and offers to re-cut it.
 
 **The scope call thins the planning head, never the verification tail.** Phase 5
 and Phase 6 run identically at every scope — skipping planning on a small change
@@ -92,7 +96,11 @@ Planning and build run unattended; the pipeline pauses for approval before
 project uses that convention. **Jira** integration is status-transitions-only
 (In Progress → In Review → Done) and is skipped if no ticket is given. **CI** is
 monitored on the PR before merge, and again after the staging and main merges to
-confirm the merge itself didn't break the branch. See `skills/auto-dev/references/gates-and-jira.md`.
+confirm the merge itself didn't break the branch.
+
+Declining is safe at every gate: `Hold` pauses a run you can resume later, `Stop`
+ends it, and both leave the branch, the worktree, and every artifact on disk. See
+`skills/auto-dev/references/gates-and-jira.md`.
 
 ## Install
 
@@ -125,8 +133,11 @@ Built-in tools only — no plugins required: `TodoWrite`, `Task`/`Agent`, `Bash`
 `Read`, `Edit`, `Write`, `Grep`, `Glob`, `AskUserQuestion`, and the `Skill` tool
 (the Phase 5 cleanup agent runs `/simplify` with it). `gh` must be on your `PATH`
 and authenticated: Phase 1 checks, and stops before doing any work if it isn't.
-Optional integrations: the Atlassian MCP (Jira transitions) and a CI provider
-CLI.
+Optional integrations: the Atlassian MCP (Jira transitions) and a CI provider CLI.
+Optional tooling: **PyYAML**, used by `skills/auto-dev/scripts/validate-config.py` to
+check a repo's `.auto-dev.yml` in Phase 1 — a mistyped key is silently ignored
+otherwise. Without it the pipeline still runs; it just reports that the file went
+unvalidated.
 
 A note on agent types: `feature-dev`'s `code-reviewer` / `code-architect` types
 look like a natural fit for the two read-only reviewers, but they pin
@@ -146,10 +157,13 @@ it cannot be staged even by a stray `git add -A`. (Note: a committed
 
 ## Safety
 
-Autonomous but bounded: all corrective loops share one iteration budget, and the
-pipeline stops and reports rather than committing a red build or weakening any
-security control. It merges to main only through a PR and only after your
-approval.
+Autonomous but bounded: every corrective loop shares one iteration budget per task
+(each sub-task of a multi-PR run gets its own), and the pipeline stops and reports
+rather than committing a red build or weakening any security control. It refuses a
+resolved quality gate with no test command in it, since that would pass Phase 5 by
+having nothing to check. It merges to main only through a PR, only after your
+approval, and if `gh pr merge` is refused it tells you why instead of working around
+branch protection.
 
 ## Upgrading from 2.x
 

@@ -12,10 +12,35 @@ only), the **Jira In Progress confirmation** (Phase 1, only with a ticket), and
 the **worktree cleanup offer** (Phase 6c). All three are specified below.
 
 Gates use `AskUserQuestion`. Each presents a **concise summary** of what is about
-to happen and the state so far, then a proceed / hold decision. Always give the
-user enough to decide without digging: what will happen, what's been verified, and
-any risks. A `Stop` / `Hold` choice ends the run gracefully (work left in place,
-reported) — never proceed past a declined gate.
+to happen and the state so far, then a decision. Always give the user enough to
+decide without digging: what will happen, what's been verified, and any risks.
+Never proceed past a declined gate.
+
+## What each option does
+
+The labels recur across gates and mean the same thing everywhere. Record the
+decision, the option chosen, and its reason in `WORK_LOG.md`.
+
+- **Proceed** (`Approve & build`, `Open PR`, `Merge to staging`, `Merge PR to main`)
+  — take the action and continue.
+- **`Hold`** — pause without ending the run. Leave the worktree, the branch, and
+  every artifact in place; mark the phase `blocked` in the ledger with the reason.
+  The run stays **resumable** from `WORK_LOG.md` (`references/artifacts.md`), and
+  resuming re-fires this gate.
+- **`Stop`** — end the run. The same state is left on disk, but nothing resumes on
+  its own: write the final report, mark the phase `blocked`, and say what remains.
+- **`Skip staging`** (6b only) — mark Phase 6b `n/a` in the ledger and continue to
+  the main gate. This is not a decline; 6c still fires.
+- **`Revise plan (tell me what to change)`** (post-plan gate only) — you edit
+  `IMPLEMENTATION.md` yourself from the user's direction, then re-fire this gate on
+  the revised plan. User-directed, not a correction: it spends **no** iteration-budget
+  round (`references/correction-loop.md`).
+- **`Adjust the breakdown`** (decomposition only) — rewrite the sub-task table in
+  `WORK_LOG.md` from the user's direction, then re-ask.
+- **`Do it as one PR anyway`** (decomposition only) — downgrade the scope call to
+  STANDARD, record the downgrade and who asked for it, and **run the Define reviewer
+  that OVERSIZED skipped** before Phase 3. Without that, the whole PR gets built from
+  a spec nothing ever reviewed.
 
 ## Gates (in pipeline order)
 
@@ -46,10 +71,18 @@ wrote itself.
 - **Options:** `Merge to staging` · `Skip staging` · `Stop`.
 
 ### Main gate — Phase 6c
-- **Summary:** PR link, CI status (must be green), review/approval state,
-  `PR_REVIEW.md` blocker count, that the merge is via `gh pr merge` respecting
-  branch protection.
+Collect the human review state before asking (`gh pr view --json
+reviewDecision,reviews,comments,mergeable,mergeStateStatus`) — this gate is the only
+place a teammate's feedback enters the pipeline.
+- **Summary:** PR link, CI status (must be green), **`reviewDecision` and any
+  unresolved review comments**, `PR_REVIEW.md` blocker count, `mergeable` /
+  `mergeStateStatus`, and that the merge is via `gh pr merge` respecting branch
+  protection.
 - **Options:** `Merge PR to main` · `Hold` · `Stop`.
+
+Unresolved human blockers go through the correction loop before this gate is worth
+asking. If `gh pr merge` then refuses, the PR is **unmergeable**: report the specific
+requirement blocking it and stop — never merge locally to get around it.
 
 ## Conditional pauses
 
@@ -57,9 +90,14 @@ These are not gates: each fires only when its situation arises, and none of them
 is a checkpoint on the change itself.
 
 ### Decomposition approval — Phase 2 (OVERSIZED only)
-Not optional when it applies: never start a multi-PR run unapproved.
+Never start a multi-PR run unapproved.
 - **Summary:** why the ticket exceeds one PR, the proposed ordered sub-tasks with
-  their dependencies, and that each becomes its own branch and PR.
+  their dependencies, that each becomes its own branch and PR, and **what it will
+  cost**: roughly 4 or 7 subagents per sub-task depending on how each is likely to
+  size up, plus the approvals it will ask for — a PR gate and a main gate per
+  sub-task, and a staging gate too where the repo has one. Six sub-tasks is on the
+  order of forty subagents and fifteen gates. Say the numbers before asking; they
+  are what the decision actually turns on.
 - **Options:** `Run them in order` · `Adjust the breakdown` · `Do it as one PR
   anyway` · `Stop`.
 
@@ -71,9 +109,13 @@ Part of "start work".
   · `Stop`.
 
 ### Worktree cleanup offer — Phase 6c (after the main merge)
-The run is already complete; declining costs nothing but disk.
+The work is already merged; declining costs nothing but disk.
 - **Summary:** the worktree path and branch, and that the PR is merged and CI green.
 - **Options:** `Remove the worktree` · `Leave it in place`.
+
+On a multi-PR run this fires **per sub-task**, and offers that sub-task's build
+worktree only. The control worktree holds the ledger and every sub-task's evidence —
+leave it until the final report.
 
 ## Jira — status transitions only
 
@@ -113,7 +155,8 @@ Full names: `mcp__atlassian-gateway__getAccessibleAtlassianResources`,
 
 - **In Progress — Phase 1.** After the worktree is created and the issue read,
   confirm with the user (part of "start work") and transition to the
-  `in_progress` state. Skip if already in a started state.
+  `in_progress` state. Skip the transition if the issue already sits at or past
+  `in_progress` in the `jira.states` map (In Progress, In Review, or Done).
 - **In Review — Phase 6a.** Rides along with the PR gate, after the PR opens.
 - **Done — Phase 6c.** Rides along with the main gate, after `gh pr merge`.
 
@@ -139,8 +182,9 @@ regardless of provider on a GitHub repo.
 - **GitLab:** `glab ci status` / `glab ci view` for the branch's pipeline.
 
 ### Policy
-- Wrap watching in a **bounded timeout** (default **30 min**; poll every ~30s);
-  never block indefinitely.
+- Wrap watching in a **bounded timeout** — default **30 min**, overridable with
+  `ci_timeout_minutes:` in `.auto-dev.yml` and recorded in `profile.md`. Poll every
+  ~30s; never block indefinitely.
 - **On red, pre-merge (Phase 6a):** surface the failing checks (name + link),
   then enter the corrective loop — the steps, the reports to refresh, and the
   commit-and-re-push are specified once in `references/correction-loop.md`.

@@ -19,7 +19,14 @@ stacks are added by following the schema below.
 3. **Merge** in anything discovered from the repo's own docs/CI that the profile
    didn't specify.
 4. **Apply** the repo-local `.auto-dev.yml` override (if present) — it wins over
-   both the profile and discovery.
+   both the profile and discovery. **Validate it first:**
+   ```bash
+   python3 skills/auto-dev/scripts/validate-config.py <repo>/.auto-dev.yml
+   ```
+   An unrecognized key is silently ignored otherwise, so a typo reads as "the
+   override did nothing" — the validator names the key and suggests the one it
+   probably meant. Exit `1` is a stop-and-report; exit `2` means validation could not
+   run (no PyYAML), which is not a pass — say so and apply the file with care.
 5. **Drop any gate check whose tool isn't actually there.** A profile lists the
    conventional gate for its ecosystem; a given repo may not use all of it. Keep a
    check only where its tool is genuinely available — the dependency is declared,
@@ -28,7 +35,14 @@ stacks are added by following the schema below.
    document it (Elixir's Credo and Dialyzer are the usual case). Never keep a
    check that cannot run: Phase 5 would never go green, and the pipeline would
    stop on a tool the project never adopted.
-6. **Record** the fully-resolved result to `.auto-dev/profile.md`. Every later
+6. **Refuse an empty gate.** Once unavailable checks are dropped, the resolved
+   `gate` must still contain at least one command that runs the project's tests. A
+   gate with nothing in it makes Phase 5 pass by having nothing to check, and the
+   change then rides through every remaining gate unverified — the one failure mode
+   this pipeline cannot detect downstream. If neither the profile nor discovery can
+   find a way to run the tests, **stop and report**: it is a setup problem the user
+   fixes in one line of `.auto-dev.yml`, and guessing is worse than asking.
+7. **Record** the fully-resolved result to `.auto-dev/profile.md`. Every later
    phase reads that file rather than re-detecting.
 
 ## Profile schema
@@ -40,9 +54,9 @@ invocation.
 
 ```yaml
 stack: elixir                 # profile id
-# Detection signals, checked in order; first file that exists wins the vote.
-# `any` = present if ANY listed path exists. Higher-precedence profiles list
-# more specific signals (see precedence rules below).
+# Detection signals. `any` = matches if ANY listed path exists; `all` = every
+# listed path must. When more than one profile matches, the most specific wins —
+# resolved by "Detection precedence" below, not by the order signals appear here.
 detect:
   any: ["mix.exs"]
 # Dependency install / toolchain activation, run once in Phase 1 after worktree
@@ -59,6 +73,9 @@ gate:
   - { kind: lint,     command: "mix credo --strict",               report: "CREDO.md" }
   - { kind: typecheck, command: "mix dialyzer",                    report: "DIALYZER.md" }
   - { kind: test,     command: "mix test",                         report: "TEST.md" }
+# Optional: gitignored files copied from the main checkout into each new worktree
+# before `setup` runs — env/config a suite needs but git does not track.
+worktree_files: [".env", ".env.test"]
 # Optional: how tests are scoped (services required, monorepo/umbrella, slow tiers)
 test_notes: "…"
 ```
@@ -73,6 +90,9 @@ Fields:
 - **`gate`** (required) — the ordered quality-gate checks. Each is
   `{ kind, command, report }`. The pipeline is only "green" when every `command`
   exits clean.
+- **`worktree_files`** (optional) — gitignored paths seeded into every new worktree
+  before `setup`. A fresh worktree has no `.env`, and the resulting failure looks
+  like broken code rather than missing config.
 - **`test_notes`** (optional) — hints passed into the coding/cleanup briefs so
   tests run at the right scope.
 
@@ -121,7 +141,14 @@ branches:
   staging: staging            # staging branch for the direct-merge step; omit to skip gate 6b
   prefix: feature             # branch-name prefix
 ci: circleci                  # github-actions | circleci | gitlab | none
-iteration_budget: 4           # revise rounds shared by every corrective loop
+ci_timeout_minutes: 30        # bound on CI watching before it reports and holds
+iteration_budget: 4           # revise rounds per task (per sub-task on a multi-PR run)
+worktree_files: [".env"]      # gitignored files to seed every new worktree with
+security_docs:                # the security directives every worker must obey;
+  - "SECURITY.md"             # first source Phase 1 checks, ahead of repo defaults
+  - "docs/security/authz.md"
+pr_review:
+  inline_comments: false      # post Phase 6a findings as inline PR comments
 gates:
   post_plan: true             # force the Phase 3 post-plan gate on for this repo
 jira:
@@ -134,6 +161,7 @@ jira:
 Resolution order (last wins): **profile → runtime discovery → `.auto-dev.yml`**.
 The fully-resolved values are written to `.auto-dev/profile.md`.
 
-`iteration_budget` and `gates.post_plan` are not stack settings, but they resolve
-the same way and are recorded in the same file — see
-`references/correction-loop.md` and `references/gates-and-jira.md`.
+`iteration_budget`, `ci_timeout_minutes`, `security_docs`, `pr_review`, and
+`gates.post_plan` are not stack settings, but they resolve the same way and land in
+the same `profile.md` — see `references/correction-loop.md`,
+`references/gates-and-jira.md`, and Phase 1 step 4 in `SKILL.md`.

@@ -35,7 +35,9 @@ Read the repo and record concrete commands into `profile.md`:
 
 If a check genuinely can't be determined, use the conventional default for the
 detected ecosystem and **record the assumption** in `profile.md` rather than
-skipping verification.
+skipping verification. One case is not an assumption to record but a stop: a
+resolved gate with **no test command at all** — Phase 5 would pass by having nothing
+to run (`references/profiles.md`).
 
 ## Adding a curated profile
 
