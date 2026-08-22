@@ -20,7 +20,15 @@ stacks are added by following the schema below.
    didn't specify.
 4. **Apply** the repo-local `.auto-dev.yml` override (if present) — it wins over
    both the profile and discovery.
-5. **Record** the fully-resolved result to `.auto-dev/profile.md`. Every later
+5. **Drop any gate check whose tool isn't actually there.** A profile lists the
+   conventional gate for its ecosystem; a given repo may not use all of it. Keep a
+   check only where its tool is genuinely available — the dependency is declared,
+   or its config file exists — and otherwise drop it and **record the omission**
+   in `profile.md`. This is a rule for every stack, not just the ones that
+   document it (Elixir's Credo and Dialyzer are the usual case). Never keep a
+   check that cannot run: Phase 5 would never go green, and the pipeline would
+   stop on a tool the project never adopted.
+6. **Record** the fully-resolved result to `.auto-dev/profile.md`. Every later
    phase reads that file rather than re-detecting.
 
 ## Profile schema
@@ -41,7 +49,7 @@ detect:
 # creation. Run in order; stop on first failure and report.
 setup:
   - "mix deps.get"
-# The quality gate: the ordered checks that must all be green in Phase 7.
+# The quality gate: the ordered checks that must all be green in Phase 5.
 # Each check maps to a lint/<report>.md artifact.
 # kind is advisory (compile|format|lint|typecheck|test|build); `command` is
 # what actually runs; `report` is the .auto-dev/lint/ filename.
@@ -110,9 +118,12 @@ gate:
   - { kind: lint, command: "mix credo --strict --all", report: "CREDO.md" }
 branches:
   base: develop               # base branch to cut from and target with the PR
-  staging: staging            # staging branch for the direct-merge step; omit to skip Phase 9
+  staging: staging            # staging branch for the direct-merge step; omit to skip gate 6b
   prefix: feature             # branch-name prefix
 ci: circleci                  # github-actions | circleci | gitlab | none
+iteration_budget: 4           # revise rounds shared by every corrective loop
+gates:
+  post_plan: true             # force the Phase 3 post-plan gate on for this repo
 jira:
   states:                     # map pipeline milestones to this board's state names
     in_progress: "In Progress"
@@ -122,3 +133,7 @@ jira:
 
 Resolution order (last wins): **profile → runtime discovery → `.auto-dev.yml`**.
 The fully-resolved values are written to `.auto-dev/profile.md`.
+
+`iteration_budget` and `gates.post_plan` are not stack settings, but they resolve
+the same way and are recorded in the same file — see
+`references/correction-loop.md` and `references/gates-and-jira.md`.

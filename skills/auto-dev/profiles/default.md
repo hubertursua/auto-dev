@@ -2,10 +2,8 @@
 
 Loaded when no shipped profile matches the repo. It ships **no hardcoded
 commands** — it tells Phase 1 to discover the ecosystem's real setup and gate
-commands at runtime and write them into `.auto-dev/profile.md`, exactly as the
-predecessor skill's Stage 0 did. This keeps the pipeline "fully general": an
-unknown stack still runs, it just relies on discovery instead of a curated
-profile.
+commands at runtime and write them into `.auto-dev/profile.md`, so an unknown
+stack still runs, on discovery instead of a curated profile.
 
 ```yaml
 stack: default

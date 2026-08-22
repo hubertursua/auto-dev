@@ -36,10 +36,9 @@ test_notes: >-
 - **Warnings as errors.** `--warnings-as-errors` on compile is intentional — a
   clean compile is part of the Definition of Done. If a project genuinely cannot
   meet that, relax it in the override, not here.
-- **Credo / Dialyzer optional per repo.** Not every Elixir repo uses Credo or
-  Dialyzer. Phase 1 keeps a gate check only if the tool is actually available
-  (dependency present / config exists); otherwise it drops that check and records
-  the omission in `profile.md`.
-- **This is the reference profile.** It intentionally mirrors the Vegas/TIG
-  toolchain (`mix compile` / `credo` / `dialyzer` / `test`) shown in the pipeline
-  diagram; other stacks follow the same schema.
+- **Credo / Dialyzer optional per repo.** Not every Elixir repo uses them, and
+  this gate lists both. Phase 1 drops a check whose tool isn't actually present —
+  the general rule for every stack, in `references/profiles.md`.
+- **This is the reference profile.** It mirrors the conventional Elixir gate
+  (`mix compile` / `format --check-formatted` / `credo` / `dialyzer` / `test`);
+  other stacks follow the same schema.
