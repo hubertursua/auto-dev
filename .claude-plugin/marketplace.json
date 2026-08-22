@@ -7,7 +7,7 @@
     {
       "name": "auto-dev",
       "source": "./",
-      "description": "Autonomously drive a coding task from spec to PR through a multi-stage subagent pipeline. Project-agnostic."
+      "description": "Autonomously drive a coding task from ticket to PR through a six-phase subagent pipeline. Stack-agnostic."
     }
   ]
 }

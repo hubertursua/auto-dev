@@ -1,7 +1,7 @@
 {
   "name": "auto-dev",
-  "version": "2.0.0",
-  "description": "Drive a single coding task from ticket to merged pull request autonomously — ticket eval, spec, plan, implement, verify, quality gate, and ship — using purpose-built subagents per phase. Stack-agnostic via editable profiles (Elixir ships), with optional Jira/CI/staging integration and human gates before PR and merges.",
+  "version": "3.0.0",
+  "description": "Drive a single coding task from ticket to merged pull request autonomously — define, plan, build, verify, and ship — using a purpose-built subagent per delegated job, with a scope call that sizes the pipeline to the task. Stack-agnostic via editable profiles (Elixir ships), with optional Jira/CI/staging integration and human gates before PR and merges.",
   "author": {
     "name": "hubertursua"
   }
