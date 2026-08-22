@@ -3,3 +3,6 @@
 
 # skill-creator eval scratch (workspaces, run outputs)
 *-workspace/
+
+# macOS finder metadata
+.DS_Store
