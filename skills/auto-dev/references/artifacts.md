@@ -46,6 +46,7 @@ Single-PR run (the task fits one PR):
 .auto-dev/
   profile.md              # resolved project profile (Phase 1) — stack, commands, branches, Jira map
   WORK_LOG.md             # normalized ticket + progress ledger + resume point (Phase 1 onward)
+  HANDOFF.md              # brief for the NEXT session; overwritten at each session boundary
   SPEC.md                 # the testable contract: context, conditions, assumptions, security (Phase 2)
   IMPLEMENTATION.md       # the technical plan — how (Phase 3)
   SPEC_EVAL.md            # code vs. spec; drives the acceptance feedback loop (Phase 5)
@@ -67,6 +68,7 @@ all, so each sub-task's artifacts and branch never collide:
 <control-worktree>/.auto-dev/
   profile.md              # resolved once in Phase 1, shared by every sub-task
   WORK_LOG.md             # ledger of all sub-tasks + their status/branch/PR
+  HANDOFF.md              # brief for the next session, naming the active sub-task
   SPEC.md                 # the parent spec — informs the decomposition only
   tasks/
     01-<slug>/            # <artifact-dir> for sub-task 01, whose code is in its
@@ -205,6 +207,13 @@ Phase 6 row's Notes since Phase 6 is one row), and `blocked`
 
 The worktree, the branch, and every artifact produced so far are still on disk.
 
+This covers both kinds of re-entry. A **planned** one — the session boundary at
+the end of S1 or S2 (`SKILL.md`, *Session boundaries*) — left a `HANDOFF.md`,
+which names the next phase outright; read it with `WORK_LOG.md` and skip to step
+3. An **unplanned** one — a crash, a `/clear`, a machine restart — has no handoff
+or a stale one, so run the detection below and trust the ledger over the handoff
+wherever the two disagree.
+
 1. **Detect.** Before Phase 1 does anything else, look for an existing control
    worktree. You are standing in the main repo, which never holds `.auto-dev/` — the
    control worktree is a sibling directory:
@@ -256,6 +265,16 @@ downstream phases can rely on them; the templates that follow fix the shape.
   and any check dropped for a missing tool, base/staging/prefix, CI provider and
   timeout, the iteration budget, the resolved security-directive sources, and Jira
   availability + state mapping. Every later phase reads this instead of re-detecting.
+- **`HANDOFF.md`** — the brief the *next* session reads. It, `WORK_LOG.md` and
+  `profile.md` are what a session opens on entry; everything else in here is read
+  only by the phase that needs it (`SKILL.md`, *Session boundaries*).
+  **Under 60 lines**, overwritten — not appended — at the end
+  of S1 and S2: what is done, the exact next phase, the 3–8 file paths that matter,
+  open assumptions, and the one command to re-enter. It is a pointer sheet, not a
+  summary: never restate `SPEC.md` or `IMPLEMENTATION.md` in it. A session that
+  needs their content either opens them where its own phase requires it (the
+  Phase 5 acceptance check, the Phase 6a checklist) or spawns a worker that reads
+  them — copying them into the handoff just pays for them twice.
 - **`SPEC.md`** — *the testable contract*, and the only statement of what the task
   asks. Four sections: **Context** (the ticket restated, links, and the research
   findings needed to act on it — stakeholder-readable, no technical design);
@@ -296,12 +315,42 @@ and the **PR body**, contracted below.
 
 ## Artifact templates
 
-Skeletons for the five artifacts a worker or the orchestrator writes. They fix the
+Skeletons for the six artifacts a worker or the orchestrator writes. They fix the
 *shape* — the contracts above fix the content. Keep the headings; a later phase reads
 them back (Phase 6a builds the PR checklist straight out of `SPEC_EVAL.md`).
 
 **Paste the relevant template into the worker's brief.** A subagent has no path to
 this file and cannot follow a reference to it.
+
+### `HANDOFF.md` (end of S1 and S2, orchestrator)
+
+```markdown
+# Handoff — <ticket or task> → <S2 Build | S3 Ship>
+
+Re-enter with: `cd <absolute worktree path>`
+Branch: <prefix>/<slug>   Base: origin/<base>   Sub-task: <id or n/a>
+Iteration budget remaining: <n>/<total>
+
+## Done
+- <phase>: <one line, outcome only>
+
+## Next
+Phase <n> — <name>. <One or two sentences on the first action.>
+
+## Files that matter
+- <path> — <why>            # 3–8 entries, no more
+
+## Open assumptions
+- <assumption the next session must not silently re-decide>
+
+## Do not
+- <anything already settled that a fresh context might redo — e.g. re-run Phase 1,
+  re-review the spec, re-detect the stack>
+```
+
+Paths absolute; a fresh session does not know where it is. Do not include a
+narrative of how the last session went — the ledger has that, and the next
+session does not need it.
 
 ### `profile.md` (Phase 1, orchestrator)
 
@@ -434,8 +483,16 @@ A lens that turns up nothing says so; an empty row is an unread lens, not a clea
 ## The PR body
 
 `.auto-dev/` is never committed, so the PR body is the one place this pipeline's
-reasoning reaches a human reviewer. The orchestrator assembles it in Phase 6a from
-artifacts that are about to become invisible to everyone but itself:
+reasoning reaches a human reviewer. The orchestrator assembles these sections in
+Phase 6a from artifacts that are about to become invisible to everyone but itself.
+
+**Who writes it.** Where the `open-pr` skill is available, Phase 6a hands the PR
+over to it — that skill owns the repo's PR template, the Jira link, the draft flag
+and the attribution line, and its prose brevity rules govern the Summary. What it
+does **not** get to drop are the two sections below that this pipeline reads back:
+**Acceptance conditions** and **Quality gate**. Pass them as required content.
+Without `open-pr`, the orchestrator writes the whole thing to this shape,
+attribution line included:
 
 ```markdown
 ## Summary
@@ -459,4 +516,6 @@ Generated with [Claude Code](https://claude.com/claude-code)
 is a decision the reviewer gets to make; a condition quietly dropped from the
 checklist is the one failure of this pipeline nobody can catch downstream. If a
 Phase 6 correction lands, the checklist and the gate lines are part of what it
-invalidates (`references/correction-loop.md`).
+invalidates (`references/correction-loop.md`) — refresh them on the open PR with
+`gh pr edit <pr> --body-file <file>`, since the PR already exists by then and
+re-running `open-pr` would try to create a second one.

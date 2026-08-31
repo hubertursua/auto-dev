@@ -14,7 +14,11 @@ description: >-
   step. Do NOT use it for a single slice of that work: running or fixing one
   test/lint/type error, critiquing a plan, explaining how code works, or answering
   a question. Choose it only when they clearly want the whole task carried
-  autonomously to a PR on their behalf.
+  autonomously to a PR on their behalf. Also use it to RESUME a run already in
+  flight — "auto-dev continue", "continue the auto-dev run", "pick up where the
+  plan session left off" — since the pipeline deliberately stops between its plan,
+  build and ship sessions.
+model: opus[1m]
 ---
 
 # auto-dev
@@ -44,7 +48,7 @@ Keep this spine in context; open a reference only when you reach the phase that
 needs it.
 
 - `references/profiles.md` — profile schema, detection precedence, monorepo rules, `.auto-dev.yml` override.
-- `references/artifacts.md` — the `.auto-dev/` layout, the `WORK_LOG.md` ledger, and every artifact's contract.
+- `references/artifacts.md` — the `.auto-dev/` layout, the `WORK_LOG.md` ledger, the `HANDOFF.md` session brief, and every artifact's contract.
 - `references/subagent-prompts.md` — the exact brief template + tool requirements for each delegated Task Agent.
 - `references/gates-and-jira.md` — human-gate scripts, Jira transition mapping, CI monitoring policy (timeouts, on-red).
 - `references/correction-loop.md` — the one corrective loop (unmet condition / PR blocker / CI red), what each correction invalidates, and the iteration budget.
@@ -63,6 +67,52 @@ Phase 6  Ship    → [GATE] commit + PR + adversarial review + CI → [GATE] sta
 Run phases in order; each depends on the previous. Track them in
 `.auto-dev/WORK_LOG.md` (which is also the resume point) and mirror the status in
 TodoWrite so progress stays visible.
+
+## Session boundaries — the pipeline spans THREE sessions, not one
+
+This pipeline **must not** run end-to-end in one context. It is cut into three
+sessions with a written handoff between each. Nothing carries across a boundary
+except `.auto-dev/` on disk and the git tree.
+
+| Session | Phases | Ends by |
+|---|---|---|
+| **S1 — Plan** | 1–3 (2–3 for a sub-task) | Writing `.auto-dev/HANDOFF.md` (Build brief) and STOPPING |
+| **S2 — Build** | 4–5 | Writing `.auto-dev/HANDOFF.md` (Ship brief) and STOPPING |
+| **S3 — Ship** | 6 | Final report |
+
+At the end of S1 and S2, do exactly this and then stop:
+
+1. Update `WORK_LOG.md` (phase statuses, remaining iteration budget, the scope
+   call, every gate decision).
+2. Overwrite `.auto-dev/HANDOFF.md` with the next session's brief — **under 60
+   lines**: what is done, the exact next phase, the 3–8 file paths that matter,
+   open assumptions, and the one command to re-enter (`cd <worktree>`). Contract
+   in `references/artifacts.md`.
+3. Tell the user: *"Plan session complete. Artifacts in `.auto-dev/`. Start a
+   fresh session and say `auto-dev continue` to run the build."* Then **stop — do
+   not begin the next phase.**
+
+On entry to S2 or S3, read `WORK_LOG.md`, `HANDOFF.md` and `profile.md` — and
+nothing else by default. `profile.md` is always in that set: it holds the resolved
+gate commands S2 needs and the CI provider and Jira mapping S3 needs, and
+re-deriving any of it is the mistake (`references/artifacts.md`, *Re-read, don't
+re-derive*).
+
+Beyond those three, read an artifact when a phase **of yours** needs it, and not
+otherwise:
+
+- **S2** — `SPEC.md`, for the Phase 5 acceptance check.
+- **S3** — `SPEC.md` and `SPEC_EVAL.md` for the PR body's condition checklist
+  (Phase 6a quotes the spec's wording and takes each tick from the eval), and
+  `lint/*.md` for the gate results the PR gate summary reports.
+
+`IMPLEMENTATION.md` is the coder's and never yours. For anything else — including
+any question *about* one of the files above that isn't the phase that needs it —
+spawn a worker that reads it and returns an answer.
+
+On a multi-PR run, each sub-task gets its **own** set of three sessions — S1
+covering phases 2–3, since Phase 1 ran once for the whole run and never repeats.
+Never carry two sub-tasks in one context.
 
 ## Why two documents
 
@@ -150,6 +200,32 @@ The loop's steps, what each correction invalidates and must refresh, and the ful
 budget accounting are in `references/correction-loop.md` — the single statement of
 both. Do not restate its rules elsewhere.
 
+## Context budget (separate from the iteration budget)
+
+The iteration budget counts *revise rounds*. This one counts *context*, and it is
+the harder limit. On top of the baseline this skill and its references already
+occupy, context grows roughly **1k tokens per assistant turn** — so turn 75 lands
+somewhere around 120k. Cost per API call rises with it, and the figures from runs
+that *didn't* stop are the argument for stopping: **87k tokens/call over turns
+1–50, 212k over 101–200, 304k over 201–400.** Every turn you add makes every later
+turn more expensive.
+
+- **Ceiling: 150k tokens per session.** You run a 1M-context model, so
+  auto-compaction will never rescue you — it is on you to stop.
+- **Checkpoint at ~120k, which is roughly assistant turn 75.** Stop whatever
+  phase you are in, finish the current tool call, write `WORK_LOG.md` +
+  `HANDOFF.md` per *Session boundaries* above, and tell the user to restart. A
+  mid-phase checkpoint is always cheaper than finishing the phase in a bloated
+  context.
+- **Never hold an artifact you can delegate.** If you are about to `Read` a file
+  in `.auto-dev/` longer than ~200 lines, stop and spawn a subagent that reads it
+  and returns a verdict. The artifacts exist so that you *don't* have to hold
+  them. `SPEC.md` and `SPEC_EVAL.md` are exempt at any length — the acceptance
+  check is yours by design, and delegating it would delegate away the one check
+  no worker can run.
+- **Turn 75 is the line, not turn 400.** Past it and not within one phase of a
+  session boundary, checkpoint early rather than pushing on.
+
 ## Tool permissions & models
 
 Pick an agent type that grants the tools listed. The safe default for any worker
@@ -190,6 +266,34 @@ works in, and the `<artifact-dir>` it reads and writes (the two are the same tre
 on a single-PR run and different trees on a multi-PR one; see
 `references/artifacts.md`) — plus `profile.md` and only the inputs its phase
 needs. The coder gets the **plan only, never the spec** (see *Why two documents*).
+
+**Avoid giving a worker a >5-minute blocking command** — a full suite, a poll
+loop, a long build. A subagent's prompt cache expires after 5 minutes where yours
+lasts an hour, so an idle worker has its entire context re-billed at write price.
+Keep such commands in your own context where you can. The **cleanup agent's
+Phase 5 quality gate is the deliberate exception**: it is the Definition of Done
+and must run in full, so its brief has it background the slow commands instead of
+blocking on them (`references/subagent-prompts.md`). And every brief says the same
+thing: **spill large output to `$TMPDIR` and return a digest, never a corpus.**
+
+## Reading discipline (orchestrator)
+
+Your average `Read` costs ~5.5k tokens and stays in context for the rest of the
+session. Before every one, ask whether a subagent should read it instead.
+
+- **Never `Read` a source file to understand it.** Spawn `Explore` and ask for the
+  conclusion. You are the orchestrator; you do not need the code.
+- **Never `Read` a whole file when you need one fact.** `grep -n` for it, then
+  read the surrounding lines — or better, have the subagent answer.
+- **Full `git diff` is for subagents, with one exception.** Freely run
+  `git diff --stat` and `git diff --name-only`. The Phase 5 acceptance check *is*
+  yours and does require reading the whole working-tree diff — that read is the
+  point of the phase. Everywhere else (scoping, sanity checks, "what changed
+  again?") delegate to a worker that returns a verdict.
+- **Each reference file, at most once per session** — `subagent-prompts.md` alone
+  is ~4.2k tokens, and S1/S2/S3 each need only their own phases' references.
+- **In Elixir repos use `dexter lookup` / `dexter references`, not grep**, for any
+  module or function symbol.
 
 ---
 
@@ -365,9 +469,15 @@ it, which is why the two are never reordered.
 2. **Commit** — stage source paths **explicitly** (`git add <paths>`, never
    `-A`/`.`); confirm nothing under `.auto-dev/` is staged. Conventional message
    ending with `Co-Authored-By: Claude Code <noreply@anthropic.com>`.
-3. **Push** the branch; **open the PR** with `gh pr create` — body includes the
-   spec's conditions as a checklist, a summary, gate results, and unresolved
-   assumptions; ends with `Generated with [Claude Code](https://claude.com/claude-code)`.
+3. **Push** the branch, then **invoke the `open-pr` skill** to create the PR if
+   the user has it — do not hand-roll `gh pr create` alongside it. That skill owns
+   template detection, the Jira link, the draft flag and the attribution line, and
+   its brevity rules govern the *prose*. They do not govern the two sections this
+   pipeline reads back: hand it the **acceptance checklist** (the spec's conditions,
+   ticked from `SPEC_EVAL.md`, unticked ones left unticked) and the **gate results**
+   as required body content (`references/artifacts.md`, *The PR body*). Without the
+   skill, `gh pr create` with that body plus a summary and unresolved assumptions,
+   ending with `Generated with [Claude Code](https://claude.com/claude-code)`.
 4. **Adversarial PR Review agent** → `.auto-dev/PR_REVIEW.md` — briefed to *find*
    problems (correctness, security, scope), not rubber-stamp. This is the only
    check briefed to find what no checklist names. Findings stay on disk: post them
@@ -384,11 +494,17 @@ project convention) and monitor CI on staging. Skip entirely if the repo has no
 staging branch.
 
 ### 6c — Main  **[gate]**
-1. **Read what humans said.** A teammate may have reviewed since the PR gate, and
-   nothing else in this pipeline reads their words:
+1. **Read what humans said,** and check whether the PR is still a draft. A
+   teammate may have reviewed since the PR gate, and nothing else in this pipeline
+   reads their words:
    ```bash
-   gh pr view <pr> --json reviewDecision,reviews,comments,mergeable,mergeStateStatus
+   gh pr view <pr> --json isDraft,reviewDecision,reviews,comments,mergeable,mergeStateStatus
    ```
+   **`isDraft: true` blocks the merge, and on some setups suppressed CI too** —
+   `open-pr` opens drafts by design, so this is the expected state, not an error.
+   Mark it ready (`gh pr ready <pr>`) *before* the gate, then confirm the checks
+   Phase 6a polled actually ran; if they only started once the draft flag came off,
+   monitor them now rather than merging on a stale green.
    Put unresolved review comments and any `CHANGES_REQUESTED` in the gate summary. A
    human blocker is handled exactly like a `PR_REVIEW.md` blocker — through the
    correction loop (`references/correction-loop.md`), never merged over.

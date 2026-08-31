@@ -52,6 +52,20 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 | 5 Verify | orchestrator, then cleanup agent | acceptance review vs. the withheld spec (feedback loop to Phase 4), then `/simplify` + the profile's quality gate to green |
 | 6 Ship | orchestrator + PR review agent | commit + PR + adversarial review + CI, then staging, then main + Jira Done — pausing at each |
 
+## Three sessions, not one
+
+The pipeline deliberately does **not** run end-to-end in a single context. It is
+cut into three sessions — **Plan** (phases 1–3), **Build** (4–5) and **Ship** (6)
+— and stops at each boundary after writing `.auto-dev/HANDOFF.md`, a short brief
+for the next one. Start a fresh session and say `auto-dev continue` to pick up.
+
+Orchestrator context is the real cost driver: it grows about 1k tokens per turn
+and every added turn makes every later turn more expensive. So the orchestrator
+holds the pipeline, not the code — it delegates reads, keeps large artifacts in
+subagents, and checkpoints at ~120k tokens rather than running until a 1M window
+fills. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,
+which is also what makes an interrupted run resumable.
+
 ## Scope call: the pipeline sizes itself to the task
 
 Phase 2 returns one of three calls, and the pipeline adapts:
@@ -133,7 +147,9 @@ Built-in tools only — no plugins required: `TodoWrite`, `Task`/`Agent`, `Bash`
 `Read`, `Edit`, `Write`, `Grep`, `Glob`, `AskUserQuestion`, and the `Skill` tool
 (the Phase 5 cleanup agent runs `/simplify` with it). `gh` must be on your `PATH`
 and authenticated: Phase 1 checks, and stops before doing any work if it isn't.
-Optional integrations: the Atlassian MCP (Jira transitions) and a CI provider CLI.
+Optional integrations: the Atlassian MCP (Jira transitions), a CI provider CLI,
+and the `open-pr` skill — Phase 6a prefers it for creating the PR when present,
+and falls back to `gh pr create` when it isn't.
 Optional tooling: **PyYAML**, used by `skills/auto-dev/scripts/validate-config.py` to
 check a repo's `.auto-dev.yml` in Phase 1 — a mistyped key is silently ignored
 otherwise. Without it the pipeline still runs; it just reports that the file went
@@ -148,8 +164,9 @@ do ("Do NOT rewrite the file. Return findings only.").
 
 ## The `.auto-dev/` scratch directory
 
-Each run creates `.auto-dev/` holding the artifacts phases hand off (see
-`skills/auto-dev/references/artifacts.md`). This is scratch, not part of your
+Each run creates `.auto-dev/` holding the artifacts phases hand off, plus
+`WORK_LOG.md` (the ledger and resume point) and `HANDOFF.md` (the brief for the
+next session) — see `skills/auto-dev/references/artifacts.md`. This is scratch, not part of your
 project — the pipeline never commits it and makes the directory self-ignoring (a
 `.gitignore` containing `*`, written into `.auto-dev/` itself) automatically, so
 it cannot be staged even by a stray `git add -A`. (Note: a committed

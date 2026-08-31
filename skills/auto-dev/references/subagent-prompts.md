@@ -38,6 +38,18 @@ see the model note in `SKILL.md`.
 - Reviewers are **read-only** and must **not** rewrite files — they return
   findings; the orchestrator applies fixes (it holds the context and this consumes
   the shared iteration budget).
+- **Spill large output to `$TMPDIR`; return a digest, never a corpus.** Say it in
+  every brief: redirect long command output (suite runs, dialyzer, full diffs) to a
+  file under `$TMPDIR` and quote only the failing tail. A worker that pastes a
+  10k-line log into its return has burned the context the artifacts exist to save.
+- **Keep any single command under 5 minutes.** A subagent's prompt cache expires
+  after 5 minutes — the orchestrator's lasts an hour — so a worker idling on a long
+  blocking command has its whole context re-billed at write price. Where a check is
+  genuinely long (a full suite, a cold build), tell the worker to scope it
+  (`--only`, a directory, the affected files) and hand the full run back to the
+  orchestrator, which can afford to wait or background it. **The cleanup agent's
+  Step 2 is the one exception** — the quality gate is the Definition of Done and
+  must run in full; its brief says how.
 
 ---
 
@@ -363,6 +375,11 @@ possible and explain why in the report.
 
 Heads-up on tests (from profile.md test_notes): <notes — required services,
 umbrella/monorepo scope, slow tiers>. Ensure prerequisites are up before running.
+
+Run the gate IN FULL — do not scope or sample it; it is the Definition of Done.
+Where a command is slow, run it in the background rather than blocking on it, and
+redirect its output to a file under $TMPDIR, reading back only the failing tail.
+Never paste a full suite or dialyzer log into your return.
 
 Return: what you simplified, **any simplification you reverted and which check
 forced it**, the files Step 1 touched, and the final status of each gate command.
