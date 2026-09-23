@@ -1,0 +1,82 @@
+[
+  {
+    "query": "auto-dev TRD-4821 for me. it's the one about the settlement job double-crediting on void. take it all the way, i'm heading into meetings for the rest of the day",
+    "should_trigger": true
+  },
+  {
+    "query": "ok i want you to just do this one yourself end to end. the market_status field needs a new `suspended_pending_review` state, the state machine is in lib/vegas/markets/status.ex. write it, test it, and open the PR. don't check in with me on every step",
+    "should_trigger": true
+  },
+  {
+    "query": "take this off my plate please — patrons can currently submit a payout request with a negative amount and it goes through. needs validation + tests + a PR. you make the calls on anything ambiguous",
+    "should_trigger": true
+  },
+  {
+    "query": "run the whole dev cycle on this: the CSV export in the reporting module drops the last row when the result set is exactly a multiple of the batch size. i'd like a PR by end of day",
+    "should_trigger": true
+  },
+  {
+    "query": "pick up https://thescore.atlassian.net/browse/TRD-5102 and ship it autonomously",
+    "should_trigger": true
+  },
+  {
+    "query": "i'm going on PTO tomorrow. can you knock out the feature flag cleanup ticket by yourself? remove the `new_pricing_engine` flag and all its dead branches, then raise the PR so someone can review it monday",
+    "should_trigger": true
+  },
+  {
+    "query": "add multi-currency support across the wallet, the ledger and the payout service. this is a big one so break it up however makes sense, but i want you to drive the whole thing to PRs without me babysitting each step",
+    "should_trigger": true
+  },
+  {
+    "query": "the error message on expiry validation just says 'invalid date' — make it name which field was invalid. small change, but do the full thing: branch, tests, quality gate, PR",
+    "should_trigger": true
+  },
+  {
+    "query": "you do it. spec it out, plan it, build it, verify it against the spec, and put up the pull request. the task is adding rate limiting to the /v2/bets endpoint, 100 req/min per patron",
+    "should_trigger": true
+  },
+  {
+    "query": "from ticket to PR, hands off: TRD-3390, the one where the audit trail is missing the actor for system-initiated market closes",
+    "should_trigger": true
+  },
+  {
+    "query": "one test is red on my branch — test/vegas/markets/status_test.exs:142, the `rejects illegal transition` case. can you figure out why and fix it",
+    "should_trigger": false
+  },
+  {
+    "query": "i wrote up an implementation plan for the settlement refactor in notes/settlement-plan.md. can you poke holes in it before i start? specifically whether the two-phase approach is actually safe under concurrent writes",
+    "should_trigger": false
+  },
+  {
+    "query": "walk me through how the ingestion pipeline decides which provider wins when two of them send conflicting prices for the same market. i just want to understand it, not change anything",
+    "should_trigger": false
+  },
+  {
+    "query": "my changes are all committed on this branch, just open a draft PR for it and link the jira ticket",
+    "should_trigger": false
+  },
+  {
+    "query": "credo is complaining about cyclomatic complexity in lib/vegas/pricing/calculator.ex and i can't get it green. help me get past it",
+    "should_trigger": false
+  },
+  {
+    "query": "review the PRs i'm tagged on, i've got like six of them piling up and i want a verdict on each",
+    "should_trigger": false
+  },
+  {
+    "query": "start work on TRD-4990 — set up the worktree and branch off main for me",
+    "should_trigger": false
+  },
+  {
+    "query": "we had an incident last night where oban pods were crash-looping in us-core between 2 and 4am. figure out what happened",
+    "should_trigger": false
+  },
+  {
+    "query": "i've finished implementing the auth changes, can you review what i wrote before i push? mainly worried about the token refresh path",
+    "should_trigger": false
+  },
+  {
+    "query": "write me an implementation plan for splitting the monolith's settlement logic into its own service. don't write any code yet, i want to circulate the plan first",
+    "should_trigger": false
+  }
+]

@@ -1,23 +1,35 @@
 {
   "skill_name": "auto-dev",
-  "notes": "Each eval runs a FULL autonomous dev cycle (discover conventions -> worktree -> spec -> plan -> code -> gate -> commit -> PR), so runs are slow, costly, and mutate the repo. Run against a throwaway copy of the repo and have runs stop at local commit (no remote/PR) unless explicitly testing the PR step. Prefer small, self-contained tasks whose quality gate can run without heavy external services.",
+  "notes": "Each eval runs a FULL autonomous pipeline (detect repo + stack -> worktree -> define -> plan -> build -> verify -> ship), so runs are slow, costly, and mutate the repo. Run against a throwaway copy and have runs stop at the PR gate (no merge) unless explicitly testing promotion. The human gates (PR, staging, main) require approval; the post-plan gate is off by default. Prefer small, self-contained tasks whose quality gate can run without heavy external services. Phase 2 returns a three-way scope call (TRIVIAL / STANDARD / OVERSIZED) that determines how much of the planning head runs; the verification tail (Phase 5 acceptance + /simplify + quality gate, Phase 6 adversarial review + CI) runs identically at every scope. The pipeline is cut into three sessions by design (S1 = phases 1-3, S2 = 4-5, S3 = 6), each ending by writing .auto-dev/HANDOFF.md and stopping. An eval that scores a single end-to-end run is therefore scoring three invocations: either drive each session as its own run (re-entering with \"auto-dev continue\"), or score only the session the eval is about and treat the handoff-and-stop as the expected terminal state rather than a truncation.",
   "evals": [
     {
       "id": 1,
       "prompt": "Auto-dev this: reject creation of a record when the requested value isn't in the allowed set for that context. Return a typed/handled error instead of throwing. Take it all the way to a PR.",
-      "expected_output": "Stage 0 discovers the repo's toolchain and quality gate; a worktree + feature branch; a specification.md with observable acceptance criteria (incl. the rejection behavior and that no default value is assumed) and an implementation-plan.md; an implemented allow-list guard with tests; the project's quality gate green; a commit and PR (or local commit if no remote).",
+      "expected_output": "Phase 1 detects the stack (Elixir -> elixir profile) and creates a worktree + feature branch with .auto-dev/ excluded; Phase 2 writes SPEC.md (Context + testable conditions incl. rejection behavior with no default assumed + Assumptions + Security/Compliance criteria) and returns a STANDARD scope call; Phase 3 writes IMPLEMENTATION.md; an allow-list guard implemented with tests (given only the plan); SPEC_EVAL.md records per-condition met/partial/unmet; /simplify runs and the profile's quality gate goes green with one lint/*.md report per gate check; pauses at the PR gate, then a commit + PR with PR_REVIEW.md (or stops at the gate if declined). No TICKET.md, ACCEPTANCE_CRITERIA.md, CODING_TODO.md, or IMPLEMENTATION_EVAL.md is produced.",
       "files": []
     },
     {
       "id": 2,
       "prompt": "Run the full dev cycle on this fix: the state machine should reject the illegal transition and surface a handled error instead of allowing it. Plan it, build it, verify it, and open a PR.",
-      "expected_output": "Two planning artifacts; a guard added to the transition logic with a test proving the illegal transition is rejected; the discovered quality gate green; commit + PR.",
+      "expected_output": "Phase 2 returns TRIVIAL (one subsystem, one behavior, existing test file covers it), so the Define review and the Phase 3 agents are skipped and the orchestrator writes a short IMPLEMENTATION.md itself — 4 subagent roles. A guard is added to the transition logic with a test proving the illegal transition is rejected. The verification tail still runs in full: SPEC_EVAL.md confirms the conditions are met, /simplify runs (unconditionally — never reported as skipped), the quality gate goes green with lint/*.md, and PR_REVIEW.md is written after the PR gate.",
       "files": []
     },
     {
       "id": 3,
-      "prompt": "auto-dev: add input validation so an entity created with an out-of-range value is rejected at creation time. Self-contained, take it to a PR.",
-      "expected_output": "Spec with acceptance criteria (out-of-range rejected, boundary defined as an assumption), implementation plan, implemented validation + tests, quality gate green, commit + PR.",
+      "prompt": "Pick up JIRA-1234 and ship it autonomously — take it to a PR.",
+      "expected_output": "Phase 1 reads the Jira issue (getJiraIssue) and, on confirmation, transitions it to In Progress; the issue populates the WORK_LOG.md header and SPEC.md's Context section; the full pipeline runs; at the PR gate a PR is opened and Jira moves to In Review. No Jira comments or field edits are made. If Jira is unavailable, it proceeds treating the key as free-form and reports Jira was skipped.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "auto-dev this whole epic: add multi-currency support across the wallet, the ledger, and the payout service. Take it all the way.",
+      "expected_output": "Phase 2 returns OVERSIZED, alerts the user with a proposed decomposition into ordered sub-tasks, and populates WORK_LOG.md. It does not cram everything onto one branch; on approval it runs Phases 2-6 per sub-task as separate PRs, updating the ledger. Each sub-task re-runs Define and gets its OWN scope call, so a small sub-task may itself come back TRIVIAL and skip the Phase 3 agents.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "auto-dev: the error message on the expiry validation says 'invalid date' — make it say which field was invalid. Ship it.",
+      "expected_output": "A textbook TRIVIAL scope call: one file, one behavior, no new abstraction or interface, no migration or config change, existing tests cover it. Exactly 4 subagent roles are used (Define, coder, cleanup, PR reviewer) — the Define reviewer and the Phase 3 plan agents are skipped. SPEC.md and IMPLEMENTATION.md are the only two documents describing the work before code, and IMPLEMENTATION.md is written by the orchestrator rather than a plan agent (profile.md and WORK_LOG.md also exist from Phase 1, as setup state and ledger). Verify and Ship are NOT thinned: SPEC_EVAL.md, one lint/*.md per gate check, and PR_REVIEW.md are all produced, and the run still pauses at the PR gate. If the pipeline runs the full 7-role path here, the downward scope branch is not working.",
       "files": []
     }
   ]
