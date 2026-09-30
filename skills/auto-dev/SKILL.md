@@ -18,7 +18,6 @@ description: >-
   flight — "auto-dev continue", "continue the auto-dev run", "pick up where the
   plan session left off" — since the pipeline deliberately stops between its plan,
   build and ship sessions.
-model: opus[1m]
 ---
 
 # auto-dev
@@ -74,11 +73,16 @@ This pipeline **must not** run end-to-end in one context. It is cut into three
 sessions with a written handoff between each. Nothing carries across a boundary
 except `.auto-dev/` on disk and the git tree.
 
-| Session | Phases | Ends by |
-|---|---|---|
-| **S1 — Plan** | 1–3 (2–3 for a sub-task) | Writing `.auto-dev/HANDOFF.md` (Build brief) and STOPPING |
-| **S2 — Build** | 4–5 | Writing `.auto-dev/HANDOFF.md` (Ship brief) and STOPPING |
-| **S3 — Ship** | 6 | Final report |
+| Session        | Phases                   | Orchestrator model | Ends by                                                   |
+| -------------- | ------------------------ | ------------------ | --------------------------------------------------------- |
+| **S1 — Plan**  | 1–3 (2–3 for a sub-task) | `opus` · high      | Writing `.auto-dev/HANDOFF.md` (Build brief) and STOPPING |
+| **S2 — Build** | 4–5                      | `opus` · high      | Writing `.auto-dev/HANDOFF.md` (Ship brief) and STOPPING  |
+| **S3 — Ship**  | 6                        | `sonnet` · medium  | Final report                                              |
+
+The orchestrator's model is the session's, so the user picks it when starting the
+session. S1 makes the scope call and S2 runs the acceptance check, and neither is
+a place to economize. S3 is scripted git/gh/CI work between human gates, so
+`sonnet` is enough for it.
 
 At the end of S1 and S2, do exactly this and then stop:
 
@@ -88,15 +92,16 @@ At the end of S1 and S2, do exactly this and then stop:
    lines**: what is done, the exact next phase, the 3–8 file paths that matter,
    open assumptions, and the one command to re-enter (`cd <worktree>`). Contract
    in `references/artifacts.md`.
-3. Tell the user: *"Plan session complete. Artifacts in `.auto-dev/`. Start a
-   fresh session and say `auto-dev continue` to run the build."* Then **stop — do
-   not begin the next phase.**
+3. Tell the user: _"Plan session complete. Artifacts in `.auto-dev/`. Start a
+   fresh session on `opus` at high effort and say `auto-dev continue` to run the
+   build."_ At the end of S2, name `sonnet` at medium effort for the ship session
+   instead. Then **stop — do not begin the next phase.**
 
 On entry to S2 or S3, read `WORK_LOG.md`, `HANDOFF.md` and `profile.md` — and
 nothing else by default. `profile.md` is always in that set: it holds the resolved
 gate commands S2 needs and the CI provider and Jira mapping S3 needs, and
-re-deriving any of it is the mistake (`references/artifacts.md`, *Re-read, don't
-re-derive*).
+re-deriving any of it is the mistake (`references/artifacts.md`, _Re-read, don't
+re-derive_).
 
 Beyond those three, read an artifact when a phase **of yours** needs it, and not
 otherwise:
@@ -107,7 +112,7 @@ otherwise:
   `lint/*.md` for the gate results the PR gate summary reports.
 
 `IMPLEMENTATION.md` is the coder's and never yours. For anything else — including
-any question *about* one of the files above that isn't the phase that needs it —
+any question _about_ one of the files above that isn't the phase that needs it —
 spawn a worker that reads it and returns an answer.
 
 On a multi-PR run, each sub-task gets its **own** set of three sessions — S1
@@ -127,7 +132,7 @@ They fail **independently**. A plan executed faithfully can still miss the
 outcome; an outcome can be delivered by a route the plan never described. Merging
 them into one document collapses both into a single, weaker check.
 
-**The coder builds from the plan, never the contract.** The plan is *required* to
+**The coder builds from the plan, never the contract.** The plan is _required_ to
 cover every condition (Phase 3), so this is not information-hiding — it is
 **language**-hiding: the coder cannot satisfy the acceptance check by echoing the
 contract's own wording back in a test name. The Phase 5 acceptance check is
@@ -145,8 +150,8 @@ Phase 2 returns a three-way **scope call**, and the pipeline adapts to it:
 - **OVERSIZED** — multiple independent deliverables, several subsystems, or a large
   file count. Do **not** cram it onto one branch: propose an ordered set of
   sub-tasks (with dependencies), write them to `WORK_LOG.md`, and **alert the
-  user**. On approval, run Phases 2–6 **per sub-task** — each *building* in its
-  own branch/worktree, while its *artifacts* stay in the **control worktree** (the
+  user**. On approval, run Phases 2–6 **per sub-task** — each _building_ in its
+  own branch/worktree, while its _artifacts_ stay in the **control worktree** (the
   one Phase 1 created) under `.auto-dev/tasks/<id>/` — respecting dependency order
   and updating the ledger after each. Each produces its own PR, and each carries its
   **own iteration budget**. A sub-task's worktree is created when that sub-task
@@ -202,11 +207,11 @@ both. Do not restate its rules elsewhere.
 
 ## Context budget (separate from the iteration budget)
 
-The iteration budget counts *revise rounds*. This one counts *context*, and it is
+The iteration budget counts _revise rounds_. This one counts _context_, and it is
 the harder limit. On top of the baseline this skill and its references already
 occupy, context grows roughly **1k tokens per assistant turn** — so turn 75 lands
 somewhere around 120k. Cost per API call rises with it, and the figures from runs
-that *didn't* stop are the argument for stopping: **87k tokens/call over turns
+that _didn't_ stop are the argument for stopping: **87k tokens/call over turns
 1–50, 212k over 101–200, 304k over 201–400.** Every turn you add makes every later
 turn more expensive.
 
@@ -214,12 +219,12 @@ turn more expensive.
   auto-compaction will never rescue you — it is on you to stop.
 - **Checkpoint at ~120k, which is roughly assistant turn 75.** Stop whatever
   phase you are in, finish the current tool call, write `WORK_LOG.md` +
-  `HANDOFF.md` per *Session boundaries* above, and tell the user to restart. A
+  `HANDOFF.md` per _Session boundaries_ above, and tell the user to restart. A
   mid-phase checkpoint is always cheaper than finishing the phase in a bloated
   context.
 - **Never hold an artifact you can delegate.** If you are about to `Read` a file
   in `.auto-dev/` longer than ~200 lines, stop and spawn a subagent that reads it
-  and returns a verdict. The artifacts exist so that you *don't* have to hold
+  and returns a verdict. The artifacts exist so that you _don't_ have to hold
   them. `SPEC.md` and `SPEC_EVAL.md` are exempt at any length — the acceptance
   check is yours by design, and delegating it would delegate away the one check
   no worker can run.
@@ -228,21 +233,47 @@ turn more expensive.
 
 ## Tool permissions & models
 
-Pick an agent type that grants the tools listed. The safe default for any worker
-is a full-tool type (`claude` / `general-purpose`, tool set `*`). The trap is a
-read-only blueprint/reviewer type (`feature-dev:code-architect`,
-`feature-dev:code-reviewer`): **no Write/Edit/Bash**, so it cannot create
-artifacts, implement, or run the gate — and both also pin `model: sonnet`, so
-they quietly downgrade the phase on top of failing it. **Never spawn an artifact
-writer with a read-only type** — it will silently fail. Only the two reviewers
-(Define review, plan review) are genuinely read-only; every other worker writes at
-least one file. The per-worker list below and the `_Tools:_` line on each brief in
-`references/subagent-prompts.md` state the same requirement — change both together.
+Every worker has its own agent type, shipped in this plugin's `agents/` directory.
+Each type fixes the worker's tools, model and effort, so spawn **exactly the type
+named** and nothing else. A generic type (`claude` / `general-purpose`) runs on
+your model and effort, which silently undoes the table below.
+`feature-dev:code-architect` and `feature-dev:code-reviewer` are worse: **no
+Write/Edit/Bash**, so an artifact writer spawned with one silently fails.
 
-**Models.** **Every worker inherits your model** — no brief pins one. No worker is
-"mechanical" enough to economize on: a weak reviewer returns "no findings," which is
-indistinguishable from a clean pass. The only model risk is the *accidental* pin in
-the read-only agent types above.
+| Worker                                         | Agent type                       | Model · effort    |
+| ---------------------------------------------- | -------------------------------- | ----------------- |
+| Define agent (Phase 2)                         | `auto-dev:define`                | `opus` · high     |
+| Define reviewer (Phase 2)                      | `auto-dev:define-reviewer`       | `opus` · high     |
+| Plan agent (Phase 3)                           | `auto-dev:planner`               | `opus` · xhigh    |
+| Plan reviewer (Phase 3)                        | `auto-dev:plan-reviewer`         | `opus` · high     |
+| Coding agent: STANDARD build, every correction | `auto-dev:coder`                 | `opus` · high     |
+| Coding agent: TRIVIAL first build              | `auto-dev:coder-trivial`         | `sonnet` · medium |
+| Cleanup agent (Phase 5)                        | `auto-dev:cleanup`               | `sonnet` · medium |
+| PR reviewer (Phase 6)                          | `auto-dev:pr-reviewer`           | `opus` · xhigh    |
+| PR reviewer, sensitive paths (Phase 6)         | `auto-dev:pr-reviewer-sensitive` | `fable` · high    |
+| Your read-and-answer lookups                   | `auto-dev:lookup`                | `sonnet` · low    |
+
+**Models.** Judgment stays on `opus`: a weak reviewer returns "no findings," which
+is indistinguishable from a clean pass, and a weak plan spends revise rounds
+downstream. Only work that a later check verifies moves down to `sonnet`: the
+TRIVIAL build (acceptance and the gate catch it), the cleanup agent (the gate
+catches it), and lookups (they only report). Two routing rules:
+
+- **Corrections always go to `auto-dev:coder`**, TRIVIAL runs included. A TRIVIAL
+  build that failed acceptance was not as trivial as the scope call said.
+- **Use `auto-dev:pr-reviewer-sensitive`** when `SPEC.md`'s
+  `Security/Compliance criteria` section lists controls for a sensitive path, and
+  `auto-dev:pr-reviewer` otherwise.
+
+The types name model **families** (`opus`, `sonnet`, `fable`), never a version, so
+each resolves to the current release without editing this skill. **Never pass the
+Agent tool's `model` parameter** when spawning a worker: it overrides the type's
+model. Change a worker's model or effort in its `agents/<name>.md` frontmatter, and
+change the table above with it.
+
+Tools per worker (each type's `tools:` frontmatter and the `_Tools:_` line on each
+brief in `references/subagent-prompts.md` state the same thing; change them
+together):
 
 - **Orchestrator (you):** TodoWrite, Bash (git/gh/CI, worktree, setup), Read,
   Edit (revise artifacts after critique), Write (`WORK_LOG.md`, `profile.md`,
@@ -265,7 +296,7 @@ Per-phase isolation: hand each worker **two** absolute paths — the worktree it
 works in, and the `<artifact-dir>` it reads and writes (the two are the same tree
 on a single-PR run and different trees on a multi-PR one; see
 `references/artifacts.md`) — plus `profile.md` and only the inputs its phase
-needs. The coder gets the **plan only, never the spec** (see *Why two documents*).
+needs. The coder gets the **plan only, never the spec** (see _Why two documents_).
 
 **Avoid giving a worker a >5-minute blocking command** — a full suite, a poll
 loop, a long build. A subagent's prompt cache expires after 5 minutes where yours
@@ -281,12 +312,12 @@ thing: **spill large output to `$TMPDIR` and return a digest, never a corpus.**
 Your average `Read` costs ~5.5k tokens and stays in context for the rest of the
 session. Before every one, ask whether a subagent should read it instead.
 
-- **Never `Read` a source file to understand it.** Spawn `Explore` and ask for the
-  conclusion. You are the orchestrator; you do not need the code.
+- **Never `Read` a source file to understand it.** Spawn `auto-dev:lookup` and ask
+  for the conclusion. You are the orchestrator; you do not need the code.
 - **Never `Read` a whole file when you need one fact.** `grep -n` for it, then
   read the surrounding lines — or better, have the subagent answer.
 - **Full `git diff` is for subagents, with one exception.** Freely run
-  `git diff --stat` and `git diff --name-only`. The Phase 5 acceptance check *is*
+  `git diff --stat` and `git diff --name-only`. The Phase 5 acceptance check _is_
   yours and does require reading the whole working-tree diff — that read is the
   point of the phase. Everywhere else (scoping, sanity checks, "what changed
   again?") delegate to a worker that returns a verdict.
@@ -305,7 +336,7 @@ Deterministic, run by the orchestrator.
 `.auto-dev/` — the control worktree is a sibling directory. Scan `git worktree list`
 for one holding a `.auto-dev/WORK_LOG.md` whose header matches this task. If one
 exists, do not re-run Phase 1: read the ledger and continue from it. Full detection
-procedure: `references/artifacts.md`, *Resuming an interrupted run*.
+procedure: `references/artifacts.md`, _Resuming an interrupted run_.
 
 1. **Detect the repo & branches.** Canonical repo name from the git remote
    (`basename -s .git "$(git remote get-url origin)"`); default branch via
@@ -354,7 +385,7 @@ procedure: `references/artifacts.md`, *Resuming an interrupted run*.
    ```
    A `.gitignore` containing `*` ignores the whole directory, itself included.
    Do **not** use `.git/info/exclude` here: inside a linked worktree `.git` is a
-   *file*, not a directory, so that command fails outright — and the shared file
+   _file_, not a directory, so that command fails outright — and the shared file
    it resolves to would leak into every other worktree. Confirm with `git status`
    that nothing under `.auto-dev/` appears.
 7. **Write `.auto-dev/profile.md`** (fully-resolved profile) and initialize
@@ -373,7 +404,7 @@ file, `.auto-dev/SPEC.md`, containing a `Context` section (restated ticket +
 research findings), the testable conditions in plain language, an `Assumptions`
 section, and a `Security/Compliance criteria` section for sensitive paths.
 
-One agent does research *and* contract because the agent holding the codebase
+One agent does research _and_ contract because the agent holding the codebase
 research is the one best positioned to know what is actually observable.
 
 Then:
@@ -399,7 +430,7 @@ Hold `SPEC.md` — you withhold it from the coder and use it for Phase 5.
 2. **Plan reviewer** (read-only) → critique; apply fixes; re-review if blockers.
    Consumes the shared budget. A spec condition with no plan step is cheapest to
    catch here, before any code exists.
-3. **Optional post-plan gate** — if enabled for this run (see *Human gates* for
+3. **Optional post-plan gate** — if enabled for this run (see _Human gates_ for
    when to enable it), pause here to approve `SPEC.md` + `IMPLEMENTATION.md`
    before any code is written. It is **independent of the scope call**: it fires
    on the TRIVIAL path too, on the plan you wrote yourself.
@@ -418,19 +449,21 @@ what decides whether the destination was reached.
 ## Phase 5 — Verify (acceptance → simplify → gate)
 
 Three steps, in this order. Running simplify after the acceptance loop means
-corrective code gets simplified too. Simplify is *meant* to preserve behavior, but
+corrective code gets simplified too. Simplify is _meant_ to preserve behavior, but
 that is an intention rather than a guarantee — step 3's gate is what actually checks
 it, which is why the two are never reordered.
 
 1. **Acceptance (you, the orchestrator).** Holding `SPEC.md` (which the coder never
    saw), verify the build against every condition — read the diff and the tests.
    The coder does not commit, so read the **working tree**, not a commit range:
+
    ```bash
    git add -N .              # intent-to-add, so newly created files show in the diff
    git diff origin/<base>
    ```
+
    Both halves matter, and both fail silently. Without `git add -N`, every file the
-   coder *created* is invisible to `git diff` — usually most of the change. And
+   coder _created_ is invisible to `git diff` — usually most of the change. And
    `git diff origin/<base>...HEAD` reports an **empty** diff, because nothing is
    committed yet. Diff against `origin/<base>` — the ref Phase 1 cut the worktree
    from — not the local branch, which may be stale. (Phase 6's PR reviewer does use
@@ -446,13 +479,14 @@ it, which is why the two are never reordered.
    confirm the correction broke nothing. The cleanup agent is spawned **once**,
    after this loop settles, and no correction brings it back. Full protocol:
    `references/correction-loop.md`.
+
 2. **Simplify.** Spawn the cleanup agent to run **`/simplify`** over the branch diff.
    Behavior-preserving only.
 3. **Quality gate.** The same agent then runs the profile's `gate` commands (from
    `profile.md`) in order, fixing what they surface, until every command is green.
    Each check writes `.auto-dev/lint/<CHECK>.md` (Elixir: `COMPILE.md`, `FORMAT.md`,
    `CREDO.md`, `DIALYZER.md`, `TEST.md`). Reaching green here is the phase's first
-   pass and spends **no** budget; only a *re-spawn* of the cleanup agent after a
+   pass and spends **no** budget; only a _re-spawn_ of the cleanup agent after a
    later correction does (`references/correction-loop.md`). If the gate cannot be
    made green, **stop and report** — never ship a red build.
 
@@ -462,9 +496,10 @@ it, which is why the two are never reordered.
    them. A reverted simplification reported by the cleanup agent is worth a second
    look at the condition it touched.
 
-## Phase 6 — Ship  **[three human gates]**
+## Phase 6 — Ship **[three human gates]**
 
-### 6a — PR  **[gate]**
+### 6a — PR **[gate]**
+
 1. **Gate:** pause for approval to open the PR (`references/gates-and-jira.md`).
 2. **Commit** — stage source paths **explicitly** (`git add <paths>`, never
    `-A`/`.`); confirm nothing under `.auto-dev/` is staged. Conventional message
@@ -472,13 +507,13 @@ it, which is why the two are never reordered.
 3. **Push** the branch, then **invoke the `open-pr` skill** to create the PR if
    the user has it — do not hand-roll `gh pr create` alongside it. That skill owns
    template detection, the Jira link, the draft flag and the attribution line, and
-   its brevity rules govern the *prose*. They do not govern the two sections this
+   its brevity rules govern the _prose_. They do not govern the two sections this
    pipeline reads back: hand it the **acceptance checklist** (the spec's conditions,
    ticked from `SPEC_EVAL.md`, unticked ones left unticked) and the **gate results**
-   as required body content (`references/artifacts.md`, *The PR body*). Without the
+   as required body content (`references/artifacts.md`, _The PR body_). Without the
    skill, `gh pr create` with that body plus a summary and unresolved assumptions,
    ending with `Generated with [Claude Code](https://claude.com/claude-code)`.
-4. **Adversarial PR Review agent** → `.auto-dev/PR_REVIEW.md` — briefed to *find*
+4. **Adversarial PR Review agent** → `.auto-dev/PR_REVIEW.md` — briefed to _find_
    problems (correctness, security, scope), not rubber-stamp. This is the only
    check briefed to find what no checklist names. Findings stay on disk: post them
    as inline PR comments **only** if the user asks during the run, or
@@ -488,12 +523,14 @@ it, which is why the two are never reordered.
    corrective loop, not an immediate halt: `references/correction-loop.md`.
 6. **Jira → In Review.**
 
-### 6b — Staging  **[gate]**  (skip if no staging branch)
+### 6b — Staging **[gate]** (skip if no staging branch)
+
 Pause for approval, then **directly merge** the branch into `staging` (no PR — per
 project convention) and monitor CI on staging. Skip entirely if the repo has no
 staging branch.
 
-### 6c — Main  **[gate]**
+### 6c — Main **[gate]**
+
 1. **Read what humans said,** and check whether the PR is still a draft. A
    teammate may have reviewed since the PR gate, and nothing else in this pipeline
    reads their words:
@@ -502,7 +539,7 @@ staging branch.
    ```
    **`isDraft: true` blocks the merge, and on some setups suppressed CI too** —
    `open-pr` opens drafts by design, so this is the expected state, not an error.
-   Mark it ready (`gh pr ready <pr>`) *before* the gate, then confirm the checks
+   Mark it ready (`gh pr ready <pr>`) _before_ the gate, then confirm the checks
    Phase 6a polled actually ran; if they only started once the draft flag came off,
    monitor them now rather than merging on a stale green.
    Put unresolved review comments and any `CHANGES_REQUESTED` in the gate summary. A
@@ -517,8 +554,8 @@ staging branch.
    locally to get past branch protection is never the answer.
 4. Monitor CI on main, transition **Jira → Done**, and offer to remove the worktree
    (confirmed, not automatic). On a multi-PR run this runs **per sub-task**, and the offer covers
-that sub-task's build worktree only — the control worktree holds the ledger and
-stays until the final report.
+   that sub-task's build worktree only — the control worktree holds the ledger and
+   stays until the final report.
 
 ---
 
@@ -533,7 +570,7 @@ never report success you didn't verify.
 ## Bounds and guardrails
 
 - **One iteration budget per task** (default 4 revise rounds) across all corrective
-  loops — and per *sub-task* on a multi-PR run. Past it, report rather than loop
+  loops — and per _sub-task_ on a multi-PR run. Past it, report rather than loop
   (`references/correction-loop.md`).
 - **Stop-and-report conditions:** `gh` is missing, unauthenticated, or `origin`
   isn't GitHub (caught in Phase 1, before any work); the worktree can't be created;
