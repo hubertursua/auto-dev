@@ -141,6 +141,24 @@ echo ".auto-dev/" >> .gitignore
 
 Now ask Claude to "auto-dev" a task and the skill triggers.
 
+### Install without the plugin
+
+If policy blocks plugins, link the agents into your user folder instead:
+
+```
+ln -s ~/Dev/auto-dev/agents ~/.claude/agents
+```
+
+This works only when `~/.claude/agents` does not exist yet. If it exists, link
+each file into it:
+
+```
+ln -s ~/Dev/auto-dev/agents/*.md ~/.claude/agents/
+```
+
+The agents load as `auto-dev-<name>`, and the orchestrator falls back to that form.
+Link `skills/auto-dev` into `~/.claude/skills/` too.
+
 ## Dependencies
 
 Built-in tools only — no plugins required: `TodoWrite`, `Task`/`Agent`, `Bash`,

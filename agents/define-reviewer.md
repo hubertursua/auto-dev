@@ -1,5 +1,5 @@
 ---
-name: define-reviewer
+name: auto-dev-define-reviewer
 description: auto-dev pipeline only — Phase 2 Define reviewer. Read-only critique of SPEC.md, returning blocker / should-fix / nit findings. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high

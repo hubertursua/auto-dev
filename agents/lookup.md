@@ -1,5 +1,5 @@
 ---
-name: lookup
+name: auto-dev-lookup
 description: auto-dev pipeline only — read-and-answer worker for the orchestrator. Reads source, diffs, or large artifacts and returns a short conclusion so the orchestrator never holds them. Spawned by the auto-dev orchestrator; not for general use.
 model: sonnet
 effort: low
