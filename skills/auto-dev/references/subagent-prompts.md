@@ -18,8 +18,9 @@ two point at different trees — see `references/artifacts.md`.
 > orchestrator check with a coder correction brief; the Phase 6 git/gh
 > operations are the orchestrator's.
 
-**Models: every worker inherits the orchestrator's model.** No brief pins one —
-see the model note in `SKILL.md`.
+**Agent types: spawn each brief with the `_Agent type:_` it names**, and never pass
+the Agent tool's `model` parameter. The type fixes the worker's model and effort
+(`agents/<name>.md` in this plugin). See the model table in `SKILL.md`.
 
 ## Conventions for every brief
 
@@ -56,6 +57,7 @@ see the model note in `SKILL.md`.
 ## Phase 2 — Define
 
 ### Define agent
+_Agent type: `auto-dev:define`._
 _Tools: Write + Read, Grep, Glob (research is read-only; it must not modify source)._
 
 One pass that researches the ticket against the codebase, states the acceptance
@@ -119,6 +121,7 @@ this phase ran, so a slug proposed here could only conflict with paths already o
 disk.
 
 ### Define reviewer
+_Agent type: `auto-dev:define-reviewer`._
 _Tools: Read, Grep, Glob only (must not rewrite the file)._
 **Skip this agent entirely when the scope call is TRIVIAL.**
 
@@ -203,6 +206,7 @@ relative to shipping the wrong thing.
 writes a short `IMPLEMENTATION.md` directly instead.
 
 ### Plan agent
+_Agent type: `auto-dev:planner`._
 _Tools: Write + Read, Grep, Glob._
 
 ```
@@ -227,6 +231,7 @@ Return: assumptions, key risks.
 ```
 
 ### Plan reviewer
+_Agent type: `auto-dev:plan-reviewer`._
 _Tools: Read, Grep, Glob only._
 
 ```
@@ -260,6 +265,8 @@ exists, and the short plan you wrote yourself is still that plan.
 ## Phase 4 — Build
 
 ### Coding agent (TDD)
+_Agent type: `auto-dev:coder` (STANDARD), `auto-dev:coder-trivial` (TRIVIAL first
+build only)._
 _Tools: Read, Write, Edit, Bash, Grep, Glob._ Spawn with the **plan only — never
 SPEC.md** (see *Why two documents* in `SKILL.md`).
 
@@ -316,8 +323,9 @@ Write `<artifact-dir>/SPEC_EVAL.md` to the template in `references/artifacts.md`
 per condition, **met / partial / unmet** with evidence (file:line or test name),
 security/compliance conditions included.
 
-For each unmet/partial condition, re-dispatch the **coding agent** with a targeted
-correction brief (this is the feedback loop; it consumes the shared budget):
+For each unmet/partial condition, re-dispatch the **coding agent** as
+`auto-dev:coder` — on a TRIVIAL run too — with a targeted correction brief (this is
+the feedback loop; it consumes the shared budget):
 
 ```
 You are the IMPLEMENTATION phase, applying a correction. Work inside the worktree
@@ -341,6 +349,7 @@ what a correction invalidates at each point, and the budget accounting are in
 `references/correction-loop.md`.
 
 ### Cleanup agent (simplify + quality gate)
+_Agent type: `auto-dev:cleanup`._
 _Tools: Read, Edit, Write, Bash, plus the **Skill** tool to run `/simplify`._
 
 Runs after the acceptance loop settles, so corrective code gets simplified too.
@@ -399,6 +408,9 @@ loop to green spends **no** iteration budget; only a later *re-spawn* of it does
 ## Phase 6 — Ship
 
 ### Adversarial PR Review agent
+_Agent type: `auto-dev:pr-reviewer-sensitive` when `SPEC.md`'s
+`Security/Compliance criteria` section lists controls for a sensitive path,
+otherwise `auto-dev:pr-reviewer`._
 _Tools: Read, Grep, Glob, Bash (`git diff`, `gh`), Write — read-only **w.r.t.
 source**, but it writes `<artifact-dir>/PR_REVIEW.md`._
 Briefed to **find problems, not rubber-stamp**. Runs after the PR is opened. This
@@ -430,8 +442,8 @@ genuinely turns up nothing, say so briefly — but default to skepticism. Do NOT
 modify code. Return the blocker count.
 ```
 
-If the review returns blockers, feed them back to the **coding agent** using the
-Phase 5 correction brief above. A Phase 6 correction lands *after* `/simplify` and
+If the review returns blockers, feed them back to the **coding agent**
+(`auto-dev:coder`) using the Phase 5 correction brief above. A Phase 6 correction lands *after* `/simplify` and
 the `lint/` reports were written, so it invalidates more than a Phase 5 one does —
 which reports to refresh, why `/simplify` does not re-run, and what happens when
 the budget runs out with blockers still open are all in

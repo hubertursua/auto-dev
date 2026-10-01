@@ -155,12 +155,30 @@ check a repo's `.auto-dev.yml` in Phase 1 — a mistyped key is silently ignored
 otherwise. Without it the pipeline still runs; it just reports that the file went
 unvalidated.
 
-A note on agent types: `feature-dev`'s `code-reviewer` / `code-architect` types
-look like a natural fit for the two read-only reviewers, but they pin
-`model: sonnet`, which breaks the skill's invariant that **every worker inherits
-your model**. Use a full-tool type (`claude` / `general-purpose`) everywhere and
-constrain the reviewers by their brief instead — which is what the briefs already
-do ("Do NOT rewrite the file. Return findings only.").
+## Models and effort
+
+Each worker ships as its own agent type in `agents/`, which fixes its tools, model
+and effort. The types name model families (`opus`, `sonnet`, `fable`), not
+versions, so a new release is picked up without editing the plugin.
+
+| Worker                                   | Agent type                       | Model · effort    |
+| ---------------------------------------- | -------------------------------- | ----------------- |
+| Define agent                             | `auto-dev:define`                | `opus` · high     |
+| Define reviewer                          | `auto-dev:define-reviewer`       | `opus` · high     |
+| Plan agent                               | `auto-dev:planner`               | `opus` · xhigh    |
+| Plan reviewer                            | `auto-dev:plan-reviewer`         | `opus` · high     |
+| Coding agent (STANDARD, all corrections) | `auto-dev:coder`                 | `opus` · high     |
+| Coding agent (TRIVIAL first build)       | `auto-dev:coder-trivial`         | `sonnet` · medium |
+| Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · medium |
+| PR reviewer                              | `auto-dev:pr-reviewer`           | `opus` · xhigh    |
+| PR reviewer (sensitive paths)            | `auto-dev:pr-reviewer-sensitive` | `fable` · high    |
+| Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · low    |
+
+The orchestrator runs on the session's model, which you pick when starting each
+session: `opus` at high effort for Plan and Build, `sonnet` at medium for Ship.
+Each session's stop message names the model for the next one. To retune a worker,
+edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
+`SKILL.md`.
 
 ## The `.auto-dev/` scratch directory
 

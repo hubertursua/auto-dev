@@ -1,5 +1,6 @@
 {
   "name": "auto-dev-marketplace",
+  "description": "Marketplace for auto-dev, an autonomous ticket-to-PR coding pipeline for Claude Code.",
   "owner": {
     "name": "hubertursua"
   },
@@ -7,7 +8,7 @@
     {
       "name": "auto-dev",
       "source": "./",
-      "description": "Autonomously drive a coding task from ticket to PR through a six-phase subagent pipeline. Stack-agnostic."
+      "description": "Drive a single coding task from ticket to merged pull request autonomously — define, plan, build, verify, and ship — using a purpose-built subagent per delegated job, with a scope call that sizes the pipeline to the task. Stack-agnostic via editable profiles (Elixir ships), with optional Jira/CI/staging integration and human gates before PR and merges."
     }
   ]
 }
