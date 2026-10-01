@@ -1,5 +1,5 @@
 ---
-name: coder-trivial
+name: auto-dev-coder-trivial
 description: auto-dev pipeline only — Phase 4 coding agent (TDD) for the first build of a TRIVIAL-scope task. Implements the short IMPLEMENTATION.md with its test; never commits. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: sonnet
 effort: medium

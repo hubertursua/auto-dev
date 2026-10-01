@@ -1,5 +1,5 @@
 ---
-name: pr-reviewer-sensitive
+name: auto-dev-pr-reviewer-sensitive
 description: auto-dev pipeline only — Phase 6 adversarial PR reviewer for changes on sensitive paths (auth, data handling, payments, access control). Same job as pr-reviewer on the most capable model. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: fable
 effort: high

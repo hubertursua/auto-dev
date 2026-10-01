@@ -1,5 +1,5 @@
 ---
-name: cleanup
+name: auto-dev-cleanup
 description: auto-dev pipeline only — Phase 5 cleanup agent. Runs /simplify over the branch diff, then the profile's quality gate to green, writing lint reports. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: sonnet
 effort: medium

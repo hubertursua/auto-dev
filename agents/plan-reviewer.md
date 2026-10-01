@@ -1,5 +1,5 @@
 ---
-name: plan-reviewer
+name: auto-dev-plan-reviewer
 description: auto-dev pipeline only — Phase 3 plan reviewer. Read-only critique of IMPLEMENTATION.md against SPEC.md, returning blocker / should-fix / nit findings. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high

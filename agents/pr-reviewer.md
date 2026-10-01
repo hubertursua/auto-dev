@@ -1,5 +1,5 @@
 ---
-name: pr-reviewer
+name: auto-dev-pr-reviewer
 description: auto-dev pipeline only — Phase 6 adversarial PR reviewer. Hunts for correctness, security, scope and test problems in the committed branch and writes PR_REVIEW.md. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: xhigh

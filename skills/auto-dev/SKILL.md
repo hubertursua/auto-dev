@@ -253,6 +253,13 @@ Write/Edit/Bash**, so an artifact writer spawned with one silently fails.
 | PR reviewer, sensitive paths (Phase 6)         | `auto-dev:pr-reviewer-sensitive` | `fable` · high    |
 | Your read-and-answer lookups                   | `auto-dev:lookup`                | `sonnet` · low    |
 
+**Resolving a type.** The table and the rules below write each type as
+`auto-dev:<x>`. To spawn worker `<x>`, use the first of these that is in the
+available agents list: `auto-dev:auto-dev-<x>` (plugin install), `auto-dev:<x>`,
+or `auto-dev-<x>` (user-level install, `agents/` symlinked into `~/.claude/agents/`).
+If none exists, stop and tell the user to install the plugin or symlink `agents/`
+into `~/.claude/agents/`. Never fall back to `general-purpose`.
+
 **Models.** Judgment stays on `opus`: a weak reviewer returns "no findings," which
 is indistinguishable from a clean pass, and a weak plan spends revise rounds
 downstream. Only work that a later check verifies moves down to `sonnet`: the
