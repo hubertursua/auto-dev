@@ -4,5 +4,8 @@
 # skill-creator eval scratch (workspaces, run outputs)
 *-workspace/
 
+# python bytecode from running bundled scripts
+__pycache__/
+
 # macOS finder metadata
 .DS_Store

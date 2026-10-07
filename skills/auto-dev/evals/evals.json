@@ -1,36 +1,141 @@
 {
   "skill_name": "auto-dev",
-  "notes": "Each eval runs a FULL autonomous pipeline (detect repo + stack -> worktree -> define -> plan -> build -> verify -> ship), so runs are slow, costly, and mutate the repo. Run against a throwaway copy and have runs stop at the PR gate (no merge) unless explicitly testing promotion. The human gates (PR, staging, main) require approval; the post-plan gate is off by default. Prefer small, self-contained tasks whose quality gate can run without heavy external services. Phase 2 returns a three-way scope call (TRIVIAL / STANDARD / OVERSIZED) that determines how much of the planning head runs; the verification tail (Phase 5 acceptance + /simplify + quality gate, Phase 6 adversarial review + CI) runs identically at every scope. The pipeline is cut into three sessions by design (S1 = phases 1-3, S2 = 4-5, S3 = 6), each ending by writing .auto-dev/HANDOFF.md and stopping. An eval that scores a single end-to-end run is therefore scoring three invocations: either drive each session as its own run (re-entering with \"auto-dev continue\"), or score only the session the eval is about and treat the handoff-and-stop as the expected terminal state rather than a truncation.",
+  "notes": "Each eval drives the autonomous pipeline, so runs are slow, costly, and mutate the repo. Run against a throwaway clone of a GitHub-hosted fixture repo: Phase 1 runs `gh auth status` and `gh repo view` and stop-and-reports on a missing gh or a non-GitHub origin, so a local-only repo ends every run in Phase 1. The worker agent types (`auto-dev:define`, `auto-dev:coder`, …) must be installed — load the plugin with `claude --plugin-dir <repo-root>` — or the run stops at its first spawn, by design. Hide any other installed copy of the skill so the version under test is the only `auto-dev`. The pipeline is cut into three sessions by design (S1 = phases 1-3, S2 = 4-5, S3 = 6), each ending by writing .auto-dev/HANDOFF.md and stopping. Each eval names the session(s) it scores in `session`; drive later sessions as their own runs (re-entering with \"auto-dev continue\") and treat the handoff-and-stop as the expected terminal state, not a truncation. Evals 6-9 start mid-run: `setup` says what state to build first, and `files` holds the ledger to put in the control worktree's .auto-dev/. Human gates (PR, staging, main) and the conditional pauses (decomposition approval, Jira In Progress, worktree cleanup) use AskUserQuestion, which a non-interactive run cannot answer — score S3 interactively, or score the gate summary and stop at the first gate. The post-plan gate is off by default. Phase 2 returns a three-way scope call (TRIVIAL / STANDARD / OVERSIZED) that sets how much of the planning head runs; the verification tail (Phase 5 acceptance + /simplify + quality gate, Phase 6 adversarial review + CI) runs identically at every scope. Also note which reference files the orchestrator opens and when (SKILL.md's 'Read when' table), and that it opens each at most once per session.",
   "evals": [
     {
       "id": 1,
+      "session": "S1, S2, S3",
       "prompt": "Auto-dev this: reject creation of a record when the requested value isn't in the allowed set for that context. Return a typed/handled error instead of throwing. Take it all the way to a PR.",
-      "expected_output": "Phase 1 detects the stack (Elixir -> elixir profile) and creates a worktree + feature branch with .auto-dev/ excluded; Phase 2 writes SPEC.md (Context + testable conditions incl. rejection behavior with no default assumed + Assumptions + Security/Compliance criteria) and returns a STANDARD scope call; Phase 3 writes IMPLEMENTATION.md; an allow-list guard implemented with tests (given only the plan); SPEC_EVAL.md records per-condition met/partial/unmet; /simplify runs and the profile's quality gate goes green with one lint/*.md report per gate check; pauses at the PR gate, then a commit + PR with PR_REVIEW.md (or stops at the gate if declined). No TICKET.md, ACCEPTANCE_CRITERIA.md, CODING_TODO.md, or IMPLEMENTATION_EVAL.md is produced.",
-      "files": []
+      "expected_output": "S1: Phase 1 checks gh first, detects the stack and loads the matching profile (profiles/elixir.md in an Elixir repo, else profiles/default.md plus discovery), creates a sibling worktree on a feature branch cut from a freshly fetched origin/<base>, makes .auto-dev/ self-excluding with scripts/exclude-artifacts.py (a .auto-dev/.gitignore of `*`, never .git/info/exclude), and writes profile.md and WORK_LOG.md. Phase 2's auto-dev:define writes SPEC.md (Context, testable conditions including the rejection behavior with no default value assumed, Assumptions, Security/Compliance criteria) and returns STANDARD; auto-dev:define-reviewer critiques it. Phase 3's auto-dev:planner writes IMPLEMENTATION.md and auto-dev:plan-reviewer critiques it. S1 ends by overwriting HANDOFF.md, telling the user to restart on opus/high with 'auto-dev continue', and stopping. S2: auto-dev:coder builds an allow-list guard and tests from IMPLEMENTATION.md alone; the orchestrator marks new files intent-to-add (untracked only), diffs against origin/<base>, and writes SPEC_EVAL.md (met / partial / unmet per condition, with evidence); auto-dev:cleanup runs /simplify and the profile's quality gate to green, one lint/<CHECK>.md per gate command; the evidence is re-resolved; HANDOFF.md names sonnet/medium for S3. S3: pauses at the PR gate; on approval, stages explicit paths, runs scripts/check-staged.py --expect, commits, pushes without --force, opens one draft PR against <base> whose body carries the acceptance checklist and quality-gate results, and spawns the PR reviewer, which writes PR_REVIEW.md. No TICKET.md, ACCEPTANCE_CRITERIA.md, CODING_TODO.md or IMPLEMENTATION_EVAL.md is produced.",
+      "files": [],
+      "expectations": [
+        "WORK_LOG.md records the scope call as STANDARD and Mode as single-PR",
+        "SPEC.md has Context, Conditions, Assumptions and Security/Compliance criteria sections, and a condition states that an out-of-set value is rejected with a handled error",
+        "The Define reviewer, planner and plan reviewer are each spawned with their auto-dev agent type, never general-purpose, and without the Agent tool's model parameter",
+        "The S1 session ends after writing HANDOFF.md, without spawning the coder",
+        "The coder's brief names IMPLEMENTATION.md and does not name or include SPEC.md",
+        "SPEC_EVAL.md gives a met/partial/unmet verdict with evidence for every SPEC.md condition",
+        "lint/ holds one <CHECK>.md per gate command in profile.md, and every one reports green",
+        "The PR is opened as a draft against the base branch, and its body has an acceptance checklist and quality-gate results",
+        "Nothing under .auto-dev/ appears in the commit",
+        "PR_REVIEW.md exists, with Blockers, Should-fix and Nits sections"
+      ]
     },
     {
       "id": 2,
+      "session": "S1, S2",
       "prompt": "Run the full dev cycle on this fix: the state machine should reject the illegal transition and surface a handled error instead of allowing it. Plan it, build it, verify it, and open a PR.",
-      "expected_output": "Phase 2 returns TRIVIAL (one subsystem, one behavior, existing test file covers it), so the Define review and the Phase 3 agents are skipped and the orchestrator writes a short IMPLEMENTATION.md itself — 4 subagent roles. A guard is added to the transition logic with a test proving the illegal transition is rejected. The verification tail still runs in full: SPEC_EVAL.md confirms the conditions are met, /simplify runs (unconditionally — never reported as skipped), the quality gate goes green with lint/*.md, and PR_REVIEW.md is written after the PR gate.",
-      "files": []
+      "expected_output": "Phase 2 returns TRIVIAL (one subsystem, one behavior, an existing test file covers it), so the Define review and the Phase 3 agents are skipped and the orchestrator writes a short IMPLEMENTATION.md itself (files to touch and the test that proves it). WORK_LOG.md marks Phase 3 `skipped`, not `pending`. The first build goes to auto-dev:coder-trivial; any correction goes to auto-dev:coder. The coder adds a guard to the transition logic and a test proving the illegal transition is rejected. The verification tail runs in full: SPEC_EVAL.md confirms the conditions, auto-dev:cleanup runs /simplify (never reported as skipped) and the quality gate to green with lint/*.md, and S3 still pauses at the PR gate.",
+      "files": [],
+      "expectations": [
+        "WORK_LOG.md records the scope call as TRIVIAL and Phase 3's status as skipped",
+        "No define-reviewer, planner or plan-reviewer agent is spawned",
+        "IMPLEMENTATION.md exists and was written by the orchestrator, naming the files to touch and the proving test",
+        "The first build is spawned as auto-dev:coder-trivial",
+        "A test that exercises the illegal transition and expects a handled error is added or extended",
+        "SPEC_EVAL.md, and at least one lint/*.md file, exist after S2",
+        "The cleanup agent runs /simplify, and no output reports it as skipped"
+      ]
     },
     {
       "id": 3,
+      "session": "S1 (S3 for the In Review transition)",
       "prompt": "Pick up JIRA-1234 and ship it autonomously — take it to a PR.",
-      "expected_output": "Phase 1 reads the Jira issue (getJiraIssue) and, on confirmation, transitions it to In Progress; the issue populates the WORK_LOG.md header and SPEC.md's Context section; the full pipeline runs; at the PR gate a PR is opened and Jira moves to In Review. No Jira comments or field edits are made. If Jira is unavailable, it proceeds treating the key as free-form and reports Jira was skipped.",
-      "files": []
+      "expected_output": "Phase 1 reads the issue with the Atlassian MCP's getJiraIssue, called by its fully qualified mcp__<server>__getJiraIssue name, and, after confirming with the user, transitions it to In Progress. The issue fills WORK_LOG.md's Ticket line (key, link, restated ask) and SPEC.md's Context section. The full pipeline runs; when the PR opens, Jira moves to In Review. No Jira comments or field edits are made. If Jira is unavailable (no Atlassian MCP, or the issue can't be read), it proceeds treating the key as a free-form task, records that, and reports Jira as skipped instead of failing.",
+      "files": [],
+      "expectations": [
+        "WORK_LOG.md's Ticket line carries JIRA-1234",
+        "With Jira available: the In Progress transition happens only after the user confirms it",
+        "No Jira comment or field-edit tool is called — transitions only",
+        "With Jira unavailable: the run continues past Phase 1 and the report says Jira was skipped"
+      ]
     },
     {
       "id": 4,
+      "session": "S1",
       "prompt": "auto-dev this whole epic: add multi-currency support across the wallet, the ledger, and the payout service. Take it all the way.",
-      "expected_output": "Phase 2 returns OVERSIZED, alerts the user with a proposed decomposition into ordered sub-tasks, and populates WORK_LOG.md. It does not cram everything onto one branch; on approval it runs Phases 2-6 per sub-task as separate PRs, updating the ledger. Each sub-task re-runs Define and gets its OWN scope call, so a small sub-task may itself come back TRIVIAL and skip the Phase 3 agents.",
-      "files": []
+      "expected_output": "Phase 2 returns OVERSIZED. The orchestrator proposes ordered sub-tasks with dependencies, writes them to WORK_LOG.md's Sub-tasks table with Mode multi-PR, and asks for decomposition approval before any sub-task starts — it does not put everything on one branch. On approval, each sub-task runs Phases 2-6 as its own run: its own build worktree and branch (created when it starts), its own PR, scope call and iteration budget (the `budget` column, <remaining>/<total>), with artifacts under the control worktree's .auto-dev/tasks/<id>/. A sub-task's phase table is written only when it starts. A small sub-task may come back TRIVIAL and skip the Phase 3 agents; a sub-task that comes back OVERSIZED stops the run with an offer to re-cut the breakdown. Each sub-task gets its own three sessions, and S1 for a sub-task starts at Phase 2.",
+      "files": [],
+      "expectations": [
+        "WORK_LOG.md has Mode multi-PR and a Sub-tasks table with the columns id, slug, depends on, scope, budget, status, branch, worktree, PR",
+        "The user is asked to approve the decomposition before any sub-task's Define agent is spawned",
+        "No code is written on a single branch for the whole epic",
+        "Only a started sub-task has its own phase table; pending sub-tasks have none",
+        "Each started sub-task's artifacts live under .auto-dev/tasks/<id>/ in the control worktree"
+      ]
     },
     {
       "id": 5,
+      "session": "S1, S2",
       "prompt": "auto-dev: the error message on the expiry validation says 'invalid date' — make it say which field was invalid. Ship it.",
-      "expected_output": "A textbook TRIVIAL scope call: one file, one behavior, no new abstraction or interface, no migration or config change, existing tests cover it. Exactly 4 subagent roles are used (Define, coder, cleanup, PR reviewer) — the Define reviewer and the Phase 3 plan agents are skipped. SPEC.md and IMPLEMENTATION.md are the only two documents describing the work before code, and IMPLEMENTATION.md is written by the orchestrator rather than a plan agent (profile.md and WORK_LOG.md also exist from Phase 1, as setup state and ledger). Verify and Ship are NOT thinned: SPEC_EVAL.md, one lint/*.md per gate check, and PR_REVIEW.md are all produced, and the run still pauses at the PR gate. If the pipeline runs the full 7-role path here, the downward scope branch is not working.",
-      "files": []
+      "expected_output": "A textbook TRIVIAL scope call: one file, one behavior, no new abstraction or interface, no migration or config change, and existing tests cover it. The Define reviewer, planner and plan reviewer are not spawned. The workers are auto-dev:define, auto-dev:coder-trivial (auto-dev:coder for any correction), auto-dev:cleanup and, in S3, the PR reviewer; read-and-answer lookups via auto-dev:lookup don't count against that. SPEC.md and IMPLEMENTATION.md are the only documents describing the work before code, and the orchestrator writes IMPLEMENTATION.md itself (profile.md and WORK_LOG.md also exist from Phase 1, as setup state and the ledger). Verify and Ship are not thinned: SPEC_EVAL.md, one lint/*.md per gate command, and PR_REVIEW.md are all produced, and the run still pauses at the PR gate. If the run takes the full STANDARD path here, the downward scope branch is not working.",
+      "files": [],
+      "expectations": [
+        "WORK_LOG.md records the scope call as TRIVIAL",
+        "No define-reviewer, planner or plan-reviewer agent is spawned",
+        "The only .auto-dev/ files before the coder runs are profile.md, WORK_LOG.md, SPEC.md, IMPLEMENTATION.md and HANDOFF.md (plus .gitignore and an empty lint/)",
+        "The changed error message names the invalid field, and a test asserts the new message",
+        "SPEC_EVAL.md and lint/*.md exist after S2 — verification is not skipped"
+      ]
+    },
+    {
+      "id": 6,
+      "session": "S2 (resume)",
+      "setup": "Run eval 1's S1 to completion (or build the equivalent state by hand): a control worktree with SPEC.md, IMPLEMENTATION.md, profile.md, and the WORK_LOG.md and HANDOFF.md in files/ (edit their paths to the real worktree). Start a fresh session in the main repo checkout, not the worktree.",
+      "prompt": "auto-dev continue",
+      "expected_output": "The orchestrator finds the run without being told where: it scans `git worktree list` and runs scripts/resume-point.py on each candidate's .auto-dev/, which reports Phase 4 — Build as the first open phase, in S2. It does not re-run Phase 1 or re-detect the stack. On entry it reads WORK_LOG.md, HANDOFF.md and profile.md and nothing else by default; it copies the S2 checklist into TodoWrite. It spawns auto-dev:coder with IMPLEMENTATION.md only (the scope call was STANDARD), marks Phase 4 in-progress before starting it, then runs Phase 5 and stops at the S2 boundary with a Ship-brief HANDOFF.md naming sonnet/medium.",
+      "files": ["evals/files/resume-s2/WORK_LOG.md", "evals/files/resume-s2/HANDOFF.md"],
+      "expectations": [
+        "scripts/resume-point.py is run against the control worktree's .auto-dev/ before any phase work",
+        "No Phase 1 step re-runs: no new worktree, no profile re-detection, and profile.md is not rewritten",
+        "Before spawning the coder, the orchestrator reads no .auto-dev/ file other than WORK_LOG.md, HANDOFF.md and profile.md",
+        "WORK_LOG.md marks Phase 4 in-progress before the coder is spawned",
+        "The session ends with HANDOFF.md naming Phase 6 next and telling the user to start a fresh session on sonnet at medium effort"
+      ]
+    },
+    {
+      "id": 7,
+      "session": "S2 (multi-PR resume)",
+      "setup": "A multi-PR run: control worktree holding the WORK_LOG.md in files/ (sub-task 01 done with a PR, 02 in-progress at Phase 4, 03 pending), a build worktree for 02 on its own branch, and .auto-dev/tasks/02/ holding SPEC.md and IMPLEMENTATION.md. Edit the paths in the ledger to the real trees.",
+      "prompt": "picking the multi-currency auto-dev run back up — continue",
+      "expected_output": "resume-point.py reports sub-task 02, Phase 4 — Build, status in-progress, in S2. Because an in-progress phase re-runs whole, the orchestrator re-runs Phase 4 for sub-task 02 from its start and overwrites what it left; it never resumes inside the phase. Workers get the two paths: the 02 build worktree as <worktree> and <control-worktree>/.auto-dev/tasks/02 as <artifact-dir>. Sub-task 01 is not touched and 03 does not start. Budget is read from sub-task 02's own `budget` cell. The session ends at the S2 boundary for sub-task 02 alone.",
+      "files": ["evals/files/resume-multi/WORK_LOG.md"],
+      "expectations": [
+        "The resume point identified is sub-task 02, Phase 4",
+        "The coder brief gives the 02 build worktree as the worktree and .auto-dev/tasks/02 as the artifact directory",
+        "No work is done on sub-task 01 or 03 in this session",
+        "The remaining budget used is sub-task 02's own, not a run-wide count"
+      ]
+    },
+    {
+      "id": 8,
+      "session": "S2 (budget exhausted)",
+      "setup": "Run eval 1 through Phase 4, then plant a defect the spec catches (e.g. the guard accepts an out-of-set value in one context). Set the ledger's iteration budget to `4 total revise rounds (0 remaining)` and Phase 5 to in-progress, as in files/.",
+      "prompt": "auto-dev continue",
+      "expected_output": "Phase 5 re-runs whole. The acceptance check finds the unmet condition and writes it in SPEC_EVAL.md, but with zero rounds left the correction loop does not run: no coder is spawned. The orchestrator stops and reports which loop ran the budget out, each unmet condition by name (not a summary), and what was tried, and leaves the work in place. It does not go on to /simplify, the quality gate or Phase 6, and it does not report success.",
+      "files": ["evals/files/budget-exhausted/WORK_LOG.md"],
+      "expectations": [
+        "SPEC_EVAL.md marks the planted condition partial or unmet, with evidence",
+        "No coder (auto-dev:coder or coder-trivial) is spawned in this session",
+        "The final message names each unmet condition and says the iteration budget is exhausted",
+        "The cleanup agent is not spawned, and nothing is committed or pushed",
+        "WORK_LOG.md records the stop and the remaining budget as 0"
+      ]
+    },
+    {
+      "id": 9,
+      "session": "S3 (CI none)",
+      "setup": "Run eval 5 through S2 in a fixture repo with no CI config (profile.md records `CI provider: none`), as in files/. Run interactively so the PR gate can be approved; decline the main gate.",
+      "prompt": "auto-dev continue",
+      "expected_output": "S3 reads WORK_LOG.md, HANDOFF.md and profile.md, then SPEC.md, SPEC_EVAL.md and lint/*.md for the PR body. It pauses at the PR gate; on approval it stages explicit paths (deleted paths via `git rm --cached`), passes scripts/check-staged.py --expect, commits, pushes without --force, and opens one draft PR with `gh pr create --base <base> --title … --body-file … --draft` (or a fitting PR skill that meets the same requirements). It spawns the PR reviewer. Because the CI provider is `none` it skips the CI watch entirely and records that; it does not poll `gh pr checks` or treat 'no checks reported' as red. The staging gate is n/a. At the main gate it is declined: it stops with the PR open, without merging or moving Jira.",
+      "files": ["evals/files/ci-none/WORK_LOG.md"],
+      "expectations": [
+        "The PR is a draft against the base branch, and exactly one PR exists for the branch",
+        "scripts/check-staged.py exits 0 before the commit, and nothing under .auto-dev/ is committed",
+        "PR_REVIEW.md is written by the auto-dev:pr-reviewer (or pr-reviewer-sensitive) agent",
+        "No CI watch runs (no `gh pr checks --watch` or polling loop), and WORK_LOG.md records that CI was skipped because the provider is none",
+        "After the main gate is declined, no `gh pr merge` is run and the PR stays open"
+      ]
     }
   ]
 }

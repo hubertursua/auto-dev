@@ -29,7 +29,7 @@ test_notes: >-
 
 ## Notes
 
-- **Aggregate gate.** If the repo defines its own precommit aggregate (e.g. a
+- **Aggregate quality gate.** If the repo defines its own precommit aggregate (e.g. a
   `mix precommit` alias or a `Makefile`/`Justfile` target), prefer running that
   and add any check it omits. Discovery in Phase 1 will surface it; declare it via
   `.auto-dev.yml` `gate:` to make it authoritative.
@@ -37,8 +37,8 @@ test_notes: >-
   clean compile is part of the Definition of Done. If a project genuinely cannot
   meet that, relax it in the override, not here.
 - **Credo / Dialyzer optional per repo.** Not every Elixir repo uses them, and
-  this gate lists both. Phase 1 drops a check whose tool isn't actually present —
+  this profile's `gate` lists both. Phase 1 drops a check whose tool isn't actually present —
   the general rule for every stack, in `references/profiles.md`.
-- **This is the reference profile.** It mirrors the conventional Elixir gate
+- **This is the reference profile.** It mirrors the conventional Elixir quality gate
   (`mix compile` / `format --check-formatted` / `credo` / `dialyzer` / `test`);
   other stacks follow the same schema.

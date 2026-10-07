@@ -3,8 +3,8 @@
 An orchestration skill for autonomous development.
 
 It drives a single coding task from a ticket to a merged pull request hands-off,
-delegating each job to a purpose-built subagent and handing structured
-artifacts between them through a `.auto-dev/` scratch directory. It is
+delegating each job to a purpose-built **worker** (a subagent) and handing
+structured artifacts between them through a `.auto-dev/` scratch directory. It is
 **stack-agnostic** via editable profiles (Elixir ships today), and integrates
 optionally with Jira, CI, and a staging branch — each auto-detected and skipped
 when absent.
@@ -12,7 +12,7 @@ when absent.
 ## Agent hierarchy
 
 The main agent stays the orchestrator and never writes code itself — it spawns a
-fresh subagent per delegated job and hands off through files in `.auto-dev/`,
+fresh worker per delegated job and hands off through files in `.auto-dev/`,
 never shared memory. Phase 1 and the Phase 5 acceptance check are its own work.
 
 ```
@@ -20,10 +20,10 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
 │
 ├─ Phase 1  Setup ......... detect repo + stack, resolve ticket, worktree, .auto-dev/
 ├─ Phase 2  Define agent .. SPEC.md — the testable contract + SCOPE CALL  (→ reviewer)
-├─ Phase 3  Plan → reviewer IMPLEMENTATION.md — the technical how         [optional gate]
-├─ Phase 4  Coding agent .. code + tests (given only the plan)
+├─ Phase 3  Planner ....... IMPLEMENTATION.md — the technical how  (→ reviewer) [optional gate]
+├─ Phase 4  Coder ......... code + tests (given only the plan)
 ├─ Phase 5  orch + cleanup  acceptance vs. the withheld spec → /simplify → quality gate
-└─ Phase 6  orch + reviewer  [GATE] PR + adversarial review + CI → [GATE] staging → [GATE] main
+└─ Phase 6  orch + PR reviewer  [GATE] PR + adversarial review + CI → [GATE] staging → [GATE] main
 ```
 
 Two documents describe the work, and they answer different questions: `SPEC.md`
@@ -47,10 +47,10 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 |-------|--------|--------|
 | 1 Setup | orchestrator | detect repo/stack, load profile, resolve ticket, isolated worktree + branch, `.auto-dev/` |
 | 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **scope call** |
-| 3 Plan | plan agent + reviewer | `IMPLEMENTATION.md` — the technical how (optional approval gate) |
-| 4 Build | coding agent | code + tests given **only** the plan |
-| 5 Verify | orchestrator, then cleanup agent | acceptance review vs. the withheld spec (feedback loop to Phase 4), then `/simplify` + the profile's quality gate to green |
-| 6 Ship | orchestrator + PR review agent | commit + PR + adversarial review + CI, then staging, then main + Jira Done — pausing at each |
+| 3 Plan | planner + plan reviewer | `IMPLEMENTATION.md` — the technical how (optional approval gate) |
+| 4 Build | coder | code + tests given **only** the plan |
+| 5 Verify | orchestrator, then cleanup agent | acceptance review vs. the withheld spec (correction loop to Phase 4), then `/simplify` + the profile's quality gate to green |
+| 6 Ship | orchestrator + PR reviewer | commit + draft PR + adversarial review + CI, then staging, then main + Jira Done — pausing at each |
 
 ## Three sessions, not one
 
@@ -62,7 +62,7 @@ for the next one. Start a fresh session and say `auto-dev continue` to pick up.
 Orchestrator context is the real cost driver: it grows about 1k tokens per turn
 and every added turn makes every later turn more expensive. So the orchestrator
 holds the pipeline, not the code — it delegates reads, keeps large artifacts in
-subagents, and checkpoints at ~120k tokens rather than running until a 1M window
+workers, and checkpoints at ~120k tokens rather than running until a 1M window
 fills. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,
 which is also what makes an interrupted run resumable.
 
@@ -73,8 +73,8 @@ Phase 2 returns one of three calls, and the pipeline adapts:
 - **TRIVIAL** — one subsystem, one behavior, no new abstraction or interface, no
   migration or config change, and an existing test file covers it. The Define review
   and the Phase 3 agents are skipped; the orchestrator writes a short plan itself.
-  **4 subagent roles.**
-- **STANDARD** — the full path. **7 subagent roles.** (Roles, not spawns —
+  **4 worker roles.**
+- **STANDARD** — the full path. **7 worker roles.** (Roles, not spawns —
   a correction round re-spawns a worker.)
 - **OVERSIZED** — too big for one PR: you get a proposed breakdown into ordered
   sub-tasks, tracked in `.auto-dev/WORK_LOG.md`, and on approval the pipeline runs
@@ -99,22 +99,29 @@ stack, loads the profile, merges in runtime discovery, and honors a repo-local
 `.auto-dev.yml` override. Shipped: **Elixir** (`mix compile`/`format`/`credo`/
 `dialyzer`/`test`) plus a generic `default` fallback that discovers commands at
 runtime. Add a stack by dropping in `profiles/<stack>.md` — no skill change. See
-`skills/auto-dev/references/profiles.md`.
+`skills/auto-dev/references/profiles.md`, and
+`skills/auto-dev/references/phase-1-setup.md` for the full Phase 1 procedure.
 
 ## Human gates & integrations
 
 Planning and build run unattended; the pipeline pauses for approval before
 **opening the PR**, before the **staging merge**, and before the **main merge**
-(plus an optional post-plan gate you can enable per run). Main is merged only via
-`gh pr merge` (respecting branch protection); staging is a direct merge where the
-project uses that convention. **Jira** integration is status-transitions-only
-(In Progress → In Review → Done) and is skipped if no ticket is given. **CI** is
-monitored on the PR before merge, and again after the staging and main merges to
-confirm the merge itself didn't break the branch.
+(plus an optional post-plan gate you can enable per run). The PR opens as a
+**draft** unless you ask for it ready for review, and is marked ready before the
+main gate. Main is merged only via `gh pr merge` (respecting branch protection,
+never `--admin`), with `--squash` by default — `--merge` if the repo disallows
+squash, `--rebase` only when it is the one method allowed. Staging is a direct
+merge where the project uses that convention. **Jira** integration is
+status-transitions-only (In Progress → In Review → Done) and is skipped if no
+ticket is given. **CI** is monitored, with a bounded timeout, on the PR before
+merge, and again after the staging and main merges to confirm the merge itself
+didn't break the branch.
 
-Declining is safe at every gate: `Hold` pauses a run you can resume later, `Stop`
-ends it, and both leave the branch, the worktree, and every artifact on disk. See
-`skills/auto-dev/references/gates-and-jira.md`.
+Declining is safe at every gate: `Stop` ends the run, `Hold` (where a gate offers
+it) pauses a run you can resume later, and both leave the branch, the worktree,
+and every artifact on disk. See `skills/auto-dev/references/gates-and-jira.md`
+for the gates, and `skills/auto-dev/references/phase-6-ship.md` for the exact
+commit, PR and merge sequences.
 
 ## Install
 
@@ -165,13 +172,23 @@ Built-in tools only — no plugins required: `TodoWrite`, `Task`/`Agent`, `Bash`
 `Read`, `Edit`, `Write`, `Grep`, `Glob`, `AskUserQuestion`, and the `Skill` tool
 (the Phase 5 cleanup agent runs `/simplify` with it). `gh` must be on your `PATH`
 and authenticated: Phase 1 checks, and stops before doing any work if it isn't.
-Optional integrations: the Atlassian MCP (Jira transitions), a CI provider CLI,
-and the `open-pr` skill — Phase 6a prefers it for creating the PR when present,
-and falls back to `gh pr create` when it isn't.
-Optional tooling: **PyYAML**, used by `skills/auto-dev/scripts/validate-config.py` to
-check a repo's `.auto-dev.yml` in Phase 1 — a mistyped key is silently ignored
-otherwise. Without it the pipeline still runs; it just reports that the file went
-unvalidated.
+Optional integrations: the Atlassian MCP (Jira transitions) and a CI provider CLI.
+The Jira tools are found by base name (`getJiraIssue`, …) with `ToolSearch`, so
+the MCP server can be registered under any name; no match means Jira is skipped.
+Phase 6a opens the PR with `gh pr create`, or through any PR skill Claude already
+has that meets the pipeline's PR requirements — none is required.
+Optional tooling: **Python 3.9+** with **PyYAML** (`pip install pyyaml`), used by
+`skills/auto-dev/scripts/validate-config.py` to check a repo's `.auto-dev.yml` in
+Phase 1 — a mistyped key is silently ignored otherwise. Without it the pipeline
+still runs; it checks the file by hand and reports that it went unvalidated.
+Three more helpers in `skills/auto-dev/scripts/` need only Python's standard
+library: `resume-point.py` (finds where an interrupted run resumes, from
+`WORK_LOG.md`), `exclude-artifacts.py` (makes `.auto-dev/` self-excluding in
+Phase 1 and verifies it with git) and `check-staged.py` (the read-only check
+before each Phase 6a commit that nothing under `.auto-dev/` is staged). Without
+`python3` the pipeline runs the same steps by hand.
+Also optional: `dexter`, which the orchestrator uses for symbol lookups in Elixir
+repos; without it on your `PATH` it falls back to `grep`.
 
 ## Models and effort
 
@@ -183,10 +200,10 @@ versions, so a new release is picked up without editing the plugin.
 | ---------------------------------------- | -------------------------------- | ----------------- |
 | Define agent                             | `auto-dev:define`                | `opus` · high     |
 | Define reviewer                          | `auto-dev:define-reviewer`       | `opus` · high     |
-| Plan agent                               | `auto-dev:planner`               | `opus` · xhigh    |
+| Planner                                  | `auto-dev:planner`               | `opus` · xhigh    |
 | Plan reviewer                            | `auto-dev:plan-reviewer`         | `opus` · high     |
-| Coding agent (STANDARD, all corrections) | `auto-dev:coder`                 | `opus` · high     |
-| Coding agent (TRIVIAL first build)       | `auto-dev:coder-trivial`         | `sonnet` · medium |
+| Coder (STANDARD build, all corrections)  | `auto-dev:coder`                 | `opus` · high     |
+| Coder (TRIVIAL first build)              | `auto-dev:coder-trivial`         | `sonnet` · medium |
 | Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · medium |
 | PR reviewer                              | `auto-dev:pr-reviewer`           | `opus` · xhigh    |
 | PR reviewer (sensitive paths)            | `auto-dev:pr-reviewer-sensitive` | `fable` · high    |
@@ -210,8 +227,9 @@ it cannot be staged even by a stray `git add -A`. (Note: a committed
 
 ## Safety
 
-Autonomous but bounded: every corrective loop shares one iteration budget per task
-(each sub-task of a multi-PR run gets its own), and the pipeline stops and reports
+Autonomous but bounded: the correction loop and the Define/plan re-reviews share
+one iteration budget per task (default 4 revise rounds; each sub-task of a
+multi-PR run gets its own), and the pipeline stops and reports
 rather than committing a red build or weakening any security control. It refuses a
 resolved quality gate with no test command in it, since that would pass Phase 5 by
 having nothing to check. It merges to main only through a PR, only after your

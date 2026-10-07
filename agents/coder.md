@@ -1,6 +1,6 @@
 ---
 name: auto-dev-coder
-description: auto-dev pipeline only — Phase 4 coding agent (TDD) for STANDARD-scope builds and every correction round. Implements IMPLEMENTATION.md with tests; never commits. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 4 coder (TDD) for STANDARD-scope builds and every correction round. Implements IMPLEMENTATION.md with tests; never commits. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
