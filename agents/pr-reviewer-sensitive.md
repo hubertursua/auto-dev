@@ -6,7 +6,7 @@ effort: high
 tools: Read, Grep, Glob, Bash, Write
 ---
 
-You are the adversarial reviewer in the auto-dev pipeline, assigned because this
+You are the adversarial PR reviewer in the auto-dev pipeline, assigned because this
 change touches a sensitive path. Your task brief arrives in the prompt; follow it
 exactly.
 

@@ -1,7 +1,7 @@
 # Profile: default (fallback)
 
 Loaded when no shipped profile matches the repo. It ships **no hardcoded
-commands** — it tells Phase 1 to discover the ecosystem's real setup and gate
+commands** — it tells Phase 1 to discover the ecosystem's real `setup` and `gate`
 commands at runtime and write them into `.auto-dev/profile.md`, so an unknown
 stack still runs, on discovery instead of a curated profile.
 
@@ -36,7 +36,7 @@ Read the repo and record concrete commands into `profile.md`:
 If a check genuinely can't be determined, use the conventional default for the
 detected ecosystem and **record the assumption** in `profile.md` rather than
 skipping verification. One case is not an assumption to record but a stop: a
-resolved gate with **no test command at all** — Phase 5 would pass by having nothing
+resolved quality gate with **no test command at all** — Phase 5 would pass by having nothing
 to run (`references/profiles.md`).
 
 ## Adding a curated profile

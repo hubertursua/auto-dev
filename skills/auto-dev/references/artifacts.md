@@ -10,6 +10,56 @@ The pipeline keeps **two** descriptions of the work — `SPEC.md` (what) and
 `IMPLEMENTATION.md` (how) — and nothing in between. Every other file here is
 either setup state, a ledger, or a verification report.
 
+## Contents
+
+- **Why two documents** — why `SPEC.md` and `IMPLEMENTATION.md` stay separate, and
+  why the coder never sees the spec.
+- **Where artifacts live: `<worktree>` vs. `<artifact-dir>`** — the two paths every
+  brief carries, and how they diverge on a multi-PR run.
+- **Layout** — the directory tree for single-PR and multi-PR runs.
+- **Never commit `.auto-dev/`** — the Phase 1 self-excluding `.gitignore` (written
+  and verified by `scripts/exclude-artifacts.py`), why not `.git/info/exclude`,
+  and the pre-commit staged check (`scripts/check-staged.py`).
+- **`WORK_LOG.md` — the progress ledger** — status rules and:
+  - **Single-PR run template**
+  - **Multi-PR run template** — sub-task table and per-sub-task phase tables.
+  - **Resuming an interrupted run** — read this on any re-entry, planned or not;
+    `scripts/resume-point.py` reads the ledger and names the resume point.
+  - **Session checklists** — the S1 / S2 / S3 progress checklists to copy into
+    TodoWrite, mirroring the ledger.
+- **Artifact contracts (what each file must contain)** — what each file *is*, plus
+  what deliberately is not an artifact.
+- **Artifact templates** — skeletons to paste into briefs, and how strict each
+  output is (strict vs. flexible, and what reads it back):
+  - **`HANDOFF.md` (end of S1 and S2, or a context checkpoint; orchestrator)**
+  - **`profile.md` (Phase 1, orchestrator)**
+  - **`SPEC.md` (Phase 2, Define agent)**
+  - **`IMPLEMENTATION.md` (Phase 3, planner)**
+  - **`SPEC_EVAL.md` (Phase 5, orchestrator)**
+  - **`PR_REVIEW.md` (Phase 6a, PR reviewer)**
+  - **`lint/<CHECK>.md` (Phase 5, cleanup agent) — one per `gate` entry**
+- **The PR body** — who writes it in Phase 6a, and the sections it must keep.
+- **The final report** — a flexible default shape for the run's last message.
+
+## Why two documents
+
+The pipeline keeps exactly two descriptions of the work, and they answer different
+questions:
+
+- **`SPEC.md` — did we build the right thing?** The testable contract: observable
+  conditions, no design.
+- **`IMPLEMENTATION.md` — did we build it the way we decided?** The technical how.
+
+They fail **independently**. A plan executed faithfully can still miss the
+outcome; an outcome can be delivered by a route the plan never described. Merging
+them into one document collapses both into a single, weaker check.
+
+**The coder builds from the plan, never the spec.** The plan is _required_ to
+cover every condition (Phase 3), so this is not information-hiding — it is
+**language**-hiding: the coder cannot satisfy the acceptance check by echoing the
+spec's own wording back in a test name. The Phase 5 acceptance check is
+independent because the context that runs it did not write the code.
+
 ## Where artifacts live: `<worktree>` vs. `<artifact-dir>`
 
 Phase 1 creates one worktree; that is the **control worktree**, and its
@@ -23,7 +73,9 @@ the same tree:
 - **`<artifact-dir>`** — where that task's artifacts are read and written.
 
 On a **single-PR run** they coincide: the control worktree is also the build
-tree, so `<artifact-dir>` is `<worktree>/.auto-dev`.
+worktree, so `<artifact-dir>` is `<worktree>/.auto-dev`. Removing that worktree
+deletes the ledger with it, so the Phase 6c cleanup offer waits until after the
+final report.
 
 On a **multi-PR run** they diverge. Each sub-task builds in its own worktree, but
 its artifacts stay in the control worktree at
@@ -49,7 +101,7 @@ Single-PR run (the task fits one PR):
   HANDOFF.md              # brief for the NEXT session; overwritten at each session boundary
   SPEC.md                 # the testable contract: context, conditions, assumptions, security (Phase 2)
   IMPLEMENTATION.md       # the technical plan — how (Phase 3)
-  SPEC_EVAL.md            # code vs. spec; drives the acceptance feedback loop (Phase 5)
+  SPEC_EVAL.md            # code vs. spec; drives the Phase 5 correction loop
   lint/                   # one report per quality-gate check (Phase 5)
     COMPILE.md            # one file per check in the profile's `gate` list —
     FORMAT.md             # Elixir's five shown; the filenames come from the
@@ -78,23 +130,29 @@ all, so each sub-task's artifacts and branch never collide:
 ```
 
 On the **TRIVIAL** fast path the file set is unchanged — `IMPLEMENTATION.md` is
-just written by the orchestrator rather than by a plan agent, and no Define review
+just written by the orchestrator rather than by the planner, and no Define review
 runs. The verification artifacts (`SPEC_EVAL.md`, `lint/`, `PR_REVIEW.md`) are
 produced exactly as on the standard path.
 
 ## Never commit `.auto-dev/`
 
-In Phase 1, immediately after creating the worktree:
+In Phase 1, immediately after creating the worktree, run
+`python3 <skill-dir>/scripts/exclude-artifacts.py <worktree>`. It does exactly
+this, then proves it with `git status --porcelain --untracked-files=all --
+.auto-dev/` (must print nothing) and `git check-ignore -q .auto-dev/WORK_LOG.md`
+(must succeed):
 
 ```bash
 mkdir -p .auto-dev/lint
 printf '*\n' > .auto-dev/.gitignore
 ```
 
-A `.gitignore` containing `*` ignores everything in the directory, itself
-included, so the exclusion is mechanical and survives even a stray `git add -A`.
-It is also self-contained: it travels with the worktree and disappears when the
-worktree is removed.
+Without `python3` (exit `127`), run those two commands by hand and confirm with
+`git status` that nothing under `.auto-dev/` appears. The script's exit handling
+is in `references/phase-1-setup.md`, step 6.
+
+The exclusion is mechanical, so it survives even a stray `git add -A`, and it is
+removed along with the worktree.
 
 **Do not use `.git/info/exclude`.** Inside a linked worktree `.git` is a *file*
 (`gitdir: …`), not a directory, so `echo … >> .git/info/exclude` fails with "not
@@ -107,8 +165,10 @@ On a multi-PR run only the control worktree holds `.auto-dev/`, so it is the onl
 tree that needs this; the sub-task worktrees contain code alone.
 
 Phase 6 also stages source paths **explicitly**
-(`git add <path> …`) and never uses `git add -A`/`.`, and confirms `git status`
-shows nothing under `.auto-dev/` before committing.
+(`git add -- <path> …`, and `git rm --cached` for deleted paths) and never uses
+`git add -A`/`.`, and before committing
+confirms nothing under `.auto-dev/` is staged, with `scripts/check-staged.py`
+or its manual equivalent (`references/phase-6-ship.md`, step 2).
 
 Note: `.auto-dev.yml` (the optional repo-local **override**, see
 `references/profiles.md`) is a *different* file — it lives at the repo root, is
@@ -129,6 +189,10 @@ half-written artifact as finished.
 
 Its header also carries the **normalized ticket** — the restated task and its
 link — so the ledger is self-describing without a separate ticket file.
+
+**Strict: ALWAYS use the exact structure below** — the same header fields, table
+columns and `status` values. Resume finds the run by its header lines and restarts
+from the phase tables' `Status` column, so a renamed field or column breaks it.
 
 ### Single-PR run template
 
@@ -191,9 +255,9 @@ Three rules govern it:
   iteration budget on a multi-PR run is per sub-task
   (`references/correction-loop.md`).
 
-The `worktree` column is the sub-task's **build** tree — the `<worktree>` its
+The `worktree` column is the sub-task's **build** worktree — the `<worktree>` its
 briefs are filled with. Its `<artifact-dir>` is always
-`<control-worktree>/.auto-dev/tasks/<id>`, so only the build tree varies. Both are
+`<control-worktree>/.auto-dev/tasks/<id>`, so only the build worktree varies. Both are
 created when the sub-task starts, not when the decomposition is approved
 (`references/subagent-prompts.md`).
 
@@ -224,6 +288,31 @@ wherever the two disagree.
    names this ticket (or restates this task), that is the run to resume, and its
    **Control worktree** line confirms the path. Two matches — the same ticket started
    twice — is a stop-and-ask, not a guess.
+
+   The script does this check and steps 3 and 5's lookup in one read-only call per
+   tree; pass the Jira key, or the task text when there is no ticket:
+   ```bash
+   python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"
+   ```
+   A Jira key must appear as a whole token on the header's Ticket line, so
+   `PROJ-12` never matches a `PROJ-123` ledger, and a Jira URL is matched by its
+   key; any other text is matched, ignoring case and spacing, against the Task
+   line and the ask the Ticket line restates.
+   It prints the task, ticket, the first phase not complete (`done`, `skipped` or
+   `n/a`) with its status, that phase's session, and the remaining budget.
+   - `0` — this tree is the run; resume where it says, handling the status as
+     step 3 does (and step 4 for Phase 6). A `Blocked:` line (a blocked phase,
+     or a blocked sub-task with no phase table) means ask the user, as step 3
+     says.
+   - `3` — this tree is the run, but every phase is complete: nothing to resume.
+     Tell the user the run already finished; re-run no phase.
+   - `1` — read the message. `MISSING` or `MISMATCH`: this tree is not the run;
+     check the next one. `MALFORMED` (it names the line or field): this may be the
+     run with a broken ledger — read it by hand, and if steps 3–5 can't place the
+     resume point, ask.
+   - `2` — it couldn't run. Not a result: read that tree's header and phase table
+     by hand, as above.
+   - `127` — `python3` isn't installed: do the whole detection by hand, as above.
 2. **Re-read, don't re-derive.** `profile.md` already holds the resolved stack,
    commands, branches, CI provider, and Jira mapping — do not re-detect any of it.
    The ledger header holds the ticket, worktree, branch, and remaining budget.
@@ -241,8 +330,10 @@ wherever the two disagree.
    to what git and `gh` actually report, then continue from there.
 5. **Multi-PR runs** restart at the first sub-task that is not `done`, and within it
    at the first phase that is not `done` in **that sub-task's own phase table**. A
-   sub-task with no phase table never started; begin it at Phase 2. Completed
-   sub-tasks keep their merged PRs — never re-run them, and never re-run Phase 1.
+   sub-task with no phase table goes by its summary `status`: `done` is complete
+   (skip it), `blocked` is step 3's report-and-ask, and `pending` never started —
+   begin it at Phase 2. Completed sub-tasks keep their merged PRs — never re-run
+   them, and never re-run Phase 1.
 6. **Re-confirm nothing already confirmed.** A gate approved before the
    interruption stays approved (the ledger records it); a gate not yet reached
    still fires. Do not repeat a Jira transition — read the issue's current status
@@ -252,16 +343,72 @@ The budget carries over: a resumed run continues from the remaining count record
 in the ledger — the header on a single-PR run, the sub-task's `budget` cell on a
 multi-PR one — never a fresh 4 (`references/correction-loop.md`).
 
+### Session checklists
+
+At the start of each session, copy that session's checklist into TodoWrite and
+tick items off as you go. The checklist **mirrors the ledger and never replaces
+it**: `WORK_LOG.md` stays the source of truth and the resume point, so update its
+phase row as well as ticking the item. On a resume, tick whatever the ledger
+already marks `done`, `skipped` or `n/a`, and start at the first open item as
+steps 3–5 above decide. Each item restates a step from `SKILL.md`, in the same
+order. The checklist adds no step, and the detail lives where `SKILL.md` puts it.
+
+```
+S1 Plan progress (on a sub-task, start at Phase 2; Phase 1 never repeats):
+- [ ] 1.1 Detect repo & branches; check gh first (missing/unauthenticated/non-GitHub → stop-and-report)
+- [ ] 1.2 Detect stack, load profile, apply .auto-dev.yml (validated); record CI provider
+- [ ] 1.3 Resolve the ticket
+- [ ] 1.4 Read binding rules; resolve security directives
+- [ ] 1.5 Worktree + branch from fresh origin/<base>; seed worktree_files (each must be gitignored); run setup
+- [ ] 1.6 Prep .auto-dev/ self-excluding: exclude-artifacts.py exits 0 (127: by hand; git status shows nothing under it)
+- [ ] 1.7 Write profile.md; initialize WORK_LOG.md
+- [ ] 1.8 Jira → In Progress (ticket only, confirmed)
+- [ ] 2   Define agent → SPEC.md
+- [ ] 2.1 Read the scope call (OVERSIZED: propose sub-tasks, get decomposition approval)
+- [ ] 2.2 Define review (STANDARD only)
+- [ ] 3.1 Planner → IMPLEMENTATION.md (TRIVIAL: write it yourself)
+- [ ] 3.2 Plan review (not on TRIVIAL)
+- [ ] 3.3 Post-plan gate (only if enabled for this run)
+- [ ] Boundary: update WORK_LOG.md → overwrite HANDOFF.md → tell the user → STOP
+```
+
+```
+S2 Build progress:
+- [ ] 4   Coder builds from IMPLEMENTATION.md only; note plan deviations
+- [ ] 5.1 Acceptance vs. SPEC.md → SPEC_EVAL.md (unmet → correction loop, re-check)
+- [ ] 5.2 Simplify (cleanup agent, after the acceptance loop settles — not per correction; no budget)
+- [ ] 5.3 Quality gate to green → lint/*.md; re-resolve SPEC_EVAL.md evidence (unmet → correction + cleanup re-spawn)
+- [ ] Boundary: update WORK_LOG.md → overwrite HANDOFF.md → tell the user → STOP
+```
+
+```
+S3 Ship progress:
+- [ ] 6a.1 PR gate
+- [ ] 6a.2 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged
+- [ ] 6a.3 Push (never --force); open PR with acceptance checklist + quality-gate results
+- [ ] 6a.4 PR reviewer (adversarial) → PR_REVIEW.md (blocker → correction loop + cleanup re-spawn)
+- [ ] 6a.5 CI monitoring (red pre-merge → correction loop + cleanup re-spawn)
+- [ ] 6a.6 Jira → In Review
+- [ ] 6b   Staging gate → direct merge → CI on staging (n/a without staging)
+- [ ] 6c.1 Read human reviews; mark the PR ready
+- [ ] 6c.2 Main gate
+- [ ] 6c.3 gh pr merge, explicit method, never --admin (refused → report, stop);
+           confirm state MERGED (queued/auto-merge → report, stop)
+- [ ] 6c.4 CI on main; Jira → Done; multi-PR: offer the sub-task's build-worktree cleanup
+- [ ] Final report
+- [ ] Single-PR: offer worktree cleanup, only now (removing it deletes .auto-dev/)
+```
+
 ---
 
 ## Artifact contracts (what each file must contain)
 
-Detailed authoring briefs for the agents that produce these live in
-`references/subagent-prompts.md`. The contracts below define what each file *is*, so
-downstream phases can rely on them; the templates that follow fix the shape.
+Briefs for the agents that produce these are in `references/subagent-prompts.md`.
+The contracts below define what each file *is*; the templates that follow fix the
+shape.
 
 - **`profile.md`** — the resolved project profile from Phase 1: detected stack and
-  which `profiles/*.md` was loaded, the exact setup/gate commands (post-override)
+  which `profiles/*.md` was loaded, the exact `setup`/`gate` commands (post-override)
   and any check dropped for a missing tool, base/staging/prefix, CI provider and
   timeout, the iteration budget, the resolved security-directive sources, and Jira
   availability + state mapping. Every later phase reads this instead of re-detecting.
@@ -269,7 +416,7 @@ downstream phases can rely on them; the templates that follow fix the shape.
   `profile.md` are what a session opens on entry; everything else in here is read
   only by the phase that needs it (`SKILL.md`, *Session boundaries*).
   **Under 60 lines**, overwritten — not appended — at the end
-  of S1 and S2: what is done, the exact next phase, the 3–8 file paths that matter,
+  of S1 and S2 and at any context checkpoint: what is done, the exact next phase, the 3–8 file paths that matter,
   open assumptions, and the one command to re-enter. It is a pointer sheet, not a
   summary: never restate `SPEC.md` or `IMPLEMENTATION.md` in it. A session that
   needs their content either opens them where its own phase requires it (the
@@ -288,14 +435,15 @@ downstream phases can rely on them; the templates that follow fix the shape.
   create/modify, design, data flow, the ordered build sequence (which is the
   coder's worklist), test plan (which test proves which behavior, and where),
   migrations/config. Buildable without the spec; every spec condition maps to a
-  build step and a test. Written by the plan agent in Phase 3 — or, on the TRIVIAL
+  build step and a test. Written by the planner in Phase 3 — or, on the TRIVIAL
   fast path, by the orchestrator as a short files-plus-test note.
 - **`SPEC_EVAL.md`** — the acceptance check against `SPEC.md` (which the coder
   never saw): per-condition **met / partial / unmet**, with evidence
   (file\:line, test) — including the security/compliance conditions. Drives the
-  Phase 5 → Phase 4 feedback loop. Nothing is committed at this point, so the
-  evidence comes from the working tree rather than a commit range — `SKILL.md`
-  Phase 5 gives the exact invocation and why each half of it matters.
+  Phase 5 correction loop back into the coder. Nothing is committed at this point, so the
+  evidence comes from the working tree rather than a commit range —
+  `references/subagent-prompts.md`, _Acceptance check_, gives the exact invocation
+  and why each half of it matters.
 - **`lint/<CHECK>.md`** — one report per quality-gate command, named per the
   loaded profile — **one per `gate` entry, all of them** (Elixir: `COMPILE.md`,
   `FORMAT.md`, `CREDO.md`, `DIALYZER.md`, `TEST.md`): the command run, final
@@ -315,17 +463,39 @@ and the **PR body**, contracted below.
 
 ## Artifact templates
 
-Skeletons for the six artifacts a worker or the orchestrator writes. They fix the
+Skeletons for the seven artifacts a worker or the orchestrator writes. They fix the
 *shape* — the contracts above fix the content. Keep the headings; a later phase reads
 them back (Phase 6a builds the PR checklist straight out of `SPEC_EVAL.md`).
 
-**Paste the relevant template into the worker's brief.** A subagent has no path to
-this file and cannot follow a reference to it.
+**Paste the relevant template into the worker's brief, with its strictness line.**
+A worker has no path to this file and cannot follow a reference to it.
 
-### `HANDOFF.md` (end of S1 and S2, orchestrator)
+**How strict each template is.** Match the output to its consumer:
+
+- **Strict** — ALWAYS use the exact template structure: the same headings in the
+  same order, the same header fields, the same table columns. Fill the `<…>`
+  placeholders; never rename, merge or drop a heading (beyond an omission the
+  template itself allows). A later step reads these back by section or field name.
+- **Flexible** — a sensible default. Adapt the sections to the task, using your
+  best judgment; only the parts named as fixed must stay.
+
+| Output | Strictness | Read back by |
+|--------|------------|--------------|
+| `WORK_LOG.md` | strict | the resume procedure and `scripts/resume-point.py` (header lines, phase-table `Status`); every session's entry |
+| `HANDOFF.md` | strict | the next session's entry |
+| `profile.md` | strict | every phase and worker (`setup`/`gate` commands run verbatim) |
+| `SPEC.md` | strict | Define reviewer, Phase 5 acceptance check, PR-reviewer type choice (`Security/Compliance criteria`), PR body |
+| `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, PR reviewer |
+| `SPEC_EVAL.md` | strict | PR body checklist, PR gate summary, the evidence re-resolve |
+| `PR_REVIEW.md` | strict | blocker count → correction loop, main gate summary |
+| `lint/<CHECK>.md` | strict | PR body `Quality gate`, PR gate summary |
+| PR body | required sections strict, prose flexible | the human reviewer; refreshed after a Phase 6 correction |
+| Final report | flexible | the user |
+
+### `HANDOFF.md` (end of S1 and S2, or a context checkpoint; orchestrator)
 
 ```markdown
-# Handoff — <ticket or task> → <S2 Build | S3 Ship>
+# Handoff — <ticket or task> → <S1 Plan | S2 Build | S3 Ship> (<next session | resume>)
 
 Re-enter with: `cd <absolute worktree path>`
 Branch: <prefix>/<slug>   Base: origin/<base>   Sub-task: <id or n/a>
@@ -336,6 +506,7 @@ Iteration budget remaining: <n>/<total>
 
 ## Next
 Phase <n> — <name>. <One or two sentences on the first action.>
+Pick up at: <start of Phase <n> | Phase 6, after <last gate passed> — reconcile first>
 
 ## Files that matter
 - <path> — <why>            # 3–8 entries, no more
@@ -348,6 +519,14 @@ Phase <n> — <name>. <One or two sentences on the first action.>
   re-review the spec, re-detect the stack>
 ```
 
+`(next session)` is the planned boundary at the end of S1 or S2. `(resume)` is a
+context checkpoint (`SKILL.md`, _Context budget_): the target is the session the
+checkpoint fired in, resumed in a fresh context. `Pick up at` tells that session
+where in the phase to start. For a phase the ledger marks `in-progress` that is
+its start, because an `in-progress` phase re-runs whole (_Resuming an
+interrupted run_, step 3). Only Phase 6 resumes inside the phase: name the last
+gate passed, and reconcile with git and `gh` before acting (step 4).
+
 Paths absolute; a fresh session does not know where it is. Do not include a
 narrative of how the last session went — the ledger has that, and the next
 session does not need it.
@@ -357,11 +536,12 @@ session does not need it.
 ```markdown
 # Project profile
 
-- **Stack:** <stack>   **Profile:** `profiles/<stack>.md` | `default.md` + discovery
+- **Stack:** <stack>   **Profile:** `profiles/<stack>.md` | `profiles/default.md` + discovery
 - **Repo:** <repo-name>   **CI:** <github-actions|circleci|gitlab|none>   **CI timeout:** <n> min
 - **Base:** <branch>   **Staging:** <branch | n/a — no staging branch>   **Prefix:** <prefix>
 - **Iteration budget:** <n> per task
 - **Worktree files seeded:** <paths copied from the main checkout | none>
+- **`.auto-dev.yml`:** <validated | not machine-validated: <reason> — checked by hand | none>
 - **Post-plan gate:** <on | off> — <which condition enabled it>
 - **Security directives:** <resolved paths> | none found — repo coding rules only
 - **Jira:** <available, cloudId cached | unavailable — no ticket / MCP unreachable>
@@ -408,6 +588,42 @@ constraints. Stakeholder-readable; no technical design.>
 entirely when the task touches no sensitive path.>
 ```
 
+### `IMPLEMENTATION.md` (Phase 3, planner)
+
+**Headings strict, content flexible.** Keep every heading below, in this order —
+the coder works `Build sequence` top to bottom, and the plan reviewer checks
+`Build sequence` and `Test plan` against the spec. What goes under `Design` and
+`Data flow` adapts to the task. On the TRIVIAL fast path the orchestrator's short
+note keeps `Files` and `Test plan` and may drop the rest.
+
+```markdown
+# Implementation plan — <task>
+
+## Files
+- `<path>` — <create | modify>: <what changes there>
+
+## Design
+<modules, functions, data structures — and why this shape, where it is not obvious>
+
+## Data flow
+<how a request, event or record moves through the change, end to end>
+
+## Build sequence
+1. <small, independently verifiable unit> — test: `<test file>`
+2. <…>
+
+## Test plan
+| Test | Location | Proves | Spec condition |
+|------|----------|--------|----------------|
+| <test name> | `<path>` | <the behavior, in the plan's own words> | <#> |
+
+## Migrations / config
+<schema migrations, config or env changes — or "none">
+```
+
+Cite spec conditions **by number only**, never by their wording: the coder reads
+this file, and the spec's language stays out of it (*Why two documents*).
+
 ### `SPEC_EVAL.md` (Phase 5, orchestrator)
 
 ```markdown
@@ -433,7 +649,7 @@ Security/compliance conditions are rows in this table — never a separate pass.
 This is what the PR body's unticked boxes are drawn from.>
 ```
 
-### `PR_REVIEW.md` (Phase 6a, adversarial reviewer)
+### `PR_REVIEW.md` (Phase 6a, PR reviewer)
 
 ```markdown
 # Adversarial PR review — <branch>
@@ -486,13 +702,14 @@ A lens that turns up nothing says so; an empty row is an unread lens, not a clea
 reasoning reaches a human reviewer. The orchestrator assembles these sections in
 Phase 6a from artifacts that are about to become invisible to everyone but itself.
 
-**Who writes it.** Where the `open-pr` skill is available, Phase 6a hands the PR
-over to it — that skill owns the repo's PR template, the Jira link, the draft flag
-and the attribution line, and its prose brevity rules govern the Summary. What it
-does **not** get to drop are the two sections below that this pipeline reads back:
-**Acceptance conditions** and **Quality gate**. Pass them as required content.
-Without `open-pr`, the orchestrator writes the whole thing to this shape,
-attribution line included:
+**Who writes it.** The orchestrator, in Phase 6a, whatever route opens the PR —
+directly with `gh pr create`, or through a fitting skill from its available-skills
+list (`references/phase-6-ship.md`, step 3, has the full requirements). Where the
+repo has a PR template, fill it and carry these sections inside it; otherwise use
+this shape as-is, attribution line included. Brevity rules may trim the Summary,
+but nothing drops the two sections this pipeline reads back: **Acceptance
+conditions** and **Quality gate**. So: those two sections and the attribution line
+are **strict**; the Summary and Assumptions prose is **flexible**.
 
 ```markdown
 ## Summary
@@ -504,7 +721,7 @@ attribution line included:
 - [ ] <partial or unmet — say which it is, and why it is being shipped anyway>
 
 ## Quality gate
-<one line per gate command: the command and its final status, from lint/*.md>
+<one line per `gate` command: the command and its final status, from lint/*.md>
 
 ## Assumptions
 <the unresolved assumptions from SPEC.md a reviewer should sanity-check>
@@ -515,7 +732,30 @@ Generated with [Claude Code](https://claude.com/claude-code)
 **Ship the unticked box rather than a tidy list.** A condition surfaced as unmet
 is a decision the reviewer gets to make; a condition quietly dropped from the
 checklist is the one failure of this pipeline nobody can catch downstream. If a
-Phase 6 correction lands, the checklist and the gate lines are part of what it
+Phase 6 correction lands, the checklist and the quality-gate lines are part of what it
 invalidates (`references/correction-loop.md`) — refresh them on the open PR with
 `gh pr edit <pr> --body-file <file>`, since the PR already exists by then and
-re-running `open-pr` would try to create a second one.
+re-running PR creation would open a second one.
+
+## The final report
+
+**Flexible — a sensible default; adapt it as needed.** It is for the user, and
+nothing reads it back. Every item `SKILL.md`, _Final report_, lists must appear;
+the order, wording and grouping are yours. On a multi-PR run, repeat the per-PR
+lines for each sub-task from `WORK_LOG.md`. A run ended early (a `Stop` at a gate,
+a stop-and-report condition) uses the same shape and says where it stopped.
+
+```markdown
+## auto-dev — <task or ticket> — <shipped | stopped at <phase>: <reason>>
+
+- **PR:** <url> (<merged | open | draft>)   **Branch:** <prefix/slug>   **Worktree:** <abs-path>
+- **Built:** <what changed, 1–3 sentences>
+- **Scope call:** <TRIVIAL | STANDARD | OVERSIZED → n sub-tasks>
+- **Quality gate:** <each check and its final status>
+- **Jira:** <transitions performed | none — no ticket>
+- **Iteration budget:** <remaining>/<total>
+
+**Assumptions:** <the ones a reviewer should know about>
+
+**Unresolved / skipped:** <unmet conditions, open blockers, skipped steps — or "none">
+```

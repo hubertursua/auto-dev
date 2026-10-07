@@ -6,20 +6,49 @@ reads as "the override did nothing" rather than as an error. This script names t
 key and suggests the one it probably meant.
 
 Usage:
-    python3 validate-config.py [path/to/.auto-dev.yml]
+    python3 <skill-dir>/scripts/validate-config.py [path/to/.auto-dev.yml]
+    python3 <skill-dir>/scripts/validate-config.py --help
 
-Defaults to ./.auto-dev.yml. Exit codes:
-    0  valid (warnings may still be printed)
+<skill-dir> is the auto-dev skill's own directory, not the target repo. The config
+path defaults to ./.auto-dev.yml relative to the current directory, so pass the
+target repo's file as an absolute path.
+
+Output:
+    stdout  `VALID: <path> overrides <keys>.`, `warning  <msg>` lines, or a note
+            that the file is missing/empty
+    stderr  `ERROR    <msg>` lines then `INVALID: ...`, or `SKIPPED: ...`
+
+Exit codes:
+    0  valid, or no file / empty file (warnings may still be printed)
     1  invalid — errors printed; Phase 1 should stop and report
     2  could not validate (PyYAML missing, file unreadable) — NOT a pass
 """
 
 import difflib
 import sys
+from pathlib import Path
 
+# The schema doc, located from this script so the path is right from any cwd.
+SCHEMA = Path(__file__).resolve().parent.parent / "references" / "profiles.md"
+
+# Allowed values mirror references/profiles.md — keep the two in sync.
+# CI providers Phase 6 knows how to watch (references/gates-and-jira.md).
 CI_PROVIDERS = {"github-actions", "circleci", "gitlab", "none"}
+# The advisory `kind` labels the profile schema lists; an unknown one only warns.
 GATE_KINDS = {"compile", "format", "lint", "typecheck", "test", "build"}
+# The pipeline milestones that trigger a Jira transition.
 JIRA_STATES = {"in_progress", "in_review", "done"}
+GATE_FIELDS = {"kind", "command", "report"}
+
+# difflib's own default: close enough to catch a dropped/swapped letter
+# (`iteration_budgt`, `bse`) without suggesting an unrelated key.
+SUGGEST_CUTOFF = 0.6
+# 0 revise rounds or 0 minutes of CI watching would make that step a no-op.
+MIN_POSITIVE = 1
+
+# Plain-language names for the schema's types, used in error messages.
+TYPE_NAMES = {str: "a string", list: "a list", dict: "a mapping",
+              int: "an integer", bool: "true or false"}
 
 # key -> (type, human description). `type` is checked with isinstance.
 TOP_LEVEL = {
@@ -46,7 +75,8 @@ warnings: list[str] = []
 
 
 def unknown_key(key, known, where):
-    near = difflib.get_close_matches(str(key), sorted(known), n=1, cutoff=0.6)
+    near = difflib.get_close_matches(str(key), sorted(known), n=1,
+                                     cutoff=SUGGEST_CUTOFF)
     hint = f" — did you mean `{near[0]}`?" if near else ""
     errors.append(f"{where}: unknown key `{key}`{hint}")
 
@@ -57,8 +87,9 @@ def check_type(value, expected, where):
         errors.append(f"{where}: expected an integer, got a boolean")
         return False
     if not isinstance(value, expected):
-        got = type(value).__name__
-        errors.append(f"{where}: expected {expected.__name__}, got {got}")
+        want = TYPE_NAMES.get(expected, expected.__name__)
+        got = TYPE_NAMES.get(type(value), type(value).__name__)
+        errors.append(f"{where}: expected {want}, got {got} ({value!r})")
         return False
     return True
 
@@ -96,9 +127,11 @@ def check_gate(gate):
         for required in ("kind", "command", "report"):
             if required not in check:
                 errors.append(f"{where}: missing `{required}`")
-        for key in check:
-            if key not in {"kind", "command", "report"}:
-                unknown_key(key, {"kind", "command", "report"}, where)
+        for key, val in check.items():
+            if key not in GATE_FIELDS:
+                unknown_key(key, GATE_FIELDS, where)
+            else:
+                check_type(val, str, f"{where}.{key}")
         kind = check.get("kind")
         if isinstance(kind, str):
             kinds.add(kind)
@@ -118,14 +151,19 @@ def check_gate(gate):
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        # Without this, `--help` is taken as a missing config path and exits 0.
+        print(__doc__)
+        return 0
     path = sys.argv[1] if len(sys.argv) > 1 else ".auto-dev.yml"
 
     try:
         import yaml
     except ImportError:
-        print("SKIPPED: PyYAML is not installed, so .auto-dev.yml cannot be "
-              "validated.\n  This is not a pass — install it (`pip install pyyaml`) "
-              "or review the file by hand\n  against references/profiles.md.",
+        print("SKIPPED: PyYAML is required to validate .auto-dev.yml and is not "
+              "installed.\n  Exit 2 is not a pass. The user can install it with "
+              "`pip install pyyaml`;\n  until then, review the file by hand "
+              f"against {SCHEMA}.",
               file=sys.stderr)
         return 2
 
@@ -136,7 +174,12 @@ def main() -> int:
         print(f"No {path} — nothing to validate (the pipeline runs without one).")
         return 0
     except yaml.YAMLError as exc:
-        print(f"INVALID: {path} is not valid YAML.\n  {exc}", file=sys.stderr)
+        print(f"INVALID: {path} is not valid YAML — fix the syntax at the line "
+              f"below.\n  {exc}", file=sys.stderr)
+        return 1
+    except UnicodeDecodeError as exc:
+        print(f"INVALID: {path} is not UTF-8 text ({exc.reason} at byte "
+              f"{exc.start}). Re-save it as UTF-8.", file=sys.stderr)
         return 1
     except OSError as exc:
         print(f"SKIPPED: could not read {path}: {exc}", file=sys.stderr)
@@ -180,8 +223,10 @@ def main() -> int:
             if key == "ci" and value not in CI_PROVIDERS:
                 errors.append(
                     f"ci: `{value}` is not one of {', '.join(sorted(CI_PROVIDERS))}")
-            if key in ("iteration_budget", "ci_timeout_minutes") and value < 1:
-                errors.append(f"{key}: must be at least 1, got {value}")
+            if (key in ("iteration_budget", "ci_timeout_minutes")
+                    and value < MIN_POSITIVE):
+                errors.append(f"{key}: must be at least {MIN_POSITIVE}, got "
+                              f"{value} — 0 would skip the step it bounds")
 
     for warning in warnings:
         print(f"warning  {warning}")
@@ -190,7 +235,7 @@ def main() -> int:
 
     if errors:
         print(f"\nINVALID: {path} has {len(errors)} error(s). "
-              f"Schema: skills/auto-dev/references/profiles.md", file=sys.stderr)
+              f"Schema: {SCHEMA}", file=sys.stderr)
         return 1
 
     keys = ", ".join(sorted(config)) or "nothing"

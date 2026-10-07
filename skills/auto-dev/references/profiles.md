@@ -1,44 +1,76 @@
 # Stack profiles — schema, detection, and overrides
 
-A **stack profile** captures everything the pipeline needs to know about *how a
-given ecosystem builds, verifies, and ships*: how to detect it, how to install
-dependencies, and the exact quality-gate commands that constitute "done." Profiles
-are what make the pipeline language/framework-agnostic — adding support for a new
-stack is dropping a new `profiles/<stack>.md` file in, no changes to `SKILL.md`.
+A **stack profile** tells the pipeline how to detect an ecosystem, install its
+dependencies, and run the exact quality-gate commands that constitute "done."
 
-Currently shipped: **`elixir.md`** and a generic **`default.md`** fallback. More
-stacks are added by following the schema below.
+Shipped: **`elixir.md`** and a generic **`default.md`** fallback. Add a stack by
+dropping in a `profiles/<stack>.md` that follows the schema below; `SKILL.md` needs
+no change.
+
+## Contents
+
+- **How Phase 1 uses profiles** — detect, load, merge, apply and validate the
+  override, drop missing tools, record `profile.md`.
+- **Profile schema** — the fenced YAML block and what each field means.
+- **Detection precedence** — which profile wins when several match.
+- **Monorepos, umbrellas, and multi-stack repos** — scoping the quality gate to the right
+  package.
+- **Repo-local override — `.auto-dev.yml`** — every key a project can override.
 
 ## How Phase 1 uses profiles
 
 1. **Detect** the stack by matching `detect` signals against the repo (see
    precedence below).
 2. **Load** the matching `profiles/<stack>.md`; if none matches, load
-   `default.md` and fill gaps by runtime discovery (read CI config, Makefile,
+   `profiles/default.md` and fill gaps by runtime discovery (read CI config, Makefile,
    mix.exs/package.json scripts, etc.).
 3. **Merge** in anything discovered from the repo's own docs/CI that the profile
    didn't specify.
 4. **Apply** the repo-local `.auto-dev.yml` override (if present) — it wins over
-   both the profile and discovery. **Validate it first:**
+   both the profile and discovery. **Validate it first** — run the script, don't
+   read it:
    ```bash
-   python3 skills/auto-dev/scripts/validate-config.py <repo>/.auto-dev.yml
+   python3 <skill-dir>/scripts/validate-config.py <repo>/.auto-dev.yml
    ```
+   `<skill-dir>` is this skill's own directory (the one holding `SKILL.md`; Claude
+   Code names it as the skill's base directory when the skill loads), not the
+   target repo — use absolute paths for both arguments so the command works from
+   any working directory. A wrong script path makes `python3` itself exit `2`
+   ("can't open file"), which is easy to misread as the validator's own exit `2`.
+   Output: `VALID: …` on stdout, or `ERROR …` lines then `INVALID: …` (or
+   `SKIPPED: …`) on stderr; `warning …` lines never fail the run.
+   **Requires** Python 3.9+ and the third-party package PyYAML; everything else
+   it imports is standard library. It checks for PyYAML itself, so there is no
+   separate pre-check to run. On Python older than 3.9 it dies with a
+   traceback (exit `1`, no `INVALID:` line) — treat that like exit `2`, not as an
+   invalid file. No `python3` on PATH at all (exit `127`, "command not found") is
+   handled the same way as exit `2`.
    An unrecognized key is silently ignored otherwise, so a typo reads as "the
    override did nothing" — the validator names the key and suggests the one it
-   probably meant. Exit `1` is a stop-and-report; exit `2` means validation could not
-   run (no PyYAML), which is not a pass — say so and apply the file with care.
-5. **Drop any gate check whose tool isn't actually there.** A profile lists the
-   conventional gate for its ecosystem; a given repo may not use all of it. Keep a
+   probably meant. Exit `0` is a pass — apply the file. Exit `1` is a
+   stop-and-report; once the user has fixed `.auto-dev.yml`, re-run the validator
+   on the fixed file before applying it, and continue only on exit `0`, handling
+   every exit code exactly as on the first run. Exit `2` means validation could not run (no PyYAML, or the
+   file could not be read), which is not a pass. Don't install PyYAML into the
+   user's environment yourself. Instead check every key in the file by hand
+   against "Repo-local override" below (spelling, type, allowed values), then apply it.
+   Record "not machine-validated: <reason>" on `profile.md`'s `.auto-dev.yml`
+   line and repeat it in the final report.
+5. **Drop any quality-gate check whose tool isn't actually there.** A profile
+   lists the conventional quality gate for its ecosystem; a given repo may not use all of it. Keep a
    check only where its tool is genuinely available — the dependency is declared,
    or its config file exists — and otherwise drop it and **record the omission**
    in `profile.md`. This is a rule for every stack, not just the ones that
    document it (Elixir's Credo and Dialyzer are the usual case). Never keep a
    check that cannot run: Phase 5 would never go green, and the pipeline would
-   stop on a tool the project never adopted.
-6. **Refuse an empty gate.** Once unavailable checks are dropped, the resolved
+   stop on a tool the project never adopted. "Available" means the project
+   adopted it, not that it is on your PATH: a declared tool, or the toolchain
+   itself (`mix`, `npm`, …), that is adopted but not installed is a setup failure.
+   Stop and report the missing command; don't drop the check (Phase 1 step 5).
+6. **Refuse an empty quality gate.** Once unavailable checks are dropped, the resolved
    `gate` must still contain at least one command that runs the project's tests. A
-   gate with nothing in it makes Phase 5 pass by having nothing to check, and the
-   change then rides through every remaining gate unverified — the one failure mode
+   quality gate with nothing in it makes Phase 5 pass by having nothing to check, and the
+   change then rides through every remaining human gate unverified — the one failure mode
    this pipeline cannot detect downstream. If neither the profile nor discovery can
    find a way to run the tests, **stop and report**: it is a setup problem the user
    fixes in one line of `.auto-dev.yml`, and guessing is worse than asking.
@@ -113,11 +145,11 @@ When multiple profiles could match:
 ## Monorepos, umbrellas, and multi-stack repos
 
 - **Elixir umbrella** (`apps/*/mix.exs`): run `mix` from the umbrella root; the
-  gate commands operate across apps. Record the umbrella layout in `profile.md`
+  `gate` commands operate across apps. Record the umbrella layout in `profile.md`
   and pass it as a test note so the coder/cleanup run the right app's suite.
 - **Polyglot monorepo** (e.g. a JS frontend + Python backend): scope to the
   package the task actually touches. Detect the sub-package from the task/ticket
-  and the files in play, record the chosen package and its own gate in
+  and the files in play, record the chosen package and its own `gate` in
   `profile.md`, and note in `WORK_LOG.md` that other packages were out of scope.
   If the task genuinely spans packages, that's a decomposition signal (see the
   task-orchestration layer in `SKILL.md`).
@@ -136,9 +168,10 @@ stack: elixir                 # force a profile instead of auto-detecting
 setup: ["mix deps.get", "mix compile"]
 gate:
   - { kind: lint, command: "mix credo --strict --all", report: "CREDO.md" }
+  - { kind: test, command: "mix test",                 report: "TEST.md" }
 branches:
   base: develop               # base branch to cut from and target with the PR
-  staging: staging            # staging branch for the direct-merge step; omit to skip gate 6b
+  staging: staging            # staging branch for the direct-merge step; omit to skip the 6b staging gate
   prefix: feature             # branch-name prefix
 ci: circleci                  # github-actions | circleci | gitlab | none
 ci_timeout_minutes: 30        # bound on CI watching before it reports and holds
@@ -164,4 +197,4 @@ The fully-resolved values are written to `.auto-dev/profile.md`.
 `iteration_budget`, `ci_timeout_minutes`, `security_docs`, `pr_review`, and
 `gates.post_plan` are not stack settings, but they resolve the same way and land in
 the same `profile.md` — see `references/correction-loop.md`,
-`references/gates-and-jira.md`, and Phase 1 step 4 in `SKILL.md`.
+`references/gates-and-jira.md`, and Phase 1 step 4 in `references/phase-1-setup.md`.

@@ -1,6 +1,6 @@
 # Subagent prompt templates
 
-Brief templates for every delegated Task Agent, plus the tool-permission
+Brief templates for every worker (the subagent for each delegated job), plus the tool-permission
 requirement for each. The orchestrator fills the `<…>` placeholders and always
 hands the worker **two absolute paths** — `<worktree>` (where the code lives and
 the work happens) and `<artifact-dir>` (where this task's artifacts are read and
@@ -14,13 +14,75 @@ stay in the control worktree at `<control-worktree>/.auto-dev/tasks/<id>`, so th
 two point at different trees — see `references/artifacts.md`.
 
 > Every delegated job is briefed here (Phases 2–6). Phase 1 is deterministic
-> orchestrator work (see `SKILL.md`); the Phase 5 acceptance check is an
-> orchestrator check with a coder correction brief; the Phase 6 git/gh
-> operations are the orchestrator's.
+> orchestrator work (see `references/phase-1-setup.md`); the Phase 5 acceptance
+> check is an orchestrator check with a coder correction brief; the Phase 6 git/gh
+> operations are the orchestrator's (`references/phase-6-ship.md`).
 
 **Agent types: spawn each brief with the `_Agent type:_` it names**, and never pass
 the Agent tool's `model` parameter. The type fixes the worker's model and effort
 (`agents/<name>.md` in this plugin). See the model table in `SKILL.md`.
+
+## Contents
+
+- **Models** — why judgment stays on `opus` and what moves to `sonnet`.
+- **Tools per worker** — the tool list each worker type gets.
+- **Conventions for every brief** — rules every brief states, whatever the phase.
+- **Phase 2 — Define**
+  - **Define agent** — writes `SPEC.md`.
+  - **Define reviewer**
+  - **Scope decision (orchestrator)** — TRIVIAL, STANDARD or OVERSIZED.
+- **Phase 3 — Plan**
+  - **Planner** — writes `IMPLEMENTATION.md`.
+  - **Plan reviewer**
+  - **Optional post-plan gate (orchestrator)**
+- **Phase 4 — Build**
+  - **Coder (TDD)**
+- **Phase 5 — Verify**
+  - **Acceptance check (orchestrator)** — writes `SPEC_EVAL.md`; includes the coder
+    correction brief.
+  - **Cleanup agent (simplify + quality gate)** — writes `lint/<CHECK>.md`.
+  - **Re-resolve the acceptance evidence (orchestrator)**
+- **Phase 6 — Ship**
+  - **PR reviewer (adversarial)** — writes `PR_REVIEW.md`.
+
+## Models
+
+Judgment stays on `opus`: a weak reviewer returns "no findings," which
+is indistinguishable from a clean pass, and a weak plan spends revise rounds
+downstream. Only work that a later check verifies moves down to `sonnet`: the
+TRIVIAL build (acceptance and the quality gate catch it), the cleanup agent (the
+quality gate catches it), and lookups (they only report). The routing rules (corrections always
+to `auto-dev:coder`; `auto-dev:pr-reviewer-sensitive` for sensitive paths) are in
+`SKILL.md` and on each brief's `_Agent type:_` line below.
+
+The types name model **families** (`opus`, `sonnet`, `fable`), never a version, so
+each resolves to the current release without editing this skill.
+
+## Tools per worker
+
+Each type's `tools:` frontmatter, this list, and the `_Tools:_` line on each brief
+below state the same thing; change them together:
+
+- **Orchestrator (you):** TodoWrite, Bash (git/gh/CI, worktree, setup), Read,
+  Edit (revise artifacts after critique), Write (`WORK_LOG.md`, `profile.md`,
+  `SPEC_EVAL.md`, and `IMPLEMENTATION.md` on the TRIVIAL fast path), the
+  Agent/Task tool (spawn every worker), AskUserQuestion
+  (gates), Skill (only if a fitting skill opens the PR in 6a), and — when a
+  ticket is present — ToolSearch to locate the Atlassian MCP Jira tools, then those
+  tools.
+- **Define agent (Phase 2):** Write + Read, Grep, Glob (research is read-only; it
+  writes `SPEC.md`).
+- **Define reviewer (Phase 2):** Read, Grep, Glob only.
+- **Planner (Phase 3):** Write + Read, Grep, Glob.
+- **Plan reviewer (Phase 3):** Read, Grep, Glob only.
+- **Coder (Phase 4):** Read, Write, Edit, Bash, Grep, Glob.
+- **Cleanup agent (Phase 5, re-spawned after later corrections):** Read, Edit, Write, Bash, Grep,
+  Glob, plus the **Skill** tool to run `/simplify`.
+- **PR reviewer (Phase 6):** Read, Grep, Glob, Bash (`git diff`, `gh`), Write —
+  read-only **w.r.t. source**, but it must be able to write its one artifact,
+  `.auto-dev/PR_REVIEW.md`.
+- **Lookup (any phase):** Read, Grep, Glob, Bash — answers a question, writes
+  nothing.
 
 ## Conventions for every brief
 
@@ -30,7 +92,8 @@ the Agent tool's `model` parameter. The type fixes the worker's model and effort
   Where `<artifact-dir>` lies outside that tree (multi-PR runs), say so
   explicitly: it is the one path the worker may read and write outside `<worktree>`.
 - Name the exact artifact file(s) to write, and **paste that artifact's template
-  from `references/artifacts.md` into the brief**. A worker has no path to the
+  from `references/artifacts.md` into the brief**, with its strictness (strict, or
+  headings-strict for `IMPLEMENTATION.md`). A worker has no path to the
   reference files and cannot follow a pointer to one.
 - Require a short structured return: what it did, assumptions, risks, and (for
   reviewers) findings grouped **blocker / should-fix / nit**.
@@ -43,9 +106,9 @@ the Agent tool's `model` parameter. The type fixes the worker's model and effort
   every brief: redirect long command output (suite runs, dialyzer, full diffs) to a
   file under `$TMPDIR` and quote only the failing tail. A worker that pastes a
   10k-line log into its return has burned the context the artifacts exist to save.
-- **Keep any single command under 5 minutes.** A subagent's prompt cache expires
-  after 5 minutes — the orchestrator's lasts an hour — so a worker idling on a long
-  blocking command has its whole context re-billed at write price. Where a check is
+- **Keep any single command under 5 minutes.** A worker's prompt cache is
+  short-lived (minutes, where the orchestrator's is far longer), so a worker idling
+  on a long blocking command has its whole context re-billed at write price. Where a check is
   genuinely long (a full suite, a cold build), tell the worker to scope it
   (`--only`, a directory, the affected files) and hand the full run back to the
   orchestrator, which can afford to wait or background it. **The cleanup agent's
@@ -62,8 +125,8 @@ _Tools: Write + Read, Grep, Glob (research is read-only; it must not modify sour
 
 One pass that researches the ticket against the codebase, states the acceptance
 conditions **as a testable contract**, and returns the **scope call** the
-orchestrator branches on. Research and contract are the same agent's job on
-purpose: the agent holding the codebase research is the one best positioned to
+orchestrator branches on. Research and spec are the same worker's job on
+purpose: the worker holding the codebase research is the one best positioned to
 know what is actually observable.
 
 ```
@@ -73,7 +136,7 @@ anything — resolve every ambiguity yourself and record it as an assumption.
 
 Ticket / task: <the ticket summary + description, or the user's task text, verbatim>
 Ticket source: <JIRA-KEY and link, or "free-form task (no ticket)">
-Project profile: read <artifact-dir>/profile.md for the stack, conventions, and gate.
+Project profile: read <artifact-dir>/profile.md for the stack, conventions, and quality gate.
 Binding rules: <repo CLAUDE.md/CONTRIBUTING summary + the security directives named
 in profile.md>. These constrain what "done" and "acceptable" mean.
 
@@ -92,6 +155,10 @@ Write exactly one file: <artifact-dir>/SPEC.md — the TESTABLE CONTRACT. Sectio
    verify by using the system. NO technical design, no file names, no function
    signatures. If a condition is hard to observe, say so and state the closest
    observable proxy.
+     Good:  "A signed-in user who deletes one of their own todos no longer sees it
+             in their list, and reloading the page does not bring it back."
+     Vague: "Deleting todos works correctly."  (nothing to observe)
+     Leaky: "The delete handler calls TodoRepo.remove()."  (design, not behavior)
 
 3. "Assumptions" — every ambiguity you resolved.
 
@@ -111,6 +178,11 @@ Return a structured summary:
   * STANDARD  = fits one PR but is none of the above.
   * OVERSIZED = multiple independent deliverables, several subsystems, or a large
                 file count. Also list the subsystems touched and a rough file count.
+  For example, in a todo app:
+    "Trim whitespace from titles before saving"        → TRIVIAL (one behavior; an
+                                                          existing test file covers it)
+    "Add a due date to todos and sort the list by it"  → STANDARD (needs a migration)
+    "Add teams: shared lists, email invites, roles"    → OVERSIZED (three deliverables)
 ```
 
 After it returns, read `SPEC.md`. **You hold it and withhold it from the coder**
@@ -140,8 +212,10 @@ Critique SPEC.md and return findings grouped blocker / should-fix / nit:
 Do NOT rewrite the file. Return findings only.
 ```
 
-Apply fixes yourself by editing `SPEC.md`; re-review only if blockers remain.
-Consumes the shared iteration budget.
+Apply fixes yourself by editing `SPEC.md`. Re-review only if the critique had
+blockers, and repeat until a review returns none. Each re-review consumes a round
+of the shared iteration budget; at zero, stop and report the open blockers
+(`references/correction-loop.md`).
 
 ### Scope decision (orchestrator)
 
@@ -205,7 +279,7 @@ relative to shipping the wrong thing.
 **Skipped as an agent phase when the scope call is TRIVIAL** — the orchestrator
 writes a short `IMPLEMENTATION.md` directly instead.
 
-### Plan agent
+### Planner
 _Agent type: `auto-dev:planner`._
 _Tools: Write + Read, Grep, Glob._
 
@@ -214,7 +288,7 @@ You are the IMPLEMENTATION-PLAN phase. Work inside the worktree at <worktree>. D
 NOT modify source. Do NOT ask the user — record assumptions.
 
 Read <artifact-dir>/SPEC.md — your plan must satisfy every condition in it. Read
-<artifact-dir>/profile.md (the gate commands are the Definition of Done) and the
+<artifact-dir>/profile.md (the `gate` commands are the Definition of Done) and the
 binding rules (<summary>). Explore the code (find similar features, map the
 architecture, identify the exact files you'll touch) before designing.
 
@@ -248,7 +322,9 @@ Critique IMPLEMENTATION.md; findings grouped blocker / should-fix / nit:
 Do NOT rewrite the file. Return findings only.
 ```
 
-Apply fixes yourself; re-review if blockers remain. Consumes the shared budget.
+Apply fixes yourself. Re-review only if the critique had blockers, and repeat until
+a review returns none. Each re-review consumes a round of the shared budget; at
+zero, stop and report the open blockers (`references/correction-loop.md`).
 A spec condition with no plan step is cheapest to catch here, before code exists.
 
 ### Optional post-plan gate (orchestrator)
@@ -264,11 +340,11 @@ exists, and the short plan you wrote yourself is still that plan.
 
 ## Phase 4 — Build
 
-### Coding agent (TDD)
+### Coder (TDD)
 _Agent type: `auto-dev:coder` (STANDARD), `auto-dev:coder-trivial` (TRIVIAL first
 build only)._
 _Tools: Read, Write, Edit, Bash, Grep, Glob._ Spawn with the **plan only — never
-SPEC.md** (see *Why two documents* in `SKILL.md`).
+SPEC.md** (see *Why two documents* in `references/artifacts.md`).
 
 ```
 You are the IMPLEMENTATION phase. Work inside the worktree at <worktree>. Do NOT
@@ -312,20 +388,28 @@ every condition. Read the diff, the tests, and the coder's DEVIATIONS report.
 The coder is told not to commit, so **the change set is the working tree**:
 
 ```bash
-git add -N .              # intent-to-add, so newly created files appear in the diff
+git ls-files -z --others --exclude-standard | xargs -0 git add -N --   # intent-to-add new files only
 git diff origin/<base>
 ```
 
-Both halves are load-bearing and both fail silently — `SKILL.md` Phase 5 gives the
-reasoning, including why the base is `origin/<base>` and not the local branch.
+Both halves matter, and both fail silently. Without intent-to-add, every file the
+coder _created_ is invisible to `git diff` — usually most of the change. Mark the
+untracked files only, never `git add -N .`: that also stages every deletion —
+real staged changes, not intent-to-add markers, made before the PR gate approved
+any commit. With no untracked
+files the line is a harmless no-op. And
+`git diff origin/<base>...HEAD` reports an **empty** diff, because nothing is
+committed yet. Diff against `origin/<base>` — the ref Phase 1 cut the worktree
+from — not the local branch, which may be stale. (Phase 6's PR reviewer does use
+the three-dot form, and is correct to — by then the branch is committed.)
 
 Write `<artifact-dir>/SPEC_EVAL.md` to the template in `references/artifacts.md`:
 per condition, **met / partial / unmet** with evidence (file:line or test name),
 security/compliance conditions included.
 
-For each unmet/partial condition, re-dispatch the **coding agent** as
+For each unmet/partial condition, re-dispatch the **coder** as
 `auto-dev:coder` — on a TRIVIAL run too — with a targeted correction brief (this is
-the feedback loop; it consumes the shared budget):
+the correction loop's Phase 5 entry; it consumes the shared budget):
 
 ```
 You are the IMPLEMENTATION phase, applying a correction. Work inside the worktree
@@ -337,38 +421,50 @@ the spec verbatim; describe what the code must do and where>. Relevant files:
 what changed. Do not commit or open a PR.
 ```
 
-After it returns, **you** re-run the affected profile `gate` commands directly
-(you have Bash) to confirm the correction broke nothing, then re-evaluate. The
-cleanup agent is **not** re-spawned for this: it runs once, after this loop
-settles, so `/simplify` sees the final code. If conditions remain unmet when the
+For an unmet condition "A user cannot delete another user's todo":
+
+- **Bad** (quotes the spec): "Condition 3 is unmet: a user cannot delete another
+  user's todo."
+- **Good** (concrete behavior): "The todo delete handler (`src/todos/`) removes any
+  todo by id. Make it reject a todo the signed-in user does not own, with the app's
+  existing not-found response, and leave the record in place. Add a test where user
+  A tries to delete user B's todo."
+
+Say what the code must do and where, in your own words.
+
+After it returns, re-evaluate and update `SPEC_EVAL.md`. Repeat until every
+condition is met. Do not re-run `gate` commands yourself as the correction's
+check, and do not spawn the cleanup agent per correction: it runs after this
+loop settles, so `/simplify` and the quality gate see the final code.
+If conditions remain unmet when the
 budget is exhausted, **stop and report** exactly which are unsatisfied and what
 was tried.
 
-This is one entry point into the pipeline's single corrective loop — its steps,
+This is one entry point into the pipeline's single correction loop — its steps,
 what a correction invalidates at each point, and the budget accounting are in
 `references/correction-loop.md`.
 
 ### Cleanup agent (simplify + quality gate)
 _Agent type: `auto-dev:cleanup`._
-_Tools: Read, Edit, Write, Bash, plus the **Skill** tool to run `/simplify`._
+_Tools: Read, Edit, Write, Bash, Grep, Glob, plus the **Skill** tool to run `/simplify`._
 
-Runs after the acceptance loop settles, so corrective code gets simplified too.
-`/simplify` is *meant* to preserve behavior; Step 2's gate is what checks that it
+Runs after the Phase 5 correction loop settles, so corrective code gets simplified too,
+is re-spawned after any Phase 5 correction made after that pass (_Re-resolve the
+acceptance evidence_, below), and is **re-spawned after every Phase 6a correction**
+(a PR-review blocker or red CI) on the code that correction changed. No spawn of it spends the iteration budget.
+`/simplify` is *meant* to preserve behavior; Step 2's quality gate is what checks that it
 did.
 
 ```
-You are the POLISH + QUALITY-GATE phase. Work inside the worktree at <worktree>.
+You are the SIMPLIFY + QUALITY-GATE phase. Work inside the worktree at <worktree>.
 
-Step 1 — Simplify: run /simplify over the code changed on this branch. Nothing
-is committed yet, so the change set is the working tree: run `git add -N .` and
-then `git diff origin/<base>` to see it, new files included
-(`git diff origin/<base>...HEAD` shows nothing at this point). Apply
+Step 1 — Simplify: run /simplify over <SCOPE — one of the two below>. Apply
 behavior-preserving simplifications only
 (clarity, DRY, remove dead/over-built code). Do NOT change what the code does.
 
 Step 2 — Quality gate (the Definition of Done, from <artifact-dir>/profile.md `gate`).
 Run each command IN ORDER, verbatim, and make it clean:
-  <list the profile's gate commands explicitly, with their report filenames>
+  <list the profile's `gate` commands explicitly, with their report filenames>
 
 How you fix a failure depends on what caused it:
 - Failure in code YOUR simplification changed — **revert that simplification.** A
@@ -378,36 +474,71 @@ How you fix a failure depends on what caused it:
   fix it forward.
 
 For each check, write <artifact-dir>/lint/<REPORT>.md: the exact command, final status
-(pass/fail), and the tail of any output you had to fix. Re-run until every gate
-command is green. If a warning must be suppressed, suppress it as narrowly as
-possible and explain why in the report.
+(pass/fail), and the tail of any output you had to fix. Re-run until every `gate`
+command is green, with two exits:
+- Make at most 3 fix attempts per failing check in this spawn. If the check still
+  fails after the third, stop, leave its report at fail with the reason, and return.
+- If a failure cannot be fixed in this phase (it traces to a design problem in the
+  plan, not to code quality), stop re-running, leave its report at fail, and say
+  why in your return.
+If a warning must be suppressed, suppress it as narrowly as possible and explain why
+in the report.
 
 Heads-up on tests (from profile.md test_notes): <notes — required services,
 umbrella/monorepo scope, slow tiers>. Ensure prerequisites are up before running.
 
-Run the gate IN FULL — do not scope or sample it; it is the Definition of Done.
+Run the quality gate IN FULL — do not scope or sample it; it is the Definition of Done.
 Where a command is slow, run it in the background rather than blocking on it, and
 redirect its output to a file under $TMPDIR, reading back only the failing tail.
 Never paste a full suite or dialyzer log into your return.
 
 Return: what you simplified, **any simplification you reverted and which check
-forced it**, the files Step 1 touched, and the final status of each gate command.
+forced it**, the files Step 1 touched, and the final status of each `gate` command.
 ```
+
+Fill `<SCOPE>` for the spawn:
+
+- **Phase 5 (first pass, or a re-spawn after a later Phase 5 correction):** "the
+  code changed on this branch. Nothing is committed
+  yet, so the change set is the working tree: run
+  `git ls-files -z --others --exclude-standard | xargs -0 git add -N --` and then
+  `git diff origin/<base>` to see it, new files included
+  (`git diff origin/<base>...HEAD` shows nothing at this point)".
+- **Phase 6a (re-spawn after a correction):** "ONLY the files this correction
+  changed. The branch is committed and already reviewed, so leave every other file
+  alone. The correction is the uncommitted working tree: run
+  `git ls-files -z --others --exclude-standard | xargs -0 git add -N --` and
+  then `git diff HEAD` to see it, new files included". Step 2 still runs the quality
+  gate in full. Why the scope is narrower: `references/correction-loop.md`.
 
 Step 1 is **unconditional** — `/simplify` is a built-in skill, so there is nothing
 to detect and no skip path. If the return says the simplify step was skipped, that
 is a bug in the run, not an expected outcome.
 
-If the gate cannot be made green (e.g. a failure that traces to a design problem in
-the plan), **stop the pipeline and report** — never commit a red build. This agent's
-loop to green spends **no** iteration budget; only a later *re-spawn* of it does
+If the agent returns any check at fail (the 3-attempt cap reached, or a failure that
+traces to a design problem in the plan), the quality gate is red: **stop the pipeline
+and report** — never commit a red build. This agent spends **no** iteration budget,
+on its first pass or on any re-spawn (`references/correction-loop.md`).
+
+### Re-resolve the acceptance evidence (orchestrator)
+
+Once the quality gate is green, **re-resolve `SPEC_EVAL.md`'s `file:line` evidence**:
+simplify moves lines, and Phase 6a builds the PR checklist from those citations.
+Re-verify only the conditions whose cited files simplify actually touched — not all
+of them. A reverted simplification reported by the cleanup agent is worth a second
+look at the condition it touched.
+
+A condition that is no longer met is a Phase 5 correction: send the coder a
+correction brief (it spends a round), then **re-spawn the cleanup agent** with the
+Phase 5 scope (free of budget), so the corrective code is simplified and the
+quality gate re-runs, then re-resolve again. Only then end S2 for Phase 6
 (`references/correction-loop.md`).
 
 ---
 
 ## Phase 6 — Ship
 
-### Adversarial PR Review agent
+### PR reviewer (adversarial)
 _Agent type: `auto-dev:pr-reviewer-sensitive` when `SPEC.md`'s
 `Security/Compliance criteria` section lists controls for a sensitive path,
 otherwise `auto-dev:pr-reviewer`._
@@ -437,14 +568,21 @@ Hunt across these lenses and actively try to break each:
 - Conventions: deviations from repo patterns.
 
 Write <artifact-dir>/PR_REVIEW.md: findings grouped blocker / should-fix / nit, each
-with file:line and a concrete "why this is wrong / how to trigger it." If a lens
+with file:line and a concrete "why this is wrong / how to trigger it." For example:
+  Blocker:    **Any user can delete any todo** — `src/todos/delete.js:31` — no
+              ownership check; signed in as A, deleting B's todo id succeeds.
+  Should-fix: **Blank titles accepted** — `src/todos/validate.js:12` — "   " passes,
+              and no test covers it.
+  Nit:        `src/todos/delete.js:8` — `res` shadows the outer response variable.
+If a lens
 genuinely turns up nothing, say so briefly — but default to skepticism. Do NOT
 modify code. Return the blocker count.
 ```
 
-If the review returns blockers, feed them back to the **coding agent**
+If the review returns blockers, feed them back to the **coder**
 (`auto-dev:coder`) using the Phase 5 correction brief above. A Phase 6 correction lands *after* `/simplify` and
 the `lint/` reports were written, so it invalidates more than a Phase 5 one does —
-which reports to refresh, why `/simplify` does not re-run, and what happens when
+which reports to refresh, the cleanup agent's re-spawn (its `/simplify` scoped to the
+correction's own diff), and what happens when
 the budget runs out with blockers still open are all in
 `references/correction-loop.md`.
