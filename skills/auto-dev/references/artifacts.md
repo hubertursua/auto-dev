@@ -294,6 +294,10 @@ wherever the two disagree.
    ```bash
    python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"
    ```
+   Pass `--task` only when the user named a ticket or task. On a bare `auto-dev
+   continue` there is nothing to match, so omit it — never pass `""` or a stand-in
+   like "continue", which `MISMATCH`es every ledger — and run the script on each
+   tree: exactly one that exits `0` or `3` is the run; several is a stop-and-ask.
    A Jira key must appear as a whole token on the header's Ticket line, so
    `PROJ-12` never matches a `PROJ-123` ledger, and a Jira URL is matched by its
    key; any other text is matched, ignoring case and spacing, against the Task

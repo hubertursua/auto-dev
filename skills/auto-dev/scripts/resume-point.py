@@ -19,7 +19,8 @@ the header's Ticket line — `PROJ-12` matches `PROJ-12 https://…/browse/PROJ-
 but not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key
 the same way. Any other text matches when, ignoring case and runs of
 whitespace, it appears in the header's Task line or in the ask the Ticket line
-restates (the text after ` — `), or one of those appears in it.
+restates (the text after ` — `), or one of those appears in it. Omit --task
+on a bare `auto-dev continue`; an empty or all-whitespace value counts as omitted.
 
 On a multi-PR ledger a sub-task's phase table, where it has one, decides; one
 with no phase table goes by its summary `status`: `done`, `skipped` or `n/a` is
@@ -322,7 +323,7 @@ def main() -> int:
 
     try:
         fields = parse_header(lines)
-        if args.task is not None:
+        if args.task is not None and args.task.strip():
             if not task_matches(args.task, fields):
                 print(f"MISMATCH: {ledger} belongs to a different task.\n"
                       f"  ledger Task:   {fields['Task']}\n"

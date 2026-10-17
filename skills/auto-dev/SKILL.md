@@ -49,7 +49,7 @@ or worktree you are in — open or run each by its absolute path.
 | `references/profiles.md` | S1, Phase 1 step 2 | profile schema, detection precedence, monorepo rules, `.auto-dev.yml` override |
 | `profiles/<stack>.md` / `profiles/default.md` | S1, Phase 1 step 2 | the matched stack profile (e.g. `profiles/elixir.md`), or the fallback's discovery checklist |
 | `scripts/validate-config.py` | S1, Phase 1 step 2, when `.auto-dev.yml` exists | run (not read): `python3 <skill-dir>/scripts/validate-config.py <repo>/.auto-dev.yml`; needs PyYAML (without it, exit `2` — not a pass); exit codes in `references/profiles.md` |
-| `scripts/resume-point.py` | Phase 1's resume check; any re-entry | run (not read): `python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"` names the resume point; exit codes in `references/artifacts.md`, _Resuming an interrupted run_ |
+| `scripts/resume-point.py` | Phase 1's resume check; any re-entry | run (not read): `python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev [--task "<ticket or task>"]` names the resume point (`--task` only when the user named a ticket or task); exit codes in `references/artifacts.md`, _Resuming an interrupted run_ |
 | `scripts/exclude-artifacts.py` | S1, Phase 1 step 6 | run (not read): `python3 <skill-dir>/scripts/exclude-artifacts.py <worktree>`; exit codes in `references/phase-1-setup.md`, step 6 |
 | `scripts/check-staged.py` | S3, before every Phase 6a commit | run (not read): `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`; exit codes in `references/phase-6-ship.md`, step 2 |
 | `references/artifacts.md` | each session's start (its checklist); writing or resuming from any `.auto-dev/` file | layout, `WORK_LOG.md` ledger, resume procedure, session checklists, `HANDOFF.md`, every artifact's contract, template and strictness, the PR body, the final report |
@@ -280,7 +280,8 @@ Deterministic, run by the orchestrator.
 
 **First: is this a resumed run?** The control worktree is a sibling of the repo
 you start in. Run `scripts/resume-point.py <tree>/.auto-dev --task "<ticket or
-task>"` on each tree in `git worktree list`; if one matches, do not re-run Phase 1 —
+task>"` on each tree in `git worktree list` — omit `--task` on a bare `auto-dev
+continue`, where the user named none; if one matches, do not re-run Phase 1 —
 continue from its ledger (`references/artifacts.md`, _Resuming an interrupted run_).
 
 **Fresh run: before step 1, read `references/phase-1-setup.md`** — each step's
