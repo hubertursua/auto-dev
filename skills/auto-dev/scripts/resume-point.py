@@ -302,11 +302,17 @@ def main() -> int:
 
     directory = Path(args.artifact_dir)
     ledger = directory / LEDGER
-    if directory.exists() and not directory.is_dir():
+    try:
+        not_a_dir = directory.exists() and not directory.is_dir()
+        ledger_present = ledger.is_file()
+    except OSError as exc:
+        print(f"ERROR: could not inspect {directory}: {exc}", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+    if not_a_dir:
         print(f"ERROR: {directory} is not a directory — pass the .auto-dev/ "
               f"directory that holds {LEDGER}.", file=sys.stderr)
         return EXIT_CANNOT_RUN
-    if not ledger.is_file():
+    if not ledger_present:
         print(f"MISSING: no {ledger} — this directory holds no auto-dev run.",
               file=sys.stderr)
         return EXIT_BAD_LEDGER
