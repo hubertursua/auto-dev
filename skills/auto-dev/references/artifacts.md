@@ -248,7 +248,9 @@ Three rules govern it:
 
 - **Write a sub-task's phase table when that sub-task starts**, not up front. A
   `pending` sub-task adds nothing, so the ledger grows only with work actually in
-  flight. Phase 1 gets no row: it ran once, for the whole run.
+  flight. Phase 1 gets no row: it ran once, for the whole run. "Starts" means its
+  worktree is cut and prepared; a prep that stops writes the table with Phase 2
+  `blocked` (`references/subagent-prompts.md`).
 - **The phase table is authoritative.** The summary `status` is a rollup for
   scanning; where the two disagree, the phase table is what resume reads.
 - **`budget` is `<remaining>/<total>` for that sub-task alone**, because the
@@ -332,8 +334,10 @@ wherever the two disagree.
    at the first phase that is not `done` in **that sub-task's own phase table**. A
    sub-task with no phase table goes by its summary `status`: `done` is complete
    (skip it), `blocked` is step 3's report-and-ask, and `pending` never started —
-   begin it at Phase 2. Completed sub-tasks keep their merged PRs — never re-run
-   them, and never re-run Phase 1.
+   begin it at Phase 2, by cutting and preparing its worktree. If that worktree
+   already exists, prep was cut off: reuse it and redo the prep
+   (`references/subagent-prompts.md`). Completed sub-tasks keep their merged
+   PRs — never re-run them, and never re-run Phase 1.
 6. **Re-confirm nothing already confirmed.** A gate approved before the
    interruption stays approved (the ledger records it); a gate not yet reached
    still fires. Do not repeat a Jira transition — read the issue's current status
@@ -354,7 +358,7 @@ steps 3–5 above decide. Each item restates a step from `SKILL.md`, in the same
 order. The checklist adds no step, and the detail lives where `SKILL.md` puts it.
 
 ```
-S1 Plan progress (on a sub-task, start at Phase 2; Phase 1 never repeats):
+S1 Plan progress (on a sub-task, cut and prepare its worktree as 1.5 does, then start at Phase 2; Phase 1 never repeats):
 - [ ] 1.1 Detect repo & branches; check gh first (missing/unauthenticated/non-GitHub → stop-and-report)
 - [ ] 1.2 Detect stack, load profile, apply .auto-dev.yml (validated); record CI provider
 - [ ] 1.3 Resolve the ticket
