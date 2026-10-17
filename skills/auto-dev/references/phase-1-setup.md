@@ -8,7 +8,7 @@ a resume.
 **First: is this a resumed run?** You are standing in the main repo, which has no
 `.auto-dev/` — the control worktree is a sibling directory. Scan `git worktree list`
 for one holding a `.auto-dev/WORK_LOG.md` whose header matches this task
-(`<skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"`
+(`python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"`
 checks each one). If one exists, do not re-run Phase 1: read the ledger and
 continue from it. Full detection procedure and the script's exit handling:
 `references/artifacts.md`, _Resuming an interrupted run_.
