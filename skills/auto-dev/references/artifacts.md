@@ -285,26 +285,31 @@ wherever the two disagree.
    git worktree list     # control worktrees are siblings: ../<repo-name>-<slug>
    ```
    Check each tree it lists for a `.auto-dev/WORK_LOG.md` and read the header. If one
-   names this ticket (or restates this task), that is the run to resume, and its
-   **Control worktree** line confirms the path. Two matches — the same ticket started
-   twice — is a stop-and-ask, not a guess.
+   names this ticket (or states this task, by the rule below), that is the run to
+   resume, and its **Control worktree** line confirms the path. Two matches — the
+   same ticket started twice — is a stop-and-ask, not a guess.
 
    The script does this check and steps 3 and 5's lookup in one read-only call per
    tree; pass the Jira key, or the task text when there is no ticket (or no
-   `--task` when the user only refers to the run loosely — see below):
+   `--task` when the user names no task at all — see below):
    ```bash
    python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"
    ```
    A Jira key must appear as a whole token on the header's Ticket line, so
    `PROJ-12` never matches a `PROJ-123` ledger, and a Jira URL is matched by its
-   key; any other text must equal, ignoring case and spacing, the Task line or the
-   ask the Ticket line restates — or be a substring covering at least 80% of one
-   (a slight abbreviation; a fragment or a longer task does not match).
-   When the user names the run only loosely ("the multi-currency run") — no
-   ticket and no full task statement to pass — run the script without `--task`
-   on each tree instead, and pick the tree whose printed task and ticket plainly
-   are the run the user means. One such tree is the run; none means a fresh run;
-   two or more, or any doubt, is a stop-and-ask, not a guess.
+   key; any other text is compared word by word, ignoring case, punctuation and
+   markdown, with the Task line and the ask the Ticket line restates. It matches
+   when it has that line's words, or the line with a few words left out (at least
+   80% kept, in order, no negation like `not` dropped). When one side's words all
+   appear in the other but that is not a match — a fragment like
+   `multi-currency`, or the user's longer original request containing the Task
+   line — the script reports `NEAR-MISS`: possibly this run, worded differently.
+   Whenever the user states a task, pass it as `--task`, even a short one.
+   Run without `--task` only when they state none — a bare "continue" or
+   "resume", or "the multi-currency run" — then list every tree that exits `0`
+   or `3` with its printed task and ticket. One plainly the run the user means
+   is the run; none means there is nothing to resume, so ask before starting
+   fresh; two or more, or any doubt, is a stop-and-ask, not a guess.
    It prints the task, ticket, the first phase not complete (`done`, `skipped` or
    `n/a`) with its status, that phase's session, and the remaining budget.
    - `0` — this tree is the run; resume where it says, handling the status as
@@ -314,7 +319,9 @@ wherever the two disagree.
    - `3` — this tree is the run, but every phase is complete: nothing to resume.
      Tell the user the run already finished; re-run no phase.
    - `1` — read the message. `MISSING` or `MISMATCH`: this tree is not the run;
-     check the next one. `MALFORMED` (it names the line or field): this may be the
+     check the next one. `NEAR-MISS`: it may be the run — after checking every
+     tree, show the user each near-miss's task and ask which (if any) is theirs;
+     never start a fresh run over one unasked. `MALFORMED` (it names the line or field): this may be the
      run with a broken ledger — read it by hand, and if steps 3–5 can't place the
      resume point, ask.
    - `2` — it couldn't run. Not a result: read that tree's header and phase table
