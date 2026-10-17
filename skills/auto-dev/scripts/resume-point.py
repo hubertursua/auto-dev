@@ -18,8 +18,9 @@ matches `^[A-Z][A-Z0-9_]+-\\d+$`, ignoring case) must appear as a whole token in
 the header's Ticket line — `PROJ-12` matches `PROJ-12 https://…/browse/PROJ-12`
 but not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key
 the same way. Any other text matches when, ignoring case and runs of
-whitespace, it appears in the header's Task line or in the ask the Ticket line
-restates (the text after ` — `), or one of those appears in it.
+whitespace, it is the header's Task line or the ask the Ticket line restates
+(the text after ` — `), or a substring of one covering at least 80% of it — a
+slight abbreviation, not a fragment like `add` or a longer task containing it.
 
 On a multi-PR ledger a sub-task's phase table, where it has one, decides; one
 with no phase table goes by its summary `status`: `done`, `skipped` or `n/a` is
@@ -76,6 +77,8 @@ SESSIONS = {1: "S1 — Plan", 2: "S1 — Plan", 3: "S1 — Plan",
             4: "S2 — Build", 5: "S2 — Build", 6: "S3 — Ship"}
 # A sub-task with no phase table never started; it begins here (resume step 5).
 SUBTASK_FIRST_PHASE = 2
+# How much of the Task line (or restated ask) free --task text must cover.
+MIN_COVERAGE = 0.8
 # A bare Jira key passed to --task (e.g. PROJ-123); matched as a whole token.
 JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$", re.IGNORECASE)
 # What separates tokens on the Ticket line: anything that can't be in a key,
@@ -194,7 +197,10 @@ def task_matches(wanted, fields):
     # Free text matches the Task line or the ask the Ticket line restates
     # (after ` — `) — never the key, link or a bare "none" before it.
     ask = fields["Ticket"].partition(" — ")[2]
-    return any(wanted in have or have in wanted
+    # The text must be the line itself or a slight abbreviation of it: a
+    # substring covering at least MIN_COVERAGE of the line. A longer task that
+    # merely contains the ledger's line, or a fragment like "add", is not it.
+    return any(wanted in have and len(wanted) >= MIN_COVERAGE * len(have)
                for have in (norm(fields["Task"]), norm(ask))
                if have)
 

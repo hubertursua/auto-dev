@@ -296,8 +296,9 @@ wherever the two disagree.
    ```
    A Jira key must appear as a whole token on the header's Ticket line, so
    `PROJ-12` never matches a `PROJ-123` ledger, and a Jira URL is matched by its
-   key; any other text is matched, ignoring case and spacing, against the Task
-   line and the ask the Ticket line restates.
+   key; any other text must equal, ignoring case and spacing, the Task line or the
+   ask the Ticket line restates — or be a substring covering at least 80% of one
+   (a slight abbreviation; a fragment or a longer task does not match).
    It prints the task, ticket, the first phase not complete (`done`, `skipped` or
    `n/a`) with its status, that phase's session, and the remaining budget.
    - `0` — this tree is the run; resume where it says, handling the status as
