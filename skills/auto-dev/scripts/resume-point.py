@@ -88,12 +88,14 @@ SUBTASK_FIRST_PHASE = 2
 # How many of the Task line's (or restated ask's) words free --task text keeps.
 MIN_COVERAGE = 0.8
 # Words an abbreviation may never drop: without them the line means the opposite.
-NEGATIONS = {"not", "no", "never", "without", "don", "dont", "doesn", "doesnt",
-             "isn", "isnt", "except", "nor", "t"}
+NEGATIONS = {"not", "no", "never", "without", "dont", "doesnt", "isnt", "except",
+             "nor"}
 # task_matches()'s third answer: not a match, but the words overlap wholly.
 NEAR_MISS = "near-miss"
 # Free text is compared as words: runs of letters and digits, case folded.
 WORD_RE = re.compile(r"[a-z0-9]+")
+# Apostrophes are dropped first, so `isn't` and `isnt` are the same word.
+APOSTROPHE_RE = re.compile("['\u2019]")
 # A bare Jira key passed to --task (e.g. PROJ-123); matched as a whole token.
 JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$", re.IGNORECASE)
 # What separates tokens on the Ticket line: anything that can't be in a key,
@@ -120,7 +122,7 @@ class LedgerError(Exception):
 
 
 def words(text):
-    return WORD_RE.findall(text.lower())
+    return WORD_RE.findall(APOSTROPHE_RE.sub("", text.lower()))
 
 
 def split_row(line, width):

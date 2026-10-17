@@ -321,9 +321,9 @@ wherever the two disagree.
    - `1` — read the message. `MISSING` or `MISMATCH`: this tree is not the run;
      check the next one. `NEAR-MISS`: it may be the run — after checking every
      tree, show the user each near-miss's task and ask which (if any) is theirs;
-     never start a fresh run over one unasked. `MALFORMED` (it names the line or field): this may be the
-     run with a broken ledger — read it by hand, and if steps 3–5 can't place the
-     resume point, ask.
+     never start a fresh run over one unasked. `MALFORMED` (it names the line or
+     field): this may be the run with a broken ledger — read it by hand, and if
+     steps 3–5 can't place the resume point, ask.
    - `2` — it couldn't run. Not a result: read that tree's header and phase table
      by hand, as above.
    - `127` — `python3` isn't installed: do the whole detection by hand, as above.
