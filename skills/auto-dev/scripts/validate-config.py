@@ -43,6 +43,7 @@ GATE_FIELDS = {"kind", "command", "report"}
 # The subset of GATE_FIELDS each check must set. Kept separate so a new
 # optional field can join GATE_FIELDS without becoming required.
 GATE_REQUIRED = ("kind", "command", "report")
+assert set(GATE_REQUIRED) <= GATE_FIELDS, "GATE_REQUIRED must be a subset of GATE_FIELDS"
 
 # difflib's own default: close enough to catch a dropped/swapped letter
 # (`iteration_budgt`, `bse`) without suggesting an unrelated key.
