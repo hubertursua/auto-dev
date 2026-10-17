@@ -66,6 +66,12 @@ ACTIONS = {
     "blocked": ("do not retry: report the recorded reason (Notes) to the "
                 "user and ask"),
 }
+# Resume step 4 and the HANDOFF rule: Phase 6 is the exception to re-running
+# an in-progress phase whole; it resumes inside itself once reconciled.
+PHASE_6_IN_PROGRESS = ("do not re-run blindly: check git log, git status, "
+                       "whether the branch is on the remote and gh pr view, "
+                       "reconcile the ledger to what they report, then "
+                       "continue after the last gate passed")
 # Resume step 4: Phase 6 is reconciled against git and gh before acting.
 PHASE_6_NOTE = ("Phase 6: check the world before acting (git log, git status, "
                 "whether the branch is on the remote, gh pr view) and reconcile "
@@ -359,8 +365,11 @@ def main() -> int:
                 f"  Session:   {SESSIONS[number]}"]
     if status == "blocked":
         out.append("  Blocked:   blocked — ask the user; do not start or retry it")
-    out.append(f"  Action:    {ACTIONS[status]}")
-    if number == 6:
+    if number == 6 and status == "in-progress":
+        out.append(f"  Action:    {PHASE_6_IN_PROGRESS}")
+    else:
+        out.append(f"  Action:    {ACTIONS[status]}")
+    if number == 6 and status != "in-progress":  # in-progress folds it in
         out.append(f"  Note:      {PHASE_6_NOTE}")
     if notes:
         out.append(f"  Notes:     {notes}")
