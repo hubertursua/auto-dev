@@ -294,7 +294,8 @@ wherever the two disagree.
    ```bash
    python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"
    ```
-   A Jira key must appear as a whole token on the header's Ticket line, so
+   A Jira key must appear as a whole token in the key/link part of the header's
+   Ticket line (before the ` — `; a key the restated ask mentions doesn't count), so
    `PROJ-12` never matches a `PROJ-123` ledger, and a Jira URL is matched by its
    key; any other text is matched, ignoring case and spacing, against the Task
    line and the ask the Ticket line restates.

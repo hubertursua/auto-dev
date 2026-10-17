@@ -15,8 +15,9 @@ Usage:
 
 --task checks that the ledger belongs to the current task. A Jira key (it
 matches `^[A-Z][A-Z0-9_]+-\\d+$`, ignoring case) must appear as a whole token in
-the header's Ticket line — `PROJ-12` matches `PROJ-12 https://…/browse/PROJ-12`
-but not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key
+the key/link part of the header's Ticket line (before the ` — ` that starts the
+restated ask, so a key the ask mentions never counts) — `PROJ-12` matches
+`PROJ-12 https://…/browse/PROJ-12` but not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key
 the same way. Any other text matches when, ignoring case and runs of
 whitespace, it appears in the header's Task line or in the ask the Ticket line
 restates (the text after ` — `), or one of those appears in it.
@@ -82,6 +83,9 @@ JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$", re.IGNORECASE)
 # so `PROJ-123` is a token in `PROJ-123`, `…/browse/PROJ-123` and `[PROJ-123]`.
 TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9_-]+")
 # A Jira issue URL passed to --task (`…/browse/PROJ-123`); its key is matched.
+# What ends the Ticket line's key/link part and starts the restated ask: the
+# template's ` — `, tolerating an en dash or extra spaces.
+TICKET_ASK_SEP_RE = re.compile(r"\s+[—–]\s+")
 BROWSE_KEY_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]+-\d+)(?:[^A-Za-z0-9_-]|$)")
 
 # Header fields the template requires; Mode decides which table to read.
@@ -180,20 +184,22 @@ def parse_header(lines):
 def task_matches(wanted, fields):
     """Whether the --task value names this ledger's task (see the docstring)."""
     wanted = wanted.strip()
+    head, ask = (TICKET_ASK_SEP_RE.split(fields["Ticket"], maxsplit=1)
+                 + [""])[:2]
     url_key = BROWSE_KEY_RE.search(wanted)
     if url_key:  # a Jira issue URL matches as its key, never as a substring
         wanted = url_key.group(1)
     if JIRA_KEY_RE.match(wanted):
-        # Strip `_` from token ends so a markdown-italic `_PROJ-12_` still counts.
-        tokens = {t.strip("_")
-                  for t in TOKEN_SPLIT_RE.split(fields["Ticket"].lower())}
+        # Only the key/link part counts: a key the restated ask mentions
+        # (`— follow-up to PROJ-11`) is not this ledger's ticket. Strip `_`
+        # from token ends so a markdown-italic `_PROJ-12_` still counts.
+        tokens = {t.strip("_") for t in TOKEN_SPLIT_RE.split(head.lower())}
         return wanted.lower() in tokens
     wanted = norm(wanted)
     if not wanted:
         return False
     # Free text matches the Task line or the ask the Ticket line restates
     # (after ` — `) — never the key, link or a bare "none" before it.
-    ask = fields["Ticket"].partition(" — ")[2]
     return any(wanted in have or have in wanted
                for have in (norm(fields["Task"]), norm(ask))
                if have)
