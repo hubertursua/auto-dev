@@ -290,7 +290,8 @@ wherever the two disagree.
    twice — is a stop-and-ask, not a guess.
 
    The script does this check and steps 3 and 5's lookup in one read-only call per
-   tree; pass the Jira key, or the task text when there is no ticket:
+   tree; pass the Jira key, or the task text when there is no ticket (or no
+   `--task` when the user only refers to the run loosely — see below):
    ```bash
    python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"
    ```
@@ -299,6 +300,11 @@ wherever the two disagree.
    key; any other text must equal, ignoring case and spacing, the Task line or the
    ask the Ticket line restates — or be a substring covering at least 80% of one
    (a slight abbreviation; a fragment or a longer task does not match).
+   When the user names the run only loosely ("the multi-currency run") — no
+   ticket and no full task statement to pass — run the script without `--task`
+   on each tree instead, and pick the tree whose printed task and ticket plainly
+   are the run the user means. One such tree is the run; none means a fresh run;
+   two or more, or any doubt, is a stop-and-ask, not a guess.
    It prints the task, ticket, the first phase not complete (`done`, `skipped` or
    `n/a`) with its status, that phase's session, and the remaining budget.
    - `0` — this tree is the run; resume where it says, handling the status as
