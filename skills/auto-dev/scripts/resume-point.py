@@ -82,10 +82,10 @@ JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$", re.IGNORECASE)
 # What separates tokens on the Ticket line: anything that can't be in a key,
 # so `PROJ-123` is a token in `PROJ-123`, `…/browse/PROJ-123` and `[PROJ-123]`.
 TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9_-]+")
-# A Jira issue URL passed to --task (`…/browse/PROJ-123`); its key is matched.
 # What ends the Ticket line's key/link part and starts the restated ask: the
 # template's ` — `, tolerating an en dash or extra spaces.
 TICKET_ASK_SEP_RE = re.compile(r"\s+[—–]\s+")
+# A Jira issue URL passed to --task (`…/browse/PROJ-123`); its key is matched.
 BROWSE_KEY_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]+-\d+)(?:[^A-Za-z0-9_-]|$)")
 
 # Header fields the template requires; Mode decides which table to read.
