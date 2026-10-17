@@ -168,7 +168,7 @@ def main() -> int:
         return 2
 
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
         print(f"No {path} — nothing to validate (the pipeline runs without one).")
