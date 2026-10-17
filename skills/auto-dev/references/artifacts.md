@@ -295,9 +295,14 @@ wherever the two disagree.
    python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"
    ```
    Pass `--task` only when the user named a ticket or task. On a bare `auto-dev
-   continue` there is nothing to match, so omit it — never pass `""` or a stand-in
-   like "continue", which `MISMATCH`es every ledger — and run the script on each
-   tree: exactly one that exits `0` or `3` is the run; several is a stop-and-ask.
+   continue` there is nothing to match, so omit it (an empty `--task` counts as
+   omitted) — never pass a stand-in like "continue", which is matched as task text
+   and can pick a ledger that merely contains the word — and run the script on
+   each tree. Without `--task` the exit code says only what a tree holds: a `3` is
+   a finished run left in place, not a candidate. Exactly one tree that exits `0`
+   is the run; several is a stop-and-ask; none (and no `MALFORMED` ledger that may
+   be the run) means there is nothing to continue — tell the user and ask what to
+   work on rather than starting a fresh Phase 1.
    A Jira key must appear as a whole token on the header's Ticket line, so
    `PROJ-12` never matches a `PROJ-123` ledger, and a Jira URL is matched by its
    key; any other text is matched, ignoring case and spacing, against the Task
