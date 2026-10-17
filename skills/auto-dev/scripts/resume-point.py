@@ -15,12 +15,14 @@ Usage:
 
 --task checks that the ledger belongs to the current task. A Jira key (it
 matches `^[A-Z][A-Z0-9_]+-\\d+$`, ignoring case) must appear as a whole token in
-the key/link part of the header's Ticket line (before the ` — ` that starts the
-restated ask, so a key the ask mentions never counts) — `PROJ-12` matches
-`PROJ-12 https://…/browse/PROJ-12` but not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key
-the same way. Any other text matches when, ignoring case and runs of
-whitespace, it appears in the header's Task line or in the ask the Ticket line
-restates (the text after ` — `), or one of those appears in it.
+the key/link part of the header's Ticket line (before the first em dash with
+whitespace on both sides, the ` — ` that starts the restated ask), so a key the
+ask mentions never counts — unless that part is a bare "none", when the ask's
+keys count instead. `PROJ-12` matches `PROJ-12 https://…/browse/PROJ-12` but
+not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key the
+same way. Any other text matches when, ignoring case and runs of whitespace, it
+appears in the header's Task line or in the ask the Ticket line restates (the
+text after that ` — `), or one of those appears in it.
 
 On a multi-PR ledger a sub-task's phase table, where it has one, decides; one
 with no phase table goes by its summary `status`: `done`, `skipped` or `n/a` is
@@ -83,8 +85,9 @@ JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$", re.IGNORECASE)
 # so `PROJ-123` is a token in `PROJ-123`, `…/browse/PROJ-123` and `[PROJ-123]`.
 TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9_-]+")
 # What ends the Ticket line's key/link part and starts the restated ask: the
-# template's ` — `, tolerating an en dash or extra spaces.
-TICKET_ASK_SEP_RE = re.compile(r"\s+[—–]\s+")
+# template's ` — `, tolerating extra whitespace. Not an en dash: one can sit
+# inside a link title (`[Login – broken](…/browse/PROJ-12)`).
+TICKET_ASK_SEP_RE = re.compile(r"\s+—\s+")
 # A Jira issue URL passed to --task (`…/browse/PROJ-123`); its key is matched.
 BROWSE_KEY_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]+-\d+)(?:[^A-Za-z0-9_-]|$)")
 
@@ -184,8 +187,9 @@ def parse_header(lines):
 def task_matches(wanted, fields):
     """Whether the --task value names this ledger's task (see the docstring)."""
     wanted = wanted.strip()
-    head, ask = (TICKET_ASK_SEP_RE.split(fields["Ticket"], maxsplit=1)
-                 + [""])[:2]
+    ticket = fields["Ticket"]
+    sep = TICKET_ASK_SEP_RE.search(ticket)
+    head, ask = (ticket[:sep.start()], ticket[sep.end():]) if sep else (ticket, "")
     url_key = BROWSE_KEY_RE.search(wanted)
     if url_key:  # a Jira issue URL matches as its key, never as a substring
         wanted = url_key.group(1)
@@ -193,7 +197,10 @@ def task_matches(wanted, fields):
         # Only the key/link part counts: a key the restated ask mentions
         # (`— follow-up to PROJ-11`) is not this ledger's ticket. Strip `_`
         # from token ends so a markdown-italic `_PROJ-12_` still counts.
-        tokens = {t.strip("_") for t in TOKEN_SPLIT_RE.split(head.lower())}
+        # With no ticket (`none — JIRA-1234 (Jira unreadable)…`) the ask is
+        # where a key could be, so its tokens count instead.
+        keyed = ask if norm(head) == "none" else head
+        tokens = {t.strip("_") for t in TOKEN_SPLIT_RE.split(keyed.lower())}
         return wanted.lower() in tokens
     wanted = norm(wanted)
     if not wanted:
