@@ -534,6 +534,10 @@ Phase 5 scope (free of budget), so the corrective code is simplified and the
 quality gate re-runs, then re-resolve again. Only then end S2 for Phase 6
 (`references/correction-loop.md`).
 
+After a Phase 6a correction the re-resolve is wider — every row, not only those
+citing touched files — and a condition no longer met is a Phase 6a correction:
+`references/correction-loop.md`, _The Phase 6a refresh_.
+
 ---
 
 ## Phase 6 — Ship

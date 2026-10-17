@@ -369,8 +369,9 @@ push, staging-merge and main-merge sequences and what to do when each fails — 
    only once `scripts/check-staged.py --expect <paths>` passes.
 3. **Push** — **never `--force`** — and open **exactly one** PR, a draft by
    default, carrying the **acceptance checklist** and the **quality-gate results**.
-4. **PR reviewer** (adversarial) → `.auto-dev/PR_REVIEW.md`.
-5. **CI monitoring**, bounded. Red pre-merge → the correction loop.
+4. **PR reviewer** (adversarial) → `.auto-dev/PR_REVIEW.md`. A blocker → the
+   correction loop, whose Phase 6a refresh re-resolves all of `SPEC_EVAL.md`.
+5. **CI monitoring**, bounded. Red pre-merge → the correction loop, the same way.
 6. **Jira → In Review.**
 
 ### 6b — Staging **[gate]** (skip if no staging branch)

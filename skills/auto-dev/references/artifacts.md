@@ -386,8 +386,8 @@ S3 Ship progress:
 - [ ] 6a.1 PR gate
 - [ ] 6a.2 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged
 - [ ] 6a.3 Push (never --force); open PR with acceptance checklist + quality-gate results
-- [ ] 6a.4 PR reviewer (adversarial) → PR_REVIEW.md (blocker → correction loop + cleanup re-spawn)
-- [ ] 6a.5 CI monitoring (red pre-merge → correction loop + cleanup re-spawn)
+- [ ] 6a.4 PR reviewer (adversarial) → PR_REVIEW.md (blocker → correction loop + cleanup re-spawn + Phase 6a refresh)
+- [ ] 6a.5 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh)
 - [ ] 6a.6 Jira → In Review
 - [ ] 6b   Staging gate → direct merge → CI on staging (n/a without staging)
 - [ ] 6c.1 Read human reviews; mark the PR ready
@@ -629,7 +629,7 @@ this file, and the spec's language stays out of it (*Why two documents*).
 ```markdown
 # Acceptance evaluation — <task>
 
-Read from the working tree against `origin/<base>`; nothing is committed yet.
+Read from the working tree against `origin/<base>`; nothing is committed yet (a Phase 6a rewrite reads the correction's uncommitted tree).
 
 | # | Condition | Verdict | Evidence |
 |---|-----------|---------|----------|
