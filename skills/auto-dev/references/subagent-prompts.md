@@ -254,6 +254,12 @@ Branch on the **SCOPE CALL**:
      git fetch origin
      git worktree add ../<repo-name>-<slug>-<id> -b <prefix>/<slug>-<id> origin/<base>
      ```
+     Then **prepare that worktree exactly as Phase 1 step 5 prepares the control
+     worktree** (`references/phase-1-setup.md`): seed the `worktree_files` from the
+     main checkout and confirm git ignores each one, then run the profile's `setup`
+     commands — stopping and reporting wherever that step says to. A bare
+     `worktree add` has neither, and the sub-task's tests would then fail in ways
+     that read exactly like broken code.
      Cutting them all at the beginning is the bug this avoids: a sub-task that
      depends on an earlier one would branch from a base predating it, and its PR
      would conflict with work already merged. Fetching first is what gives the
