@@ -38,7 +38,11 @@ CI_PROVIDERS = {"github-actions", "circleci", "gitlab", "none"}
 GATE_KINDS = {"compile", "format", "lint", "typecheck", "test", "build"}
 # The pipeline milestones that trigger a Jira transition.
 JIRA_STATES = {"in_progress", "in_review", "done"}
+# Every key a gate check may carry; anything else is flagged as unknown.
 GATE_FIELDS = {"kind", "command", "report"}
+# The subset of GATE_FIELDS each check must set. Kept separate so a new
+# optional field can join GATE_FIELDS without becoming required.
+GATE_REQUIRED = ("kind", "command", "report")
 
 # difflib's own default: close enough to catch a dropped/swapped letter
 # (`iteration_budgt`, `bse`) without suggesting an unrelated key.
@@ -124,7 +128,7 @@ def check_gate(gate):
         where = f"gate[{i}]"
         if not check_type(check, dict, where):
             continue
-        for required in ("kind", "command", "report"):
+        for required in GATE_REQUIRED:
             if required not in check:
                 errors.append(f"{where}: missing `{required}`")
         for key, val in check.items():
