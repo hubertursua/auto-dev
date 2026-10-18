@@ -61,7 +61,8 @@ no change.
    check only where its tool is genuinely available — the dependency is declared,
    or its config file exists — and otherwise drop it and **record the omission**
    in `profile.md`. This is a rule for every stack, not just the ones that
-   document it (Elixir's Credo and Dialyzer are the usual case). Never keep a
+   document it (an ESLint check in a repo with no ESLint config is the usual
+   case; example in TypeScript). Never keep a
    check that cannot run: Phase 5 would never go green, and the pipeline would
    stop on a tool the project never adopted. "Available" means the project
    adopted it, not that it is on your PATH: a declared tool, or the toolchain
@@ -84,27 +85,29 @@ reads. **Commands are run verbatim** — never paraphrase or "improve" a command
 string; if a command is wrong, fix the profile or the override, not the
 invocation.
 
+Example in TypeScript (no TypeScript profile ships; `profiles/elixir.md` is the
+one shipped stack profile):
+
 ```yaml
-stack: elixir                 # profile id
+stack: typescript             # profile id
 # Detection signals. `any` = matches if ANY listed path exists; `all` = every
 # listed path must. When more than one profile matches, the most specific wins —
 # resolved by "Detection precedence" below, not by the order signals appear here.
 detect:
-  any: ["mix.exs"]
+  all: ["package.json", "tsconfig.json"]
 # Dependency install / toolchain activation, run once in Phase 1 after worktree
 # creation. Run in order; stop on first failure and report.
 setup:
-  - "mix deps.get"
+  - "npm ci"
 # The quality gate: the ordered checks that must all be green in Phase 5.
 # Each check maps to a lint/<report>.md artifact.
 # kind is advisory (compile|format|lint|typecheck|test|build); `command` is
 # what actually runs; `report` is the .auto-dev/lint/ filename.
 gate:
-  - { kind: compile,  command: "mix compile --warnings-as-errors", report: "COMPILE.md" }
-  - { kind: format,   command: "mix format --check-formatted",     report: "FORMAT.md" }
-  - { kind: lint,     command: "mix credo --strict",               report: "CREDO.md" }
-  - { kind: typecheck, command: "mix dialyzer",                    report: "DIALYZER.md" }
-  - { kind: test,     command: "mix test",                         report: "TEST.md" }
+  - { kind: typecheck, command: "npx tsc --noEmit",       report: "TYPECHECK.md" }
+  - { kind: lint,      command: "npx eslint .",           report: "LINT.md" }
+  - { kind: format,    command: "npx prettier --check .", report: "FORMAT.md" }
+  - { kind: test,      command: "npm test",               report: "TEST.md" }
 # Optional: gitignored files copied from the main checkout into each new worktree
 # before `setup` runs — env/config a suite needs but git does not track.
 worktree_files: [".env", ".env.test"]
@@ -112,9 +115,10 @@ worktree_files: [".env", ".env.test"]
 test_notes: "…"
 # Optional: a code-index tool for finding a symbol's definition and callers.
 # <symbol> is replaced by the name looked up. Omit it to use `grep -n`.
+# (The Elixir profile sets `dexter lookup <symbol>` / `dexter references <symbol>`.)
 symbol_lookup:
-  definition: "dexter lookup <symbol>"
-  references: "dexter references <symbol>"
+  definition: "<index-tool> definition <symbol>"
+  references: "<index-tool> references <symbol>"
 ```
 
 Fields:
@@ -155,9 +159,12 @@ When multiple profiles could match:
 
 ## Monorepos, umbrellas, and multi-stack repos
 
-- **Elixir umbrella** (`apps/*/mix.exs`): run `mix` from the umbrella root; the
-  `gate` commands operate across apps. Record the umbrella layout in `profile.md`
-  and pass it as a test note so the coder/cleanup run the right app's suite.
+- **Workspaces** (example in TypeScript: `workspaces` in the root
+  `package.json`, or `pnpm-workspace.yaml`): run the `gate` in the package the
+  task touches (`npm test -w <package>`). Record the layout in `profile.md` and
+  pass it as a test note so the coder/cleanup run the right package's suite. A
+  stack's own layout (the Elixir umbrella) is described in its profile's
+  `test_notes`.
 - **Polyglot monorepo** (e.g. a JS frontend + Python backend): scope to the
   package the task actually touches. Detect the sub-package from the task/ticket
   and the files in play, record the chosen package and its own `gate` in
@@ -171,15 +178,15 @@ When multiple profiles could match:
 A project can commit a `.auto-dev.yml` at its repo root to override anything the
 profile or discovery got wrong, or to declare project-specific conventions. It is
 NOT scratch and is NOT excluded from git. Keys mirror the profile plus repo/CI/Jira
-settings; anything present overrides the resolved value:
+settings; anything present overrides the resolved value. Example in TypeScript:
 
 ```yaml
 # .auto-dev.yml  (committed at repo root; all keys optional)
-stack: elixir                 # force a profile instead of auto-detecting
-setup: ["mix deps.get", "mix compile"]
+stack: default                # force a profile (a profiles/<stack>.md id) instead of auto-detecting
+setup: ["npm ci", "npm run build"]
 gate:
-  - { kind: lint, command: "mix credo --strict --all", report: "CREDO.md" }
-  - { kind: test, command: "mix test",                 report: "TEST.md" }
+  - { kind: lint, command: "npx eslint . --max-warnings 0", report: "LINT.md" }
+  - { kind: test, command: "npm test",                      report: "TEST.md" }
 branches:
   base: develop               # base branch to cut from and target with the PR
   staging: staging            # staging branch for the direct-merge step; omit to skip the 6b staging gate
@@ -189,8 +196,8 @@ ci_timeout_minutes: 30        # bound on CI watching before it reports and holds
 iteration_budget: 4           # revise rounds per task (per sub-task on a multi-PR run)
 worktree_files: [".env"]      # gitignored files to seed every new worktree with
 symbol_lookup:                # code-index commands instead of grep; <symbol> is the name
-  definition: "dexter lookup <symbol>"
-  references: "dexter references <symbol>"
+  definition: "<index-tool> definition <symbol>"
+  references: "<index-tool> references <symbol>"
 security_docs:                # the security directives every worker must obey;
   - "SECURITY.md"             # first source Phase 1 checks, ahead of repo defaults
   - "docs/security/authz.md"

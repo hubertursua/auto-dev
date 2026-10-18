@@ -119,10 +119,9 @@ Single-PR run (the task fits one PR):
   SPEC_EVAL.md            # code vs. spec, with an evidence tier per condition (Phase 5, verifier)
   evidence/               # what the verifier ran and saw: integrity.txt, acceptance.txt, C<n>.txt, mutants.json(+.results.json)
   lint/                   # one report per quality-gate check (Phase 5)
-    COMPILE.md            # one file per check in the profile's `gate` list —
-    FORMAT.md             # Elixir's five shown; the filenames come from the
-    CREDO.md              # profile, so another stack has another set
-    DIALYZER.md
+    TYPECHECK.md          # one file per check in the profile's `gate` list —
+    LINT.md               # example in TypeScript; the filenames come from the
+    FORMAT.md             # profile, so another stack has another set
     TEST.md
   review/                 # raw code-review reports, one directory per pass (Phase 6a)
     pass-1/
@@ -530,8 +529,8 @@ shape.
   mutants and only add new ones for code written since.
   `SPEC_EVAL.md` cites these; the correction brief quotes them.
 - **`lint/<CHECK>.md`** — one report per quality-gate command, named per the
-  loaded profile — **one per `gate` entry, all of them** (Elixir: `COMPILE.md`,
-  `FORMAT.md`, `CREDO.md`, `DIALYZER.md`, `TEST.md`): the command run, final
+  loaded profile — **one per `gate` entry, all of them** (example in
+  TypeScript: `TYPECHECK.md`, `LINT.md`, `FORMAT.md`, `TEST.md`): the command run, final
   status, and the tail of any output that had to be fixed.
 - **`review/pass-<n>/R<k>.md`** — one code reviewer's own findings for one pass,
   each with a trigger path, plus security leads it noticed. Raw input to the
@@ -743,6 +742,8 @@ this file, and the spec's language stays out of it (*Why two documents*).
 
 ### `acceptance/MANIFEST.md` (Phase 3, acceptance tester)
 
+Filled-in rows are an example in TypeScript.
+
 ```markdown
 # Acceptance checks — <task>
 
@@ -751,7 +752,7 @@ Sealed copies are under `files/`; the verifier installs them after the build.
 
 | # | Condition | Check (path :: test name) | Kind | Base run |
 |---|-----------|---------------------------|------|----------|
-| 1 | <condition, in the spec's own words> | `test/app/acceptance/todo_delete_acceptance_test.exs` :: "owner deleting a todo removes it from the list" | fail-to-pass | failed: `UndefinedFunctionError Todos.delete/2` |
+| 1 | <condition, in the spec's own words> | `src/todos/todo-delete.acceptance.test.ts` :: "owner deleting a todo removes it from the list" | fail-to-pass | failed: `TypeError: todos.delete is not a function` |
 | 2 | <condition> | <path :: name> | pass-to-pass | passed |
 | S1 | <security/compliance criterion> | <path :: name> | fail-to-pass | failed: expected 404, got 200 |
 
@@ -771,6 +772,8 @@ here. A repaired check reads `not re-run (repair)`.
 
 ### `SPEC_EVAL.md` (Phase 5, verifier)
 
+Filled-in rows are an example in TypeScript.
+
 ```markdown
 # Acceptance evaluation — <task>
 
@@ -779,7 +782,7 @@ Pass: <first | re-check after <what changed>> · acceptance run: <n passed / n t
 
 | # | Condition | Verdict | Tier | Evidence |
 |---|-----------|---------|------|----------|
-| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todo_delete_acceptance_test.exs` :: "owner deleting…" passed (`evidence/C1.txt`) |
+| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todo-delete.acceptance.test.ts` :: "owner deleting…" passed (`evidence/C1.txt`) |
 | 2 | <condition> | met | Adequate | expected `GET /todos` without the deleted id; saw it (`evidence/C2.txt`) |
 | 3 | <condition> | partial | Weak | <what holds, what was not run, and why> |
 | 4 | <condition> | unmet | Strong | acceptance check failed: <the failing assertion, one line> |
@@ -797,8 +800,8 @@ are rows in this table — never a separate pass.
 
 | Finding | Location | Judgment | Reason |
 |---------|----------|----------|--------|
-| REMOVED_ASSERTION | `test/app/todos_test.exs:-42` | Justified | condition 3 changes the response to 404 |
-| ADDED_SKIP | `test/app/list_test.exs:10` | Unjustified | no condition removes this behavior |
+| REMOVED_ASSERTION | `src/todos/todos.test.ts:-42` | Justified | condition 3 changes the response to 404 |
+| ADDED_SKIP | `src/todos/list.test.ts:10` | Unjustified | no condition removes this behavior |
 
 <"None." when the audit is clean and the diff shows no gaming>
 
@@ -807,8 +810,8 @@ are rows in this table — never a separate pass.
 
 | Mutant | Location | Change | Condition | Judgment |
 |--------|----------|--------|-----------|----------|
-| M4 | `lib/app/todos.ex:58` | `n <= 10` → `n < 10` | 2 | Test gap — no test accepts exactly 10; condition 2 partial |
-| M7 | `lib/app/todos.ex:71` | `Enum.sort/1` → `Enum.sort(&>=/2)` | — | Equivalent — the list has at most one element here |
+| M4 | `src/todos/todos.ts:58` | `n <= 10` → `n < 10` | 2 | Test gap — no test accepts exactly 10; condition 2 partial |
+| M7 | `src/todos/todos.ts:71` | `items.sort(byDue)` → `items.sort((a, b) => byDue(b, a))` | — | Equivalent — the list has at most one element here |
 
 <list survivors only; "None survived." when none did>
 
@@ -852,13 +855,15 @@ An empty `Findings` section says `none — <what you tried>`. An empty
 
 ### `review/pass-<n>/VOTES-R<k>.md` (Phase 6a, code reviewer re-voting)
 
+Filled-in rows are an example in TypeScript.
+
 ```markdown
 # Re-votes R<k> — pass <n>
 
 | Finding | Vote | Reason |
 |---------|------|--------|
-| C4 | agree | `lib/todos/list.ex:42` — `hd/1` on the empty list; nothing upstream guards it |
-| C6 | disagree | `lib/todos/save.ex:18` — the changeset already rejects a blank title |
+| C4 | agree | `src/todos/list.ts:42` — `items[0].id` on the empty list; nothing upstream guards it |
+| C6 | disagree | `src/todos/save.ts:18` — the schema already rejects a blank title |
 ```
 
 ### `CODE_REVIEW.md` (Phase 6a, review judge)

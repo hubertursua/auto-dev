@@ -177,7 +177,7 @@
     {
       "id": 11,
       "session": "S2 (test tampering)",
-      "setup": "Run eval 1 through Phase 4 (S1 leaves acceptance/ sealed; leave it so). Then, in the worktree, delete the assertion from one pre-existing test the change does not touch, and mark another as skipped with the test framework's own marker (for example `@unittest.skip` in Python, `it.skip` in Jest or Mocha, `@tag :skip` in ExUnit). Set Phase 4 done and Phase 5 pending in the ledger from files/, with at least 2 rounds remaining.",
+      "setup": "Run eval 1 through Phase 4 (S1 leaves acceptance/ sealed; leave it so). Then, in the worktree, delete the assertion from one pre-existing test the change does not touch, and mark another as skipped with the test framework's own marker (for example `it.skip`; example in TypeScript). Set Phase 4 done and Phase 5 pending in the ledger from files/, with at least 2 rounds remaining.",
       "prompt": "auto-dev continue",
       "expected_output": "Phase 5 starts with the verifier. scripts/check-tests.py reports REMOVED_ASSERTION and ADDED_SKIP on the planted tests (exit 1); no SPEC.md condition changes that behavior, so the verifier judges both Unjustified in SPEC_EVAL.md's Test integrity section. The orchestrator treats them as a Phase 5 correction: one brief to auto-dev:coder, spending one round, naming which tests to restore, then a verifier re-check finds the audit clean of those findings. The cleanup agent runs only after that. The planted edits never reach a PR.",
       "files": [

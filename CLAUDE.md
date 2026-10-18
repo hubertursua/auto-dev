@@ -67,10 +67,13 @@ default for every repo.
   stack-neutral fallback when it's absent. `symbol_lookup` is the model:
   `SKILL.md` says "use `profile.md`'s symbol lookup", which falls back to
   `grep -n`, and only the Elixir profile names `dexter`.
-- **Examples span languages, or use placeholders.** An example that names a
-  command, path or code either shows two or more ecosystems side by side
-  (`mix test`, `pytest`, `npm test`) or uses a neutral placeholder
-  (`<test command>`, `src/<module>`). Don't add an example in only one language.
+- **Examples are in TypeScript, and say so.** An example that names a command,
+  path or code uses TypeScript, a language most readers know, and is labeled
+  "example in TypeScript" (or "Filled-in rows are an example in TypeScript." above
+  a template). The label goes outside a template block, so an agent filling the
+  template doesn't copy it. Where no example is needed, use a neutral placeholder
+  (`<test command>`, `src/<module>`). The only other language allowed is a
+  shipped profile's own (`profiles/elixir.md`), labeled the same way.
 - **Scripts stay language-blind.** A helper script takes paths and commands as
   input and never hardcodes one stack's test runner or syntax. Where it has to
   recognize code (as `check-tests.py` does for skips and assertions), the

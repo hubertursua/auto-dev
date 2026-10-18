@@ -128,7 +128,7 @@ below state the same thing; change them together:
   findings; the orchestrator applies fixes (it holds the context and this consumes
   the shared iteration budget).
 - **Spill large output to `$TMPDIR`; return a digest, never a corpus.** Say it in
-  every brief: redirect long command output (suite runs, dialyzer, full diffs) to a
+  every brief: redirect long command output (suite runs, type-checker output, full diffs) to a
   file under `$TMPDIR` and quote only the failing tail. A worker that pastes a
   10k-line log into its return has burned the context the artifacts exist to save.
 - **Keep any single command under 5 minutes.** A worker's prompt cache is
@@ -443,7 +443,7 @@ entry points>>.
 For every SPEC.md condition, Security/Compliance criteria included:
 1. Write at least one black-box check that fails if the condition does not hold.
    Drive it through the most external entry point the repo's tests can reach (a
-   request/controller/LiveView test, a CLI invocation, the public API), not
+   HTTP request or controller test, a CLI invocation, the public API), not
    internal helpers. Take expected values from the spec's words, never from how
    the code computes them. Each condition's Example is your first check, with its
    values; its Edge line is your second. Its Verify by line names the level to
@@ -453,7 +453,7 @@ For every SPEC.md condition, Security/Compliance criteria included:
    that one, and report AMBIGUOUS with both readings.
    Put the checks in NEW files in the repo's test tree, following its naming
    conventions, with `acceptance` in each file name (e.g.
-   `test/<app>/acceptance/<slug>_acceptance_test.exs`). Never edit an existing
+   `src/<module>/<slug>.acceptance.test.ts`; example in TypeScript). Never edit an existing
    test file. Name each test after the behavior it checks.
 2. Classify each check: `fail-to-pass` (new or changed behavior — must FAIL on
    this untouched tree) or `pass-to-pass` (behavior the change must preserve —
@@ -955,7 +955,7 @@ umbrella/monorepo scope, slow tiers>. Ensure prerequisites are up before running
 Run the quality gate IN FULL — do not scope or sample it; it is the Definition of Done.
 Where a command is slow, run it in the background rather than blocking on it, and
 redirect its output to a file under $TMPDIR, reading back only the failing tail.
-Never paste a full suite or dialyzer log into your return.
+Never paste a full suite or type-checker log into your return.
 
 Return: what you simplified, **any simplification you reverted and which check
 forced it**, the files Step 1 touched, and the final status of each `gate` command.
@@ -1094,13 +1094,13 @@ Return: your finding count by category, the security-lead count, and anything
 you could not cover.
 ```
 
-For example, a finding with a usable trigger path:
+For example, a finding with a usable trigger path (example in TypeScript):
 
 ```
-1. **Deleting the last todo crashes the list page** — `lib/todos/list.ex:42` — correctness
-   Trigger path: `TodoController.delete/2` (`lib/web/todo_controller.ex:30`)
-   redirects to `index`, which calls `List.page/1` with `[]`; `hd/1` at
-   `lib/todos/list.ex:42` raises on the empty list.
+1. **Deleting the last todo crashes the list page** — `src/todos/list.ts:42` — correctness
+   Trigger path: `TodoController.delete` (`src/web/todo-controller.ts:30`)
+   redirects to `index`, which calls `page()` with `[]`; `items[0].id` at
+   `src/todos/list.ts:42` throws a TypeError on the empty list.
    Why it is wrong: the page should render empty, not 500.
 ```
 
