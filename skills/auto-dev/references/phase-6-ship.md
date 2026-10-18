@@ -32,7 +32,8 @@ and fixed, and the PR never collects review-fix commits.
    reviewer running `/security-review` over the whole change, then the judge
    verifies every High/Medium finding. Introduced and confirmed → must-fix,
    through the correction loop, then step 1 on the fix's files and this step
-   again. Pre-existing → the PR gate, for the user. Procedure:
+   again. Pre-existing: High and confirmed → fixed the same way, automatically,
+   and reported at the gate; Medium → the PR gate, for the user. Procedure:
    `references/review.md`.
 
    Findings stay on disk. They are posted as inline PR comments (step 5) **only**
@@ -40,8 +41,9 @@ and fixed, and the PR never collects review-fix commits.
    `pr_review.inline_comments: true`.
 3. **Gate:** pause for approval to open the PR (`references/gates-and-jira.md`).
    The summary carries both reviews: each one's overall confidence, the must-fix
-   findings fixed and still open, and any pre-existing security finding for the
-   user to triage.
+   findings fixed and still open (pre-existing High ones fixed automatically
+   included), and any pre-existing Medium security finding for the user to
+   triage.
 4. **Commit** — stage source paths **explicitly**, confirm nothing under
    `.auto-dev/` is staged, then commit with a conventional message. Run exactly
    this sequence; only the paths and the message vary:

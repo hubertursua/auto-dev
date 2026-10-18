@@ -2,7 +2,7 @@
 
 Three things send work backwards: an unmet spec condition, a must-fix review
 finding, and a red CI check. A review finding comes from the code review panel
-(`CODE_REVIEW.md`), the security review (`SECURITY_REVIEW.md`), a pre-existing
+(`CODE_REVIEW.md`), the security review (`SECURITY_REVIEW.md`, pre-existing High findings included), a pre-existing
 security finding the user chose to fix at the PR gate, or a human reviewer's
 blocker on the PR. They are **one loop entered at three points**, and this file
 is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
@@ -66,7 +66,7 @@ Earlier in the pipeline there is less of it to rewrite.
 |---|---|---|---|
 | **Phase 5 — acceptance** (unmet condition) | nothing; the cleanup agent has not run | `SPEC_EVAL.md` only | not yet run — the single cleanup pass after this loop settles simplifies corrective code with everything else |
 | **Phase 5 — after the quality gate** (re-resolving the evidence finds a condition no longer met) | `SPEC_EVAL.md`, `lint/` | `SPEC_EVAL.md`, then `lint/` (rewritten by the re-spawned cleanup agent), then re-resolve the evidence again | **yes, Phase 5 scope** (the branch diff) — no human has read it yet |
-| **Phase 6a — review** (a must-fix finding from the code review panel or the security review, or a pre-existing finding the user chose to fix at the PR gate; **before the commit**) | `SPEC_EVAL.md`, `lint/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | `lint/` (rewritten by the re-spawned cleanup agent), then steps 1–2 of _The Phase 6a refresh_ below (`SPEC_EVAL.md`, every row), then **review again**: the code review panel on the files the fix changed, then the security review on the whole change (`references/review.md`). Nothing is committed, pushed or published yet, so the refresh stops there | **yes, scoped to the files the correction changed** — see below |
+| **Phase 6a — review** (a must-fix finding from the code review panel or the security review — a pre-existing High security finding included — or a pre-existing Medium finding the user chose to fix at the PR gate; **before the commit**) | `SPEC_EVAL.md`, `lint/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | `lint/` (rewritten by the re-spawned cleanup agent), then steps 1–2 of _The Phase 6a refresh_ below (`SPEC_EVAL.md`, every row), then **review again**: the code review panel on the files the fix changed, then the security review on the whole change (`references/review.md`). Nothing is committed, pushed or published yet, so the refresh stops there | **yes, scoped to the files the correction changed** — see below |
 | **Phase 6a — CI red** (pre-merge), or **Phase 6c — a human reviewer's blocker** | `SPEC_EVAL.md`, `lint/`, the review reports, the commit, the push, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: `SPEC_EVAL.md`, a review of the correction, commit and re-push (CI re-runs — re-watch it), then the PR body | **yes, scoped to the correction's own diff** — see below |
 
 **The Phase 6a refresh.** Every correction in Phase 6 runs it once the
@@ -148,7 +148,7 @@ Five things spend it, one round each:
 | 1 | Define review — re-review after fixes | 2 |
 | 2 | Plan review — re-review after fixes | 3 |
 | 3 | Acceptance corrections to the coder | 5 |
-| 4 | Review-finding corrections — code review panel, security review, a pre-existing security finding the user chose to fix, or a human reviewer's blocker | 6a, 6c |
+| 4 | Review-finding corrections — code review panel, security review (pre-existing High included), a pre-existing Medium security finding the user chose to fix, or a human reviewer's blocker | 6a, 6c |
 | 5 | CI-red corrections, pre-merge | 6a |
 
 **Review passes never spend it** — not the first code review or security review,

@@ -115,13 +115,16 @@ hole that only shows up through another file.
    `auto-dev:review-judge` (security-verify brief) once for all of them. It traces
    each path in the code and writes `confirmed` or `refuted`, with a reason, into
    the finding's `Verified` cell. A refuted finding becomes advisory.
-3. **Confirmed must-fix findings** (introduced by this change, High or Medium)
-   go to the correction loop, entry _Phase 6a — review_. After the fix, go back to
+3. **Confirmed must-fix findings** (introduced by this change, High or Medium,
+   and pre-existing High) go to the correction loop, entry _Phase 6a — review_. After the fix, go back to
    **Step 1**, scoped to the files the fix changed, because a security fix can
    introduce a bug. Then run Step 2 again on the whole change.
-4. **Pre-existing findings** (High or Medium, confirmed) never block and are
-   never fixed without the user's say-so. They go to the PR gate for the user to
-   decide (`references/gates-and-jira.md`, _PR gate_).
+4. **Pre-existing findings** split by confidence. A confirmed **High** one is
+   fixed automatically, like an introduced one: no approval is asked, and the PR
+   gate summary reports it as fixed so the user sees it afterwards. A confirmed
+   **Medium** one never blocks and is never fixed without the user's say-so,
+   because its path rests on an assumption. It goes to the PR gate for the user
+   to decide (`references/gates-and-jira.md`, _PR gate_).
 
 ## The review loop
 
@@ -209,7 +212,8 @@ reviewer, and must-fix still needs 2 votes.
 | Introduced by this change | **High:** a clear path from untrusted input (a request, a file, a message, anything an outside party controls) to the exploit | **must-fix**, once the judge confirms it |
 | Introduced by this change | **Medium:** the path exists but depends on a configuration or an assumption, which the finding names | **must-fix**, once the judge confirms it |
 | Introduced by this change | **Low:** speculative, with no traced path | **advisory** |
-| Pre-existing | High or Medium, confirmed by the judge | **for the user:** shown at the PR gate. It never blocks on its own |
+| Pre-existing | **High**, confirmed by the judge | **must-fix**, fixed automatically and reported afterwards. It widens the PR, so the PR body names it |
+| Pre-existing | **Medium**, confirmed by the judge | **for the user:** shown at the PR gate. It never blocks on its own |
 | Pre-existing | Low | **advisory**, listed in the report only |
 
 A High or Medium finding the judge refutes becomes **advisory**, with the reason

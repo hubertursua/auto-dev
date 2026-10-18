@@ -389,11 +389,12 @@ pushed until they settle and the user approves.
 2. **Security review** → `.auto-dev/SECURITY_REVIEW.md`. One security reviewer runs
    `/security-review` over the whole change; the judge verifies every High/Medium
    finding. An introduced, confirmed finding is must-fix → the correction loop,
-   then Step 1 on the fix's files, then this step again. A pre-existing one goes to
-   the user at the PR gate.
+   then Step 1 on the fix's files, then this step again. A pre-existing High one
+   is fixed the same way, without asking, and reported afterwards; a pre-existing
+   Medium one goes to the user at the PR gate.
 3. **Gate:** pause for approval to open the PR. The summary carries both reports'
-   confidence and counts, any open must-fix, and the pre-existing security
-   findings for the user to triage.
+   confidence and counts, any open must-fix, the pre-existing High findings fixed
+   automatically, and the pre-existing Medium findings for the user to triage.
 4. **Commit** — stage source paths **explicitly** (never `git add -A`/`.`); commit
    only once `scripts/check-staged.py --expect <paths>` passes.
 5. **Push** — **never `--force`** — and open **exactly one** PR, a draft by
