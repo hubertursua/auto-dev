@@ -27,6 +27,8 @@ all appear in the other — a fragment like `multi-currency`, or a longer reques
 that contains the whole line — it is reported as a NEAR-MISS, which may be this
 run worded differently and is for the user to confirm, never a fresh run.
 Without --task nothing is checked: every ledger reports its resume point.
+Omit --task on a bare `auto-dev continue`; an empty or all-whitespace value
+counts as omitted.
 
 On a multi-PR ledger a sub-task's phase table, where it has one, decides; one
 with no phase table goes by its summary `status`: `done`, `skipped` or `n/a` is
@@ -45,13 +47,15 @@ Exit codes:
        — its Action line says to ask the user
     1  WORK_LOG.md missing or malformed, or --task does not match its header
        (MISMATCH, or NEAR-MISS when it may be the same task worded differently)
-    2  could not run (bad arguments, not a directory, file unreadable) — NOT a
-       result; read the ledger by hand
+    2  could not run (bad arguments, not a directory, directory or file
+       unreadable) — NOT a result; read the ledger by hand
     3  every phase is done, skipped or n/a — nothing to resume
 """
 
 import argparse
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -336,6 +340,14 @@ def multi_pr(lines):
     return None, None, None
 
 
+def stat_or_none(path: Path) -> "os.stat_result | None":
+    """Return os.stat(path), or None when the path does not exist."""
+    try:
+        return os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -349,11 +361,24 @@ def main() -> int:
 
     directory = Path(args.artifact_dir)
     ledger = directory / LEDGER
-    if directory.exists() and not directory.is_dir():
+    # Stat directly: Path.exists()/is_dir()/is_file() swallow some OSErrors
+    # (all of them on Python 3.14+), which would turn EACCES or ELOOP into
+    # MISSING. Only "no such path" counts as absent; any other failure is 2.
+    try:
+        dir_stat = stat_or_none(directory)
+        not_a_dir = dir_stat is not None and not stat.S_ISDIR(dir_stat.st_mode)
+        ledger_stat = None if not_a_dir else stat_or_none(ledger)
+    except OSError as exc:
+        print(f"ERROR: could not inspect {exc.filename or directory}: "
+              f"{exc.strerror or exc}", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+    ledger_present = (ledger_stat is not None
+                      and stat.S_ISREG(ledger_stat.st_mode))
+    if not_a_dir:
         print(f"ERROR: {directory} is not a directory — pass the .auto-dev/ "
               f"directory that holds {LEDGER}.", file=sys.stderr)
         return EXIT_CANNOT_RUN
-    if not ledger.is_file():
+    if not ledger_present:
         print(f"MISSING: no {ledger} — this directory holds no auto-dev run.",
               file=sys.stderr)
         return EXIT_BAD_LEDGER
@@ -369,7 +394,7 @@ def main() -> int:
 
     try:
         fields = parse_header(lines)
-        if args.task is not None:
+        if args.task is not None and args.task.strip():
             match = task_matches(args.task, fields)
             if match is not True:
                 verdict = (

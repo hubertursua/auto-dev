@@ -9,11 +9,11 @@ a resume.
 `.auto-dev/` — the control worktree is a sibling directory. Scan `git worktree list`
 for one holding a `.auto-dev/WORK_LOG.md` whose header matches this task
 (`<skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"`
-checks each one; with no `--task` when the user states no task, e.g. a bare
-"continue"; a `NEAR-MISS` is for the user to confirm). If one exists, do not
-re-run Phase 1: read the ledger and continue from it. Full detection procedure
-and the script's exit handling: `references/artifacts.md`, _Resuming an
-interrupted run_.
+checks each one; on a bare `auto-dev continue`, with no ticket or task named, omit
+`--task` — then only an exit `0` counts, and several is a stop-and-ask; a
+`NEAR-MISS` is for the user to confirm). If one exists, do not re-run Phase 1:
+read the ledger and continue from it. Full detection procedure and the script's
+exit handling: `references/artifacts.md`, _Resuming an interrupted run_.
 
 1. **Detect the repo & branches.** Canonical repo name from the git remote
    (`basename -s .git "$(git remote get-url origin)"`); default branch via
