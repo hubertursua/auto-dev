@@ -173,7 +173,8 @@ PR gate
   review pass after it, the fix may be half-applied in the working tree.
   Re-dispatch the same correction to the coder against the tree as it stands,
   **without spending another round** (the Notes show it was spent), then carry on
-  with the cleanup re-spawn and the re-review. Scope them by diffing against the
+  with the cleanup re-spawn, the verifier re-check (the Phase 6a refresh, steps
+  1–2, `references/correction-loop.md`) and the re-review. Scope them by diffing against the
   snapshot the Notes recorded, not a new one, so the files the interrupted
   attempt changed are covered too.
 

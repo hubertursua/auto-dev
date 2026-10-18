@@ -162,7 +162,10 @@ def save_index(backup_dir, index):
 
 def restore_all(wt, backup_dir):
     """Put every backed-up file back, checked against its recorded hash.
-    Returns the paths that could not be restored."""
+    A file is overwritten only while it still holds the mutant (or is missing);
+    if it already holds the original, the backup is just dropped; if it holds
+    anything else, someone edited it after the run died, and it is left alone
+    and reported. Returns the paths that could not be restored."""
     if not os.path.isdir(backup_dir):
         return []
     index = load_index(backup_dir)
@@ -175,6 +178,20 @@ def restore_all(wt, backup_dir):
             with open(src, "rb") as f:
                 data = f.read()
             if dst is None or sha(data) != digest:
+                failed.append(rel)
+                continue
+            try:
+                with open(dst, "rb") as f:
+                    current = sha(f.read())
+            except OSError:
+                current = None
+            if current == digest:
+                del index[rel]
+                save_index(backup_dir, index)
+                continue
+            if current is not None and current != entry.get("mutant_sha256"):
+                print(f"ERROR: {rel} changed after the mutation run stopped — "
+                      f"not overwriting it; the original is at {src}", file=sys.stderr)
                 failed.append(rel)
                 continue
             write_atomic(dst, data, mode)
@@ -304,13 +321,15 @@ def main() -> int:
                 rec.update(status="invalid", output="file is not writable")
                 continue
             lines[n] = lines[n].replace(find, repl, 1)
+            mutated = b"\n".join(lines)
             # Back up atomically and record the hash BEFORE touching the file.
             write_atomic(os.path.join(backup_dir, "files", m["file"]), original)
             mode = os.stat(path).st_mode & 0o7777
-            index[m["file"]] = {"sha256": sha(original), "mode": mode}
+            index[m["file"]] = {"sha256": sha(original), "mode": mode,
+                                "mutant_sha256": sha(mutated)}
             save_index(backup_dir, index)
             try:
-                write_atomic(path, b"\n".join(lines))
+                write_atomic(path, mutated)
                 touch_forward(path)
                 code, tail = run(m.get("cmd") or args.cmd, wt, args.timeout)
             finally:

@@ -516,9 +516,12 @@ these checks are installed at their paths. Fix each one IN PLACE at its
 installed path, then copy it over its sealed copy so the two stay
 byte-identical; do not remove it from the worktree. Skip the base run and
 record its Base run as `not re-run (repair)`. Update its MANIFEST row; leave
-every other check alone." (Before the build — a post-plan-gate revision —
-nothing is installed: re-run the brief with Scope "ONLY conditions <those
-checks' conditions>", base run included.) Then re-spawn the verifier in re-check mode. A repaired
+every other check alone." Checks are installed only from Phase 5 on. Before
+that, nothing is installed, so the repair re-runs the brief with Scope "ONLY
+conditions <those checks' conditions>" and seals as on a first run (removing
+the checks from the worktree again): after a post-plan-gate revision, with
+the base run; after a Phase 4 `BLOCKED` revision, the tree already holds
+partial code, so record the Base run as `not re-run (repair)`. Then re-spawn the verifier in re-check mode. A repaired
 check no longer proves the change was needed, so the verifier counts it as
 Adequate evidence at most, never Strong. A repair spends a round from the entry
 point that led to it (consumer #3 in Phase 4–5, #4 or #5 in Phase 6); a
@@ -738,14 +741,19 @@ it.
    likely to break the behavior while still compiling: flip a comparison or
    boolean, drop a guard or a negation, move a boundary by one, return a
    plausible wrong value, remove a call that has an effect. Tag each with the
-   condition it threatens. Line numbers are grep -n's. Write them to
+   condition it threatens. Line numbers are grep -n's. Before every run, first
+   pass and re-run alike, delete <artifact-dir>/evidence/mutate.exit and
+   mutate.log, so a stale exit file is never read as this run's. Write them to
    <artifact-dir>/evidence/mutants.json (a JSON list of {"id", "file", "line",
    "find", "replace", "condition"}), save `git status --porcelain` and
    `git diff origin/<base> | sha256sum`, then run:
-     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <artifact-dir>/evidence/mutants.json --max <cap> --timeout <about 3× one scoped run, in seconds> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>" > <artifact-dir>/evidence/mutate.log 2>&1; echo $? > <artifact-dir>/evidence/mutate.exit
+     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <artifact-dir>/evidence/mutants.json --max <cap> --timeout <about 3× one COLD scoped run, in seconds: touch one changed source file, then time the scoped command, since every mutant forces a rebuild> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>" > <artifact-dir>/evidence/mutate.log 2>&1; echo $? > <artifact-dir>/evidence/mutate.exit
    The whole run can take longer than 5 minutes (one test run per mutant), so
    start it in the background and check <artifact-dir>/evidence/mutate.exit every
-   few minutes until it exists; never block on it, and never kill it. The
+   few minutes until it exists; never block on it, never kill it, and never
+   return while it is running — a run still going holds a mutant in the tree.
+   If most mutants time out, the timeout was too short, not the tests strong:
+   raise it and re-run before judging. The
    scoped command must pass as-is and should take seconds; give a mutant its
    own narrower "cmd" when one file's tests are enough. Exit codes: 0 none
    survived; 1 some survived; 2 your mutants file is malformed — fix it and
