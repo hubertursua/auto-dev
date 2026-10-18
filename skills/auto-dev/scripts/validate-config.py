@@ -173,18 +173,21 @@ def main() -> int:
         return 2
 
     try:
-        with open(path) as f:
+        # Binary mode: PyYAML then decodes UTF-8 itself (or UTF-16 when the file
+        # starts with a BOM) instead of the locale's encoding, and reports a bad
+        # byte at its offset in the whole file.
+        with open(path, "rb") as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
         print(f"No {path} — nothing to validate (the pipeline runs without one).")
         return 0
+    except yaml.reader.ReaderError as exc:
+        print(f"INVALID: {path} has a byte or character YAML cannot read — "
+              f"re-save it as UTF-8 text.\n  {exc}", file=sys.stderr)
+        return 1
     except yaml.YAMLError as exc:
         print(f"INVALID: {path} is not valid YAML — fix the syntax at the line "
               f"below.\n  {exc}", file=sys.stderr)
-        return 1
-    except UnicodeDecodeError as exc:
-        print(f"INVALID: {path} is not UTF-8 text ({exc.reason} at byte "
-              f"{exc.start}). Re-save it as UTF-8.", file=sys.stderr)
         return 1
     except OSError as exc:
         print(f"SKIPPED: could not read {path}: {exc}", file=sys.stderr)
