@@ -429,10 +429,16 @@ Inputs:
   existing tests, for conventions, helpers and fixtures.
 Binding rules: <summary>. Use synthetic test data only.
 
-First, start clean: if <artifact-dir>/acceptance/ exists from an earlier,
-cut-off run, delete it, and remove from the worktree any untracked test file
-with `acceptance` in its name that `git status --porcelain --untracked-files=all`
-shows. The worktree must hold no change before you begin.
+Scope: <ALL CONDITIONS | ONLY conditions <numbers>, because <a coverage gap /
+the other reading of an ambiguous condition / a plan revision changed their
+entry points>>.
+- ALL CONDITIONS: start clean. If <artifact-dir>/acceptance/ exists from an
+  earlier, cut-off run, delete it, and remove from the worktree any untracked
+  test file with `acceptance` in its name that `git status --porcelain
+  --untracked-files=all` shows. The worktree must hold no change before you begin.
+- ONLY named conditions: keep <artifact-dir>/acceptance/ — every other
+  condition's sealed checks and MANIFEST rows stay exactly as they are. Replace
+  only the named conditions' sealed files and rows.
 
 For every SPEC.md condition, Security/Compliance criteria included:
 1. Write at least one black-box check that fails if the condition does not hold.
@@ -459,12 +465,18 @@ For every SPEC.md condition, Security/Compliance criteria included:
    a setup crash in the check itself is a broken check: fix it. A pass-to-pass
    check must pass. If you cannot make a check behave, drop it and list the
    condition under Not automatable with the reason.
+   Then make the check files pass the profile's non-test `gate` commands
+   (format, lint, compile warnings) scoped to your files — run the formatter on
+   them if the gate has one. Nobody may edit a check after it is sealed, so a
+   check that fails the quality gate can never be fixed later.
 4. A condition no check can drive (visual layout, an external service with no
    test double, wording only a human can judge) goes under Not automatable, with
    the closest observable proxy a later agent could run, if there is one (a CLI
    call, a request, a log line).
 
 Then SEAL the checks:
+- create <artifact-dir>/acceptance/files/ even if you sealed no check (every
+  condition not automatable) — the audit treats a missing directory as an error;
 - copy each check file to <artifact-dir>/acceptance/files/<its repo-relative
   path>.sealed (the `.sealed` suffix keeps every test runner from collecting it);
 - delete it from the worktree, and any directory you created for it;
@@ -485,10 +497,12 @@ or listed under Not automatable, and `git status` in the worktree is unchanged.
 For each **AMBIGUOUS** condition, decide against the ticket which reading is
 meant — on TRIVIAL runs this is the only ambiguity probe the spec gets. If the
 tester's reading is right, record it in `SPEC.md`'s Assumptions (no round). If
-not, record the other reading there and re-spawn the tester for that condition
-(a round, consumer #2).
-Fix a gap by re-spawning this agent with the gap named (a first pass is not a
-round; a re-spawn spends one, consumer #2 in `references/correction-loop.md`).
+not, record the other reading there and re-spawn the tester with Scope "ONLY
+condition <n>" (a round, consumer #2).
+Fix a gap by re-spawning this agent with Scope "ONLY conditions <the gap>" (a
+first pass is not a round; a re-spawn spends one, consumer #2 in
+`references/correction-loop.md`). Only the first spawn of a run uses ALL
+CONDITIONS; every re-spawn names its conditions, or it would wipe the rest.
 
 **Repair mode.** A check is repaired, never edited by the coder, when you agree
 against `SPEC.md` that it is wrong. Three things lead here: the verifier reports
@@ -496,15 +510,15 @@ it defective (_Acting on SPEC_EVAL.md_, below); a `BLOCKED` plan revision or a
 post-plan-gate revision changes an entry point it calls; or, in Phase 6, a
 must-fix review finding or a human reviewer's blocker is about the check itself.
 If you disagree, the check stands and its failure is the coder's to fix. To
-repair, re-spawn this agent with the same brief scoped to the named checks
-(skip its "start clean" step), plus: "The tree now holds the built change and
+repair, re-spawn this agent with the same brief, Scope "ONLY conditions <the
+checks' conditions>", plus: "The tree now holds the built change and
 these checks are installed at their paths. Fix each one IN PLACE at its
 installed path, then copy it over its sealed copy so the two stay
 byte-identical; do not remove it from the worktree. Skip the base run and
 record its Base run as `not re-run (repair)`. Update its MANIFEST row; leave
 every other check alone." (Before the build — a post-plan-gate revision —
-nothing is installed: re-run the full brief for the affected checks instead,
-base run included.) Then re-spawn the verifier in re-check mode. A repaired
+nothing is installed: re-run the brief with Scope "ONLY conditions <those
+checks' conditions>", base run included.) Then re-spawn the verifier in re-check mode. A repaired
 check no longer proves the change was needed, so the verifier counts it as
 Adequate evidence at most, never Strong. A repair spends a round from the entry
 point that led to it (consumer #3 in Phase 4–5, #4 or #5 in Phase 6); a
@@ -728,17 +742,23 @@ it.
    <artifact-dir>/evidence/mutants.json (a JSON list of {"id", "file", "line",
    "find", "replace", "condition"}), save `git status --porcelain` and
    `git diff origin/<base> | sha256sum`, then run:
-     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <artifact-dir>/evidence/mutants.json --max <cap> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>"
-   The scoped command must pass as-is and should take seconds; give a mutant its
+     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <artifact-dir>/evidence/mutants.json --max <cap> --timeout <about 3× one scoped run, in seconds> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>" > <artifact-dir>/evidence/mutate.log 2>&1; echo $? > <artifact-dir>/evidence/mutate.exit
+   The whole run can take longer than 5 minutes (one test run per mutant), so
+   start it in the background and check <artifact-dir>/evidence/mutate.exit every
+   few minutes until it exists; never block on it, and never kill it. The
+   scoped command must pass as-is and should take seconds; give a mutant its
    own narrower "cmd" when one file's tests are enough. Exit codes: 0 none
    survived; 1 some survived; 2 your mutants file is malformed — fix it and
    re-run; 3 the scoped tests fail unmutated — a test is already failing, which
-   is unmet, report it; 5 leftover backups — run it again with `--restore`
-   (no other flags), then re-run; 7 an I/O error such as a full disk — report
+   is unmet, report it; 5 leftover backups — run `python3
+   <skill-dir>/scripts/mutate.py <worktree> --restore --mutants
+   <artifact-dir>/evidence/mutants.json`, then re-run; 6 interrupted, every file
+   restored — re-run it once, in the background; if it is interrupted again,
+   write the mutation check as "not run" with the reason; 7 an I/O error such as a full disk — report
    it, do not retry; 8 every mutant was invalid (lines moved or `find` text
    wrong) — re-read the lines and re-write them, and if a second run is still
-   all invalid, write the mutation check as "not run" with the reason; 4, or 6
-   twice, STOP and return MUTATION LEFT CHANGES. Afterwards both saved values must be unchanged; if they are not (the
+   all invalid, write the mutation check as "not run" with the reason; 4, or
+   any other code (a crash), STOP and return MUTATION LEFT CHANGES. Afterwards both saved values must be unchanged; if they are not (the
    test command itself may have written files), return MUTATION LEFT CHANGES
    with the paths. Never commit, stage or keep a mutant.
    Judge each survivor: Equivalent (no input can tell the mutant from the code —

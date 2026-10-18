@@ -56,7 +56,8 @@ Exit codes:
     0  clean — no findings
     1  findings — each needs a justification tied to SPEC.md, or a correction
     2  usage error, not a git worktree, the base ref does not resolve, or no
-       sealed checks under --acceptance
+       `files/` directory under --acceptance (an empty one is fine: every
+       condition was not automatable)
     3  an acceptance test is missing or modified — never justified (takes
        precedence over 1)
 """
@@ -196,9 +197,10 @@ def main() -> int:
                 elif installed != read(src):
                     findings.append(("ACCEPTANCE_MODIFIED", rel, "differs from the sealed copy"))
                     tampered = True
-        if not sealed:
-            print(f"ERROR: no sealed acceptance tests (*{SEALED_SUFFIX}) under {root}", file=sys.stderr)
+        if not os.path.isdir(root):
+            print(f"ERROR: no sealed-checks directory at {root}", file=sys.stderr)
             return 2
+        # An empty files/ is valid: every condition was not automatable.
 
     tokens = status.split("\0")
     changed = []
