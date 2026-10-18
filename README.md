@@ -179,8 +179,8 @@ runtime. Add a stack by dropping in `profiles/<stack>.md` — no skill change.
 The keys most runs touch in `.auto-dev.yml`: `iteration_budget` (revise rounds,
 default 4), `mutation.max` (mutants per verifier pass, default 20, `0` = off),
 `gates.post_plan` (turn the post-plan gate on), `branches` (`base`, `staging`,
-`prefix`), `ci` and `ci_timeout_minutes`, `worktree_files`, `security_docs`, and
-`jira.states`. Phase 1 validates the file with `scripts/validate-config.py`, so a
+`prefix`), `ci` and `ci_timeout_minutes`, `worktree_files`, `security_docs`,
+`symbol_lookup` (a code-index tool to use instead of grep), and `jira.states`. Phase 1 validates the file with `scripts/validate-config.py`, so a
 mistyped key is reported rather than silently ignored. See
 `skills/auto-dev/references/profiles.md`, and
 `skills/auto-dev/references/phase-1-setup.md` for the full Phase 1 procedure.
@@ -280,8 +280,10 @@ under `.auto-dev/` is staged); without `python3` the orchestrator runs the same
 steps by hand. Two are run by the Phase 5 verifier: `check-tests.py` (the
 test-integrity audit) and `mutate.py` (applies mutants one at a time and restores
 every file afterwards).
-Also optional: `dexter`, which the orchestrator uses for symbol lookups in Elixir
-repos; without it on your `PATH` it falls back to `grep`.
+Also optional: a code-index tool a profile names under `symbol_lookup`, which the
+orchestrator uses instead of `grep` to find a symbol's definition and callers.
+The Elixir profile names `dexter`; without it on your `PATH`, the orchestrator
+uses `grep`.
 
 ## Models and effort
 
@@ -389,6 +391,14 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in a profile. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 3.4
+
+3.5 moves the Elixir-only `dexter` rule out of `SKILL.md` into a new optional
+profile key, `symbol_lookup`, which any profile or `.auto-dev.yml` can set.
+Phase 1 records the resolved lookup in `profile.md`. A run in flight can resume
+on 3.5: a `profile.md` written by 3.4 has no _Symbol lookup_ line, and the
+orchestrator then uses `grep -n`.
 
 ## Upgrading from 3.3
 

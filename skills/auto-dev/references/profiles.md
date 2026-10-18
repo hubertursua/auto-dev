@@ -110,6 +110,11 @@ gate:
 worktree_files: [".env", ".env.test"]
 # Optional: how tests are scoped (services required, monorepo/umbrella, slow tiers)
 test_notes: "…"
+# Optional: a code-index tool for finding a symbol's definition and callers.
+# <symbol> is replaced by the name looked up. Omit it to use `grep -n`.
+symbol_lookup:
+  definition: "dexter lookup <symbol>"
+  references: "dexter references <symbol>"
 ```
 
 Fields:
@@ -127,6 +132,12 @@ Fields:
   like broken code rather than missing config.
 - **`test_notes`** (optional) — hints passed into the coding/cleanup briefs so
   tests run at the right scope.
+- **`symbol_lookup`** (optional) — commands the orchestrator uses instead of
+  grep to find where a module, function or class is defined (`definition`) and
+  used (`references`). Each must contain `<symbol>`. Phase 1 keeps them only if
+  the tool is on PATH; otherwise, or when the profile has none, `profile.md`
+  records `grep -n`. A code index answers with less noise than grep, which
+  saves the orchestrator's context.
 
 ## Detection precedence
 
@@ -177,6 +188,9 @@ ci: circleci                  # github-actions | circleci | gitlab | none
 ci_timeout_minutes: 30        # bound on CI watching before it reports and holds
 iteration_budget: 4           # revise rounds per task (per sub-task on a multi-PR run)
 worktree_files: [".env"]      # gitignored files to seed every new worktree with
+symbol_lookup:                # code-index commands instead of grep; <symbol> is the name
+  definition: "dexter lookup <symbol>"
+  references: "dexter references <symbol>"
 security_docs:                # the security directives every worker must obey;
   - "SECURITY.md"             # first source Phase 1 checks, ahead of repo defaults
   - "docs/security/authz.md"

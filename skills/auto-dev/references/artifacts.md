@@ -646,6 +646,7 @@ session does not need it.
 - **Iteration budget:** <n> per task
 - **Mutation cap:** <n> mutants per verifier pass (default 20; TRIVIAL uses at most 8) | off (`mutation.max: 0`)
 - **Worktree files seeded:** <paths copied from the main checkout | none>
+- **Symbol lookup:** `<definition command>` / `<references command>` | `grep -n` — <none in profile | `<tool>` not on PATH>
 - **`.auto-dev.yml`:** <validated | not machine-validated: <reason> — checked by hand | none>
 - **Post-plan gate:** <on | off> — <which condition enabled it>
 - **Security directives:** <resolved paths> | none found — repo coding rules only

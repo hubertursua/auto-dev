@@ -62,10 +62,11 @@ default for every repo.
   `SKILL.md`, `references/`, `agents/` and the evals describe the step in
   neutral terms ("the profile's test command", "the framework's skip marker")
   and read the specifics from the run's `profile.md`.
-- **A rule for one stack says so.** If a rule only applies to one ecosystem,
-  open it with that condition and say what happens everywhere else. `SKILL.md`'s
-  `dexter` rule ("In Elixir repos use `dexter` … No `dexter` on PATH → `grep -n`")
-  is the model.
+- **A rule for one stack goes through the profile.** If a step needs a tool
+  only one ecosystem has, add an optional profile key the step reads, with a
+  stack-neutral fallback when it's absent. `symbol_lookup` is the model:
+  `SKILL.md` says "use `profile.md`'s symbol lookup", which falls back to
+  `grep -n`, and only the Elixir profile names `dexter`.
 - **Examples span languages, or use placeholders.** An example that names a
   command, path or code either shows two or more ecosystems side by side
   (`mix test`, `pytest`, `npm test`) or uses a neutral placeholder

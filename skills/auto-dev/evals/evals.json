@@ -11,6 +11,7 @@
       "expectations": [
         "WORK_LOG.md records the scope call as STANDARD and Mode as single-PR",
         "SPEC.md has Context, Conditions, Assumptions and Security/Compliance criteria sections, and a condition states that an out-of-set value is rejected with a handled error",
+        "profile.md has a Symbol lookup line: the profile's symbol_lookup commands when the tool is on PATH, else `grep -n` with the reason",
         "Every SPEC.md condition has Example, Edge and Verify by lines, and the Define reviewer's brief asks for the ambiguity probe",
         "The Define reviewer, planner and plan reviewer are each spawned with their auto-dev agent type, never general-purpose, and without the Agent tool's model parameter",
         "The S1 session ends after writing HANDOFF.md, without spawning the coder",

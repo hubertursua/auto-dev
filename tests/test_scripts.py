@@ -250,6 +250,21 @@ class ValidateConfigTest(unittest.TestCase):
         r = self.validate("mutation:\n  max: 500\n")
         self.assertEqual(r.returncode, 1)
 
+    def test_symbol_lookup_valid(self):
+        r = self.validate('symbol_lookup:\n  definition: "dexter lookup <symbol>"\n'
+                          '  references: "dexter references <symbol>"\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_symbol_lookup_needs_placeholder(self):
+        r = self.validate('symbol_lookup:\n  definition: "dexter lookup"\n')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("<symbol>", r.stderr)
+
+    def test_symbol_lookup_unknown_field(self):
+        r = self.validate('symbol_lookup:\n  lookup: "dexter lookup <symbol>"\n')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("symbol_lookup", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

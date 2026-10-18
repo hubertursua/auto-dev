@@ -289,8 +289,9 @@ session. Before every one, ask whether a worker should read it instead.
   the whole diff so that you don't.
 - **Each reference file, at most once per session** — `subagent-prompts.md` alone
   is ~5k tokens, and S1/S2/S3 each need only their own phases' references.
-- **In Elixir repos use `dexter lookup` / `dexter references`, not grep**, for any
-  module or function symbol. No `dexter` on PATH → `grep -n`, noted in `WORK_LOG.md`.
+- **Find symbols with `profile.md`'s _Symbol lookup_ commands.** They name the
+  stack's code-index tool when the profile has one and it's on PATH, and
+  `grep -n` otherwise (also when `profile.md` has no such line).
 
 ---
 
