@@ -132,8 +132,8 @@ Never carry two sub-tasks in one context.
 design); **`IMPLEMENTATION.md`** answers _did we build it the way we decided?_ (the
 technical how). They fail independently, so they stay separate. **The coder builds
 from the plan, never the spec.** Beside them sit the **held-out acceptance
-checks**, written from the spec alone before any code exists and sealed away from
-the coder; the Phase 5 verifier runs them, never seeing the plan or the coder's
+checks**, written from the spec alone before any code exists and sealed out of
+the worktree, never named in the coder's brief; the Phase 5 verifier runs them, never seeing the plan or the coder's
 report. The full rationale is in `references/artifacts.md`, _Why two
 documents_.
 
@@ -356,7 +356,8 @@ On **TRIVIAL**, skip steps 1–2 and write a short `IMPLEMENTATION.md` yourself
    `SPEC.md` alone (the plan only for entry points), one or more black-box checks
    per condition; each new-behavior check must **fail on the untouched tree for
    the right reason**. It then **seals** them — removes them from the worktree and
-   keeps the only copy under `acceptance/files/` — and writes `MANIFEST.md`.
+   keeps the only copy under `acceptance/files/` as `<path>.sealed` — and writes
+   `MANIFEST.md`.
 4. **Optional post-plan gate**, if enabled for this run — **independent of the
    scope call**, so it fires on TRIVIAL too.
 

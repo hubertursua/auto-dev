@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Audit a worktree's test changes against its base: catch tests that were
-deleted, skipped, weakened or tampered with, and new tests that assert nothing.
+deleted, skipped, focused, weakened or tampered with, and new tests that assert
+nothing.
 
 Run by the Phase 5 verifier on every pass (references/subagent-prompts.md,
 _Verifier_). Read-only: it never stages, edits or restores anything. Each
@@ -14,30 +15,35 @@ Usage:
 
 <skill-dir> is the auto-dev skill's own directory, not the target repo.
 <worktree> is the tree to audit. --base is the ref Phase 1 cut it from
-(`origin/<base>`). The change set is the working tree against that ref —
-tracked changes from `git diff <ref>`, plus untracked files, which are read
-straight from disk (nothing is marked intent-to-add). Paths under `.auto-dev/`
-are ignored.
+(`origin/<base>`). The change set is the working tree against that ref:
+`git diff <ref>` (which includes files marked intent-to-add), plus untracked
+files, read straight from disk. Paths under `.auto-dev/` are ignored.
 
 --acceptance is `<artifact-dir>/acceptance`, the held-out checks Phase 3
-wrote. Every file under its `files/` directory is the sealed copy of an
-acceptance test, at the repo-relative path it is installed at; the installed
-file in <worktree> must be byte-identical to it.
+wrote. Each file under its `files/` directory is the sealed copy of one check,
+stored at `<repo-relative install path>.sealed` so no test runner collects it;
+the installed file in <worktree> must be byte-identical to it.
 
 Findings (one per line on stdout, tab-separated: KIND, location, detail):
     ACCEPTANCE_MISSING   a sealed acceptance test is not installed
     ACCEPTANCE_MODIFIED  an installed acceptance test differs from its sealed copy
-    DELETED_TEST         a test file that exists at the base is gone
-    REMOVED_ASSERTION    a line holding an assertion was removed or changed in an existing test
-    ADDED_SKIP           a skip / xfail / ignore marker was added to a test
+    DELETED_TEST         a test file that exists at the base is gone (and was
+                         not renamed: a rename is diffed as an edit instead)
+    REMOVED_ASSERTION    a line holding an assertion was removed or changed in
+                         an existing (or renamed) test
+    ADDED_SKIP           a skip / xfail / ignore / focus (`.only`, `fit`,
+                         `@tag :focus`) marker was added to a test
     NO_ASSERTIONS        a new test file defines tests but asserts nothing
+    TEST_CONFIG_CHANGED  a test-runner config or helper changed (it can exclude
+                         or skip tests without touching any test file)
 
 Test files are recognized by name (`*_test.*`, `test_*.py`, `*.test.*`,
 `*.spec.*`, `*_spec.rb`, `*Test.java` …) or by a code file sitting under a
 `test/`, `tests/`, `spec/` or `__tests__/` directory. The assertion and skip
 patterns are heuristics across common stacks (ExUnit, pytest/unittest, Jest/
-Vitest/Mocha, RSpec/Minitest, Go, Rust, JUnit, PHPUnit): a finding is a lead
-to read, and a clean run is not proof the tests are meaningful.
+Vitest/Mocha, RSpec/Minitest, Go, Rust, JUnit, PHPUnit); comment-only lines are
+ignored. A finding is a lead to read, and a clean run is not proof the tests
+are meaningful.
 
 Output:
     stdout  the findings, then `SUMMARY: <n> finding(s)` or `CLEAN: …`
@@ -46,17 +52,20 @@ Output:
 Exit codes:
     0  clean — no findings
     1  findings — each needs a justification tied to SPEC.md, or a correction
-    2  usage error, not a git worktree, or the base ref does not resolve
+    2  usage error, not a git worktree, the base ref does not resolve, or no
+       sealed checks under --acceptance
     3  an acceptance test is missing or modified — never justified (takes
        precedence over 1)
 """
 
 import argparse
+import difflib
 import os
 import re
 import subprocess
 import sys
 
+SEALED_SUFFIX = ".sealed"
 CODE_EXT = {
     ".ex", ".exs", ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".rb",
     ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
@@ -67,10 +76,17 @@ TEST_NAME = re.compile(
     r"(_test\.\w+$|^test_.*\.py$|\.test\.\w+$|\.spec\.\w+$|_spec\.rb$"
     r"|Tests?\.(java|kt|scala|cs|swift|php)$)"
 )
+# Runner configs and shared helpers that can exclude, skip or focus tests.
+TEST_CONFIG = re.compile(
+    r"(^|/)(test_helper\.exs|conftest\.py|pytest\.ini|tox\.ini|setup\.cfg"
+    r"|(jest|vitest|playwright|karma|cypress)\.config\.\w+|\.mocharc(\.\w+)?"
+    r"|phpunit\.xml(\.dist)?|\.rspec|spec_helper\.rb|rails_helper\.rb)$"
+)
+COMMENT_ONLY = re.compile(r"^\s*(#|//|--|%|/\*|\*|;)")
 ASSERTION = re.compile(
-    r"(\bassert\w*!?|\brefute\w*|\bexpect\s*[({]|\.should\b|\bshould\s*\("
-    r"|\bt\.(Error|Errorf|Fatal|Fatalf|Fail|FailNow)\b|\brequire\.\w+\("
-    r"|\bassertThat\b|\bpytest\.raises\b|\.to(_not|Be|Equal|Throw|Have)\w*\b"
+    r"(\bassert(_\w+|[A-Z]\w*|!|\b)|\brefute(_\w+|\b)|\bexpect\s*[({]"
+    r"|\.should\b|\bshould\s*\(|\bt\.(Error|Errorf|Fatal|Fatalf|Fail|FailNow)\b"
+    r"|\brequire\.\w+\(|\bpytest\.raises\b|\.to(_not|Be|Equal|Throw|Have)\w*\b"
     r"|\bmust_\w+|\bverify\s*\()"
 )
 TEST_DEF = re.compile(
@@ -78,11 +94,14 @@ TEST_DEF = re.compile(
     r"|\bfunc\s+Test\w+|@Test\b|#\[test\]|\btest\s*\(|\bproperty\s+[\"'])"
 )
 SKIP = re.compile(
-    r"(@(module)?tag\s+:?skip\b|@tag\s+skip:|@pytest\.mark\.(skip|skipif|xfail)\b"
+    r"(@(module)?tag\s+:?(skip|focus)\b|@tag\s+(skip|focus):"
+    r"|@pytest\.mark\.(skip|skipif|xfail)\b|\bpytestmark\s*=.*\b(skip|xfail)"
     r"|@unittest\.(skip|expectedFailure)\b|\bpytest\.(skip|xfail)\("
-    r"|\b(it|describe|test|context)\.(skip|todo)\b|\bx(it|describe|test|context)\s*[(\"']"
-    r"|\bt\.Skip(Now|f)?\(|@(Disabled|Ignore)\b|#\[ignore\]|\bmarkTestSkipped\("
-    r"|^\s*(skip|pending)(\s*\(|\s+[\"']|\s*$))"
+    r"|\b(it|describe|test|context)\.(skip|todo|only)\b"
+    r"|\b[xf](it|describe|test|context)\s*[(\"']|\bt\.Skip(Now|f)?\("
+    r"|@(Disabled|Ignore)\b|#\[ignore\]|\bmarkTestSkipped\("
+    r"|ExUnit\.(configure|start)\(.*\b(exclude|only)\b"
+    r"|^\s*(skip|pending)(\s*\(|\s+[\"']))"
 )
 HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -96,11 +115,15 @@ def git(worktree, *args):
 
 def is_test_file(path):
     base = os.path.basename(path)
-    ext = os.path.splitext(base)[1]
     if TEST_NAME.search(base):
         return True
-    parts = path.split("/")[:-1]
-    return ext in CODE_EXT and any(p in TEST_DIRS for p in parts)
+    ext = os.path.splitext(base)[1]
+    return ext in CODE_EXT and any(p in TEST_DIRS for p in path.split("/")[:-1])
+
+
+def code(line):
+    """The line, or '' when it is only a comment."""
+    return "" if COMMENT_ONLY.match(line) else line
 
 
 def read(path):
@@ -109,6 +132,20 @@ def read(path):
             return f.read()
     except OSError:
         return None
+
+
+def edit_findings(path, old_lines, new_lines, findings):
+    """Removed/changed assertions and added skips between two versions."""
+    sm = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op in ("replace", "delete"):
+            for n in range(i1, i2):
+                if ASSERTION.search(code(old_lines[n])):
+                    findings.append(("REMOVED_ASSERTION", f"{path}:-{n + 1}", old_lines[n].strip()[:120]))
+        if op in ("replace", "insert"):
+            for n in range(j1, j2):
+                if SKIP.search(code(new_lines[n])):
+                    findings.append(("ADDED_SKIP", f"{path}:{n + 1}", new_lines[n].strip()[:120]))
 
 
 def main() -> int:
@@ -136,17 +173,16 @@ def main() -> int:
     findings = []
     tampered = False
 
-    # Acceptance tests: installed copy must equal the sealed copy.
+    # Acceptance tests: each installed copy must equal its sealed copy.
     sealed = set()
     if args.acceptance:
         root = os.path.join(os.path.abspath(args.acceptance), "files")
-        if not os.path.isdir(root):
-            print(f"ERROR: no sealed acceptance tests at {root}", file=sys.stderr)
-            return 2
         for dirpath, _, names in os.walk(root):
             for n in names:
+                if not n.endswith(SEALED_SUFFIX):
+                    continue
                 src = os.path.join(dirpath, n)
-                rel = os.path.relpath(src, root).replace(os.sep, "/")
+                rel = os.path.relpath(src, root).replace(os.sep, "/")[: -len(SEALED_SUFFIX)]
                 sealed.add(rel)
                 installed = read(os.path.join(wt, rel))
                 if installed is None:
@@ -155,51 +191,77 @@ def main() -> int:
                 elif installed != read(src):
                     findings.append(("ACCEPTANCE_MODIFIED", rel, "differs from the sealed copy"))
                     tampered = True
+        if not sealed:
+            print(f"ERROR: no sealed acceptance tests (*{SEALED_SUFFIX}) under {root}", file=sys.stderr)
+            return 2
 
     tokens = status.split("\0")
-    changed = [(tokens[i], tokens[i + 1]) for i in range(0, len(tokens) - 1, 2)]
+    changed = [(tokens[i][:1], tokens[i + 1]) for i in range(0, len(tokens) - 1, 2)]
     changed += [("A", p) for p in untracked.split("\0") if p]
+    changed = [(c, p) for c, p in changed if not p.startswith(".auto-dev/")]
 
-    for code, path in changed:
-        if path.startswith(".auto-dev/") or not is_test_file(path):
-            continue
-        if code.startswith("D"):
-            findings.append(("DELETED_TEST", path, "test file removed"))
-            continue
-        if code.startswith("A") and path not in sealed:
-            data = read(os.path.join(wt, path))
-            if data is None:
+    for c, path in changed:
+        if TEST_CONFIG.search(path):
+            findings.append(("TEST_CONFIG_CHANGED", path, "runner config or test helper changed"))
+
+    tests = [(c, p) for c, p in changed if is_test_file(p) and p not in sealed]
+    added = {p: (read(os.path.join(wt, p)) or b"").decode("utf-8", "replace")
+             for c, p in tests if c == "A"}
+    paired = set()
+
+    for c, path in tests:
+        if c == "D":
+            try:
+                old = git(wt, "show", f"{args.base}:{path}")
+            except RuntimeError:
+                old = ""
+            # A deleted test whose content reappears in a new file is a rename:
+            # diff it as an edit so a weakened assertion cannot hide behind it.
+            best, ratio = None, 0.0
+            for p, text in added.items():
+                if p in paired:
+                    continue
+                r = difflib.SequenceMatcher(None, old, text, autojunk=False).quick_ratio()
+                if r > ratio:
+                    best, ratio = p, r
+            if best and ratio >= 0.6 and difflib.SequenceMatcher(
+                    None, old, added[best], autojunk=False).ratio() >= 0.6:
+                paired.add(best)
+                edit_findings(best, old.splitlines(), added[best].splitlines(), findings)
+            else:
+                findings.append(("DELETED_TEST", path, "test file removed"))
+        elif c == "M":
+            try:
+                diff = git(wt, "diff", "-U0", "--no-renames", args.base, "--", path)
+            except RuntimeError:
                 continue
-            text = data.decode("utf-8", "replace")
-            for n, line in enumerate(text.splitlines(), 1):
-                if SKIP.search(line):
-                    findings.append(("ADDED_SKIP", f"{path}:{n}", line.strip()[:120]))
-            if TEST_DEF.search(text) and not ASSERTION.search(text):
-                findings.append(("NO_ASSERTIONS", path, "defines tests, asserts nothing"))
+            old_n = new_n = 0
+            for line in diff.splitlines():
+                m = HUNK.match(line)
+                if m:
+                    old_n, new_n = int(m.group(1)), int(m.group(2))
+                    continue
+                if line.startswith(("---", "+++")):
+                    continue
+                if line.startswith("-"):
+                    if ASSERTION.search(code(line[1:])):
+                        findings.append(("REMOVED_ASSERTION", f"{path}:-{old_n}", line[1:].strip()[:120]))
+                    old_n += 1
+                elif line.startswith("+"):
+                    if SKIP.search(code(line[1:])):
+                        findings.append(("ADDED_SKIP", f"{path}:{new_n}", line[1:].strip()[:120]))
+                    new_n += 1
+
+    for path, text in added.items():
+        if path in paired:
             continue
-        if code.startswith("A"):
-            continue  # a sealed acceptance test; checked above
-        # Modified existing test: inspect the hunks.
-        try:
-            diff = git(wt, "diff", "-U0", "--no-renames", args.base, "--", path)
-        except RuntimeError:
-            continue
-        old_n = new_n = 0
-        for line in diff.splitlines():
-            m = HUNK.match(line)
-            if m:
-                old_n, new_n = int(m.group(1)), int(m.group(2))
-                continue
-            if line.startswith(("---", "+++")):
-                continue
-            if line.startswith("-"):
-                if ASSERTION.search(line[1:]):
-                    findings.append(("REMOVED_ASSERTION", f"{path}:-{old_n}", line[1:].strip()[:120]))
-                old_n += 1
-            elif line.startswith("+"):
-                if SKIP.search(line[1:]):
-                    findings.append(("ADDED_SKIP", f"{path}:{new_n}", line[1:].strip()[:120]))
-                new_n += 1
+        lines = text.splitlines()
+        for n, line in enumerate(lines, 1):
+            if SKIP.search(code(line)):
+                findings.append(("ADDED_SKIP", f"{path}:{n}", line.strip()[:120]))
+        body = "\n".join(code(l) for l in lines)
+        if TEST_DEF.search(body) and not ASSERTION.search(body):
+            findings.append(("NO_ASSERTIONS", path, "defines tests, asserts nothing"))
 
     for kind, loc, detail in findings:
         print(f"{kind}\t{loc}\t{detail}")

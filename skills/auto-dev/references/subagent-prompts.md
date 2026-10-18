@@ -247,8 +247,9 @@ Branch on the **SCOPE CALL**:
 
 - **TRIVIAL** — skip the Define review, the planner and the plan reviewer. Write
   a short `IMPLEMENTATION.md` yourself: the files to touch and the test that
-  proves it. Then spawn the acceptance tester, and go to Phase 4 (but see the
-  post-plan gate below — it still fires if enabled).
+  proves it. Then spawn the acceptance tester and end S1 at its boundary as
+  usual, Phase 4 next (but see the post-plan gate below — it still fires if
+  enabled).
   Record `Mode: single-PR` and `Scope call: TRIVIAL` in `WORK_LOG.md`. Phase 3
   still runs the acceptance tester, so its ledger row goes `in-progress` and then
   `done` like any phase — never `skipped`, or a run cut off before the tester
@@ -402,6 +403,11 @@ Inputs:
   existing tests, for conventions, helpers and fixtures.
 Binding rules: <summary>. Use synthetic test data only.
 
+First, start clean: if <artifact-dir>/acceptance/ exists from an earlier,
+cut-off run, delete it, and remove from the worktree any untracked test file
+with `acceptance` in its name that `git status --porcelain --untracked-files=all`
+shows. The worktree must hold no change before you begin.
+
 For every SPEC.md condition, Security/Compliance criteria included:
 1. Write at least one black-box check that fails if the condition does not hold.
    Drive it through the most external entry point the repo's tests can reach (a
@@ -429,7 +435,8 @@ For every SPEC.md condition, Security/Compliance criteria included:
    call, a request, a log line).
 
 Then SEAL the checks:
-- copy each check file to <artifact-dir>/acceptance/files/<its repo-relative path>;
+- copy each check file to <artifact-dir>/acceptance/files/<its repo-relative
+  path>.sealed (the `.sealed` suffix keeps every test runner from collecting it);
 - delete it from the worktree, and any directory you created for it;
 - confirm `git status --porcelain --untracked-files=all` lists none of your files.
 Write <artifact-dir>/acceptance/MANIFEST.md to this template (strict):
@@ -447,14 +454,25 @@ or listed under Not automatable, and `git status` in the worktree is unchanged.
 Fix a gap by re-spawning this agent with the gap named (a first pass is not a
 round; a re-spawn spends one, consumer #2 in `references/correction-loop.md`).
 
-**Repair mode.** When the verifier reports a check as defective and you agree
-against `SPEC.md` (_Acting on SPEC_EVAL.md_, below), re-spawn this agent with the
-same brief scoped to that check, plus: "The tree now holds the built change, so
-skip the base run for the repaired check and record its Base run as `not re-run
-(repair)`. Update its sealed copy and its MANIFEST row; leave every other check
-alone." A repaired check is no longer proof the change was needed, so the
-verifier counts it as Adequate evidence at most, never Strong. Repair spends a
-round (consumer #3).
+**Repair mode.** A check is repaired, never edited by the coder, when you agree
+against `SPEC.md` that it is wrong. Three things lead here: the verifier reports
+it defective (_Acting on SPEC_EVAL.md_, below); a `BLOCKED` plan revision or a
+post-plan-gate revision changes an entry point it calls; or, in Phase 6, a
+must-fix review finding or a human reviewer's blocker is about the check itself.
+If you disagree, the check stands and its failure is the coder's to fix. To
+repair, re-spawn this agent with the same brief scoped to the named checks
+(skip its "start clean" step), plus: "The tree now holds the built change and
+these checks are installed at their paths. Fix each one IN PLACE at its
+installed path, then copy it over its sealed copy so the two stay
+byte-identical; do not remove it from the worktree. Skip the base run and
+record its Base run as `not re-run (repair)`. Update its MANIFEST row; leave
+every other check alone." (Before the build — a post-plan-gate revision —
+nothing is installed: re-run the full brief for the affected checks instead,
+base run included.) Then re-spawn the verifier in re-check mode. A repaired
+check no longer proves the change was needed, so the verifier counts it as
+Adequate evidence at most, never Strong. A repair spends a round from the entry
+point that led to it (consumer #3 in Phase 4–5, #4 or #5 in Phase 6); a
+post-plan-gate revision's spends none, like the revision itself.
 
 ### Optional post-plan gate (orchestrator)
 If enabled for this run, pause here (`AskUserQuestion`) for the user to approve
@@ -530,8 +548,10 @@ Settle it before Phase 5, against `SPEC.md`, which you hold:
 - **The plan is wrong or incomplete** (it names a function that cannot work that
   way, misses a caller, contradicts the code): on STANDARD, re-spawn the planner
   with the blocker and have it revise only the affected steps; on TRIVIAL, edit
-  `IMPLEMENTATION.md` yourself. Then re-dispatch `auto-dev:coder` for the stopped
-  steps. This spends one round (consumer #3, `references/correction-loop.md`).
+  `IMPLEMENTATION.md` yourself. If the revision changes an entry point an
+  acceptance check calls, repair those checks too (_Acceptance tester_, repair
+  mode). Then re-dispatch `auto-dev:coder` for the stopped steps. This spends one
+  round (consumer #3, `references/correction-loop.md`).
 - **The spec itself cannot be met as written** (two conditions contradict each
   other, or the codebase makes one impossible): that is the _self-contradictory or
   impossible_ stop-and-report in `SKILL.md`. Report which conditions and why.
@@ -588,15 +608,19 @@ and the sealed checks under <artifact-dir>/acceptance/files/, <artifact-dir>/pro
 (test command, test_notes), and the binding rules (<summary>). Do NOT read
 IMPLEMENTATION.md or any other file under <artifact-dir>.
 
-Mode: <FIRST PASS | RE-CHECK after <what changed: an acceptance correction / the
-cleanup pass / a Phase 6 correction>; rewrite every row of the existing SPEC_EVAL.md>
-Corrections dispatched so far (copy into SPEC_EVAL.md's table): <rows, or "none">
+Mode: <FIRST PASS | RE-CHECK after <what changed: an acceptance correction / an
+acceptance-check repair / the cleanup pass / a Phase 6 correction>>. On a
+re-check, do NOT read the existing SPEC_EVAL.md: judge from scratch and overwrite
+it.
 
 1. Integrity, then install. Paths below are absolute.
-   - FIRST PASS: copy every file under <artifact-dir>/acceptance/files/ to the same
-     repo-relative path in the worktree. If a file already exists at one of those
-     paths, do not overwrite it: stop and return INSTALL CONFLICT with the path.
-     Then run the audit (below).
+   Each sealed check <artifact-dir>/acceptance/files/<path>.sealed installs at
+   <worktree>/<path>.
+   - FIRST PASS: check every path before copying any. A file already there and
+     byte-identical to its sealed copy is already installed (a resumed pass):
+     leave it. A file there that differs is not yours: copy NOTHING, and return
+     INSTALL CONFLICT with every such path. Otherwise install the rest, then run
+     the audit (below).
    - RE-CHECK: run the audit first, then re-copy every sealed check over its
      installed path (this undoes any edit; the audit has already recorded it).
    Audit: python3 <skill-dir>/scripts/check-tests.py <worktree> --base origin/<base> --acceptance <artifact-dir>/acceptance
@@ -607,7 +631,10 @@ Corrections dispatched so far (copy into SPEC_EVAL.md's table): <rows, or "none"
      git diff origin/<base>
    and read it whole (spill it to $TMPDIR if long). Never `git add -N .`.
 3. Run the acceptance checks with the profile's test command scoped to their
-   files; save the output to <artifact-dir>/evidence/acceptance.txt.
+   files; save the output to <artifact-dir>/evidence/acceptance.txt. Confirm the
+   runner executed every test MANIFEST.md lists — a test excluded, filtered or
+   skipped did not pass: its condition is unmet, and the cause is an Unjustified
+   integrity finding.
 4. For each SPEC.md condition (Security/Compliance criteria included), decide its
    evidence tier. Before running anything for it, write down the outcome you
    expect; then run and compare. Save what you ran and saw to
@@ -632,7 +659,8 @@ Corrections dispatched so far (copy into SPEC_EVAL.md's table): <rows, or "none"
      way to observe it here. Say exactly what a human must check, and how.
 5. Judge each integrity finding: Justified (name the SPEC.md condition that
    changes or removes that behavior) or Unjustified. ACCEPTANCE_* findings are
-   never justified. Also look through the diff for gaming the audit cannot see:
+   never justified, and so is TEST_CONFIG_CHANGED when it excludes, skips or
+   focuses tests. Also look through the diff for gaming the audit cannot see:
    production code branching on values that appear only in tests, checks for a
    test environment, logic stubbed out or returning a constant. Each is an
    Unjustified finding.
@@ -668,15 +696,14 @@ One brief covers every open item from one verifier pass. A condition at
 `manual` is **not** a correction — nothing the coder writes can make it
 observable here. It goes to the PR gate and the PR body as a check for a human.
 
-If a verdict looks wrong to you against `SPEC.md`, re-spawn the verifier once
-with your objection stated; its second answer stands. An `INSTALL CONFLICT` means
-the coder wrote a file at an acceptance check's path: correct the coder to move
-its file, then re-run the verifier's first pass.
+If a verdict looks wrong to you against `SPEC.md`, re-spawn the verifier once,
+naming the condition and what to re-examine — never your reasons for thinking it
+met; its second answer stands. An `INSTALL CONFLICT` means the coder wrote a file
+at an acceptance check's path: correct the coder to move its file (a correction,
+spending a round), then re-run the verifier's first pass.
 
-If the verifier reports a **defective acceptance check** and you agree against
-`SPEC.md`, re-spawn the acceptance tester in repair mode (_Acceptance tester_,
-Phase 3) instead of correcting the coder, then re-spawn the verifier. If you
-disagree, the check stands and its failure is the coder's to fix.
+If the verifier reports a **defective acceptance check**, settle it by repair
+mode (_Acceptance tester_, Phase 3), never by correcting the coder.
 
 The correction brief:
 

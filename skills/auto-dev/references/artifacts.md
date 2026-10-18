@@ -115,7 +115,7 @@ Single-PR run (the task fits one PR):
   IMPLEMENTATION.md       # the technical plan — how (Phase 3)
   acceptance/             # held-out checks from SPEC.md alone (Phase 3, acceptance tester)
     MANIFEST.md           # condition → check, kind, base-run result; what is not automatable
-    files/<repo-path>     # the sealed copy of each check, at the path the verifier installs it
+    files/<repo-path>.sealed  # the sealed copy of each check; the verifier installs it at <repo-path>
   SPEC_EVAL.md            # code vs. spec, with an evidence tier per condition (Phase 5, verifier)
   evidence/               # what the verifier ran and saw: integrity.txt, acceptance.txt, C<n>.txt
   lint/                   # one report per quality-gate check (Phase 5)
@@ -234,7 +234,7 @@ from the phase tables' `Status` column, so a renamed field or column breaks it.
 |---|-------|--------|-------|
 | 1 | Setup | done | |
 | 2 | Define | in-progress | |
-| 3 | Plan | skipped | scope call TRIVIAL — plan written by the orchestrator |
+| 3 | Plan | done | TRIVIAL: plan by orchestrator; planner and plan review skipped; acceptance checks sealed |
 | 4 | Build | pending | |
 | 5 | Verify | pending | |
 | 6 | Ship | pending | staging gate: n/a (no staging branch) |
@@ -261,7 +261,7 @@ below it — the same six-row shape a single-PR run uses.
 | # | Phase | Status | Notes |
 |---|-------|--------|-------|
 | 2 | Define | done | scope call TRIVIAL |
-| 3 | Plan | skipped | plan written by the orchestrator |
+| 3 | Plan | done | TRIVIAL: plan by orchestrator; planner and plan review skipped; acceptance checks sealed |
 | 4 | Build | in-progress | |
 | 5 | Verify | pending | |
 | 6 | Ship | pending | staging gate: n/a (no staging branch) |
@@ -433,7 +433,8 @@ S2 Build progress:
 - [ ] 4   Coder builds from IMPLEMENTATION.md only; settle any BLOCKED step; note plan deviations
 - [ ] 5.1 Verifier (first pass) → SPEC_EVAL.md (unmet / partial / unjustified integrity → correction + verifier re-check)
 - [ ] 5.2 Simplify (cleanup agent, after the acceptance loop settles — not per correction; no budget)
-- [ ] 5.3 Quality gate to green → lint/*.md; verifier re-check (unmet → correction + cleanup re-spawn + re-check)
+- [ ] 5.3 Quality gate to green → lint/*.md (never by weakening a test)
+- [ ] 5.4 Verifier re-check over the final code (unmet → correction + cleanup re-spawn + re-check)
 - [ ] Boundary: update WORK_LOG.md → overwrite HANDOFF.md → tell the user → STOP
 ```
 
@@ -498,8 +499,11 @@ shape.
   `MANIFEST.md` maps each `SPEC.md` condition to its checks, each check's kind
   (`fail-to-pass` or `pass-to-pass`) and its run on the untouched tree, and lists
   the conditions no check can drive, with an observable proxy where one exists.
-  `files/` holds the **sealed** copy of each check at its repo-relative path; the
-  worktree holds no copy until the verifier installs them in Phase 5. Once
+  `files/` holds the **sealed** copy of each check at its repo-relative path plus
+  `.sealed`, a suffix no test runner collects; the worktree holds no copy until
+  the verifier installs them in Phase 5. The coder is never given the path, but
+  `.auto-dev/` is in its worktree on a single-PR run: like `SPEC.md`, the checks
+  are withheld by the brief, not by the filesystem. Once
   installed they ship in the PR like any other test, and
   `scripts/check-tests.py` fails any run where an installed copy differs from its
   sealed one.
@@ -781,20 +785,17 @@ are rows in this table — never a separate pass.
 ## Defective acceptance checks
 <each check that asserts something SPEC.md does not say, and why — or "None.">
 
-## Corrections dispatched
-| Round | Item | Brief | Outcome |
-|-------|------|-------|---------|
-| 1 | 4 | <one line> | met |
-
 ## Unresolved
-<every condition still partial or unmet, and every Unjustified finding, when the
-loop settled, and what was tried. Then every `manual` condition. This is what the
-PR body's unticked boxes are drawn from.>
+<every condition still partial or unmet, and every Unjustified finding, as this
+pass found them, then every `manual` condition. This is what the PR body's
+unticked boxes are drawn from.>
 ```
 
-The verifier rewrites the whole file on every pass. Carry the `Corrections
-dispatched` rows over from the previous version (the orchestrator tells it what
-was dispatched) so the history survives.
+The verifier rewrites the whole file on every pass, from scratch and without
+reading the previous version: its verdicts must not lean on the last pass's.
+The correction history — what each round was dispatched for and what it
+bought — lives in `WORK_LOG.md`, which the verifier never reads; the final
+report and the stop-and-report's "what was tried" come from there.
 
 ### `review/pass-<n>/R<k>.md` (Phase 6a, code reviewer)
 

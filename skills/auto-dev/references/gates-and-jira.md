@@ -76,8 +76,9 @@ Enable for the run when **any** of these holds, and record which one in
 - **Summary:** task, `SPEC.md` + `IMPLEMENTATION.md` paths, key assumptions, main
   risks, files the plan will touch, and the acceptance coverage from
   `acceptance/MANIFEST.md` (checks per condition; each not-automatable condition
-  by name). A revision that changes an entry point the checks call re-spawns the
-  acceptance tester before the gate re-fires; like the revision, it spends no
+  by name). A revision that changes an entry point the checks call re-runs the
+  acceptance tester for those checks before the gate re-fires (nothing is
+  installed yet, so with their base run); like the revision, it spends no
   round.
 - **Options:** `Approve & build` · `Revise plan (tell me what to change)` · `Stop`.
 

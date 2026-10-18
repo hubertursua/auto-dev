@@ -49,7 +49,8 @@ make tests pass by weakening them. Verification is built around that:
   spec condition into a black-box test from the spec alone. Every check for new
   behavior must **fail on the untouched code for the right reason**, since a test
   that passes before the change exists proves nothing. The checks are then sealed
-  away: the coder never sees them during the build.
+  out of the worktree (stored where no test runner collects them), and the
+  coder's brief never names them.
 - **An independent verifier that runs things.** After the build, a fresh verifier
   installs the checks and **runs** them. It never sees the plan or the coder's
   report. Each condition gets a verdict and an evidence tier: **Strong** (the

@@ -12,7 +12,7 @@
 |---|-------|--------|-------|
 | 1 | Setup | done | CI provider: github-actions |
 | 2 | Define | done | scope call TRIVIAL |
-| 3 | Plan | skipped | scope call TRIVIAL — plan written by the orchestrator |
+| 3 | Plan | done | TRIVIAL: plan by orchestrator; planner and plan review skipped; acceptance checks sealed |
 | 4 | Build | done | |
 | 5 | Verify | done | all conditions met; quality gate green |
 | 6 | Ship | in-progress | staging gate: n/a (no staging branch); code review pass 1: done, 0 open; security review: in progress |
