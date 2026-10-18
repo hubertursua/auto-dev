@@ -4,7 +4,7 @@
     "should_trigger": true
   },
   {
-    "query": "ok i want you to just do this one yourself end to end. the market_status field needs a new `suspended_pending_review` state, the state machine is in lib/acme/markets/status.ex. write it, test it, and open the PR. don't check in with me on every step",
+    "query": "ok i want you to just do this one yourself end to end. the market_status field needs a new `suspended_pending_review` state, the state machine is in acme/markets/status.py. write it, test it, and open the PR. don't check in with me on every step",
     "should_trigger": true
   },
   {
@@ -84,7 +84,7 @@
     "should_trigger": true
   },
   {
-    "query": "one test is red on my branch — test/acme/markets/status_test.exs:142, the `rejects illegal transition` case. can you figure out why and fix it",
+    "query": "one test is red on my branch — src/markets/status.test.ts:142, the `rejects illegal transition` case. can you figure out why and fix it",
     "should_trigger": false
   },
   {
@@ -180,7 +180,7 @@
     "should_trigger": true
   },
   {
-    "query": "continue the rebase — i fixed the conflicts in lib/acme/markets/status.ex, just finish it and push",
+    "query": "continue the rebase — i fixed the conflicts in internal/markets/status.go, just finish it and push",
     "should_trigger": false
   },
   {

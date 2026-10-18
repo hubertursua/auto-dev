@@ -116,15 +116,15 @@ wrote itself.
   was run instead of a held-out check), every `manual` condition with exactly
   what the human must check, and every test-integrity finding judged Justified,
   with its reason, so the user can disagree. An Unjustified finding still open
-  means Phase 5 did not settle: say so, never present it as a pass. For example:
+  means Phase 5 did not settle: say so, never present it as a pass.
   Then the mutation line: killed of total, and each surviving mutant judged
-  equivalent, with its reason, so the user can disagree.
+  equivalent, with its reason, so the user can disagree. Example in TypeScript:
   ```
   Acceptance — 5 met (4 Strong, 1 Adequate) · 0 partial · 0 unmet · 1 manual
     Mutation: 14 of 15 killed · 1 equivalent (M7: sort of a one-element list)
     C2 Adequate: no held-out check (repaired); verifier observed GET /todos
     C6 manual: open /settings on a phone and check the toggle is visible
-    Test changes: 1 justified — todos_test.exs:-42 assertion changed (C3 makes it 404)
+    Test changes: 1 justified — todos.test.ts:-42 assertion changed (C3 makes it 404)
   ```
 - **The two reviews (before asking):** from `CODE_REVIEW.md` and
   `SECURITY_REVIEW.md`. For each, give the overall confidence with its reason,
@@ -132,14 +132,14 @@ wrote itself.
   confidence. Then list the pre-existing security findings for the user, each
   with its confidence and location. Leave advisory findings and noise out; say
   only how many there are and where they are. A **Low** overall confidence is a
-  warning, never a clean pass: say what failed. For example:
+  warning, never a clean pass: say what failed. Example in TypeScript:
   ```
   Code review — confidence: High (3/3 reviewers, full diff)
     Must-fix: 0 open · 2 fixed (C1 High, C2 Medium)
     Advisory: 4 (in CODE_REVIEW.md)
   Security review — confidence: High
     Must-fix: 0 open · 1 fixed (S1 High)
-    Pre-existing, for you: 1 — S2 (Medium) lib/auth.ex:88, session token not rotated on login
+    Pre-existing, for you: 1 — S2 (Medium) src/auth.ts:88, session token not rotated on login
   ```
   A must-fix finding is open here only when the iteration budget ran out
   (`references/correction-loop.md`, _On exhaustion_). Say so, and that `Open PR`

@@ -61,6 +61,7 @@ TOP_LEVEL = {
     "setup": (list, "ordered install/activation commands"),
     "gate": (list, "ordered quality-gate checks"),
     "test_notes": (str, "how tests are scoped"),
+    "symbol_lookup": (dict, "definition / references commands"),
     "worktree_files": (list, "gitignored files to seed each worktree with"),
     "branches": (dict, "base / staging / prefix"),
     "ci": (str, "CI provider"),
@@ -77,6 +78,9 @@ PR_REVIEW = {"inline_comments": bool}
 GATES = {"post_plan": bool}
 MUTATION = {"max": int}
 MUTATION_MAX = 50
+# Each symbol-lookup command is run with <symbol> replaced by the name sought.
+SYMBOL_LOOKUP = {"definition": str, "references": str}
+SYMBOL_PLACEHOLDER = "<symbol>"
 
 errors: list[str] = []
 warnings: list[str] = []
@@ -226,6 +230,14 @@ def main() -> int:
                     and not 0 <= cap <= MUTATION_MAX):
                 errors.append(f"mutation.max: must be 0 (off) to {MUTATION_MAX}, "
                               f"got {cap}")
+        elif key == "symbol_lookup":
+            check_mapping(value, SYMBOL_LOOKUP, "symbol_lookup")
+            for field, cmd in (value.items() if isinstance(value, dict) else ()):
+                if (field in SYMBOL_LOOKUP and isinstance(cmd, str)
+                        and SYMBOL_PLACEHOLDER not in cmd):
+                    errors.append(f"symbol_lookup.{field}: the command must contain "
+                                  f"{SYMBOL_PLACEHOLDER}, which is replaced by the "
+                                  f"name looked up")
         elif key == "jira":
             if check_type(value, dict, "jira"):
                 for jkey, jval in value.items():

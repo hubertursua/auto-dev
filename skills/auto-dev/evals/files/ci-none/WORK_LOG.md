@@ -2,7 +2,7 @@
 
 - **Task:** Make the expiry validation error name the invalid field
 - **Ticket:** none — the expiry validation error says 'invalid date'; it should say which field was invalid
-- **Repo:** <repo-name>   **Base:** main   **Stack:** elixir
+- **Repo:** <repo-name>   **Base:** main   **Stack:** <profile>
 - **Control worktree:** <abs-path-to-worktree>   **Branch:** fix/expiry-error-field
 - **Mode:** single-PR   **Scope call:** TRIVIAL   (`OVERSIZED` runs multi-PR)
 - **Iteration budget:** 4 total revise rounds (4 remaining)

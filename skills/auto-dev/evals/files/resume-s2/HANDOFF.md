@@ -5,7 +5,7 @@ Branch: feat/allowed-set-guard   Base: origin/main   Sub-task: n/a
 Iteration budget remaining: 4/4
 
 ## Done
-- Phase 1: worktree created, elixir profile loaded, .auto-dev/ excluded.
+- Phase 1: worktree created, <profile> profile loaded, .auto-dev/ excluded.
 - Phase 2: SPEC.md written; scope call STANDARD; define review clean.
 - Phase 3: IMPLEMENTATION.md written; plan review clean; acceptance checks sealed
   (acceptance/MANIFEST.md: every condition covered).

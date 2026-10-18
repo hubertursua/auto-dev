@@ -25,6 +25,9 @@ test_notes: >-
   root runs all apps; scope to one app's suite with `mix cmd --app <app> mix test`
   when the task is confined to a single app. Dialyzer's first run builds a PLT and
   can be slow; that's expected, not a failure.
+symbol_lookup:
+  definition: "dexter lookup <symbol>"
+  references: "dexter references <symbol>"
 ```
 
 ## Notes
@@ -39,6 +42,9 @@ test_notes: >-
 - **Credo / Dialyzer optional per repo.** Not every Elixir repo uses them, and
   this profile's `gate` lists both. Phase 1 drops a check whose tool isn't actually present —
   the general rule for every stack, in `references/profiles.md`.
+- **`dexter` is optional.** It indexes Elixir code, so a symbol lookup returns
+  the definition and its callers without grep's false matches. Without `dexter`
+  on PATH, Phase 1 records `grep -n` as the symbol lookup instead.
 - **This is the reference profile.** It mirrors the conventional Elixir quality gate
   (`mix compile` / `format --check-formatted` / `credo` / `dialyzer` / `test`);
   other stacks follow the same schema.
