@@ -385,9 +385,10 @@ PR: the phase table, the worker and model table, the dependencies, the
 
 Branches are named `<type>/<short-kebab-description>` (`fix/mutate-mtime`), PR
 titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`,
-`chore` and `ci`. Every PR is squash-merged. PR conventions,
-the full README checklist and the rules for changing a script are in
-`CLAUDE.md`.
+`chore` and `ci`. Every PR is squash-merged. No change may tie the pipeline to
+one language: stack-specific commands and syntax belong in a profile. PR
+conventions, the full README checklist, the language-agnostic rules and the
+rules for changing a script are in `CLAUDE.md`.
 
 ## Upgrading from 3.3
 

@@ -49,6 +49,40 @@ that a script can check, add it there.
   The full eval suite is slow and needs a GitHub-hosted fixture repo, so PRs
   usually don't run it. Say so in the PR's Testing section.
 
+## Keep auto-dev language-agnostic
+
+auto-dev has to work the same in a Python, Node, Go or Elixir repo. A run learns
+the repo's stack from its profile (`profiles/<stack>.md`) or from discovery
+(`profiles/default.md`). Nothing else in this repo may assume a stack. Agents
+copy what they read, so a rule or example written for one language becomes a
+default for every repo.
+
+- **Stack-specific facts live in a profile.** Commands, tool names, file
+  layouts and test-framework syntax for one stack go in `profiles/<stack>.md`.
+  `SKILL.md`, `references/`, `agents/` and the evals describe the step in
+  neutral terms ("the profile's test command", "the framework's skip marker")
+  and read the specifics from the run's `profile.md`.
+- **A rule for one stack says so.** If a rule only applies to one ecosystem,
+  open it with that condition and say what happens everywhere else. `SKILL.md`'s
+  `dexter` rule ("In Elixir repos use `dexter` … No `dexter` on PATH → `grep -n`")
+  is the model.
+- **Examples span languages, or use placeholders.** An example that names a
+  command, path or code either shows two or more ecosystems side by side
+  (`mix test`, `pytest`, `npm test`) or uses a neutral placeholder
+  (`<test command>`, `src/<module>`). Don't add an example in only one language.
+- **Scripts stay language-blind.** A helper script takes paths and commands as
+  input and never hardcodes one stack's test runner or syntax. Where it has to
+  recognize code (as `check-tests.py` does for skips and assertions), the
+  patterns cover several stacks, with a test for each one you add.
+- **Evals and fixtures don't assume a stack.** A setup step says what to plant
+  ("mark a test as skipped"), not one framework's syntax; ledger fixtures use
+  placeholders such as `<profile>`; trigger queries span several languages.
+
+Before pushing, grep what you changed for one stack's terms
+(`grep -rn -i -E "elixir|exunit|mix |credo|dialyzer|\.exs?\b" skills/ agents/`,
+and the same for any other stack your change mentions). Each hit should be in a
+profile, scoped to that stack, or one example among several.
+
 ## Every PR keeps README.md current
 
 If a PR changes how the pipeline behaves, update `README.md` **in the same PR**.
