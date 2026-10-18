@@ -35,8 +35,8 @@ and fixed, and the PR never collects review-fix commits.
    again. Pre-existing → the PR gate, for the user. Procedure:
    `references/review.md`.
 
-   Findings stay on disk. Post them as inline PR comments, once the PR is open,
-   **only** if the user asks during the run, or `.auto-dev.yml` sets
+   Findings stay on disk. They are posted as inline PR comments (step 5) **only**
+   if the user asks during the run, or `.auto-dev.yml` sets
    `pr_review.inline_comments: true`.
 3. **Gate:** pause for approval to open the PR (`references/gates-and-jira.md`).
    The summary carries both reviews: each one's overall confidence, the must-fix
@@ -133,6 +133,13 @@ and fixed, and the PR never collects review-fix commits.
    open a second — and afterwards read the result back
    (`gh pr view <pr> --json url,isDraft,baseRefName,title,body`) and fix any
    requirement it misses, including a `baseRefName` that isn't `<base>`.
+
+   **Inline review comments**, only if the user asked for them during the run or
+   `.auto-dev.yml` sets `pr_review.inline_comments: true`: once the PR is
+   confirmed, post each finding from `CODE_REVIEW.md` and `SECURITY_REVIEW.md`
+   that is still open or advisory as an inline comment at its `path:line`, with
+   its verdict and confidence. Skip noise and fixed findings, and skip
+   pre-existing security findings unless the user chose `Leave it` at the gate.
 6. **CI monitoring** — poll the PR's checks (detected provider) with a bounded
    timeout (`references/gates-and-jira.md`). On red pre-merge the response is a
    correction loop, not an immediate halt: `references/correction-loop.md`. Its

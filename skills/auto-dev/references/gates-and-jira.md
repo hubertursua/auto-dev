@@ -125,12 +125,16 @@ wrote itself.
   ships it listed in the PR body's `Review` section.
 - **Options:** `Open PR` · `Hold (don't push yet)` · `Stop`.
 - **Triage, only when there are pre-existing security findings for the user:**
-  ask a second question in the same `AskUserQuestion` call, one per finding (up
-  to four; group the rest into one question if there are more):
+  add one question per finding to the same `AskUserQuestion` call. The call
+  holds at most four questions and the gate's own options take one, so ask about
+  up to three findings and group any others into one question:
   `Leave it (note in the PR body)` · `Fix it in this PR` · `Ignore it`.
   `Fix it in this PR` is a correction (`references/correction-loop.md`, entry
   _Phase 6a — review_): it spends a round, the fix is reviewed like any other
-  (`references/review.md`), and the gate fires again on the result. `Leave it`
+  (`references/review.md`), and the gate fires again on the result. It **wins
+  over `Open PR`**: when both are picked, commit nothing, run the correction, and
+  ask the gate again. At zero budget, leave `Fix it in this PR` out of the options
+  and say why. `Leave it`
   adds the finding to the PR body's `Review` section. `Ignore it` records the
   decision in `WORK_LOG.md` and nothing else. Record every triage decision, and
   its reason, in `WORK_LOG.md`.
@@ -164,7 +168,7 @@ signs off on the change itself.
 Never start a multi-PR run unapproved.
 - **Summary:** why the ticket exceeds one PR, the proposed ordered sub-tasks with
   their dependencies, that each becomes its own branch and PR, and **what it will
-  cost**: roughly 9 or 12 worker spawns per sub-task depending on how each is
+  cost**: roughly 8–9 or 11–12 worker spawns per sub-task depending on how each is
   likely to size up (the Phase 6a reviews alone are at least 5: three code
   reviewers, the judge and the security reviewer, plus re-votes, a verification,
   and a re-review after every fix), plus the approvals it will ask for — a PR gate

@@ -111,7 +111,7 @@ resolved `gate` commands, CI provider and Jira mapping — never re-derive them)
 Beyond those, read an artifact only when a phase **of yours** needs it: in S2,
 `SPEC.md` for the acceptance check; in S3, `SPEC.md`, `SPEC_EVAL.md`,
 `lint/*.md`, `CODE_REVIEW.md` and `SECURITY_REVIEW.md` for the PR body and the PR
-gate summary. `IMPLEMENTATION.md` is the
+gate summary, and `review/pass-<n>/VOTES-R<k>.md` to apply the re-votes. `IMPLEMENTATION.md` is the
 coder's, never yours. For anything else — including a question _about_ one of
 those files outside the phase that needs it — spawn a worker that reads it and
 returns an answer.

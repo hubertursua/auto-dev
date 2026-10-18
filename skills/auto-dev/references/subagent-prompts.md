@@ -71,7 +71,8 @@ Each type's `tools:` frontmatter, this list, and the `_Tools:_` line on each bri
 below state the same thing; change them together:
 
 - **Orchestrator (you):** TodoWrite, Bash (git/gh/CI, worktree, setup), Read,
-  Edit (revise artifacts after critique), Write (`WORK_LOG.md`, `profile.md`,
+  Edit (revise artifacts after critique, and apply re-votes to `CODE_REVIEW.md`),
+  Write (`WORK_LOG.md`, `profile.md`,
   `SPEC_EVAL.md`, and `IMPLEMENTATION.md` on the TRIVIAL fast path), the
   Agent/Task tool (spawn every worker), AskUserQuestion
   (gates), Skill (only if a fitting skill opens the PR in 6a), and — when a

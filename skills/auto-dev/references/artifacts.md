@@ -361,10 +361,12 @@ wherever the two disagree.
    acting: `git log`, `git status`, whether the branch is on the remote,
    `gh pr view`. A PR may already be open, or already merged. Reconcile the ledger
    to what git and `gh` actually report, then continue from there. With no commit
-   on the branch, the PR gate has not passed: the run was in the reviews, which
-   come before it. Re-run every review step the Phase 6 Notes do not record as
-   done (`references/review.md`, _The review loop_), and never trust a review
-   report the Notes do not vouch for.
+   on the branch and no PR-gate approval recorded in the Notes, the PR gate has
+   not passed: the run was in the reviews, which come before it. Resume them as
+   `references/review.md`, _The review loop_, says: re-run every review step the
+   Notes do not record as done, and never trust a review report the Notes do not
+   vouch for. A correction the Notes record as dispatched but not re-reviewed
+   is re-dispatched without spending another round.
 5. **Multi-PR runs** restart at the first sub-task that is not `done`, and within it
    at the first phase that is not `done` in **that sub-task's own phase table**. A
    sub-task with no phase table goes by its summary `status`: `done` is complete
@@ -426,7 +428,7 @@ S3 Ship progress:
 - [ ] 6a.2 Security review: security reviewer (/security-review) → judge verifies High/Medium → SECURITY_REVIEW.md (must-fix → correction loop, then 6a.1 on the fix's files, then 6a.2 again)
 - [ ] 6a.3 PR gate (both reviews' confidence + counts; open must-fix; pre-existing security for the user to triage)
 - [ ] 6a.4 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged
-- [ ] 6a.5 Push (never --force); open PR with acceptance checklist + quality-gate results + review summary
+- [ ] 6a.5 Push (never --force); open PR with acceptance checklist + quality-gate results + review summary; inline review comments only if asked or configured
 - [ ] 6a.6 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh, its fix reviewed before re-push)
 - [ ] 6a.7 Jira → In Review
 - [ ] 6b   Staging gate → direct merge → CI on staging (n/a without staging)

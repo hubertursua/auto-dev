@@ -50,7 +50,7 @@ git ls-files -z --others --exclude-standard | xargs -0 git add -N --
 | Pass | Code review panel covers | Security review covers |
 |---|---|---|
 | **First pass** | the whole change: the uncommitted working tree against `HEAD` (nothing on the branch is committed yet) | the whole change |
-| **After a review-stage fix** (before the commit) | **only the files the fix changed** (the coder's return lists them; confirm with `git status --porcelain`) | the whole change |
+| **After a review-stage fix** (before the commit) | **only the files the fix changed** (the coder's return lists them; `git status` cannot, since before the commit it lists the whole change) | the whole change |
 | **After a CI-red or human-blocker fix** (after the commit) | the fix: the uncommitted working tree against `HEAD` | the whole change |
 
 "The whole change" for the security review is everything since the branch left
@@ -71,8 +71,10 @@ hole that only shows up through another file.
 3. **A reviewer that fails** (it errors, times out, or writes no usable report)
    gets one re-spawn. If it fails again, carry on with the reports you have and
    record the gap. The judge lowers the overall confidence (_The rubric_). With
-   fewer than two usable reports, the panel has nothing to cross-check: the
-   overall confidence is Low, and the PR gate shows that as a warning.
+   fewer than two usable reports, the panel has nothing to cross-check: no
+   finding can reach two votes, so none is must-fix; the judge still confirms or
+   refutes each one, the overall confidence is Low, and the PR gate shows that as
+   a warning.
 4. **Spawn the judge** (`auto-dev:review-judge`, consolidate brief). It reads
    every `R<k>.md`, merges duplicates, checks each trigger path itself, applies
    the rubric, and writes `CODE_REVIEW.md`. On pass 2 or later it also re-checks
@@ -141,9 +143,16 @@ PR gate
   findings listed (`references/correction-loop.md`, _On exhaustion_). Never
   commit over them silently.
 - **Record each step's outcome** in the Phase 6 row's Notes, for example
-  `code review pass 2: done, 0 open` or `security review: done, 1 pre-existing`.
+  `code review pass 2: done, 0 open` or `security review: done, 1 pre-existing`,
+  and each correction when it is dispatched, for example
+  `correction for pass 2 (C1, C3): dispatched, round spent`.
   A resumed run re-runs any review step whose completion the Notes do not record.
   A half-written report cannot be told apart from a finished one.
+- **Resuming mid-correction.** If the Notes show a correction dispatched and no
+  review pass after it, the fix may be half-applied in the working tree.
+  Re-dispatch the same correction to the coder against the tree as it stands,
+  **without spending another round** (the Notes show it was spent), then carry on
+  with the cleanup re-spawn and the re-review.
 
 ## The rubric
 

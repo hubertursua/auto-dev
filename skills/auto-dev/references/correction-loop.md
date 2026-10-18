@@ -26,7 +26,8 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 3. **Re-spawn the cleanup agent on the changed code** (`auto-dev:cleanup`,
    brief in `references/subagent-prompts.md`). It runs `/simplify` and then the
    quality gate to green, exactly as on its first pass, and rewrites `lint/`. In
-   Phase 6a its `/simplify` is scoped to the correction's own diff (below). In
+   Phase 6 its `/simplify` is scoped to the files the correction changed (below;
+   before the commit, that is the coder's file list, not the diff). In
    Phase 5 the acceptance loop's corrections wait for the single cleanup pass
    that follows once the loop settles (Phase 5 steps 2–3), so do not spawn it per
    correction there. A Phase 5 correction made **after** that pass — a condition
@@ -82,11 +83,12 @@ to the reviews, which are its re-check:
    new verdicts and `file:line` evidence back to `SPEC_EVAL.md`.
 2. **A condition no longer met joins the pending correction**, before anything is
    committed: back to step 1 of the loop, as another round of the same entry point
-   (logged against the same consumer, #4 or #5 below). The cleanup re-spawn's scope,
-   the uncommitted diff, then covers both corrections, and this refresh runs again.
-   At zero budget, step 2 stops the loop: commit, push and edit nothing — the open
-   PR keeps describing the commit it carries — and report the condition, by number,
-   as unmet at the gate (_On exhaustion_, below).
+   (logged against the same consumer, #4 or #5 below). The cleanup re-spawn's scope
+   (the files the corrections changed) then covers both corrections, and this
+   refresh runs again. At zero budget, step 2 stops the loop: commit, push and edit
+   nothing — after the commit, the open PR keeps describing the commit it carries —
+   and report the condition, by number, as unmet at the gate (_On exhaustion_,
+   below).
 3. **Review the correction** before anything is committed
    (`references/review.md`, _Later corrections_): the code review panel on the
    uncommitted correction, then the security review on the whole change. A
