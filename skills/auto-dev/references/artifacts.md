@@ -523,7 +523,10 @@ shape.
 - **`evidence/`** — what the verifier ran and saw: the audit output
   (`integrity.txt`), the acceptance run (`acceptance.txt`), and per condition its
   stated expectation, the command and the result (`C<n>.txt`), and the mutants it
-  ran with their results (`mutants.json`, `mutants.json.results.json`).
+  ran with their results (`mutants.json`, `mutants.json.results.json`), plus the
+  fixed mutant set and the diff it was chosen from (`mutation-set.json`,
+  `mutation-base.diff`), kept across passes so re-checks re-run the same
+  mutants and only add new ones for code written since.
   `SPEC_EVAL.md` cites these; the correction brief quotes them.
 - **`lint/<CHECK>.md`** — one report per quality-gate command, named per the
   loaded profile — **one per `gate` entry, all of them** (Elixir: `COMPILE.md`,

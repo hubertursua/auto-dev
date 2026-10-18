@@ -465,10 +465,12 @@ For every SPEC.md condition, Security/Compliance criteria included:
    a setup crash in the check itself is a broken check: fix it. A pass-to-pass
    check must pass. If you cannot make a check behave, drop it and list the
    condition under Not automatable with the reason.
-   Then make the check files pass the profile's non-test `gate` commands
-   (format, lint, compile warnings) scoped to your files — run the formatter on
-   them if the gate has one. Nobody may edit a check after it is sealed, so a
-   check that fails the quality gate can never be fixed later.
+   Then make the check files pass the profile's FORMAT and LINT `gate` commands
+   scoped to your files — run the formatter on them if the gate has one. Nobody
+   may edit a check after it is sealed. Compile or type errors that come only
+   from the entry point not existing yet are expected; never hide them with a
+   suppression (`@ts-expect-error`, `# type: ignore`, a cast), which would turn
+   into an error once the code exists.
 4. A condition no check can drive (visual layout, an external service with no
    test double, wording only a human can judge) goes under Not automatable, with
    the closest observable proxy a later agent could run, if there is one (a CLI
@@ -508,7 +510,10 @@ CONDITIONS; every re-spawn names its conditions, or it would wipe the rest.
 against `SPEC.md` that it is wrong. Three things lead here: the verifier reports
 it defective (_Acting on SPEC_EVAL.md_, below); a `BLOCKED` plan revision or a
 post-plan-gate revision changes an entry point it calls; or, in Phase 6, a
-must-fix review finding or a human reviewer's blocker is about the check itself.
+must-fix review finding or a human reviewer's blocker is about the check itself;
+or the cleanup agent returns ACCEPTANCE CHECK FAILS GATE — then the repair is
+to make the check pass the gate without changing what it asserts, and the
+cleanup agent is re-spawned after it (free).
 If you disagree, the check stands and its failure is the coder's to fix. To
 repair, re-spawn this agent with the same brief, Scope "ONLY conditions <the
 checks' conditions>", plus: "The tree now holds the built change and
@@ -661,7 +666,9 @@ the condition that is NOT met. Missing evidence means not met.
 Read: <artifact-dir>/SPEC.md (the contract), <artifact-dir>/acceptance/MANIFEST.md
 and the sealed checks under <artifact-dir>/acceptance/files/, <artifact-dir>/profile.md
 (test command, test_notes), and the binding rules (<summary>). Do NOT read
-IMPLEMENTATION.md or any other file under <artifact-dir>.
+IMPLEMENTATION.md or any other file under <artifact-dir>, except what you write
+under evidence/ — including evidence/mutation-set.json and
+evidence/mutation-base.diff from earlier passes (step 7).
 
 Mode: <FIRST PASS | RE-CHECK after <what changed: an acceptance correction / an
 acceptance-check repair / the cleanup pass / a Phase 6 correction>>. On a
@@ -731,9 +738,17 @@ it.
    Passing tests show the code works; mutants show the tests would notice if it
    stopped working. Start by deleting <artifact-dir>/evidence/mutants.json and
    its .results.json from any earlier pass. At cap 0, write "off" and stop here.
-   Every pass, first pass and re-check alike, picks a FRESH set over the whole
-   change, plus one mutant re-creating each previous survivor listed below (find
-   its line again — the code may have moved).
+   The set of mutants is FIXED across passes, so the loop converges instead of
+   finding new gaps by resampling:
+   - FIRST PASS (or no evidence/mutation-set.json yet): choose the set as below,
+     then save it as evidence/mutation-set.json and save `git diff origin/<base>`
+     as evidence/mutation-base.diff.
+   - RE-CHECK: re-create every entry of evidence/mutation-set.json at its current
+     line (find the code again — it may have moved; drop an entry whose code is
+     gone). Add new mutants ONLY on changed source lines that are not in
+     evidence/mutation-base.diff — code written since the set was chosen — within
+     the cap. Then append them to mutation-set.json and overwrite
+     mutation-base.diff with the current diff.
    Previous survivors: <the Mutation table rows from the last SPEC_EVAL.md, or "none">
    Keep a previous Equivalent judgment unless that code changed.
    Choose mutants on CHANGED SOURCE lines the conditions depend on — never tests,
@@ -907,7 +922,10 @@ Never make a test pass by deleting it, skipping it, or changing what it asserts,
 and never touch the acceptance checks (<installed paths from MANIFEST.md>). An edit
 to a test file is limited to formatting, lint and compile warnings. A failing test
 that would need more than that is a design-level failure: leave its report at
-fail and say why. (Every test change is audited afterwards.)
+fail and say why. (Every test change is audited afterwards.) If a check fails
+ONLY because of an acceptance check file, leave its report at fail and return
+ACCEPTANCE CHECK FAILS GATE with the file and the error: the orchestrator has it
+repaired.
 
 For each check, write <artifact-dir>/lint/<REPORT>.md: the exact command, final status
 (pass/fail), and the tail of any output you had to fix. Re-run until every `gate`
@@ -960,7 +978,10 @@ is a bug in the run, not an expected outcome.
 
 If the agent returns any check at fail (the 3-attempt cap reached, or a failure that
 traces to a design problem in the plan), the quality gate is red: **stop the pipeline
-and report** — never commit a red build. This agent spends **no** iteration budget,
+and report** — never commit a red build. The one exception is ACCEPTANCE CHECK
+FAILS GATE: repair that check (_Acceptance tester_, repair mode; a round,
+consumer #3), then re-spawn this agent; stop only if the repaired check still
+fails the gate. This agent spends **no** iteration budget,
 on its first pass or on any re-spawn (`references/correction-loop.md`).
 
 ### Re-verify after cleanup (verifier re-spawn)
