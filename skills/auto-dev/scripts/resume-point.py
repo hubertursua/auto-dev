@@ -20,10 +20,18 @@ whitespace on both sides, the ` — ` that starts the restated ask), so a key th
 ask mentions never counts — unless that part is a bare "none", when the ask's
 keys count instead. `PROJ-12` matches `PROJ-12 https://…/browse/PROJ-12` but
 not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key the
-same way. Any other text matches when, ignoring case and runs of whitespace, it
-appears in the header's Task line or in the ask the Ticket line restates (the
-text after that ` — `), or one of those appears in it. Omit --task on a bare
-`auto-dev continue`; an empty or all-whitespace value counts as omitted.
+same way. Any other text is compared word by word, ignoring case,
+punctuation and markdown (so ``Add `--dry-run` flag.`` is `add dry run flag`),
+against the header's Task line and the ask the Ticket line restates (the text
+after ` — `). It matches when its words are that line's words, or that line
+with a few words left out (it keeps at least 80% of them, in order, and drops
+no negation such as `not`). Anything else is a MISMATCH; when one side's words
+all appear in the other — a fragment like `multi-currency`, or a longer request
+that contains the whole line — it is reported as a NEAR-MISS, which may be this
+run worded differently and is for the user to confirm, never a fresh run.
+Without --task nothing is checked: every ledger reports its resume point.
+Omit --task on a bare `auto-dev continue`; an empty or all-whitespace value
+counts as omitted.
 
 On a multi-PR ledger a sub-task's phase table, where it has one, decides; one
 with no phase table goes by its summary `status`: `done`, `skipped` or `n/a` is
@@ -37,12 +45,14 @@ Output:
             git and gh, except Phase 6 in-progress, whose Action carries it and
             says to resume inside the phase rather than re-run it whole
     stderr  `MISSING: …`, `MALFORMED: …` (naming the line or field),
+            `NEAR-MISS: …` (--task and the header overlap — ask the user),
             `MISMATCH: …`, or `ERROR: …`
 
 Exit codes:
     0  resume point found (printed), including a blocked phase or sub-task
        — its Action line says to ask the user
     1  WORK_LOG.md missing or malformed, or --task does not match its header
+       (MISMATCH, or NEAR-MISS when it may be the same task worded differently)
     2  could not run (bad arguments, not a directory, directory or file
        unreadable) — NOT a result; read the ledger by hand
     3  every phase is done, skipped or n/a — nothing to resume
@@ -100,6 +110,17 @@ SESSIONS = {1: "S1 — Plan", 2: "S1 — Plan", 3: "S1 — Plan",
             4: "S2 — Build", 5: "S2 — Build", 6: "S3 — Ship"}
 # A sub-task with no phase table never started; it begins here (resume step 5).
 SUBTASK_FIRST_PHASE = 2
+# How many of the Task line's (or restated ask's) words free --task text keeps.
+MIN_COVERAGE = 0.8
+# Words an abbreviation may never drop: without them the line means the opposite.
+NEGATIONS = {"not", "no", "never", "without", "dont", "doesnt", "isnt", "except",
+             "nor"}
+# task_matches()'s third answer: not a match, but the words overlap wholly.
+NEAR_MISS = "near-miss"
+# Free text is compared as words: runs of letters and digits, case folded.
+WORD_RE = re.compile(r"[a-z0-9]+")
+# Apostrophes are dropped first, so `isn't` and `isnt` are the same word.
+APOSTROPHE_RE = re.compile("['\u2019]")
 # A bare Jira key passed to --task (e.g. PROJ-123); matched as a whole token.
 JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$", re.IGNORECASE)
 # What separates tokens on the Ticket line: anything that can't be in a key,
@@ -129,8 +150,8 @@ class LedgerError(Exception):
     """WORK_LOG.md does not follow the template; the message says where."""
 
 
-def norm(text):
-    return re.sub(r"\s+", " ", text).strip().lower()
+def words(text):
+    return WORD_RE.findall(APOSTROPHE_RE.sub("", text.lower()))
 
 
 def split_row(line, width):
@@ -206,7 +227,8 @@ def parse_header(lines):
 
 
 def task_matches(wanted, fields):
-    """Whether the --task value names this ledger's task (see the docstring)."""
+    """True if the --task value names this ledger's task (see the docstring),
+    NEAR_MISS if it may be the same task worded differently, else False."""
     wanted = wanted.strip()
     ticket = fields["Ticket"]
     sep = TICKET_ASK_SEP_RE.search(ticket)
@@ -220,17 +242,41 @@ def task_matches(wanted, fields):
         # from token ends so a markdown-italic `_PROJ-12_` still counts.
         # With no ticket (`none — JIRA-1234 (Jira unreadable)…`) the ask is
         # where a key could be, so its tokens count instead.
-        keyed = ask if norm(head) == "none" else head
+        keyed = ask if head.strip().lower() == "none" else head
         tokens = {t.strip("_") for t in TOKEN_SPLIT_RE.split(keyed.lower())}
         return wanted.lower() in tokens
-    wanted = norm(wanted)
+    wanted = words(wanted)
     if not wanted:
         return False
     # Free text matches the Task line or the ask the Ticket line restates
     # (after ` — `) — never the key, link or a bare "none" before it.
-    return any(wanted in have or have in wanted
-               for have in (norm(fields["Task"]), norm(ask))
-               if have)
+    lines = [have for have in (words(fields["Task"]), words(ask)) if have]
+    if any(abbreviates(wanted, have) for have in lines):
+        return True
+    # Not the same task as far as the words go, but one side's words all appear
+    # in the other: a fragment, or a longer request that contains the line.
+    if any(set(wanted) <= set(have) or set(have) <= set(wanted)
+           for have in lines):
+        return NEAR_MISS
+    return False
+
+
+def abbreviates(wanted, have):
+    """Whether `wanted` is `have`, or `have` with a few words left out.
+
+    The kept words must appear in order, cover at least MIN_COVERAGE of
+    `have`, and the dropped ones must include no negation. A longer request
+    that merely contains the line, or a fragment, is not it.
+    """
+    if len(wanted) < MIN_COVERAGE * len(have):
+        return False
+    dropped, i = [], 0
+    for word in have:
+        if i < len(wanted) and wanted[i] == word:
+            i += 1
+        else:
+            dropped.append(word)
+    return i == len(wanted) and not NEGATIONS & set(dropped)
 
 
 def first_open_phase(rows, where):
@@ -339,7 +385,9 @@ def main() -> int:
         usage="python3 %(prog)s <artifact-dir> [--task TEXT]")
     parser.add_argument("artifact_dir", help="the run's .auto-dev/ directory")
     parser.add_argument("--task", help="exit 1 unless the ledger header "
-                        "names this task or ticket")
+                        "names this ticket, or this task word for word (a few "
+                        "words may be left out); a NEAR-MISS means ask the "
+                        "user; omit to report any ledger's resume point")
     args = parser.parse_args()  # bad arguments exit 2 via argparse
 
     directory = Path(args.artifact_dir)
@@ -378,8 +426,15 @@ def main() -> int:
     try:
         fields = parse_header(lines)
         if args.task is not None and args.task.strip():
-            if not task_matches(args.task, fields):
-                print(f"MISMATCH: {ledger} belongs to a different task.\n"
+            match = task_matches(args.task, fields)
+            if match is not True:
+                verdict = (
+                    f"NEAR-MISS: {ledger} may be this task worded differently "
+                    f"— every word of one appears in the other. Ask the user "
+                    f"whether this is the run; do not start a fresh one "
+                    f"unasked." if match == NEAR_MISS else
+                    f"MISMATCH: {ledger} belongs to a different task.")
+                print(f"{verdict}\n"
                       f"  ledger Task:   {fields['Task']}\n"
                       f"  ledger Ticket: {fields['Ticket']}\n"
                       f"  --task:        {args.task}", file=sys.stderr)
