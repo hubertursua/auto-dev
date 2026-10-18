@@ -1,3 +1,6 @@
+<!-- Title: "<type>: <summary>" (see CLAUDE.md, Branches, commits and PRs).
+This PR will be squash-merged, so the title becomes the commit on main. -->
+
 ## Summary
 
 <!-- What changes and why, in plain sentences. For a release, name the version

@@ -363,6 +363,7 @@ skills/auto-dev/
                         and trigger-eval.json (should / shouldn't trigger)
 tests/                  unit tests for the helper scripts
 tools/check-repo.py     checks that the repo's files agree with each other
+tools/check-pr.py       checks a branch name and PR title against the conventions
 ruff.toml               lint config
 .github/                CI workflow and PR template
 CLAUDE.md               conventions for agents (and people) changing this repo
@@ -380,7 +381,11 @@ python3 -m unittest discover -s tests
 
 Every change that alters how the pipeline behaves updates this README in the same
 PR: the phase table, the worker and model table, the dependencies, the
-`.auto-dev/` layout, and an *Upgrading* note for a version bump. PR conventions,
+`.auto-dev/` layout, and an *Upgrading* note for a version bump.
+
+Branches are named `<type>/<short-kebab-description>` (`fix/mutate-mtime`), PR
+titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`,
+`chore` and `ci`. Every PR is squash-merged. PR conventions,
 the full README checklist and the rules for changing a script are in
 `CLAUDE.md`.
 

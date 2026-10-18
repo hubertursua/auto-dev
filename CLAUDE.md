@@ -80,10 +80,9 @@ wrong about something? If yes, fix the README.
 - **Models.** The worker table in `SKILL.md` (_Tool permissions & models_), the
   table in `README.md` (_Models and effort_), and each `agents/<name>.md`
   frontmatter must agree.
-- **Version.** A release that changes artifacts or how a run resumes bumps
-  `version` in `.claude-plugin/plugin.json` and adds an *Upgrading from X.Y*
-  section to the README (newest first). Say whether a run in flight can resume on
-  the new version.
+- **Version.** Bump `.claude-plugin/plugin.json` as _Branches, commits and
+  PRs_ says. An *Upgrading from X.Y* section in the README (newest first) says
+  what changed and whether a run in flight can resume on the new version.
 - **Descriptions.** `plugin.json` and `marketplace.json` carry the same plugin
   description.
 - **Evals.** When behavior changes, update the expectations in
@@ -91,21 +90,65 @@ wrong about something? If yes, fix the README.
 
 ## Branches, commits and PRs
 
-- **One topic per PR.** Unrelated fixes go in separate PRs, even small ones.
-  PRs are squash-merged, so the PR title becomes the commit on `main`.
-- **Titles** are a plain imperative sentence saying what changes, with no
-  `feat:`-style prefix: "Return exit 2 when resume-point cannot stat the
-  artifact dir". A release adds the version: "… (3.3 → 3.4)".
-- **Bodies** follow `.github/pull_request_template.md`: *Summary* (what and
-  why), *Testing* (what you ran and saw, before and after for a fix, and what
-  was not tested), *Docs*, and *Not included* when something is left for
-  later.
-- **Commit messages** inside a PR: a short imperative subject, then a body
-  explaining why. Fix review findings in new commits; don't force-push over a
-  branch someone is reviewing.
-- **Versioning** (semver in `plugin.json`): patch for fixes and wording,
-  minor for a new behavior, artifact or worker, major for a change that breaks
-  resuming a run in flight.
+Earlier PRs in this repo predate these rules, so don't copy their style; follow
+this section. CI (`.github/workflows/pr-conventions.yml`) checks the branch name
+and PR title. Run the same check locally before opening a PR:
+
+```
+python3 tools/check-pr.py --branch "$(git branch --show-current)" --title "<PR title>"
+```
+
+**Types.** One list is used for both branch names and PR titles:
+
+| Type       | For                                                   | Version bump |
+| ---------- | ----------------------------------------------------- | ------------ |
+| `feat`     | new pipeline behavior, worker, artifact, script, key  | minor        |
+| `fix`      | a bug in a script or a wrong or contradictory rule    | patch        |
+| `docs`     | README, CLAUDE.md, or wording that changes no behavior | none        |
+| `refactor` | restructuring that changes no behavior                | none         |
+| `test`     | tests or evals only                                   | none         |
+| `chore`    | metadata, housekeeping                                | none         |
+| `ci`       | workflows, lint config, `tools/`                      | none         |
+
+A breaking change (a run in flight can't resume on the new version, or a
+`.auto-dev.yml` key or artifact is removed or renamed) adds `!` and is a major
+bump.
+
+**Branches: `<type>/<short-kebab-description>`.** Lowercase, words joined by
+single hyphens, no ticket numbers or dates: `fix/mutate-mtime`,
+`feat/acceptance-tester`, `docs/readme-refresh`. Always branch from an
+up-to-date `main`, and never commit to `main` directly. The one exception:
+Claude Code cloud sessions are assigned a `claude/…` branch and can't choose
+another, so the check accepts `claude/<anything>`; the PR title must still
+follow the rules.
+
+**PR titles: `<type>: <summary>`.** `<type>!: <summary>` for a breaking
+change. The summary is imperative, lowercase after the colon, no trailing
+period, 72 characters at most in total: `fix: give each mutant its own mtime`.
+A PR that releases a version names it: `feat: verify builds by running
+held-out checks (3.4.0)`.
+
+**Always squash merge.** Every PR lands on `main` as exactly one commit whose
+subject is the PR title, so the title is what the history shows. Never use a
+merge commit or rebase merge, and never merge with `--admin`. With `gh`:
+`gh pr merge <n> --squash --delete-branch`. Edit the squash message so its
+body is the PR's Summary, not a list of the branch's commits.
+
+**One topic per PR.** Unrelated fixes go in separate PRs, even small ones,
+because a squash merge can't be partly reverted.
+
+**PR bodies** follow `.github/pull_request_template.md`: *Summary* (what and
+why), *Testing* (what you ran and saw, before and after for a fix, and what was
+not tested), *Docs*, and *Not included* when something is left for later.
+
+**Commits on the branch** are squashed away, so they only need to make sense
+during review: a short imperative subject, one logical change each. Fix review
+findings in new commits; don't force-push over a branch someone is reviewing.
+Bring in `main` by merging it, not rebasing, once a review has started.
+
+**Versioning.** The version in `.claude-plugin/plugin.json` follows the bump in
+the types table, in the same PR. A minor or major bump also adds an
+*Upgrading from X.Y* section to the README.
 
 ## Writing style
 
