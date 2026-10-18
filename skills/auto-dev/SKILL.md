@@ -285,9 +285,9 @@ on each tree in `git worktree list` — omit `--task` on a bare `auto-dev
 continue`, where the user named none; then only an exit `0` counts, several is a
 stop-and-ask, and none means there is nothing to continue (ask, don't start fresh).
 If one matches, do not re-run Phase 1 — continue from its ledger
-(`references/artifacts.md`, _Resuming an interrupted run_). A `NEAR-MISS` is
-settled as that section says — ask the user unless one tree is plainly the run,
-never a fresh Phase 1 unasked.
+(`references/artifacts.md`, _Resuming an interrupted run_). A `NEAR-MISS` may be
+the run: show the user each near-miss's task and ask which (if any) is theirs,
+as that section says — never a fresh Phase 1 unasked.
 
 **Fresh run: before step 1, read `references/phase-1-setup.md`** — each step's
 procedure and exact commands. The steps, in order:
