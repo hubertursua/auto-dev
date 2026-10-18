@@ -305,7 +305,9 @@ wherever the two disagree.
    is the run; several is a stop-and-ask; none (and no `MALFORMED` ledger that may
    be the run) means there is nothing to continue — tell the user and ask what to
    work on rather than starting a fresh Phase 1.
-   A Jira key must appear as a whole token on the header's Ticket line, so
+   A Jira key must appear as a whole token in the key/link part of the header's
+   Ticket line (before the first spaced em dash ` — `; a key the restated ask
+   mentions doesn't count, unless that part is a bare "none"), so
    `PROJ-12` never matches a `PROJ-123` ledger, and a Jira URL is matched by its
    key; any other text is matched, ignoring case and spacing, against the Task
    line and the ask the Ticket line restates.
