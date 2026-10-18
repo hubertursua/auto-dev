@@ -34,8 +34,11 @@ Findings (one per line on stdout, tab-separated: KIND, location, detail):
     ADDED_SKIP           a skip / xfail / ignore / focus (`.only`, `fit`,
                          `@tag :focus`) marker was added to a test
     NO_ASSERTIONS        a new test file defines tests but asserts nothing
-    TEST_CONFIG_CHANGED  a test-runner config or helper changed (it can exclude
-                         or skip tests without touching any test file)
+    TEST_CONFIG_CHANGED  a file that can configure the test runner changed
+                         (runner configs, test helpers, and manifests such as
+                         pyproject.toml, package.json, mix.exs, Cargo.toml): it
+                         can exclude or skip tests without touching a test file;
+                         the verifier judges whether this change does
 
 Test files are recognized by name (`*_test.*`, `test_*.py`, `*.test.*`,
 `*.spec.*`, `*_spec.rb`, `*Test.java` …) or by a code file sitting under a
@@ -80,9 +83,10 @@ TEST_NAME = re.compile(
 TEST_CONFIG = re.compile(
     r"(^|/)(test_helper\.exs|conftest\.py|pytest\.ini|tox\.ini|setup\.cfg"
     r"|(jest|vitest|playwright|karma|cypress)\.config\.\w+|\.mocharc(\.\w+)?"
-    r"|phpunit\.xml(\.dist)?|\.rspec|spec_helper\.rb|rails_helper\.rb)$"
+    r"|phpunit\.xml(\.dist)?|\.rspec|spec_helper\.rb|rails_helper\.rb"
+    r"|pyproject\.toml|package\.json|mix\.exs|Cargo\.toml|vitest\.workspace\.\w+)$"
 )
-COMMENT_ONLY = re.compile(r"^\s*(#|//|--|%|/\*|\*|;)")
+COMMENT_ONLY = re.compile(r"^\s*(#(?![\[!])|//|--|%|/\*|\*|;)")
 ASSERTION = re.compile(
     r"(\bassert(_\w+|[A-Z]\w*|!|\b)|\brefute(_\w+|\b)|\bexpect\s*[({]"
     r"|\.should\b|\bshould\s*\(|\bt\.(Error|Errorf|Fatal|Fatalf|Fail|FailNow)\b"
@@ -134,14 +138,15 @@ def read(path):
         return None
 
 
-def edit_findings(path, old_lines, new_lines, findings):
-    """Removed/changed assertions and added skips between two versions."""
+def edit_findings(old_path, path, old_lines, new_lines, findings):
+    """Removed/changed assertions and added skips between two versions.
+    A removed line is reported at its old path and line; an added one at its new."""
     sm = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op in ("replace", "delete"):
             for n in range(i1, i2):
                 if ASSERTION.search(code(old_lines[n])):
-                    findings.append(("REMOVED_ASSERTION", f"{path}:-{n + 1}", old_lines[n].strip()[:120]))
+                    findings.append(("REMOVED_ASSERTION", f"{old_path}:-{n + 1}", old_lines[n].strip()[:120]))
         if op in ("replace", "insert"):
             for n in range(j1, j2):
                 if SKIP.search(code(new_lines[n])):
@@ -196,7 +201,13 @@ def main() -> int:
             return 2
 
     tokens = status.split("\0")
-    changed = [(tokens[i][:1], tokens[i + 1]) for i in range(0, len(tokens) - 1, 2)]
+    changed = []
+    for i in range(0, len(tokens) - 1, 2):
+        c, p = tokens[i][:1], tokens[i + 1]
+        if c == "T":  # type change (e.g. file -> symlink): judge as removed + new
+            changed += [("D", p), ("A", p)]
+        else:
+            changed.append((c, p))
     changed += [("A", p) for p in untracked.split("\0") if p]
     changed = [(c, p) for c, p in changed if not p.startswith(".auto-dev/")]
 
@@ -215,19 +226,22 @@ def main() -> int:
                 old = git(wt, "show", f"{args.base}:{path}")
             except RuntimeError:
                 old = ""
-            # A deleted test whose content reappears in a new file is a rename:
-            # diff it as an edit so a weakened assertion cannot hide behind it.
+            # A deleted test whose lines mostly reappear in a new file is a
+            # rename: diff it as an edit so a weakened assertion cannot hide
+            # behind it. Compare sets of non-blank lines (cheap, and two
+            # unrelated files share few exact lines).
+            old_set = {l.strip() for l in old.splitlines() if l.strip()}
             best, ratio = None, 0.0
             for p, text in added.items():
-                if p in paired:
+                if p in paired or not old_set:
                     continue
-                r = difflib.SequenceMatcher(None, old, text, autojunk=False).quick_ratio()
+                new_set = {l.strip() for l in text.splitlines() if l.strip()}
+                r = len(old_set & new_set) / max(len(old_set), len(new_set), 1)
                 if r > ratio:
                     best, ratio = p, r
-            if best and ratio >= 0.6 and difflib.SequenceMatcher(
-                    None, old, added[best], autojunk=False).ratio() >= 0.6:
+            if best and ratio >= 0.6:
                 paired.add(best)
-                edit_findings(best, old.splitlines(), added[best].splitlines(), findings)
+                edit_findings(path, best, old.splitlines(), added[best].splitlines(), findings)
             else:
                 findings.append(("DELETED_TEST", path, "test file removed"))
         elif c == "M":
@@ -236,12 +250,14 @@ def main() -> int:
             except RuntimeError:
                 continue
             old_n = new_n = 0
+            in_hunk = False
             for line in diff.splitlines():
                 m = HUNK.match(line)
                 if m:
                     old_n, new_n = int(m.group(1)), int(m.group(2))
+                    in_hunk = True
                     continue
-                if line.startswith(("---", "+++")):
+                if not in_hunk:  # the file header (---/+++ lines) precedes every hunk
                     continue
                 if line.startswith("-"):
                     if ASSERTION.search(code(line[1:])):

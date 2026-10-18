@@ -24,7 +24,8 @@ counts `\\n` only, as `grep -n` does. `find` must occur exactly once on that lin
 only that occurrence is replaced, byte for byte — the rest of the file is never
 re-encoded. --cmd runs through the shell in <worktree>, in its own process
 group; a non-zero exit means the mutant was caught. It must pass on the
-unmutated tree first (the baseline), or nothing is mutated. --max (default 50)
+unmutated tree first (the baseline), and so must every per-mutant `cmd`, or
+nothing is mutated. File permission bits are preserved. --max (default 50)
 is the most mutants accepted; pass the run's mutation cap.
 
 Each write (mutant and restore) moves the file's mtime forward, so mtime-based
@@ -52,13 +53,16 @@ Statuses:
     invalid   `find` is not exactly once on `line` — the mutant was not applied
 
 Exit codes:
-    0  no mutant survived
+    0  no mutant survived (and at least one was applied)
     1  at least one mutant survived
     2  usage error or a malformed mutants file — fix the input
     3  baseline red: the test command fails on the unmutated tree
     4  a file could not be restored — the worktree is changed: stop and report
     5  leftover backups from a killed run — run `--restore` first
     6  interrupted by a signal; every file was restored
+    7  an I/O error (e.g. disk full, unwritable backup dir); every file was
+       restored — fix the cause, do not just retry
+    8  every mutant was invalid, so nothing was tested — fix the mutants
 """
 
 import argparse
@@ -113,13 +117,21 @@ def touch_forward(path):
     os.utime(path, (t, t))
 
 
-def write_atomic(path, data):
+def write_atomic(path, data, mode=None):
+    """Write via a temp file and rename. Keeps the existing file's permission
+    bits (mkstemp creates 0600), or applies `mode` when given."""
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
+    if mode is None:
+        try:
+            mode = os.stat(path).st_mode & 0o7777
+        except OSError:
+            mode = 0o644
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
@@ -155,7 +167,8 @@ def restore_all(wt, backup_dir):
         return []
     index = load_index(backup_dir)
     failed = []
-    for rel, digest in list(index.items()):
+    for rel, entry in list(index.items()):
+        digest, mode = entry["sha256"], entry["mode"]
         src = os.path.join(backup_dir, "files", rel)
         dst = inside(wt, rel)
         try:
@@ -164,7 +177,7 @@ def restore_all(wt, backup_dir):
             if dst is None or sha(data) != digest:
                 failed.append(rel)
                 continue
-            write_atomic(dst, data)
+            write_atomic(dst, data, mode)
             touch_forward(dst)
             with open(dst, "rb") as f:
                 if sha(f.read()) != digest:
@@ -255,14 +268,18 @@ def main() -> int:
             print(f"ERROR: {m['id']}: `{m['file']}` is not inside the worktree", file=sys.stderr)
             return 2
 
-    try:
-        code, tail = run(args.cmd, wt, args.timeout)
-    except Interrupted:
-        return 6
-    if code != 0:
-        print(f"ERROR: baseline is not green (the test command must pass unmutated):\n{tail}",
-              file=sys.stderr)
-        return 3
+    # Every command a mutant will run must pass on the unmutated tree, or a
+    # failure would be read as the mutant being caught.
+    cmds = [args.cmd] + sorted({m["cmd"] for m in mutants if m.get("cmd")} - {args.cmd})
+    for cmd in cmds:
+        try:
+            code, tail = run(cmd, wt, args.timeout)
+        except Interrupted:
+            return 6
+        if code != 0:
+            print(f"ERROR: baseline is not green (each test command must pass unmutated): "
+                  f"{cmd}\n{tail}", file=sys.stderr)
+            return 3
 
     results = []
     index = {}
@@ -289,17 +306,19 @@ def main() -> int:
             lines[n] = lines[n].replace(find, repl, 1)
             # Back up atomically and record the hash BEFORE touching the file.
             write_atomic(os.path.join(backup_dir, "files", m["file"]), original)
-            index[m["file"]] = sha(original)
+            mode = os.stat(path).st_mode & 0o7777
+            index[m["file"]] = {"sha256": sha(original), "mode": mode}
             save_index(backup_dir, index)
             try:
                 write_atomic(path, b"\n".join(lines))
                 touch_forward(path)
                 code, tail = run(m.get("cmd") or args.cmd, wt, args.timeout)
             finally:
-                write_atomic(path, original)
+                write_atomic(path, original, mode)
                 touch_forward(path)
             with open(path, "rb") as f:
-                if sha(f.read()) != index[m["file"]]:
+                if sha(f.read()) != index[m["file"]]["sha256"] or \
+                        os.stat(path).st_mode & 0o7777 != mode:
                     raise OSError(f"restore mismatch: {m['file']}")
             del index[m["file"]]
             save_index(backup_dir, index)
@@ -311,7 +330,7 @@ def main() -> int:
             print(f"ERROR: stopped ({e}); could not restore: {', '.join(failed)}", file=sys.stderr)
             return 4
         print(f"ERROR: stopped ({e}); every file restored", file=sys.stderr)
-        return 6
+        return 6 if isinstance(e, Interrupted) else 7
     shutil.rmtree(backup_dir, ignore_errors=True)
 
     write_atomic(out_path, json.dumps(results, indent=2).encode("utf-8"))
@@ -321,7 +340,12 @@ def main() -> int:
         print(f"{r['id']}\t{r['status']}\t{r['file']}:{r['line']}\tcondition {r.get('condition', '-')}")
     print("SUMMARY: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
           + f" (results: {out_path})")
-    return 1 if counts.get("survived") else 0
+    if counts.get("survived"):
+        return 1
+    if not any(counts.get(k) for k in ("killed", "timeout")):
+        print("ERROR: no mutant was applied (all invalid) — nothing was tested", file=sys.stderr)
+        return 8
+    return 0
 
 
 if __name__ == "__main__":

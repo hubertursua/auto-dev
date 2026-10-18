@@ -734,8 +734,11 @@ it.
    survived; 1 some survived; 2 your mutants file is malformed — fix it and
    re-run; 3 the scoped tests fail unmutated — a test is already failing, which
    is unmet, report it; 5 leftover backups — run it again with `--restore`
-   (no other flags), then re-run; 4, or 6 twice, STOP and return MUTATION LEFT
-   CHANGES. Afterwards both saved values must be unchanged; if they are not (the
+   (no other flags), then re-run; 7 an I/O error such as a full disk — report
+   it, do not retry; 8 every mutant was invalid (lines moved or `find` text
+   wrong) — re-read the lines and re-write them, and if a second run is still
+   all invalid, write the mutation check as "not run" with the reason; 4, or 6
+   twice, STOP and return MUTATION LEFT CHANGES. Afterwards both saved values must be unchanged; if they are not (the
    test command itself may have written files), return MUTATION LEFT CHANGES
    with the paths. Never commit, stage or keep a mutant.
    Judge each survivor: Equivalent (no input can tell the mutant from the code —
