@@ -64,9 +64,9 @@ class CannotRun(Exception):
 def git(worktree, *args):
     try:
         result = subprocess.run(["git", "-C", str(worktree), *args],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, check=False)
     except OSError as exc:
-        raise CannotRun(f"could not run git: {exc}")
+        raise CannotRun(f"could not run git: {exc}") from None
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit {result.returncode}"
         raise CannotRun(f"`git {' '.join(args)}` failed in {worktree}: {detail}")
@@ -78,7 +78,7 @@ def never_existed(top, path):
     if (top / path).exists() or (top / path).is_symlink():
         return False
     result = subprocess.run(["git", "-C", str(top), "cat-file", "-e",
-                             f"HEAD:{path}"], capture_output=True)
+                             f"HEAD:{path}"], capture_output=True, check=False)
     return result.returncode != 0
 
 

@@ -60,9 +60,9 @@ class CannotRun(Exception):
 def git(worktree, *args):
     try:
         return subprocess.run(["git", "-C", str(worktree), *args],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, check=False)
     except OSError as exc:
-        raise CannotRun(f"could not run git: {exc}")
+        raise CannotRun(f"could not run git: {exc}") from None
 
 
 def check_worktree(worktree):
@@ -113,7 +113,7 @@ def ensure_exclusion(worktree):
                 was = current.strip().replace("\n", "\\n") or "<empty>"
                 notes.append(f"replaced {ignore} (was: {was[:80]})")
     except OSError as exc:
-        raise CannotRun(f"could not prepare {root}: {exc}")
+        raise CannotRun(f"could not prepare {root}: {exc}") from None
     return notes
 
 

@@ -1,0 +1,20 @@
+# Lint config for the helper scripts, tests and tools. Run: ruff check .
+# The scripts must keep running on the oldest Python the README promises.
+target-version = "py39"
+line-length = 100
+
+[lint]
+select = [
+  "E", "W",   # pycodestyle
+  "F",        # pyflakes: unused names, undefined names
+  "B",        # bugbear: likely bugs
+  "I",        # import order
+  "UP",       # syntax the target Python allows
+  "ISC",      # implicit string concatenation
+  "PLW1510",  # subprocess.run must say check=True or check=False
+  "RUF",      # ruff's own checks
+]
+ignore = [
+  "RUF001", "RUF003",  # en dashes in messages are deliberate (they match the docs)
+  "RUF005",            # list concatenation is fine
+]
