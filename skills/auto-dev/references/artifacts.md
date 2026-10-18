@@ -194,7 +194,10 @@ or its manual equivalent (`references/phase-6-ship.md`, step 4).
 
 Note: `.auto-dev.yml` (the optional repo-local **override**, see
 `references/profiles.md`) is a *different* file — it lives at the repo root, is
-meant to be committed by the project, and is **not** excluded.
+meant to be committed by the project, and is **not** excluded. A **saved
+profile** (`references/profiles.md`, _Saved profiles_) is not an artifact either:
+it lives in the user's home directory, outside every checkout, and outlives the
+run.
 
 ---
 
@@ -411,7 +414,7 @@ order. The checklist adds no step, and the detail lives where `SKILL.md` puts it
 ```
 S1 Plan progress (on a sub-task, cut and prepare its worktree as 1.5 does, then start at Phase 2; Phase 1 never repeats):
 - [ ] 1.1 Detect repo & branches; check gh first (missing/unauthenticated/non-GitHub → stop-and-report)
-- [ ] 1.2 Detect stack, load profile, apply .auto-dev.yml (validated); record CI provider
+- [ ] 1.2 Resolve the profile: saved (profile-path.py) or researched + confirmed (+ saved if chosen); apply .auto-dev.yml (validated); record CI provider
 - [ ] 1.3 Resolve the ticket
 - [ ] 1.4 Read binding rules; resolve security directives
 - [ ] 1.5 Worktree + branch from fresh origin/<base>; seed worktree_files (each must be gitignored); run setup
@@ -465,8 +468,9 @@ Briefs for the agents that produce these are in `references/subagent-prompts.md`
 The contracts below define what each file *is*; the templates that follow fix the
 shape.
 
-- **`profile.md`** — the resolved project profile from Phase 1: detected stack and
-  which `profiles/*.md` was loaded, the exact `setup`/`gate` commands (post-override)
+- **`profile.md`** — the resolved project profile from Phase 1: the stack and
+  where the profile came from (a saved file, or researched and confirmed, and
+  whether it was saved), the exact `setup`/`gate` commands (post-override)
   and any check dropped for a missing tool, base/staging/prefix, CI provider and
   timeout, the iteration budget, the mutation cap, the resolved security-directive sources, and Jira
   availability + state mapping. Every later phase reads this instead of re-detecting.
@@ -619,7 +623,7 @@ Pick up at: <start of Phase <n> | Phase 6, after <last gate passed> — reconcil
 
 ## Do not
 - <anything already settled that a fresh context might redo — e.g. re-run Phase 1,
-  re-review the spec, re-detect the stack>
+  re-review the spec, re-resolve the profile>
 ```
 
 `(next session)` is the planned boundary at the end of S1 or S2. `(resume)` is a
@@ -639,7 +643,8 @@ session does not need it.
 ```markdown
 # Project profile
 
-- **Stack:** <stack>   **Profile:** `profiles/<stack>.md` | `profiles/default.md` + discovery
+- **Stack:** <stack>
+- **Profile:** saved — `<path>` <(not machine-validated: <reason>)> | researched, confirmed by the user, saved to `<path>` | researched, confirmed, not saved — <user chose this run only | save failed: <reason> | no save path: <reason>> | `.auto-dev.yml` (sets setup and gate)
 - **Repo:** <repo-name>   **CI:** <github-actions|circleci|gitlab|none>   **CI timeout:** <n> min
 - **Base:** <branch>   **Staging:** <branch | n/a — no staging branch>   **Prefix:** <prefix>
 - **Iteration budget:** <n> per task
@@ -666,7 +671,7 @@ session does not need it.
 <required services, monorepo/umbrella scope, slow tiers>
 
 ## Assumptions
-<anything inferred rather than found — required when the default profile was used>
+<anything inferred rather than found, and every profiler question the user answered, with the answer>
 ```
 
 ### `SPEC.md` (Phase 2, Define agent)

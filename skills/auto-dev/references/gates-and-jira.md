@@ -4,7 +4,7 @@ How the orchestrator pauses for approval, moves the Jira ticket, and watches CI.
 
 ## Contents
 
-- **Human gates** — the four gates and three conditional pauses at a glance.
+- **Human gates** — the four gates and four conditional pauses at a glance.
 - **What each option does** — Proceed, `Hold`, and the other labels every gate shares.
 - **Gates (in pipeline order)** — summary and options for each:
   - **Post-plan gate — Phase 3 (off by default)**
@@ -12,6 +12,7 @@ How the orchestrator pauses for approval, moves the Jira ticket, and watches CI.
   - **Staging gate — Phase 6b (skip entirely if no staging branch)**
   - **Main gate — Phase 6c**
 - **Conditional pauses** — situational stops that are not gates:
+  - **Profile confirmation — Phase 1 (only when the profile was researched)**
   - **Decomposition approval — Phase 2 (OVERSIZED only)**
   - **Jira In Progress confirmation — Phase 1 (only with a ticket)**
   - **Worktree cleanup offer — Phase 6c (after the main merge)**
@@ -28,10 +29,12 @@ How the orchestrator pauses for approval, moves the Jira ticket, and watches CI.
 
 Four gates exist. Three of them — PR, staging, main — sit **inside
 Phase 6**; the fourth (post-plan) sits at the end of Phase 3 and is off by default.
-**Three further pauses are conditional** — they are not gates, and they fire only
-when their situation arises: the **decomposition approval** (Phase 2, OVERSIZED
-only), the **Jira In Progress confirmation** (Phase 1, only with a ticket), and
-the **worktree cleanup offer** (Phase 6c). All three are specified below.
+**Four further pauses are conditional** — they are not gates, and they fire only
+when their situation arises: the **profile confirmation** (Phase 1, only when no
+saved profile exists and the profile was researched), the **decomposition
+approval** (Phase 2, OVERSIZED only), the **Jira In Progress confirmation**
+(Phase 1, only with a ticket), and the **worktree cleanup offer** (Phase 6c).
+All four are specified below.
 
 Gates use `AskUserQuestion`. Each presents a **concise summary**, enough to decide
 without digging (what will happen, what's been verified, any risks), then a
@@ -188,6 +191,25 @@ requirement blocking it and stop — never merge locally to get around it.
 
 These are not gates: each fires only when its situation arises, and none of them
 signs off on the change itself.
+
+### Profile confirmation — Phase 1 (only when the profile was researched)
+Fires on a repo's first run, after the profiler returns
+(`references/profiles.md`, _How Phase 1 resolves the profile_). A saved
+profile, or a `.auto-dev.yml` that sets both `setup` and `gate`, skips it.
+- **Summary:** the draft profile as YAML (also in the save option's preview),
+  the profiler's evidence line for each command, everything under its NOT
+  INSTALLED and QUESTIONS (questions first: they are what the user is confirming),
+  which keys `.auto-dev.yml` will override, the path a save writes to, and the
+  permissions guidance (`references/profiles.md`, _Permissions_) filled in with
+  this run's directory, skill directory and commands.
+- **Options:** `Looks right — save it for this repo` · `Looks right — use it for
+  this run only` · `Change something (tell me what)` · `Stop`. Leave the save
+  option out when `scripts/profile-path.py` could not name a path (exit `2` or
+  `127`). `Change something` means you apply the user's corrections and ask
+  again; it spends no iteration-budget round. `Stop` ends the run before any
+  worktree exists.
+- `WORK_LOG.md` doesn't exist yet: record the decision when Phase 1 step 7
+  initializes it, and in `profile.md`'s _Profile_ line.
 
 ### Decomposition approval — Phase 2 (OVERSIZED only)
 Never start a multi-PR run unapproved.
