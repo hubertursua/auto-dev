@@ -38,7 +38,12 @@ CI_PROVIDERS = {"github-actions", "circleci", "gitlab", "none"}
 GATE_KINDS = {"compile", "format", "lint", "typecheck", "test", "build"}
 # The pipeline milestones that trigger a Jira transition.
 JIRA_STATES = {"in_progress", "in_review", "done"}
+# Every key a gate check may carry; anything else is flagged as unknown.
 GATE_FIELDS = {"kind", "command", "report"}
+# The subset of GATE_FIELDS each check must set. Kept separate so a new
+# optional field can join GATE_FIELDS without becoming required.
+GATE_REQUIRED = ("kind", "command", "report")
+assert set(GATE_REQUIRED) <= GATE_FIELDS, "GATE_REQUIRED must be a subset of GATE_FIELDS"
 
 # difflib's own default: close enough to catch a dropped/swapped letter
 # (`iteration_budgt`, `bse`) without suggesting an unrelated key.
@@ -124,7 +129,7 @@ def check_gate(gate):
         where = f"gate[{i}]"
         if not check_type(check, dict, where):
             continue
-        for required in ("kind", "command", "report"):
+        for required in GATE_REQUIRED:
             if required not in check:
                 errors.append(f"{where}: missing `{required}`")
         for key, val in check.items():
@@ -168,18 +173,21 @@ def main() -> int:
         return 2
 
     try:
-        with open(path) as f:
+        # Binary mode: PyYAML then decodes UTF-8 itself (or UTF-16 when the file
+        # starts with a BOM) instead of the locale's encoding, and reports a bad
+        # byte at its offset in the whole file.
+        with open(path, "rb") as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
         print(f"No {path} — nothing to validate (the pipeline runs without one).")
         return 0
+    except yaml.reader.ReaderError as exc:
+        print(f"INVALID: {path} has a byte or character YAML cannot read — "
+              f"re-save it as UTF-8 text.\n  {exc}", file=sys.stderr)
+        return 1
     except yaml.YAMLError as exc:
         print(f"INVALID: {path} is not valid YAML — fix the syntax at the line "
               f"below.\n  {exc}", file=sys.stderr)
-        return 1
-    except UnicodeDecodeError as exc:
-        print(f"INVALID: {path} is not UTF-8 text ({exc.reason} at byte "
-              f"{exc.start}). Re-save it as UTF-8.", file=sys.stderr)
         return 1
     except OSError as exc:
         print(f"SKIPPED: could not read {path}: {exc}", file=sys.stderr)

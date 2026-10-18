@@ -248,7 +248,9 @@ Three rules govern it:
 
 - **Write a sub-task's phase table when that sub-task starts**, not up front. A
   `pending` sub-task adds nothing, so the ledger grows only with work actually in
-  flight. Phase 1 gets no row: it ran once, for the whole run.
+  flight. Phase 1 gets no row: it ran once, for the whole run. "Starts" means its
+  worktree is cut and prepared; a prep that stops writes the table with Phase 2
+  `blocked` (`references/subagent-prompts.md`).
 - **The phase table is authoritative.** The summary `status` is a rollup for
   scanning; where the two disagree, the phase table is what resume reads.
 - **`budget` is `<remaining>/<total>` for that sub-task alone**, because the
@@ -294,6 +296,15 @@ wherever the two disagree.
    ```bash
    python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"
    ```
+   Pass `--task` only when the user named a ticket or task. On a bare `auto-dev
+   continue` there is nothing to match, so omit it (an empty `--task` counts as
+   omitted) — never pass a stand-in like "continue", which is matched as task text
+   and can pick a ledger that merely contains the word — and run the script on
+   each tree. Without `--task` the exit code says only what a tree holds: a `3` is
+   a finished run left in place, not a candidate. Exactly one tree that exits `0`
+   is the run; several is a stop-and-ask; none (and no `MALFORMED` ledger that may
+   be the run) means there is nothing to continue — tell the user and ask what to
+   work on rather than starting a fresh Phase 1.
    A Jira key must appear as a whole token in the key/link part of the header's
    Ticket line (before the first spaced em dash ` — `; a key the restated ask
    mentions doesn't count, unless that part is a bare "none"), so
@@ -334,8 +345,10 @@ wherever the two disagree.
    at the first phase that is not `done` in **that sub-task's own phase table**. A
    sub-task with no phase table goes by its summary `status`: `done` is complete
    (skip it), `blocked` is step 3's report-and-ask, and `pending` never started —
-   begin it at Phase 2. Completed sub-tasks keep their merged PRs — never re-run
-   them, and never re-run Phase 1.
+   begin it at Phase 2, by cutting and preparing its worktree. If that worktree
+   already exists, prep was cut off: reuse it and redo the prep
+   (`references/subagent-prompts.md`). Completed sub-tasks keep their merged
+   PRs — never re-run them, and never re-run Phase 1.
 6. **Re-confirm nothing already confirmed.** A gate approved before the
    interruption stays approved (the ledger records it); a gate not yet reached
    still fires. Do not repeat a Jira transition — read the issue's current status
@@ -356,7 +369,7 @@ steps 3–5 above decide. Each item restates a step from `SKILL.md`, in the same
 order. The checklist adds no step, and the detail lives where `SKILL.md` puts it.
 
 ```
-S1 Plan progress (on a sub-task, start at Phase 2; Phase 1 never repeats):
+S1 Plan progress (on a sub-task, cut and prepare its worktree as 1.5 does, then start at Phase 2; Phase 1 never repeats):
 - [ ] 1.1 Detect repo & branches; check gh first (missing/unauthenticated/non-GitHub → stop-and-report)
 - [ ] 1.2 Detect stack, load profile, apply .auto-dev.yml (validated); record CI provider
 - [ ] 1.3 Resolve the ticket
@@ -388,8 +401,8 @@ S3 Ship progress:
 - [ ] 6a.1 PR gate
 - [ ] 6a.2 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged
 - [ ] 6a.3 Push (never --force); open PR with acceptance checklist + quality-gate results
-- [ ] 6a.4 PR reviewer (adversarial) → PR_REVIEW.md (blocker → correction loop + cleanup re-spawn)
-- [ ] 6a.5 CI monitoring (red pre-merge → correction loop + cleanup re-spawn)
+- [ ] 6a.4 PR reviewer (adversarial) → PR_REVIEW.md (blocker → correction loop + cleanup re-spawn + Phase 6a refresh)
+- [ ] 6a.5 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh)
 - [ ] 6a.6 Jira → In Review
 - [ ] 6b   Staging gate → direct merge → CI on staging (n/a without staging)
 - [ ] 6c.1 Read human reviews; mark the PR ready
@@ -631,7 +644,7 @@ this file, and the spec's language stays out of it (*Why two documents*).
 ```markdown
 # Acceptance evaluation — <task>
 
-Read from the working tree against `origin/<base>`; nothing is committed yet.
+Read from the working tree against `origin/<base>`; nothing is committed yet (a Phase 6a rewrite reads the correction's uncommitted tree).
 
 | # | Condition | Verdict | Evidence |
 |---|-----------|---------|----------|

@@ -62,8 +62,33 @@ Earlier in the pipeline there is less of it to rewrite.
 |---|---|---|---|
 | **Phase 5 — acceptance** (unmet condition) | nothing; the cleanup agent has not run | `SPEC_EVAL.md` only | not yet run — the single cleanup pass after this loop settles simplifies corrective code with everything else |
 | **Phase 5 — after the quality gate** (re-resolving the evidence finds a condition no longer met) | `SPEC_EVAL.md`, `lint/` | `SPEC_EVAL.md`, then `lint/` (rewritten by the re-spawned cleanup agent), then re-resolve the evidence again | **yes, Phase 5 scope** (the branch diff) — no human has read it yet |
-| **Phase 6a — PR review** (blocker, adversarial or human) | `lint/`, the commit, the PR body | `lint/` (rewritten by the re-spawned cleanup agent) and the PR body's quality-gate results, then commit and re-push (CI re-runs — re-watch it) | **yes, scoped to the correction's own diff** — see below |
-| **Phase 6a — CI red** (pre-merge) | `lint/`, the commit, the push, the PR body | `lint/` (rewritten by the re-spawned cleanup agent) and the PR body's quality-gate results, then commit and re-push | **yes, scoped to the correction's own diff** |
+| **Phase 6a — PR review** (blocker, adversarial or human) | `SPEC_EVAL.md`, `lint/`, the commit, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: `SPEC_EVAL.md`, commit and re-push (CI re-runs — re-watch it), then the PR body | **yes, scoped to the correction's own diff** — see below |
+| **Phase 6a — CI red** (pre-merge) | `SPEC_EVAL.md`, `lint/`, the commit, the push, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: `SPEC_EVAL.md`, commit and re-push, then the PR body | **yes, scoped to the correction's own diff** |
+
+**The Phase 6a refresh.** Both Phase 6a rows run it once the re-spawned cleanup
+agent returns every `gate` check green, in this order:
+
+1. **Re-resolve every row of `SPEC_EVAL.md` and rewrite the file.** Not only the
+   rows citing files the correction touched: a `/simplify` preserves behavior, but
+   a correction changes it on purpose, and a `met` condition can depend on a file
+   its evidence never names. Re-check each `met` row against the code it cites, and
+   re-evaluate each `partial` or `unmet` row too — its Evidence cell names what is
+   missing rather than a file, and the correction may have supplied it. Write the
+   new verdicts and `file:line` evidence back to `SPEC_EVAL.md`.
+2. **A condition no longer met joins the pending correction**, before anything is
+   committed: back to step 1 of the loop, as another round of the same entry point
+   (logged against the same consumer, #4 or #5 below). The cleanup re-spawn's scope,
+   the uncommitted diff, then covers both corrections, and this refresh runs again.
+   At zero budget, step 2 stops the loop: commit, push and edit nothing — the open
+   PR keeps describing the commit it carries — and report the condition, by number,
+   as unmet at the gate (_On exhaustion_, below).
+3. **Commit and re-push**, with the sequence above.
+4. **Then refresh the PR body** — the acceptance checklist from the rewritten
+   `SPEC_EVAL.md`, the quality-gate results from `lint/` — starting from the live
+   body (`gh pr view <pr> --json body`) so edits made on GitHub survive, and
+   publish it with `gh pr edit <pr> --body-file <file>`, the file in
+   `<artifact-dir>` or `$TMPDIR` (`references/phase-6-ship.md`, step 3). Only
+   after the push, so the PR never shows results for a commit it does not carry.
 
 **Why `/simplify` is scoped to the correction in Phase 6.** Corrective code needs
 simplifying as much as any other code, so the cleanup agent re-runs after every

@@ -135,13 +135,16 @@ def main() -> int:
         # column) is set, or untracked `??`. -z: no quoting, one path each.
         # --ignore-submodules=dirty: a submodule with only dirty content shows
         # as ` M sub` but nothing can stage it; a new submodule commit still
-        # shows, and `git add sub` stages that.
-        status = git(worktree, "status", "--porcelain", "-z",
-                     "--untracked-files=all", "--no-renames",
-                     "--ignore-submodules=dirty")
-        unstaged = sorted(e[3:] for e in status.split("\0")
-                          if len(e) > 3 and e[1] != " "
-                          and not e[3:].startswith(ARTIFACTS_PREFIX))
+        # shows, and `git add sub` stages that. Only --expect uses it, so
+        # skip the call (and its failure modes) otherwise.
+        unstaged = []
+        if expected is not None:
+            status = git(worktree, "status", "--porcelain", "-z",
+                         "--untracked-files=all", "--no-renames",
+                         "--ignore-submodules=dirty")
+            unstaged = sorted(e[3:] for e in status.split("\0")
+                              if len(e) > 3 and e[1] != " "
+                              and not e[3:].startswith(ARTIFACTS_PREFIX))
     except CannotRun as exc:
         print(f"ERROR: {exc}. Nothing was checked — this is not a pass.",
               file=sys.stderr)
