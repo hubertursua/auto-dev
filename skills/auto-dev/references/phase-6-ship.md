@@ -39,9 +39,10 @@ and fixed, and the PR never collects review-fix commits.
    if the user asks during the run, or `.auto-dev.yml` sets
    `pr_review.inline_comments: true`.
 3. **Gate:** pause for approval to open the PR (`references/gates-and-jira.md`).
-   The summary carries both reviews: each one's overall confidence, the must-fix
-   findings fixed and still open, and any pre-existing security finding for the
-   user to triage.
+   The summary carries the acceptance block (verdicts, evidence tiers, `manual`
+   checks, justified test changes) and both reviews: each one's overall
+   confidence, the must-fix findings fixed and still open, and any pre-existing
+   security finding for the user to triage.
 4. **Commit** — stage source paths **explicitly**, confirm nothing under
    `.auto-dev/` is staged, then commit with a conventional message. Run exactly
    this sequence; only the paths and the message vary:
@@ -102,8 +103,9 @@ and fixed, and the PR never collects review-fix commits.
    route opens it:
    - **Body** to the PR-body contract (`references/artifacts.md`, _The PR body_):
      summary, unresolved assumptions, and — as required content — the **acceptance
-     checklist** (the spec's conditions, ticked from `SPEC_EVAL.md`, unticked ones
-     left unticked), the **quality-gate results**, and the **review summary**
+     checklist** (the spec's conditions, ticked from `SPEC_EVAL.md` with each
+     one's evidence tier, unticked ones left unticked, `manual` ones listed as
+     checks for a human), the **quality-gate results**, and the **review summary**
      (each review's overall confidence, the must-fix findings fixed, and any left
      open — from `CODE_REVIEW.md` and `SECURITY_REVIEW.md`). Brevity rules may
      trim the _prose_; they never drop those three sections.

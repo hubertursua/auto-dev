@@ -14,9 +14,9 @@ stay in the control worktree at `<control-worktree>/.auto-dev/tasks/<id>`, so th
 two point at different trees — see `references/artifacts.md`.
 
 > Every delegated job is briefed here (Phases 2–6). Phase 1 is deterministic
-> orchestrator work (see `references/phase-1-setup.md`); the Phase 5 acceptance
-> check is an orchestrator check with a coder correction brief; the Phase 6 git/gh
-> operations are the orchestrator's (`references/phase-6-ship.md`).
+> orchestrator work (see `references/phase-1-setup.md`); in Phase 5 the verifier
+> judges and the orchestrator turns its verdicts into coder correction briefs; the
+> Phase 6 git/gh operations are the orchestrator's (`references/phase-6-ship.md`).
 
 **Agent types: spawn each brief with the `_Agent type:_` it names**, and never pass
 the Agent tool's `model` parameter. The type fixes the worker's model and effort
@@ -34,14 +34,17 @@ the Agent tool's `model` parameter. The type fixes the worker's model and effort
 - **Phase 3 — Plan**
   - **Planner** — writes `IMPLEMENTATION.md`.
   - **Plan reviewer**
+  - **Acceptance tester** — writes and seals the held-out checks under
+    `acceptance/`.
   - **Optional post-plan gate (orchestrator)**
 - **Phase 4 — Build**
-  - **Coder (TDD)**
+  - **Coder (TDD)** — includes what to do with a `BLOCKED` report.
 - **Phase 5 — Verify**
-  - **Acceptance check (orchestrator)** — writes `SPEC_EVAL.md`; includes the coder
-    correction brief.
+  - **Verifier** — runs the checks, writes `SPEC_EVAL.md`.
+  - **Acting on SPEC_EVAL.md (orchestrator)** — the coder correction brief, and
+    repairing a defective acceptance check.
   - **Cleanup agent (simplify + quality gate)** — writes `lint/<CHECK>.md`.
-  - **Re-resolve the acceptance evidence (orchestrator)**
+  - **Re-verify after cleanup (verifier re-spawn)**
 - **Phase 6 — Ship** (the procedure and the rubric are in `references/review.md`)
   - **Code reviewer: review mode** — one of three; writes `review/pass-<n>/R<k>.md`.
   - **Code reviewer: re-vote mode** — writes `review/pass-<n>/VOTES-R<k>.md`.
@@ -56,8 +59,9 @@ Judgment stays on `opus`: a weak reviewer returns "no findings," which
 is indistinguishable from a clean pass, and a weak plan spends revise rounds
 downstream. Only work that a later check verifies moves down to `sonnet`: the
 TRIVIAL build (acceptance and the quality gate catch it), the cleanup agent (the
-quality gate catches it), and lookups (they only report). The review panel, the
-judge and the security reviewer are all judgment, so all stay on `opus` (or
+quality gate and the re-verify catch it), and lookups (they only report). The
+acceptance tester, the verifier, the review panel, the judge and the security
+reviewer are all judgment, so all stay on `opus` (or
 `fable` for the sensitive-path security reviewer). The routing rules (corrections always
 to `auto-dev:coder`; `auto-dev:security-reviewer-sensitive` for sensitive paths) are in
 `SKILL.md` and on each brief's `_Agent type:_` line below.
@@ -72,8 +76,8 @@ below state the same thing; change them together:
 
 - **Orchestrator (you):** TodoWrite, Bash (git/gh/CI, worktree, setup), Read,
   Edit (revise artifacts after critique, and apply re-votes to `CODE_REVIEW.md`),
-  Write (`WORK_LOG.md`, `profile.md`,
-  `SPEC_EVAL.md`, and `IMPLEMENTATION.md` on the TRIVIAL fast path), the
+  Write (`WORK_LOG.md`, `profile.md`, and `IMPLEMENTATION.md` on the TRIVIAL
+  fast path or after a `BLOCKED` report there), the
   Agent/Task tool (spawn every worker), AskUserQuestion
   (gates), Skill (only if a fitting skill opens the PR in 6a), and — when a
   ticket is present — ToolSearch to locate the Atlassian MCP Jira tools, then those
@@ -83,7 +87,13 @@ below state the same thing; change them together:
 - **Define reviewer (Phase 2):** Read, Grep, Glob only.
 - **Planner (Phase 3):** Write + Read, Grep, Glob.
 - **Plan reviewer (Phase 3):** Read, Grep, Glob only.
+- **Acceptance tester (Phase 3):** Read, Write, Edit, Bash, Grep, Glob — writes
+  only its own checks (removed from the worktree before it returns) and
+  `acceptance/`; never source.
 - **Coder (Phase 4):** Read, Write, Edit, Bash, Grep, Glob.
+- **Verifier (Phase 5, re-spawned after every later change):** Read, Grep, Glob,
+  Bash, Write — read-only w.r.t. source and tests; it installs the sealed
+  acceptance checks and writes `SPEC_EVAL.md` and `evidence/`.
 - **Cleanup agent (Phase 5, re-spawned after later corrections):** Read, Edit, Write, Bash, Grep,
   Glob, plus the **Skill** tool to run `/simplify`.
 - **Code reviewer (Phase 6a):** Read, Grep, Glob, Bash (`git diff`, `git blame`),
@@ -235,11 +245,15 @@ of the shared iteration budget; at zero, stop and report the open blockers
 
 Branch on the **SCOPE CALL**:
 
-- **TRIVIAL** — skip the Define review and the Phase 3 agents. Write a short
-  `IMPLEMENTATION.md` yourself: the files to touch and the test that proves it.
-  Go to Phase 4 (but see the post-plan gate below — it still fires if enabled).
-  Record `Mode: single-PR` and `Scope call: TRIVIAL` in `WORK_LOG.md`, and mark
-  Phase 3's ledger row `skipped`.
+- **TRIVIAL** — skip the Define review, the planner and the plan reviewer. Write
+  a short `IMPLEMENTATION.md` yourself: the files to touch and the test that
+  proves it. Then spawn the acceptance tester, and go to Phase 4 (but see the
+  post-plan gate below — it still fires if enabled).
+  Record `Mode: single-PR` and `Scope call: TRIVIAL` in `WORK_LOG.md`. Phase 3
+  still runs the acceptance tester, so its ledger row goes `in-progress` and then
+  `done` like any phase — never `skipped`, or a run cut off before the tester
+  would resume past it — with the Notes "TRIVIAL: plan by orchestrator; planner
+  and plan review skipped".
 - **STANDARD** — proceed to Phase 3 as a single-PR run. Record `Mode: single-PR`
   and `Scope call: STANDARD`.
 - **OVERSIZED** — **skip the Define reviewer here too.** The parent `SPEC.md` exists
@@ -307,8 +321,9 @@ relative to shipping the wrong thing.
 
 ## Phase 3 — Plan
 
-**Skipped as an agent phase when the scope call is TRIVIAL** — the orchestrator
-writes a short `IMPLEMENTATION.md` directly instead.
+**On TRIVIAL the planner and plan reviewer are skipped** — the orchestrator
+writes a short `IMPLEMENTATION.md` directly instead. **The acceptance tester runs
+at every scope**: it is the head of the verification tail, not of the planning.
 
 ### Planner
 _Agent type: `auto-dev:planner`._
@@ -358,9 +373,94 @@ a review returns none. Each re-review consumes a round of the shared budget; at
 zero, stop and report the open blockers (`references/correction-loop.md`).
 A spec condition with no plan step is cheapest to catch here, before code exists.
 
+### Acceptance tester
+_Agent type: `auto-dev:acceptance-tester`._
+_Tools: Read, Write, Edit, Bash, Grep, Glob._ Runs once the plan is final (after
+the plan review settles, or after you write the TRIVIAL plan), before the
+post-plan gate and before any code exists.
+
+The coder's own tests are written by the agent whose work they judge, so they
+cannot be the main evidence that the work is right. This agent writes a second,
+**held-out** set from `SPEC.md` alone, proves each new-behavior check fails on
+the untouched tree (a check that passes before the change exists proves nothing
+about it), and then **seals** them: removes them from the worktree and keeps the
+only copy under `<artifact-dir>/acceptance/`. The coder never sees them during
+the build; the verifier installs them afterwards (Phase 5).
+
+```
+You are the ACCEPTANCE-TEST phase. Work inside the worktree at <worktree>;
+<artifact-dir> is the one other path you may write to. Do NOT modify source code.
+Do NOT ask the user — record assumptions.
+
+Inputs:
+- <artifact-dir>/SPEC.md — the conditions. It is your ONLY source for what the
+  right outcome is.
+- <artifact-dir>/IMPLEMENTATION.md — read it ONLY for the entry points the change
+  will expose (routes, public modules/functions, CLI commands, pages) and where
+  tests live. Never take an expected value from it.
+- <artifact-dir>/profile.md — the test command and test_notes; and the repo's
+  existing tests, for conventions, helpers and fixtures.
+Binding rules: <summary>. Use synthetic test data only.
+
+For every SPEC.md condition, Security/Compliance criteria included:
+1. Write at least one black-box check that fails if the condition does not hold.
+   Drive it through the most external entry point the repo's tests can reach (a
+   request/controller/LiveView test, a CLI invocation, the public API), not
+   internal helpers. Take expected values from the spec's words, never from how
+   the code computes them. Where the spec states or implies a negative or edge
+   case (someone else's record, empty input, a limit), check it too.
+   Put the checks in NEW files in the repo's test tree, following its naming
+   conventions, with `acceptance` in each file name (e.g.
+   `test/<app>/acceptance/<slug>_acceptance_test.exs`). Never edit an existing
+   test file. Name each test after the behavior it checks.
+2. Classify each check: `fail-to-pass` (new or changed behavior — must FAIL on
+   this untouched tree) or `pass-to-pass` (behavior the change must preserve —
+   must PASS on it).
+3. Run your checks with the profile's test command scoped to your files, output
+   to $TMPDIR. A fail-to-pass check must fail FOR THE RIGHT REASON: an assertion,
+   or the entry point being absent or returning the wrong result (a compile error
+   that names the missing entry point counts). A syntax error, a broken fixture or
+   a setup crash in the check itself is a broken check: fix it. A pass-to-pass
+   check must pass. If you cannot make a check behave, drop it and list the
+   condition under Not automatable with the reason.
+4. A condition no check can drive (visual layout, an external service with no
+   test double, wording only a human can judge) goes under Not automatable, with
+   the closest observable proxy a later agent could run, if there is one (a CLI
+   call, a request, a log line).
+
+Then SEAL the checks:
+- copy each check file to <artifact-dir>/acceptance/files/<its repo-relative path>;
+- delete it from the worktree, and any directory you created for it;
+- confirm `git status --porcelain --untracked-files=all` lists none of your files.
+Write <artifact-dir>/acceptance/MANIFEST.md to this template (strict):
+<paste the MANIFEST.md template from references/artifacts.md>
+
+Spill long output to $TMPDIR; quote only failing tails. Keep each command under
+5 minutes.
+
+Return: the checks per condition (path :: test name, kind), each check's base-run
+result, the not-automatable conditions, and your assumptions.
+```
+
+Check the return before moving on: every condition is either covered by a check
+or listed under Not automatable, and `git status` in the worktree is unchanged.
+Fix a gap by re-spawning this agent with the gap named (a first pass is not a
+round; a re-spawn spends one, consumer #2 in `references/correction-loop.md`).
+
+**Repair mode.** When the verifier reports a check as defective and you agree
+against `SPEC.md` (_Acting on SPEC_EVAL.md_, below), re-spawn this agent with the
+same brief scoped to that check, plus: "The tree now holds the built change, so
+skip the base run for the repaired check and record its Base run as `not re-run
+(repair)`. Update its sealed copy and its MANIFEST row; leave every other check
+alone." A repaired check is no longer proof the change was needed, so the
+verifier counts it as Adequate evidence at most, never Strong. Repair spends a
+round (consumer #3).
+
 ### Optional post-plan gate (orchestrator)
 If enabled for this run, pause here (`AskUserQuestion`) for the user to approve
-`SPEC.md` + `IMPLEMENTATION.md` before any code is written. Off by default; see
+`SPEC.md` + `IMPLEMENTATION.md` before any code is written, with
+`acceptance/MANIFEST.md`'s coverage (checks per condition, and what is not
+automatable) in the summary. Off by default; see
 `references/gates-and-jira.md`.
 
 **This gate is independent of the scope call.** On the TRIVIAL path the agents
@@ -387,70 +487,215 @@ and the binding rules (<summary>) — follow the repo's security and coding
 guidelines, never log/expose sensitive data, never hardcode secrets, use
 synthetic/test data only.
 
-Work test-first where practical: for each step, add or extend the test the plan
-calls for, then make it pass. Follow existing codebase conventions and
+Work test-first: for each step, add or extend the test the plan calls for, run
+it and see it FAIL, then make it pass. Follow existing codebase conventions and
 abstractions closely. Run the relevant tests as you go and get them green
 (test command: <from profile.md>; scope hints: <profile.md test_notes>). Do NOT
 commit and do NOT open a PR — just leave the working tree with the change
 implemented.
 
+Tests are evidence, so keep them honest. A later, independent check audits every
+test change and runs checks you have not seen:
+- Never delete, skip, xfail or weaken an existing test, or change what it
+  asserts, unless the plan's behavior change requires it. List every such edit
+  under TEST CHANGES with the reason.
+- Never make a test pass by special-casing its inputs, detecting the test
+  environment, hard-coding the expected value, or mocking out the very behavior
+  the test names. Every test you add must fail if that behavior breaks.
+- Never modify a file this brief names as an acceptance check.
+If the plan conflicts with the code as you find it, or a step can only be made
+green by breaking one of these rules, STOP that step — do not force it. Report it
+under BLOCKED and carry on with the steps it does not affect.
+
 Return:
 - files created/modified, and tests added
 - which build-sequence steps are done
-- DEVIATIONS: any step you did differently than the plan describes, or could not
-  do at all, and why. Be specific and honest — a better route is a fine reason,
-  and this report is read as information, not as a failure.
+- TEST CHANGES: every existing test you edited, skipped or removed, and why
+  (write "none" if none)
+- BLOCKED: each step you stopped, what conflicts, and what you would need to
+  finish it (write "none" if none)
+- DEVIATIONS: any step you did differently than the plan describes, and why. Be
+  specific and honest — a better route is a fine reason, and this report is read
+  as information, not as a failure.
 ```
 
-**Read the DEVIATIONS report as context going into Phase 5 — not as a defect list.**
-The plan is a route; Phase 5's acceptance check is what decides whether the
-destination was reached. Do not spend budget reconciling code with a plan it
-improved on.
+**Read the DEVIATIONS report as information, not a defect list.** The plan is a
+route; the Phase 5 verifier decides whether the destination was reached. Do not
+spend budget reconciling code with a plan it improved on. The verifier never sees
+this report: it judges the code, not the coder's account of it.
+
+**A `BLOCKED` report** means a step stopped rather than going green dishonestly.
+Settle it before Phase 5, against `SPEC.md`, which you hold:
+
+- **The plan is wrong or incomplete** (it names a function that cannot work that
+  way, misses a caller, contradicts the code): on STANDARD, re-spawn the planner
+  with the blocker and have it revise only the affected steps; on TRIVIAL, edit
+  `IMPLEMENTATION.md` yourself. Then re-dispatch `auto-dev:coder` for the stopped
+  steps. This spends one round (consumer #3, `references/correction-loop.md`).
+- **The spec itself cannot be met as written** (two conditions contradict each
+  other, or the codebase makes one impossible): that is the _self-contradictory or
+  impossible_ stop-and-report in `SKILL.md`. Report which conditions and why.
+- **An existing test asserts the old behavior the spec changes**: not a blocker.
+  Tell the coder, in the re-dispatch, that updating that test is in scope and to
+  list it under TEST CHANGES.
 
 ---
 
 ## Phase 5 — Verify
 
-### Acceptance check (orchestrator)
+### Verifier
+_Agent type: `auto-dev:verifier`._
+_Tools: Read, Grep, Glob, Bash, Write._ Spawn it **without** `IMPLEMENTATION.md`,
+the coder's return, or your correction history: it gets the contract and the
+code, nothing that explains the code.
 
-**You**, holding `SPEC.md` (which the coder never saw), verify the build against
-every condition. Read the diff, the tests, and the coder's DEVIATIONS report.
+The verifier replaces reading the diff and judging it. Two things make its
+verdicts worth more than a read: it **runs** the evidence instead of citing it,
+and it holds none of the context that wants the build to have worked — the plan,
+the coder's account, the rounds already spent. Anthropic's harness work found
+agents "reliably skew positive" when grading work whose story they already hold,
+and that an evaluator that clicks through the running system catches what one
+that reads the code does not.
 
-The coder is told not to commit, so **the change set is the working tree**:
+**Its first pass** runs once the build returns with nothing `BLOCKED`. **It is
+re-spawned** — in re-check mode, never spending a round — after every
+acceptance correction, after the cleanup agent (_Re-verify after cleanup_,
+below), and after every Phase 6 correction (`references/correction-loop.md`,
+_The Phase 6a refresh_).
 
-```bash
-git ls-files -z --others --exclude-standard | xargs -0 git add -N --   # intent-to-add new files only
-git diff origin/<base>
+The coder is told not to commit, so **the change set is the working tree**, and
+the brief's diff step has two halves that both fail silently. Without
+intent-to-add, every file the coder _created_ is invisible to `git diff` —
+usually most of the change. Mark the untracked files only, never `git add -N .`:
+that also stages every deletion — real staged changes, not intent-to-add markers,
+made before the PR gate approved any commit. And `git diff origin/<base>...HEAD`
+reports an **empty** diff, because nothing is committed yet. Diff against
+`origin/<base>` — the ref Phase 1 cut the worktree from — not the local branch,
+which may be stale. (Phase 6a's reviews run before the commit too, so they also
+read the working tree; `references/review.md`, _What each review pass covers_.)
+
+```
+You are the VERIFY phase. Work inside the worktree at <worktree>; <artifact-dir>
+is the one other path you may write to. Do NOT ask the user. Do NOT modify source
+or tests: your only writes are installing the sealed acceptance checks,
+<artifact-dir>/evidence/, and <artifact-dir>/SPEC_EVAL.md.
+
+You did not build this change and you have not seen its plan. Your job is to find
+the condition that is NOT met. Missing evidence means not met.
+
+Read: <artifact-dir>/SPEC.md (the contract), <artifact-dir>/acceptance/MANIFEST.md
+and the sealed checks under <artifact-dir>/acceptance/files/, <artifact-dir>/profile.md
+(test command, test_notes), and the binding rules (<summary>). Do NOT read
+IMPLEMENTATION.md or any other file under <artifact-dir>.
+
+Mode: <FIRST PASS | RE-CHECK after <what changed: an acceptance correction / the
+cleanup pass / a Phase 6 correction>; rewrite every row of the existing SPEC_EVAL.md>
+Corrections dispatched so far (copy into SPEC_EVAL.md's table): <rows, or "none">
+
+1. Integrity, then install. Paths below are absolute.
+   - FIRST PASS: copy every file under <artifact-dir>/acceptance/files/ to the same
+     repo-relative path in the worktree. If a file already exists at one of those
+     paths, do not overwrite it: stop and return INSTALL CONFLICT with the path.
+     Then run the audit (below).
+   - RE-CHECK: run the audit first, then re-copy every sealed check over its
+     installed path (this undoes any edit; the audit has already recorded it).
+   Audit: python3 <skill-dir>/scripts/check-tests.py <worktree> --base origin/<base> --acceptance <artifact-dir>/acceptance
+   Exit 0 clean, 1 findings, 3 an acceptance check missing or modified, 2 an
+   error (report it; do not guess). Save its output to <artifact-dir>/evidence/integrity.txt.
+2. The change set: run
+     git ls-files -z --others --exclude-standard | xargs -0 git add -N --
+     git diff origin/<base>
+   and read it whole (spill it to $TMPDIR if long). Never `git add -N .`.
+3. Run the acceptance checks with the profile's test command scoped to their
+   files; save the output to <artifact-dir>/evidence/acceptance.txt.
+4. For each SPEC.md condition (Security/Compliance criteria included), decide its
+   evidence tier. Before running anything for it, write down the outcome you
+   expect; then run and compare. Save what you ran and saw to
+   <artifact-dir>/evidence/C<n>.txt.
+   - Strong: the condition's acceptance checks all passed in step 3, and each
+     fail-to-pass one failed on the base per MANIFEST.md.
+   - Adequate: no usable Strong evidence (the condition is not automatable, a
+     check was repaired, or the checks cover only part of it), but you ran
+     something yourself and it matched your stated expectation — a test in the
+     change (read it first: it must assert the condition's observable outcome,
+     not a mock of the code under test), or a direct observation such as a CLI
+     call, a request against a test server, or a script through the project's
+     runner.
+   - Weak: a code citation you did not execute.
+   Verdict:
+   - unmet — any acceptance check for it fails, or the behavior is absent or
+     contradicted.
+   - met — every acceptance check for it passes, the evidence is Strong or
+     Adequate, and no unjustified integrity finding touches it.
+   - partial — some of it holds, or the only evidence is Weak.
+   - manual — ONLY when MANIFEST.md lists it as not automatable AND you found no
+     way to observe it here. Say exactly what a human must check, and how.
+5. Judge each integrity finding: Justified (name the SPEC.md condition that
+   changes or removes that behavior) or Unjustified. ACCEPTANCE_* findings are
+   never justified. Also look through the diff for gaming the audit cannot see:
+   production code branching on values that appear only in tests, checks for a
+   test environment, logic stubbed out or returning a constant. Each is an
+   Unjustified finding.
+6. If an acceptance check itself is defective — it asserts something SPEC.md
+   does not say, or contradicts it — say so and why. Do not edit it.
+
+Write <artifact-dir>/SPEC_EVAL.md to this template (strict):
+<paste the SPEC_EVAL.md template from references/artifacts.md>
+
+Never downgrade a failure you saw without writing why in its row. Spill long
+output to $TMPDIR; keep each command under 5 minutes.
+
+Return: one line per condition (number, verdict, tier); the unjustified integrity
+findings; any defective acceptance check; INSTALL CONFLICT if it happened.
 ```
 
-Both halves matter, and both fail silently. Without intent-to-add, every file the
-coder _created_ is invisible to `git diff` — usually most of the change. Mark the
-untracked files only, never `git add -N .`: that also stages every deletion —
-real staged changes, not intent-to-add markers, made before the PR gate approved
-any commit. With no untracked
-files the line is a harmless no-op. And
-`git diff origin/<base>...HEAD` reports an **empty** diff, because nothing is
-committed yet. Diff against `origin/<base>` — the ref Phase 1 cut the worktree
-from — not the local branch, which may be stale. (Phase 6a's reviews run before
-the commit too, so they also read the working tree; `references/review.md`,
-_What each review pass covers_.)
+The verifier's run spends no round, on its first pass or any re-spawn: like the
+quality gate and the reviews, it is a check, and what bounds the loop is the
+correction that sent it back (`references/correction-loop.md`).
 
-Write `<artifact-dir>/SPEC_EVAL.md` to the template in `references/artifacts.md`:
-per condition, **met / partial / unmet** with evidence (file:line or test name),
-security/compliance conditions included.
+### Acting on SPEC_EVAL.md (orchestrator)
 
-For each unmet/partial condition, re-dispatch the **coder** as
-`auto-dev:coder` — on a TRIVIAL run too — with a targeted correction brief (this is
-the correction loop's Phase 5 entry; it consumes the shared budget):
+Read `SPEC_EVAL.md` — not the diff. Each of these is a Phase 5 correction to
+`auto-dev:coder`, on a TRIVIAL run too, and spends a round (this is the
+correction loop's Phase 5 entry; consumer #3):
+
+- a condition `unmet` or `partial`;
+- an **Unjustified** integrity finding — a deleted, skipped or weakened test, an
+  assertion-free new test, gaming in the code, or an acceptance check the coder
+  touched.
+
+One brief covers every open item from one verifier pass. A condition at
+`manual` is **not** a correction — nothing the coder writes can make it
+observable here. It goes to the PR gate and the PR body as a check for a human.
+
+If a verdict looks wrong to you against `SPEC.md`, re-spawn the verifier once
+with your objection stated; its second answer stands. An `INSTALL CONFLICT` means
+the coder wrote a file at an acceptance check's path: correct the coder to move
+its file, then re-run the verifier's first pass.
+
+If the verifier reports a **defective acceptance check** and you agree against
+`SPEC.md`, re-spawn the acceptance tester in repair mode (_Acceptance tester_,
+Phase 3) instead of correcting the coder, then re-spawn the verifier. If you
+disagree, the check stands and its failure is the coder's to fix.
+
+The correction brief:
 
 ```
 You are the IMPLEMENTATION phase, applying a correction. Work inside the worktree
 at <worktree>. The following required behavior is not yet satisfied:
 
-<translate the unmet SPEC condition into CONCRETE required behavior — do NOT quote
-the spec verbatim; describe what the code must do and where>. Relevant files:
-<paths>. Implement the fix and its test, run the relevant tests green, and report
-what changed. Do not commit or open a PR.
+<translate each unmet SPEC condition into CONCRETE required behavior — do NOT
+quote the spec verbatim; describe what the code must do and where. For an
+integrity finding, say which test to restore or strengthen, or what special-case
+to remove.> Relevant files: <paths>.
+
+These files are held-out acceptance checks: <installed paths from MANIFEST.md>.
+Do NOT modify them; make the code satisfy them. The rules on keeping tests honest
+from your first brief still apply, and so does BLOCKED: if this cannot be done
+honestly, stop and say why.
+
+Implement the fix and its test, run the relevant tests green, and report what
+changed, TEST CHANGES and BLOCKED. Do not commit or open a PR.
 ```
 
 For an unmet condition "A user cannot delete another user's todo":
@@ -462,15 +707,17 @@ For an unmet condition "A user cannot delete another user's todo":
   existing not-found response, and leave the record in place. Add a test where user
   A tries to delete user B's todo."
 
-Say what the code must do and where, in your own words.
+Say what the code must do and where, in your own words. The verifier's evidence
+files (`evidence/C<n>.txt`) tell you what it ran and saw; quote the failure, not
+the condition.
 
-After it returns, re-evaluate and update `SPEC_EVAL.md`. Repeat until every
-condition is met. Do not re-run `gate` commands yourself as the correction's
-check, and do not spawn the cleanup agent per correction: it runs after this
-loop settles, so `/simplify` and the quality gate see the final code.
-If conditions remain unmet when the
-budget is exhausted, **stop and report** exactly which are unsatisfied and what
-was tried.
+After it returns, re-spawn the verifier in re-check mode and act on the new
+`SPEC_EVAL.md`. Repeat until no condition is `unmet` or `partial` and no
+integrity finding is Unjustified. Do not run the `gate` commands yourself, and do
+not spawn the cleanup agent per correction: it runs after this loop settles, so
+`/simplify` and the quality gate see the final code. If anything is still open
+when the budget is exhausted, **stop and report** exactly which conditions and
+findings remain and what was tried.
 
 This is one entry point into the pipeline's single correction loop — its steps,
 what a correction invalidates at each point, and the budget accounting are in
@@ -481,8 +728,8 @@ _Agent type: `auto-dev:cleanup`._
 _Tools: Read, Edit, Write, Bash, Grep, Glob, plus the **Skill** tool to run `/simplify`._
 
 Runs after the Phase 5 correction loop settles, so corrective code gets simplified too,
-is re-spawned after any Phase 5 correction made after that pass (_Re-resolve the
-acceptance evidence_, below), and is **re-spawned after every Phase 6 correction**
+is re-spawned after any Phase 5 correction made after that pass (_Re-verify after
+cleanup_, below), and is **re-spawned after every Phase 6 correction**
 (a must-fix review finding, a human blocker or red CI) on the code that correction
 changed. No spawn of it spends the iteration budget.
 `/simplify` is *meant* to preserve behavior; Step 2's quality gate is what checks that it
@@ -505,6 +752,11 @@ How you fix a failure depends on what caused it:
   editing until the check passes destroys the only signal that it went wrong.
 - Failure that was already there before Step 1, or that Step 1 merely surfaced —
   fix it forward.
+Never make a test pass by deleting it, skipping it, or changing what it asserts,
+and never touch the acceptance checks (<installed paths from MANIFEST.md>). An edit
+to a test file is limited to formatting, lint and compile warnings. A failing test
+that would need more than that is a design-level failure: leave its report at
+fail and say why. (Every test change is audited afterwards.)
 
 For each check, write <artifact-dir>/lint/<REPORT>.md: the exact command, final status
 (pass/fail), and the tail of any output you had to fix. Re-run until every `gate`
@@ -560,23 +812,25 @@ traces to a design problem in the plan), the quality gate is red: **stop the pip
 and report** — never commit a red build. This agent spends **no** iteration budget,
 on its first pass or on any re-spawn (`references/correction-loop.md`).
 
-### Re-resolve the acceptance evidence (orchestrator)
+### Re-verify after cleanup (verifier re-spawn)
 
-Once the quality gate is green, **re-resolve `SPEC_EVAL.md`'s `file:line` evidence**:
-simplify moves lines, and Phase 6a builds the PR checklist from those citations.
-Re-verify only the conditions whose cited files simplify actually touched — not all
-of them. A reverted simplification reported by the cleanup agent is worth a second
-look at the condition it touched.
+Once the quality gate is green, **re-spawn the verifier in re-check mode** ("after
+the cleanup pass"). `/simplify` is meant to preserve behavior, and the cleanup
+agent may have fixed things forward; the quality gate shows the tests still pass,
+but only the verifier re-runs the acceptance checks, re-audits the tests and
+rewrites the evidence Phase 6a builds the PR checklist from. It re-checks every
+row, not only the ones citing files simplify touched: a `met` condition can depend
+on a file its evidence never names, and re-running is cheap next to reading.
 
-A condition that is no longer met is a Phase 5 correction: send the coder a
-correction brief (it spends a round), then **re-spawn the cleanup agent** with the
-Phase 5 scope (free of budget), so the corrective code is simplified and the
-quality gate re-runs, then re-resolve again. Only then end S2 for Phase 6
-(`references/correction-loop.md`).
+A condition no longer met, or a new Unjustified integrity finding, is a Phase 5
+correction: send the coder a correction brief (it spends a round), then
+**re-spawn the cleanup agent** with the Phase 5 scope (free of budget), so the
+corrective code is simplified and the quality gate re-runs, then re-verify again.
+Only then end S2 for Phase 6 (`references/correction-loop.md`).
 
-After a Phase 6a correction the re-resolve is wider — every row, not only those
-citing touched files — and a condition no longer met is a Phase 6a correction:
-`references/correction-loop.md`, _The Phase 6a refresh_.
+After a Phase 6 correction the verifier re-checks the same way, and a condition
+no longer met is a Phase 6 correction: `references/correction-loop.md`, _The
+Phase 6a refresh_.
 
 ---
 
