@@ -125,17 +125,20 @@ wrote itself.
   ships it listed in the PR body's `Review` section.
 - **Options:** `Open PR` · `Hold (don't push yet)` · `Stop`.
 - **Triage, only when there are pre-existing security findings for the user:**
-  add one question per finding to the same `AskUserQuestion` call. The call
+  these are never fixed without asking, whatever their confidence. Fixing one
+  widens the PR beyond its task, so whether it belongs in this PR or a separate
+  one is the user's call. Add one question per finding to the same `AskUserQuestion` call. The call
   holds at most four questions and the gate's own options take one, so ask about
   up to three findings and group any others into one question:
-  `Leave it (note in the PR body)` · `Fix it in this PR` · `Ignore it`.
+  `Separate PR (note it as a follow-up)` · `Fix it in this PR` · `Ignore it`.
   `Fix it in this PR` is a correction (`references/correction-loop.md`, entry
   _Phase 6a — review_): it spends a round, the fix is reviewed like any other
   (`references/review.md`), and the gate fires again on the result. It **wins
   over `Open PR`**: when both are picked, commit nothing, run the correction, and
   ask the gate again. At zero budget, leave `Fix it in this PR` out of the options
-  and say why. `Leave it`
-  adds the finding to the PR body's `Review` section. `Ignore it` records the
+  and say why. `Separate PR` adds the finding to the PR body's `Review` section
+  and the final report as a follow-up for its own PR; the pipeline does not open
+  that PR. `Ignore it` records the
   decision in `WORK_LOG.md` and nothing else. Record every triage decision, and
   its reason, in `WORK_LOG.md`.
 

@@ -878,8 +878,8 @@ confidence, and its must-fix findings fixed and still open>
 - Security review — confidence <High | Medium | Low>: <n> must-fix fixed, <n> open
 <then one line per must-fix finding still open: what it is, where, and why it is
 being shipped anyway. Advisory and noise findings stay in .auto-dev/. A
-pre-existing security finding appears here only if the user chose that at the PR
-gate.>
+pre-existing security finding appears here only if the user chose `Separate PR`
+(listed as a follow-up) or `Fix it in this PR` (listed as fixed) at the PR gate.>
 
 ## Assumptions
 <the unresolved assumptions from SPEC.md a reviewer should sanity-check>
@@ -917,4 +917,6 @@ a stop-and-report condition) uses the same shape and says where it stopped.
 **Assumptions:** <the ones a reviewer should know about>
 
 **Unresolved / skipped:** <unmet conditions, open must-fix findings, skipped steps — or "none">
+
+**Follow-ups:** <pre-existing security findings the user sent to a separate PR — or "none">
 ```

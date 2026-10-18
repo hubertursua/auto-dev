@@ -113,7 +113,8 @@ A **rubric** decides what must be fixed and what is noise:
   introduce are dropped.
 - **Security findings.** One this change introduced, with a traced path, is
   must-fix. One that was already there is shown to you at the PR gate to triage:
-  leave it, fix it in this PR, or ignore it.
+  fix it in this PR, note it as a follow-up for a separate PR, or ignore it.
+  It is never fixed without asking, because fixing it widens the PR's scope.
 - **Confidence.** Every finding carries a confidence level (High, Medium or
   Low), and so does each report as a whole. A report whose confidence is Low
   (say, a reviewer failed) is flagged at the gate as a warning, never shown as a

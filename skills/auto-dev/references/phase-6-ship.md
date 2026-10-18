@@ -139,7 +139,7 @@ and fixed, and the PR never collects review-fix commits.
    confirmed, post each finding from `CODE_REVIEW.md` and `SECURITY_REVIEW.md`
    that is still open or advisory as an inline comment at its `path:line`, with
    its verdict and confidence. Skip noise and fixed findings, and skip
-   pre-existing security findings unless the user chose `Leave it` at the gate.
+   pre-existing security findings unless the user chose `Separate PR` at the gate.
 6. **CI monitoring** — poll the PR's checks (detected provider) with a bounded
    timeout (`references/gates-and-jira.md`). On red pre-merge the response is a
    correction loop, not an immediate halt: `references/correction-loop.md`. Its
