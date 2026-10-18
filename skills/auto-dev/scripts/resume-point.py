@@ -15,9 +15,12 @@ Usage:
 
 --task checks that the ledger belongs to the current task. A Jira key (it
 matches `^[A-Z][A-Z0-9_]+-\\d+$`, ignoring case) must appear as a whole token in
-the header's Ticket line — `PROJ-12` matches `PROJ-12 https://…/browse/PROJ-12`
-but not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key
-the same way. Any other text is compared word by word, ignoring case,
+the key/link part of the header's Ticket line (before the first em dash with
+whitespace on both sides, the ` — ` that starts the restated ask), so a key the
+ask mentions never counts — unless that part is a bare "none", when the ask's
+keys count instead. `PROJ-12` matches `PROJ-12 https://…/browse/PROJ-12` but
+not `PROJ-123`; a Jira issue URL (`…/browse/PROJ-12`) is matched by its key the
+same way. Any other text is compared word by word, ignoring case,
 punctuation and markdown (so ``Add `--dry-run` flag.`` is `add dry run flag`),
 against the header's Task line and the ask the Ticket line restates (the text
 after ` — `). It matches when its words are that line's words, or that line
@@ -37,7 +40,10 @@ Phase 2, and `in-progress` is MALFORMED (a started sub-task has a table).
 
 Output:
     stdout  `RESUME: …` plus task, ticket, mode, phase and status, session, what
-            the status means, and budget; or `COMPLETE: …` when nothing is left
+            the status means (`Action:`), and budget; or `COMPLETE: …` when
+            nothing is left. A Phase 6 result adds a `Note:` on reconciling with
+            git and gh, except Phase 6 in-progress, whose Action carries it and
+            says to resume inside the phase rather than re-run it whole
     stderr  `MISSING: …`, `MALFORMED: …` (naming the line or field),
             `NEAR-MISS: …` (--task and the header overlap — ask the user),
             `MISMATCH: …`, or `ERROR: …`
@@ -71,7 +77,8 @@ STATUSES = {"pending", "in-progress", "done", "skipped", "n/a", "blocked"}
 COMPLETE = {"done", "skipped", "n/a"}
 
 # What resume step 3 says to do at each incomplete status, so the caller does
-# not have to re-open the procedure to act on the output.
+# not have to re-open the procedure to act on the output. Phase 6 in-progress
+# is the one exception: it prints PHASE_6_IN_PROGRESS instead (step 4).
 ACTIONS = {
     "pending": "run the phase normally",
     "in-progress": ("the phase was cut off mid-flight: re-run the whole phase "
@@ -80,9 +87,23 @@ ACTIONS = {
                 "user and ask"),
 }
 # Resume step 4: Phase 6 is reconciled against git and gh before acting.
-PHASE_6_NOTE = ("Phase 6: check the world before acting (git log, git status, "
-                "whether the branch is on the remote, gh pr view) and reconcile "
-                "the ledger to it")
+PHASE_6_CHECKS = ("check the world before acting (git log, git status, "
+                  "whether the branch is on the remote, gh pr view) and "
+                  "reconcile the ledger to it")
+PHASE_6_NOTE = f"Phase 6: {PHASE_6_CHECKS}"
+# Resume steps 4 and 6 and the HANDOFF rule: Phase 6 is the exception to
+# re-running an in-progress phase whole; it resumes inside itself once
+# reconciled. This script cannot see which gate passed, so the Action says
+# where that is recorded and what to do when nothing records it.
+PHASE_6_IN_PROGRESS = (
+    f"do not re-run blindly: {PHASE_6_CHECKS}. Find the last gate passed: a "
+    "commit or PR on the branch means the PR gate passed, a merge into "
+    "staging or the base the staging or main gate; the Notes or HANDOFF.md's "
+    "`Pick up at` line may name it. If no gate passed, start at the PR gate. "
+    "Continue after that gate, re-doing (not trusting) any step after it that "
+    "leaves an artifact, such as PR_REVIEW.md or a correction, and reusing a "
+    "commit, push or PR already made. Never repeat a gate or Jira transition "
+    "that already happened; read the issue's Jira status, do not assume it")
 
 # Which session holds each phase (SKILL.md, Session boundaries).
 SESSIONS = {1: "S1 — Plan", 2: "S1 — Plan", 3: "S1 — Plan",
@@ -105,6 +126,10 @@ JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$", re.IGNORECASE)
 # What separates tokens on the Ticket line: anything that can't be in a key,
 # so `PROJ-123` is a token in `PROJ-123`, `…/browse/PROJ-123` and `[PROJ-123]`.
 TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9_-]+")
+# What ends the Ticket line's key/link part and starts the restated ask: the
+# template's ` — `, tolerating extra whitespace. Not an en dash: one can sit
+# inside a link title (`[Login – broken](…/browse/PROJ-12)`).
+TICKET_ASK_SEP_RE = re.compile(r"\s+—\s+")
 # A Jira issue URL passed to --task (`…/browse/PROJ-123`); its key is matched.
 BROWSE_KEY_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]+-\d+)(?:[^A-Za-z0-9_-]|$)")
 
@@ -205,20 +230,26 @@ def task_matches(wanted, fields):
     """True if the --task value names this ledger's task (see the docstring),
     NEAR_MISS if it may be the same task worded differently, else False."""
     wanted = wanted.strip()
+    ticket = fields["Ticket"]
+    sep = TICKET_ASK_SEP_RE.search(ticket)
+    head, ask = (ticket[:sep.start()], ticket[sep.end():]) if sep else (ticket, "")
     url_key = BROWSE_KEY_RE.search(wanted)
     if url_key:  # a Jira issue URL matches as its key, never as a substring
         wanted = url_key.group(1)
     if JIRA_KEY_RE.match(wanted):
-        # Strip `_` from token ends so a markdown-italic `_PROJ-12_` still counts.
-        tokens = {t.strip("_")
-                  for t in TOKEN_SPLIT_RE.split(fields["Ticket"].lower())}
+        # Only the key/link part counts: a key the restated ask mentions
+        # (`— follow-up to PROJ-11`) is not this ledger's ticket. Strip `_`
+        # from token ends so a markdown-italic `_PROJ-12_` still counts.
+        # With no ticket (`none — JIRA-1234 (Jira unreadable)…`) the ask is
+        # where a key could be, so its tokens count instead.
+        keyed = ask if head.strip().lower() == "none" else head
+        tokens = {t.strip("_") for t in TOKEN_SPLIT_RE.split(keyed.lower())}
         return wanted.lower() in tokens
     wanted = words(wanted)
     if not wanted:
         return False
     # Free text matches the Task line or the ask the Ticket line restates
     # (after ` — `) — never the key, link or a bare "none" before it.
-    ask = fields["Ticket"].partition(" — ")[2]
     lines = [have for have in (words(fields["Task"]), words(ask)) if have]
     if any(abbreviates(wanted, have) for have in lines):
         return True
@@ -438,9 +469,12 @@ def main() -> int:
                 f"  Session:   {SESSIONS[number]}"]
     if status == "blocked":
         out.append("  Blocked:   blocked — ask the user; do not start or retry it")
-    out.append(f"  Action:    {ACTIONS[status]}")
-    if number == 6:
-        out.append(f"  Note:      {PHASE_6_NOTE}")
+    if number == 6 and status == "in-progress":  # folds the Note in
+        out.append(f"  Action:    {PHASE_6_IN_PROGRESS}")
+    else:
+        out.append(f"  Action:    {ACTIONS[status]}")
+        if number == 6:
+            out.append(f"  Note:      {PHASE_6_NOTE}")
     if notes:
         out.append(f"  Notes:     {notes}")
     out.append(f"  Budget:    {budget}")

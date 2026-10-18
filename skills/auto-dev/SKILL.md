@@ -279,8 +279,9 @@ session. Before every one, ask whether a worker should read it instead.
 Deterministic, run by the orchestrator.
 
 **First: is this a resumed run?** The control worktree is a sibling of the repo
-you start in. Run `scripts/resume-point.py <tree>/.auto-dev --task "<ticket or
-task>"` on each tree in `git worktree list` — omit `--task` on a bare `auto-dev
+you start in. Run
+`python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"`
+on each tree in `git worktree list` — omit `--task` on a bare `auto-dev
 continue`, where the user named none; then only an exit `0` counts, several is a
 stop-and-ask, and none means there is nothing to continue (ask, don't start fresh).
 If one matches, do not re-run Phase 1 — continue from its ledger
