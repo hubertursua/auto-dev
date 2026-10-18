@@ -112,7 +112,7 @@ HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def git(worktree, *args):
-    r = subprocess.run(["git", "-C", worktree, *args], capture_output=True)
+    r = subprocess.run(["git", "-C", worktree, *args], capture_output=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.decode("utf-8", "replace").strip() or "git failed")
     return r.stdout.decode("utf-8", "replace")
@@ -147,7 +147,8 @@ def edit_findings(old_path, path, old_lines, new_lines, findings):
         if op in ("replace", "delete"):
             for n in range(i1, i2):
                 if ASSERTION.search(code(old_lines[n])):
-                    findings.append(("REMOVED_ASSERTION", f"{old_path}:-{n + 1}", old_lines[n].strip()[:120]))
+                    findings.append(("REMOVED_ASSERTION", f"{old_path}:-{n + 1}",
+                                     old_lines[n].strip()[:120]))
         if op in ("replace", "insert"):
             for n in range(j1, j2):
                 if SKIP.search(code(new_lines[n])):
@@ -169,7 +170,7 @@ def main() -> int:
         try:
             git(wt, "rev-parse", "--verify", "--quiet", args.base + "^{commit}")
         except RuntimeError:
-            raise RuntimeError(f"base ref does not resolve: {args.base}")
+            raise RuntimeError(f"base ref does not resolve: {args.base}") from None
         status = git(wt, "diff", "--name-status", "--no-renames", "-z", args.base)
         untracked = git(wt, "ls-files", "--others", "--exclude-standard", "-z")
     except (RuntimeError, OSError) as e:
@@ -213,7 +214,7 @@ def main() -> int:
     changed += [("A", p) for p in untracked.split("\0") if p]
     changed = [(c, p) for c, p in changed if not p.startswith(".auto-dev/")]
 
-    for c, path in changed:
+    for _c, path in changed:
         if TEST_CONFIG.search(path):
             findings.append(("TEST_CONFIG_CHANGED", path, "runner config or test helper changed"))
 
@@ -232,12 +233,12 @@ def main() -> int:
             # rename: diff it as an edit so a weakened assertion cannot hide
             # behind it. Compare sets of non-blank lines (cheap, and two
             # unrelated files share few exact lines).
-            old_set = {l.strip() for l in old.splitlines() if l.strip()}
+            old_set = {ln.strip() for ln in old.splitlines() if ln.strip()}
             best, ratio = None, 0.0
             for p, text in added.items():
                 if p in paired or not old_set:
                     continue
-                new_set = {l.strip() for l in text.splitlines() if l.strip()}
+                new_set = {ln.strip() for ln in text.splitlines() if ln.strip()}
                 r = len(old_set & new_set) / max(len(old_set), len(new_set), 1)
                 if r > ratio:
                     best, ratio = p, r
@@ -263,7 +264,8 @@ def main() -> int:
                     continue
                 if line.startswith("-"):
                     if ASSERTION.search(code(line[1:])):
-                        findings.append(("REMOVED_ASSERTION", f"{path}:-{old_n}", line[1:].strip()[:120]))
+                        findings.append(("REMOVED_ASSERTION", f"{path}:-{old_n}",
+                                         line[1:].strip()[:120]))
                     old_n += 1
                 elif line.startswith("+"):
                     if SKIP.search(code(line[1:])):
@@ -277,7 +279,7 @@ def main() -> int:
         for n, line in enumerate(lines, 1):
             if SKIP.search(code(line)):
                 findings.append(("ADDED_SKIP", f"{path}:{n}", line.strip()[:120]))
-        body = "\n".join(code(l) for l in lines)
+        body = "\n".join(code(ln) for ln in lines)
         if TEST_DEF.search(body) and not ASSERTION.search(body):
             findings.append(("NO_ASSERTIONS", path, "defines tests, asserts nothing"))
 

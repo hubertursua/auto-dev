@@ -296,7 +296,7 @@ def first_open_phase(rows, where):
         except ValueError:
             raise LedgerError(
                 f"line {line_no}: phase number `{row['#']}` in the {where} "
-                f"table is not 1–6")
+                f"table is not 1–6") from None
         if number not in SESSIONS:
             raise LedgerError(
                 f"line {line_no}: phase number {number} in the {where} table "
@@ -357,8 +357,8 @@ def multi_pr(lines):
                 continue  # finished (e.g. merged): never re-run it
             if status == "blocked":
                 return name, (None, None, "blocked",
-                              "sub-task status is blocked and it has no "
-                              "phase table"), budget
+                              ("sub-task status is blocked and it has no "
+                               "phase table")), budget
             if status == "in-progress":
                 raise LedgerError(
                     f"line {line_no}: sub-task {name} is in-progress but has "

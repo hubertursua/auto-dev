@@ -1,0 +1,30 @@
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # The oldest Python the README promises, and a current one.
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install lint and test dependencies
+        run: pip install ruff pyyaml
+      - name: Lint
+        run: ruff check .
+      - name: Repo consistency
+        run: python3 tools/check-repo.py
+      - name: Script tests
+        run: python3 -m unittest discover -s tests -v

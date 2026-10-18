@@ -174,7 +174,14 @@ declares how a stack installs and what its quality gate is; Phase 1 detects the
 stack, loads the profile, merges in runtime discovery, and honors a repo-local
 `.auto-dev.yml` override. Shipped: **Elixir** (`mix compile`/`format`/`credo`/
 `dialyzer`/`test`) plus a generic `default` fallback that discovers commands at
-runtime. Add a stack by dropping in `profiles/<stack>.md` — no skill change. See
+runtime. Add a stack by dropping in `profiles/<stack>.md` — no skill change.
+
+The keys most runs touch in `.auto-dev.yml`: `iteration_budget` (revise rounds,
+default 4), `mutation.max` (mutants per verifier pass, default 20, `0` = off),
+`gates.post_plan` (turn the post-plan gate on), `branches` (`base`, `staging`,
+`prefix`), `ci` and `ci_timeout_minutes`, `worktree_files`, `security_docs`, and
+`jira.states`. Phase 1 validates the file with `scripts/validate-config.py`, so a
+mistyped key is reported rather than silently ignored. See
 `skills/auto-dev/references/profiles.md`, and
 `skills/auto-dev/references/phase-1-setup.md` for the full Phase 1 procedure.
 
@@ -192,6 +199,12 @@ status-transitions-only (In Progress → In Review → Done) and is skipped if n
 ticket is given. **CI** is monitored, with a bounded timeout, on the PR before
 merge, and again after the staging and main merges to confirm the merge itself
 didn't break the branch.
+
+Three more pauses are **conditional** and fire only when their situation
+arises: the **decomposition approval** (OVERSIZED only — a multi-PR run never
+starts unapproved), the **Jira In Progress confirmation** (Phase 1, only with a
+ticket) and the **worktree cleanup offer** (after the main merge). Everything
+else runs without check-ins.
 
 Declining is safe at every gate: `Stop` ends the run, `Hold` (where a gate offers
 it) pauses a run you can resume later, and both leave the branch, the worktree,
@@ -258,12 +271,15 @@ Optional tooling: **Python 3.9+** with **PyYAML** (`pip install pyyaml`), used b
 `skills/auto-dev/scripts/validate-config.py` to check a repo's `.auto-dev.yml` in
 Phase 1 — a mistyped key is silently ignored otherwise. Without it the pipeline
 still runs; it checks the file by hand and reports that it went unvalidated.
-Three more helpers in `skills/auto-dev/scripts/` need only Python's standard
-library: `resume-point.py` (finds where an interrupted run resumes, from
-`WORK_LOG.md`), `exclude-artifacts.py` (makes `.auto-dev/` self-excluding in
-Phase 1 and verifies it with git) and `check-staged.py` (the read-only check
-before each Phase 6a commit that nothing under `.auto-dev/` is staged). Without
-`python3` the pipeline runs the same steps by hand.
+The other helpers in `skills/auto-dev/scripts/` need only Python's standard
+library. Three are run by the orchestrator: `resume-point.py` (finds where an
+interrupted run resumes, from `WORK_LOG.md`), `exclude-artifacts.py` (makes
+`.auto-dev/` self-excluding in Phase 1 and verifies it with git) and
+`check-staged.py` (the read-only check before each Phase 6a commit that nothing
+under `.auto-dev/` is staged); without `python3` the orchestrator runs the same
+steps by hand. Two are run by the Phase 5 verifier: `check-tests.py` (the
+test-integrity audit) and `mutate.py` (applies mutants one at a time and restores
+every file afterwards).
 Also optional: `dexter`, which the orchestrator uses for symbol lookups in Elixir
 repos; without it on your `PATH` it falls back to `grep`.
 
@@ -298,9 +314,23 @@ edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
 
 ## The `.auto-dev/` scratch directory
 
-Each run creates `.auto-dev/` holding the artifacts phases hand off, plus
-`WORK_LOG.md` (the ledger and resume point) and `HANDOFF.md` (the brief for the
-next session) — see `skills/auto-dev/references/artifacts.md`. This is scratch, not part of your
+Each run creates `.auto-dev/` holding the artifacts phases hand off:
+
+| Path | Written by | Holds |
+| ---- | ---------- | ----- |
+| `profile.md` | Phase 1 | the resolved stack, commands, branches, CI and Jira settings |
+| `WORK_LOG.md` | Phase 1 onward | the ledger: phase status, scope call, gate decisions, budget; the resume point |
+| `HANDOFF.md` | each session's end | the brief for the next session |
+| `SPEC.md` | Phase 2 | the testable contract |
+| `IMPLEMENTATION.md` | Phase 3 | the technical plan |
+| `acceptance/` | Phase 3 | the sealed held-out checks and their `MANIFEST.md` |
+| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and evidence tiers, and what it ran |
+| `lint/` | Phase 5 | one report per quality-gate check |
+| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review |
+
+On a multi-PR run these live in the control worktree, with a
+`tasks/<nn>-<slug>/` folder per sub-task. The full layout and every artifact's contract are in
+`skills/auto-dev/references/artifacts.md`. This is scratch, not part of your
 project — the pipeline never commits it and makes the directory self-ignoring (a
 `.gitignore` containing `*`, written into `.auto-dev/` itself) automatically, so
 it cannot be staged even by a stray `git add -A`. (Note: a committed
@@ -311,11 +341,53 @@ it cannot be staged even by a stray `git add -A`. (Note: a committed
 Autonomous but bounded: the correction loop and the Define/plan re-reviews share
 one iteration budget per task (default 4 revise rounds; each sub-task of a
 multi-PR run gets its own), and the pipeline stops and reports
-rather than committing a red build or weakening any security control. It refuses a
+rather than committing a red build or weakening any security control. It also
+stops if the mutation step may have left a planted bug in the tree, or if the
+build edited source inside a submodule. It refuses a
 resolved quality gate with no test command in it, since that would pass Phase 5 by
 having nothing to check. It merges to main only through a PR, only after your
 approval, and if `gh pr merge` is refused it tells you why instead of working around
 branch protection.
+
+## Repository layout
+
+```
+.claude-plugin/         plugin.json (name, version) and marketplace.json
+agents/                 one agent type per worker: tools, model, effort, role
+skills/auto-dev/
+  SKILL.md              the orchestrator's spine: phases, sessions, gates, rules
+  references/           detail read on demand, one file per phase or topic
+  profiles/             stack profiles (elixir.md, default.md)
+  scripts/              the Python helpers listed under Dependencies
+  evals/                evals.json (pipeline evals, with fixtures in files/)
+                        and trigger-eval.json (should / shouldn't trigger)
+tests/                  unit tests for the helper scripts
+tools/check-repo.py     checks that the repo's files agree with each other
+tools/check-pr.py       checks a branch name and PR title against the conventions
+ruff.toml               lint config
+.github/                CI workflow and PR template
+CLAUDE.md               conventions for agents (and people) changing this repo
+```
+
+## Contributing
+
+Before pushing, run the same checks CI runs:
+
+```
+ruff check .
+python3 tools/check-repo.py
+python3 -m unittest discover -s tests
+```
+
+Every change that alters how the pipeline behaves updates this README in the same
+PR: the phase table, the worker and model table, the dependencies, the
+`.auto-dev/` layout, and an *Upgrading* note for a version bump.
+
+Branches are named `<type>/<short-kebab-description>` (`fix/mutate-mtime`), PR
+titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`,
+`chore` and `ci`. Every PR is squash-merged. PR conventions,
+the full README checklist and the rules for changing a script are in
+`CLAUDE.md`.
 
 ## Upgrading from 3.3
 
