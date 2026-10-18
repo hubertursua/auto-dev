@@ -117,8 +117,11 @@ wrote itself.
   what the human must check, and every test-integrity finding judged Justified,
   with its reason, so the user can disagree. An Unjustified finding still open
   means Phase 5 did not settle: say so, never present it as a pass. For example:
+  Then the mutation line: killed of total, and each surviving mutant judged
+  equivalent, with its reason, so the user can disagree.
   ```
   Acceptance — 5 met (4 Strong, 1 Adequate) · 0 partial · 0 unmet · 1 manual
+    Mutation: 14 of 15 killed · 1 equivalent (M7: sort of a one-element list)
     C2 Adequate: no held-out check (repaired); verifier observed GET /todos
     C6 manual: open /settings on a phone and check the toggle is visible
     Test changes: 1 justified — todos_test.exs:-42 assertion changed (C3 makes it 404)

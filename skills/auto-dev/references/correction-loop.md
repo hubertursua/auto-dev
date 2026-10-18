@@ -160,7 +160,7 @@ Five things spend it, one round each:
 |---|---|---|
 | 1 | Define review — re-review after fixes | 2 |
 | 2 | Plan review — re-review after fixes, and an acceptance-tester re-spawn to fill a coverage gap (a re-spawn after a post-plan-gate revision spends none, like the revision) | 3 |
-| 3 | Build and acceptance corrections to the coder — an unmet or partial condition, an unjustified integrity finding, an install conflict, a `BLOCKED` step (with its plan revision) — and an acceptance-check repair in Phase 4–5 | 4–5 |
+| 3 | Build and acceptance corrections to the coder — an unmet or partial condition (a surviving mutant's test gap included), an unjustified integrity finding, an install conflict, a `BLOCKED` step (with its plan revision) — and an acceptance-check repair in Phase 4–5 | 4–5 |
 | 4 | Review-finding corrections — code review panel, security review, a pre-existing security finding the user chose to fix, or a human reviewer's blocker | 6a, 6c |
 | 5 | CI-red corrections, pre-merge | 6a |
 

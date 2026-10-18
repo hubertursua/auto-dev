@@ -45,6 +45,11 @@ Tests the coder wrote are evidence the coder produced, so they can't be the main
 proof that the work is right. Agents are known to mark work done too early and to
 make tests pass by weakening them. Verification is built around that:
 
+- **A spec written to be tested.** Every condition in `SPEC.md` carries a
+  concrete example (Given / When / Then), its tricky edge case, and how it should
+  be verified (unit, integration, end-to-end or manual). The Define reviewer runs
+  an ambiguity probe: if two different implementations both fit a condition's
+  words, the condition is rewritten before anything is built.
 - **Held-out acceptance checks.** After planning, an acceptance tester turns each
   spec condition into a black-box test from the spec alone. Every check for new
   behavior must **fail on the untouched code for the right reason**, since a test
@@ -63,6 +68,13 @@ make tests pass by weakening them. Verification is built around that:
   sealed check. Each finding must be justified by the spec or it goes back to the
   coder. The coder and cleanup agent are told never to game tests, and the coder
   has a `BLOCKED` exit for when a step can't be done honestly.
+- **Targeted mutation testing.** Passing tests show the code works; they don't
+  show the tests would notice if it broke. The verifier plants a few small bugs
+  in the changed lines (a flipped comparison, a boundary moved by one) with
+  `scripts/mutate.py`, which restores every file afterwards. A bug no test
+  catches on a line a condition depends on is a test gap and goes back to the
+  coder. Capped at 20 mutants per pass by default; set `mutation.max` in
+  `.auto-dev.yml` (0 turns it off).
 - **Re-checked after every change.** The verifier runs again after `/simplify`
   and after every later fix, so the PR checklist always reflects the final code.
 
@@ -304,6 +316,14 @@ resolved quality gate with no test command in it, since that would pass Phase 5 
 having nothing to check. It merges to main only through a PR, only after your
 approval, and if `gh pr merge` is refused it tells you why instead of working around
 branch protection.
+
+## Upgrading from 3.3
+
+3.4 adds Example, Edge and Verify by lines under every `SPEC.md` condition, an
+ambiguity probe in the Define review, and a mutation step in the verifier
+(`scripts/mutate.py`, the `mutation.max` key in `.auto-dev.yml`). A run with a
+3.3 `SPEC.md` still works: the acceptance tester falls back to the condition's
+own words, and the mutation step needs nothing from the spec.
 
 ## Upgrading from 3.2
 

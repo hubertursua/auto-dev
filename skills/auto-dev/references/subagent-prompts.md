@@ -92,7 +92,8 @@ below state the same thing; change them together:
   `acceptance/`; never source.
 - **Coder (Phase 4):** Read, Write, Edit, Bash, Grep, Glob.
 - **Verifier (Phase 5, re-spawned after every later change):** Read, Grep, Glob,
-  Bash, Write — read-only w.r.t. source and tests; it installs the sealed
+  Bash, Write — read-only w.r.t. source and tests (its mutants are applied and
+  restored by `scripts/mutate.py`, never by hand); it installs the sealed
   acceptance checks and writes `SPEC_EVAL.md` and `evidence/`.
 - **Cleanup agent (Phase 5, re-spawned after later corrections):** Read, Edit, Write, Bash, Grep,
   Glob, plus the **Skill** tool to run `/simplify`.
@@ -183,6 +184,20 @@ Write exactly one file: <artifact-dir>/SPEC.md — the TESTABLE CONTRACT. Sectio
              in their list, and reloading the page does not bring it back."
      Vague: "Deleting todos works correctly."  (nothing to observe)
      Leaky: "The delete handler calls TodoRepo.remove()."  (design, not behavior)
+   Under each condition add three lines, because a later agent turns them into
+   tests without asking you what you meant:
+     - Example: one concrete Given / When / Then with real-looking values.
+         "Given user A owns todo 7, when A deletes todo 7, then A's list no
+          longer contains todo 7."
+     - Edge: the negative, boundary or error case that most tempts a wrong
+       implementation, and its observable result ("B deletes A's todo 7 → not
+       found, and todo 7 is still in A's list"); or "none — <why>".
+     - Verify by: unit, integration, end-to-end, or manual with the reason no
+       agent can observe it (visual layout, a third-party service with no test
+       double). Prefer the most external level the repo's tests can reach.
+   Write the condition so ONE reading fits: if two implementations could both
+   satisfy the words yet behave differently on some input, pick one and say so in
+   the Example or the Assumptions.
 
 3. "Assumptions" — every ambiguity you resolved.
 
@@ -191,7 +206,11 @@ Write exactly one file: <artifact-dir>/SPEC.md — the TESTABLE CONTRACT. Sectio
    pull the specific controls from the security-directive sources named in
    <artifact-dir>/profile.md (e.g. parameterized queries, authz checks, no
    secrets/PII). If it records "none found", fall back to the repo's coding rules
-   and say so in this section.
+   and say so in this section. Number them S1, S2, …, each with an Example (the
+   abusive or unauthorized action, and how it is refused) and a Verify by line.
+
+Use the SPEC.md template below exactly (strict):
+<paste the SPEC.md template from references/artifacts.md>
 
 Return a structured summary:
 - assumptions: the key ones you made
@@ -227,6 +246,12 @@ You are the DEFINE-REVIEW phase. Read <artifact-dir>/SPEC.md and the binding rul
 
 Critique SPEC.md and return findings grouped blocker / should-fix / nit:
 - Are all conditions observable and TESTABLE (not vague)?
+- Does every condition have an Example with concrete values, an Edge line (a real
+  negative or boundary case, or a credible "none"), and a Verify by line? Is a
+  `manual` Verify by justified, or could a test observe it after all?
+- Ambiguity probe: for each condition, try to describe two implementations that
+  both satisfy its words but behave differently on some input. If you can, name
+  both readings — a blocker unless the Example or Assumptions already settle it.
 - Free of technical leakage (no design masquerading as a requirement)?
 - Does the Context section actually support the conditions — is anything asserted
   in a condition that the research doesn't back up?
@@ -343,7 +368,8 @@ Write exactly one file: <artifact-dir>/IMPLEMENTATION.md — the technical HOW, 
 to build from ON ITS OWN. Include: files to create/modify (paths); the design
 (modules/functions/data structures); data flow; the ordered build sequence (this
 is the coder's worklist — make each step a small, verifiable unit with its test);
-the test plan (which test proves which behavior, and where it lives); any
+the test plan (which test proves which behavior, and where it lives — at the
+level each condition's Verify by line names); any
 migration/config. It must be self-contained — a competent engineer who has NOT
 seen the spec should build the right thing from this plan alone. Ensure every
 SPEC.md condition maps to a build step AND a test.
@@ -413,8 +439,12 @@ For every SPEC.md condition, Security/Compliance criteria included:
    Drive it through the most external entry point the repo's tests can reach (a
    request/controller/LiveView test, a CLI invocation, the public API), not
    internal helpers. Take expected values from the spec's words, never from how
-   the code computes them. Where the spec states or implies a negative or edge
-   case (someone else's record, empty input, a limit), check it too.
+   the code computes them. Each condition's Example is your first check, with its
+   values; its Edge line is your second. Its Verify by line names the level to
+   test at (a `manual` one goes straight to Not automatable, step 4).
+   If a condition reads two ways — two implementations could both satisfy its
+   words yet differ on some input — pick the reading its Example supports, test
+   that one, and report AMBIGUOUS with both readings.
    Put the checks in NEW files in the repo's test tree, following its naming
    conventions, with `acceptance` in each file name (e.g.
    `test/<app>/acceptance/<slug>_acceptance_test.exs`). Never edit an existing
@@ -446,11 +476,17 @@ Spill long output to $TMPDIR; quote only failing tails. Keep each command under
 5 minutes.
 
 Return: the checks per condition (path :: test name, kind), each check's base-run
-result, the not-automatable conditions, and your assumptions.
+result, the not-automatable conditions, AMBIGUOUS (each condition, both readings,
+the one you tested — or "none"), and your assumptions.
 ```
 
 Check the return before moving on: every condition is either covered by a check
 or listed under Not automatable, and `git status` in the worktree is unchanged.
+For each **AMBIGUOUS** condition, decide against the ticket which reading is
+meant — on TRIVIAL runs this is the only ambiguity probe the spec gets. If the
+tester's reading is right, record it in `SPEC.md`'s Assumptions (no round). If
+not, record the other reading there and re-spawn the tester for that condition
+(a round, consumer #2).
 Fix a gap by re-spawning this agent with the gap named (a first pass is not a
 round; a re-spawn spends one, consumer #2 in `references/correction-loop.md`).
 
@@ -565,7 +601,9 @@ Settle it before Phase 5, against `SPEC.md`, which you hold:
 
 ### Verifier
 _Agent type: `auto-dev:verifier`._
-_Tools: Read, Grep, Glob, Bash, Write._ Spawn it **without** `IMPLEMENTATION.md`,
+_Tools: Read, Grep, Glob, Bash, Write._ It never edits source; the one time source
+changes under it is inside `scripts/mutate.py`, which restores every file it
+mutates. Spawn it **without** `IMPLEMENTATION.md`,
 the coder's return, or your correction history: it gets the contract and the
 code, nothing that explains the code.
 
@@ -653,7 +691,8 @@ it.
    - unmet — any acceptance check for it fails, or the behavior is absent or
      contradicted.
    - met — every acceptance check for it passes, the evidence is Strong or
-     Adequate, and no unjustified integrity finding touches it.
+     Adequate, no unjustified integrity finding touches it, and no Test gap
+     (step 7) sits on its lines. Settle verdicts only after step 7.
    - partial — some of it holds, or the only evidence is Weak.
    - manual — ONLY when MANIFEST.md lists it as not automatable AND you found no
      way to observe it here. Say exactly what a human must check, and how.
@@ -666,6 +705,37 @@ it.
    Unjustified finding.
 6. If an acceptance check itself is defective — it asserts something SPEC.md
    does not say, or contradicts it — say so and why. Do not edit it.
+7. Mutation check (cap: <mutation cap from profile.md; TRIVIAL: at most 8>; at 0,
+   skip it and write "off"). Passing tests show the code works; mutants show the
+   tests would notice if it stopped working. Scope by mode:
+   - FIRST PASS and RE-CHECK after the cleanup pass: a fresh set over the whole
+     change.
+   - RE-CHECK after an acceptance correction or repair: the survivors listed in
+     <artifact-dir>/evidence/mutants.json.results.json, plus new mutants on the
+     lines that correction changed.
+   - RE-CHECK after a Phase 6 correction: only the lines that correction
+     changed, at most 5.
+   Choose mutants on CHANGED SOURCE lines the conditions depend on — never tests,
+   config, logging or docs — at most one per line, each the small edit most
+   likely to break the behavior while still compiling: flip a comparison or
+   boolean, drop a guard or a negation, move a boundary by one, return a
+   plausible wrong value, remove a call that has an effect. Tag each with the
+   condition it threatens. Write them to <artifact-dir>/evidence/mutants.json
+   (a JSON list of {"id", "file", "line", "find", "replace", "condition"}), save
+   `git status --porcelain` and `git diff origin/<base> | sha256sum`, then run:
+     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <artifact-dir>/evidence/mutants.json --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>"
+   The scoped command must pass as-is (the script checks) and should take
+   seconds; give a mutant its own narrower "cmd" when one file's tests are
+   enough. Exit 0 none survived, 1 some survived or timed out, 2 an error (fix
+   your input; a red baseline means a test is already failing — unmet, report
+   it), 4 a file could not be restored: STOP and return MUTATION LEFT CHANGES.
+   Afterwards both saved values must be unchanged; if not, return MUTATION LEFT
+   CHANGES. Never commit, stage or keep a mutant.
+   Judge each survivor: Equivalent (no input can tell the mutant from the code —
+   say why) or a Test gap. A timeout usually means the mutant made the code hang,
+   which a test noticed: count it as killed and say so. A Test gap on a line a
+   condition depends on makes that condition `partial` (evidence: the mutant
+   survived); any other Test gap is advisory.
 
 Write <artifact-dir>/SPEC_EVAL.md to this template (strict):
 <paste the SPEC_EVAL.md template from references/artifacts.md>
@@ -674,7 +744,9 @@ Never downgrade a failure you saw without writing why in its row. Spill long
 output to $TMPDIR; keep each command under 5 minutes.
 
 Return: one line per condition (number, verdict, tier); the unjustified integrity
-findings; any defective acceptance check; INSTALL CONFLICT if it happened.
+findings; the mutation summary and each Test gap (mutant, line, condition, and the
+behavior no test pins down); any defective acceptance check; INSTALL CONFLICT or
+MUTATION LEFT CHANGES if either happened.
 ```
 
 The verifier's run spends no round, on its first pass or any re-spawn: like the
@@ -687,7 +759,8 @@ Read `SPEC_EVAL.md` — not the diff. Each of these is a Phase 5 correction to
 `auto-dev:coder`, on a TRIVIAL run too, and spends a round (this is the
 correction loop's Phase 5 entry; consumer #3):
 
-- a condition `unmet` or `partial`;
+- a condition `unmet` or `partial` — including one made `partial` by a surviving
+  mutant (a **Test gap**);
 - an **Unjustified** integrity finding — a deleted, skipped or weakened test, an
   assertion-free new test, gaming in the code, or an acceptance check the coder
   touched.
@@ -705,6 +778,12 @@ spending a round), then re-run the verifier's first pass.
 If the verifier reports a **defective acceptance check**, settle it by repair
 mode (_Acceptance tester_, Phase 3), never by correcting the coder.
 
+**`MUTATION LEFT CHANGES`** means a mutant may still be in the source. Before
+anything else, run `python3 <skill-dir>/scripts/mutate.py <worktree> --restore
+--mutants <artifact-dir>/evidence/mutants.json`; if it cannot restore (exit 4),
+stop and report — never let a worker build on that tree. Then re-spawn the
+verifier.
+
 The correction brief:
 
 ```
@@ -714,7 +793,9 @@ at <worktree>. The following required behavior is not yet satisfied:
 <translate each unmet SPEC condition into CONCRETE required behavior — do NOT
 quote the spec verbatim; describe what the code must do and where. For an
 integrity finding, say which test to restore or strengthen, or what special-case
-to remove.> Relevant files: <paths>.
+to remove. For a Test gap, describe the behavior no test pins down, never the
+mutant itself: "nothing fails if 10 items are rejected; add a test that a list
+of exactly 10 is accepted".> Relevant files: <paths>.
 
 These files are held-out acceptance checks: <installed paths from MANIFEST.md>.
 Do NOT modify them; make the code satisfy them. The rules on keeping tests honest

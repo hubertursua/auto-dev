@@ -117,7 +117,7 @@ Single-PR run (the task fits one PR):
     MANIFEST.md           # condition → check, kind, base-run result; what is not automatable
     files/<repo-path>.sealed  # the sealed copy of each check; the verifier installs it at <repo-path>
   SPEC_EVAL.md            # code vs. spec, with an evidence tier per condition (Phase 5, verifier)
-  evidence/               # what the verifier ran and saw: integrity.txt, acceptance.txt, C<n>.txt
+  evidence/               # what the verifier ran and saw: integrity.txt, acceptance.txt, C<n>.txt, mutants.json(+.results.json)
   lint/                   # one report per quality-gate check (Phase 5)
     COMPILE.md            # one file per check in the profile's `gate` list —
     FORMAT.md             # Elixir's five shown; the filenames come from the
@@ -468,7 +468,7 @@ shape.
 - **`profile.md`** — the resolved project profile from Phase 1: detected stack and
   which `profiles/*.md` was loaded, the exact `setup`/`gate` commands (post-override)
   and any check dropped for a missing tool, base/staging/prefix, CI provider and
-  timeout, the iteration budget, the resolved security-directive sources, and Jira
+  timeout, the iteration budget, the mutation cap, the resolved security-directive sources, and Jira
   availability + state mapping. Every later phase reads this instead of re-detecting.
 - **`HANDOFF.md`** — the brief the *next* session reads. It, `WORK_LOG.md` and
   `profile.md` are what a session opens on entry; everything else in here is read
@@ -513,15 +513,18 @@ shape.
   (**Strong** — the held-out checks passed; **Adequate** — something the verifier
   ran itself matched its stated expectation; **Weak** — a citation nobody ran,
   which caps the verdict at partial), and the evidence; plus the test-integrity
-  audit, each finding judged justified or not. Drives the Phase 5 correction loop
+  audit, each finding judged justified or not, and the mutation check, each
+  surviving mutant judged equivalent or a test gap (a test gap on a condition's
+  lines caps it at partial). Drives the Phase 5 correction loop
   back into the coder. Rewritten in full by every verifier re-spawn. Nothing is
   committed at this point, so the evidence comes from the working tree rather than
   a commit range — `references/subagent-prompts.md`, _Verifier_, gives the exact
   invocation and why each half of it matters.
 - **`evidence/`** — what the verifier ran and saw: the audit output
   (`integrity.txt`), the acceptance run (`acceptance.txt`), and per condition its
-  stated expectation, the command and the result (`C<n>.txt`). `SPEC_EVAL.md`
-  cites these; the correction brief quotes them.
+  stated expectation, the command and the result (`C<n>.txt`), and the mutants it
+  ran with their results (`mutants.json`, `mutants.json.results.json`).
+  `SPEC_EVAL.md` cites these; the correction brief quotes them.
 - **`lint/<CHECK>.md`** — one report per quality-gate command, named per the
   loaded profile — **one per `gate` entry, all of them** (Elixir: `COMPILE.md`,
   `FORMAT.md`, `CREDO.md`, `DIALYZER.md`, `TEST.md`): the command run, final
@@ -637,6 +640,7 @@ session does not need it.
 - **Repo:** <repo-name>   **CI:** <github-actions|circleci|gitlab|none>   **CI timeout:** <n> min
 - **Base:** <branch>   **Staging:** <branch | n/a — no staging branch>   **Prefix:** <prefix>
 - **Iteration budget:** <n> per task
+- **Mutation cap:** <n> mutants per verifier pass (default 20; TRIVIAL uses at most 8) | off (`mutation.max: 0`)
 - **Worktree files seeded:** <paths copied from the main checkout | none>
 - **`.auto-dev.yml`:** <validated | not machine-validated: <reason> — checked by hand | none>
 - **Post-plan gate:** <on | off> — <which condition enabled it>
@@ -673,17 +677,28 @@ constraints. Stakeholder-readable; no technical design.>
 
 ## Conditions
 1. <observable, testable condition in plain language — no file names, no signatures>
+   - Example: Given <starting state>, when <action>, then <observable result>.
+   - Edge: <negative, boundary or error case> → <observable result>
+     (or `none — <why the condition has no edge>`)
+   - Verify by: <unit | integration | end-to-end | manual — <why no agent can observe it>>
 2. <…>
 
-<where a condition is hard to observe, say so and give the closest observable proxy>
+<where a condition is hard to observe, say so in Verify by and give the closest
+observable proxy>
 
 ## Assumptions
 - <each ambiguity resolved, and how it was resolved>
 
 ## Security/Compliance criteria
-<the specific controls, pulled from the sources profile.md names. Omit this section
-entirely when the task touches no sensitive path.>
+S1. <the specific control, pulled from the sources profile.md names>
+   - Example: Given <state>, when <the abusive or unauthorized action>, then <it is refused, and how>.
+   - Verify by: <unit | integration | end-to-end | manual — <why>>
+<Omit this section entirely when the task touches no sensitive path.>
 ```
+
+Every condition and criterion carries its Example, Verify by and (conditions)
+Edge lines: they are what the acceptance tester turns into checks, so a condition
+without them leaves the tester to guess what the spec meant.
 
 ### `IMPLEMENTATION.md` (Phase 3, planner)
 
@@ -767,7 +782,7 @@ Pass: <first | re-check after <what changed>> · acceptance run: <n passed / n t
 | S1 | <security/compliance criterion> | met | Strong | <check passed> |
 
 Verdicts: `met` needs every acceptance check for the condition passing AND Strong
-or Adequate evidence; Weak evidence caps a condition at `partial`; a failing
+or Adequate evidence AND no surviving mutant judged a test gap on its lines; Weak evidence caps a condition at `partial`; a failing
 acceptance check is `unmet`; `manual` only for a condition MANIFEST.md lists as not
 automatable that could not be observed here either. Security/compliance criteria
 are rows in this table — never a separate pass.
@@ -781,6 +796,16 @@ are rows in this table — never a separate pass.
 | ADDED_SKIP | `test/app/list_test.exs:10` | Unjustified | no condition removes this behavior |
 
 <"None." when the audit is clean and the diff shows no gaming>
+
+## Mutation
+<n> mutants (cap <n> | off): <n> killed · <n> survived · <n> invalid (`evidence/mutants.json.results.json`)
+
+| Mutant | Location | Change | Condition | Judgment |
+|--------|----------|--------|-----------|----------|
+| M4 | `lib/app/todos.ex:58` | `n <= 10` → `n < 10` | 2 | Test gap — no test accepts exactly 10; condition 2 partial |
+| M7 | `lib/app/todos.ex:71` | `Enum.sort/1` → `Enum.sort(&>=/2)` | — | Equivalent — the list has at most one element here |
+
+<list survivors only; "None survived." when none did>
 
 ## Defective acceptance checks
 <each check that asserts something SPEC.md does not say, and why — or "None.">
@@ -957,6 +982,7 @@ each with its evidence tier>
 - [x] <condition, in the spec's own words> — <Strong | Adequate>: <the check or what was run>
 - [ ] <partial or unmet — say which it is, and why it is being shipped anyway>
 - [ ] Needs a human check: <condition> — <exactly what to check, from SPEC_EVAL.md>
+Mutation: <n> killed of <n> (<n> equivalent survivors) | off
 <then one line per Unjustified test-integrity finding still open, if any>
 
 ## Quality gate

@@ -184,6 +184,8 @@ pr_review:
   inline_comments: false      # post Phase 6a findings as inline PR comments
 gates:
   post_plan: true             # force the Phase 3 post-plan gate on for this repo
+mutation:
+  max: 20                     # mutants per Phase 5 verifier pass (0 = off; at most 50)
 jira:
   states:                     # map pipeline milestones to this board's state names
     in_progress: "In Progress"
@@ -194,7 +196,10 @@ jira:
 Resolution order (last wins): **profile → runtime discovery → `.auto-dev.yml`**.
 The fully-resolved values are written to `.auto-dev/profile.md`.
 
-`iteration_budget`, `ci_timeout_minutes`, `security_docs`, `pr_review`, and
-`gates.post_plan` are not stack settings, but they resolve the same way and land in
+`iteration_budget`, `ci_timeout_minutes`, `security_docs`, `pr_review`,
+`gates.post_plan` and `mutation.max` are not stack settings, but they resolve the same way and land in
 the same `profile.md` — see `references/correction-loop.md`,
-`references/gates-and-jira.md`, and Phase 1 step 4 in `references/phase-1-setup.md`.
+`references/gates-and-jira.md`, Phase 1 step 4 in `references/phase-1-setup.md`,
+and, for `mutation.max`, the verifier's mutation step in
+`references/subagent-prompts.md`. Turn mutation off only for a repo whose suite
+cannot run a scoped subset in seconds: each mutant is one scoped test run.

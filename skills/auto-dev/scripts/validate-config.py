@@ -69,11 +69,14 @@ TOP_LEVEL = {
     "security_docs": (list, "paths to the security directives"),
     "pr_review": (dict, "inline_comments"),
     "gates": (dict, "post_plan"),
+    "mutation": (dict, "max"),
     "jira": (dict, "states"),
 }
 BRANCHES = {"base": str, "staging": str, "prefix": str}
 PR_REVIEW = {"inline_comments": bool}
 GATES = {"post_plan": bool}
+MUTATION = {"max": int}
+MUTATION_MAX = 50
 
 errors: list[str] = []
 warnings: list[str] = []
@@ -216,6 +219,13 @@ def main() -> int:
             check_mapping(value, PR_REVIEW, "pr_review")
         elif key == "gates":
             check_mapping(value, GATES, "gates")
+        elif key == "mutation":
+            check_mapping(value, MUTATION, "mutation")
+            cap = value.get("max") if isinstance(value, dict) else None
+            if (isinstance(cap, int) and not isinstance(cap, bool)
+                    and not 0 <= cap <= MUTATION_MAX):
+                errors.append(f"mutation.max: must be 0 (off) to {MUTATION_MAX}, "
+                              f"got {cap}")
         elif key == "jira":
             if check_type(value, dict, "jira"):
                 for jkey, jval in value.items():
