@@ -265,6 +265,118 @@ class ValidateConfigTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("symbol_lookup", r.stderr)
 
+    def validate_profile(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "web-app.yml"
+            path.write_text(text)
+            return run("validate-config.py", "--profile", path)
+
+    PROFILE = ('stack: typescript\nsetup: ["npm ci"]\ngate:\n'
+               '  - { kind: test, command: "npm test", report: "TEST.md" }\n')
+
+    def test_profile_valid(self):
+        r = self.validate_profile(self.PROFILE + "ci: github-actions\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("is a profile with", r.stdout)
+
+    def test_profile_needs_setup_and_gate(self):
+        r = self.validate_profile("stack: typescript\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("must set `setup`", r.stderr)
+        self.assertIn("must set `gate`", r.stderr)
+
+    def test_profile_rejects_repo_policy_keys(self):
+        r = self.validate_profile(self.PROFILE + "iteration_budget: 3\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(".auto-dev.yml", r.stderr)
+
+    def test_profile_gate_needs_a_test(self):
+        r = self.validate_profile(
+            'setup: []\ngate:\n'
+            '  - { kind: lint, command: "npx eslint .", report: "LINT.md" }\n')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("kind: test", r.stderr)
+
+    def test_missing_profile_is_invalid(self):
+        r = run("validate-config.py", "--profile", "/nonexistent/web-app.yml")
+        self.assertEqual(r.returncode, 1)
+
+    def test_override_may_still_set_policy_keys(self):
+        r = self.validate("stack: typescript\niteration_budget: 3\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_stack_alone_warns_it_selects_nothing(self):
+        r = self.validate("stack: typescript\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no longer selects", r.stdout)
+        r = self.validate(self.PROFILE)
+        self.assertNotIn("no longer selects", r.stdout)
+
+
+class ProfilePathTest(GitRepoCase):
+    def setUp(self):
+        super().setUp()
+        self.profiles = self.tmp / "profiles"
+
+    def lookup(self, url=None, repo=None, env=None):
+        if url is not None:
+            self.git("remote", "add", "origin", url)
+        environ = {**GIT_ENV, "AUTO_DEV_PROFILES_DIR": str(self.profiles), **(env or {})}
+        return subprocess.run([sys.executable, str(SCRIPTS / "profile-path.py"),
+                               str(repo or self.repo)],
+                              capture_output=True, text=True, env=environ, check=False)
+
+    def test_url_forms_share_one_path(self):
+        expected = self.profiles / "github.com" / "acme" / "web-app.yml"
+        for url in ("git@github.com:Acme/Web-App.git",
+                    "https://github.com/acme/web-app",
+                    "https://user:token@github.com/acme/web-app.git/",
+                    "ssh://git@github.com:22/acme/web-app.git"):
+            with self.subTest(url=url):
+                if "origin" in self.git("remote"):
+                    self.git("remote", "remove", "origin")
+                r = self.lookup(url)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn(f"NOT FOUND: {expected}", r.stdout)
+                self.assertIn(f"DIR: {self.profiles}", r.stdout)
+
+    def test_found(self):
+        saved = self.profiles / "gitlab.com" / "acme" / "team" / "api.yml"
+        saved.parent.mkdir(parents=True)
+        saved.write_text("setup: []\n")
+        r = self.lookup("git@gitlab.com:acme/team/api.git")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"FOUND: {saved}", r.stdout)
+
+    def test_worktree_finds_the_same_profile(self):
+        self.git("remote", "add", "origin", "git@github.com:acme/web-app.git")
+        tree = self.tmp / "web-app-feature"
+        self.git("worktree", "add", "-q", "-b", "feature", str(tree))
+        self.assertIn(str(self.profiles / "github.com" / "acme" / "web-app.yml"),
+                      self.lookup(repo=tree).stdout)
+
+    def test_xdg_config_home(self):
+        self.git("remote", "add", "origin", "git@github.com:acme/web-app.git")
+        environ = {k: v for k, v in GIT_ENV.items() if k != "AUTO_DEV_PROFILES_DIR"}
+        environ["XDG_CONFIG_HOME"] = str(self.tmp / "xdg")
+        r = subprocess.run([sys.executable, str(SCRIPTS / "profile-path.py"), str(self.repo)],
+                           capture_output=True, text=True, env=environ, check=False)
+        self.assertIn(str(self.tmp / "xdg" / "auto-dev" / "profiles" / "github.com"), r.stdout)
+
+    def test_no_origin(self):
+        r = self.lookup()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ERROR", r.stderr)
+
+    def test_not_a_repo(self):
+        r = self.lookup(repo=self.tmp / "nowhere")
+        self.assertEqual(r.returncode, 2)
+
+    def test_unsafe_segment_is_refused(self):
+        r = self.lookup("https://github.com/acme/../../etc/passwd")
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("FOUND", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

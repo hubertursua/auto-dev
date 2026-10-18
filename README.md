@@ -5,7 +5,9 @@ An orchestration skill for autonomous development.
 It drives a single coding task from a ticket to a merged pull request hands-off,
 delegating each job to a purpose-built **worker** (a subagent) and handing
 structured artifacts between them through a `.auto-dev/` scratch directory. It is
-**stack-agnostic** via editable profiles (Elixir ships today), and integrates
+**stack-agnostic**: it ships no stack profile, and instead researches each repo's
+setup and quality-gate commands on the first run, confirms them with you and can
+save them for later runs. It integrates
 optionally with Jira, CI, and a staging branch — each auto-detected and skipped
 when absent.
 
@@ -20,7 +22,7 @@ context a judge must not have.
 ```
 Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the human gates
 │
-├─ Phase 1  Setup ......... detect repo + stack, resolve ticket, worktree, .auto-dev/
+├─ Phase 1  Setup ......... detect repo, profile (saved, or profiler + your OK), ticket, worktree
 ├─ Phase 2  Define agent .. SPEC.md — the testable contract + SCOPE CALL  (→ reviewer)
 ├─ Phase 3  Planner ....... IMPLEMENTATION.md — the technical how  (→ reviewer)
 │           Acceptance tester  held-out checks from the spec, proven to fail, sealed [optional gate]
@@ -86,7 +88,7 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 
 | Phase | Worker | Output |
 |-------|--------|--------|
-| 1 Setup | orchestrator | detect repo/stack, load profile, resolve ticket, isolated worktree + branch, `.auto-dev/` |
+| 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch, `.auto-dev/` |
 | 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **scope call** |
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
@@ -126,6 +128,9 @@ Phase 2 returns one of three calls, and the pipeline adapts:
   it, alongside how many times it will stop for your approval. A sub-task can be
   TRIVIAL but never OVERSIZED: decomposing inside a decomposition means the
   breakdown was wrong, so the pipeline stops and offers to re-cut it.
+
+These counts leave out Phase 1's profiler, which runs once per run and only when
+the repo has no saved profile.
 
 **The scope call thins the planning head, never the verification tail.** Phase 5
 and Phase 6 run identically at every scope — skipping planning on a small change
@@ -169,18 +174,101 @@ are in `skills/auto-dev/references/review.md`.
 
 ## Stack profiles
 
-The pipeline is language/framework-agnostic. A **profile** (`skills/auto-dev/profiles/`)
-declares how a stack installs and what its quality gate is; Phase 1 detects the
-stack, loads the profile, merges in runtime discovery, and honors a repo-local
-`.auto-dev.yml` override. Shipped: **Elixir** (`mix compile`/`format`/`credo`/
-`dialyzer`/`test`) plus a generic `default` fallback that discovers commands at
-runtime. Add a stack by dropping in `profiles/<stack>.md` — no skill change.
+The pipeline is language/framework-agnostic and ships no stack profile. A
+**profile** says how a repo installs its dependencies and which commands make up
+its quality gate (test, lint, format check, type check, build). Phase 1 gets one
+in this order:
+
+1. **A saved profile.** If you saved one for this repo on an earlier run, Phase 1
+   loads it without asking.
+2. **A committed `.auto-dev.yml` that sets both `setup` and `gate`.** The repo
+   has declared its profile, so there is nothing to research.
+3. **Research.** Otherwise the `profiler` worker reads the repo (CI config, task
+   runners, manifests, lockfiles, contributing docs) and returns a draft profile
+   with the file and line each command came from, plus anything it had to guess.
+   The run pauses to show you the draft and asks: save it for this repo, use it
+   for this run only, change something, or stop.
+
+`.auto-dev.yml` is applied on top in every case. The schema and the full
+procedure are in `skills/auto-dev/references/profiles.md`.
+
+### Where saved profiles live
+
+A saved profile is a YAML file on your machine, outside every checkout, named
+after the repo's `origin` remote:
+
+```
+~/.config/auto-dev/profiles/<host>/<owner>/<repo>.yml
+```
+
+So `git@github.com:acme/web-app.git` is saved as
+`~/.config/auto-dev/profiles/github.com/acme/web-app.yml`, and every clone and
+worktree of that repo finds the same file. Set `AUTO_DEV_PROFILES_DIR` to use
+another directory (`$XDG_CONFIG_HOME/auto-dev/profiles` is used when that is
+set). `skills/auto-dev/scripts/profile-path.py <repo>` prints the path for a
+repo. Edit the file to change the profile, or delete it to have the next run
+research it again. It holds only how the stack installs and checks itself; repo
+policy such as branches and the iteration budget stays in `.auto-dev.yml`.
+
+### Permissions for unattended runs
+
+Claude Code asks before reading or writing a file outside the directory it was
+started in, so loading and saving a profile prompts unless you allow it. Add
+these rules to `~/.claude/settings.json` (or run `/permissions`):
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Read(~/.config/auto-dev/**)",
+      "Edit(~/.config/auto-dev/**)"
+    ]
+  }
+}
+```
+
+- `Edit(...)` also covers creating the file; there is no separate `Write` rule.
+- If you moved the directory with `AUTO_DEV_PROFILES_DIR` or `XDG_CONFIG_HOME`,
+  use that path instead: `~/…` inside your home directory, `//…` for any other
+  absolute path (`Read(//opt/auto-dev/profiles/**)`).
+- For a single session, start with `claude --add-dir ~/.config/auto-dev` or run
+  `/add-dir ~/.config/auto-dev`. Reads stop prompting; saving still asks unless
+  you accept edits.
+- With the Bash sandbox on, also add
+  `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }`.
+- The directory is deliberately not under `~/.claude/`: Claude Code protects
+  that folder, and every write there prompts whatever your rules say.
+
+The run also executes the helper scripts and the profile's commands through
+Bash. To let those run without prompts, add `Bash(...)` rules for them to the
+main checkout's `.claude/settings.local.json`. Example in TypeScript:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 /path/to/auto-dev/skills/auto-dev/scripts/*)",
+      "Bash(npm ci *)",
+      "Bash(npm test *)"
+    ]
+  }
+}
+```
+
+A rule matches the command's text, so copy the commands exactly as the profile
+lists them. At the profile confirmation the orchestrator prints these snippets
+filled in with your real paths and commands. It never edits your settings
+itself; you choose what to allow.
+
+### `.auto-dev.yml`
 
 The keys most runs touch in `.auto-dev.yml`: `iteration_budget` (revise rounds,
 default 4), `mutation.max` (mutants per verifier pass, default 20, `0` = off),
 `gates.post_plan` (turn the post-plan gate on), `branches` (`base`, `staging`,
 `prefix`), `ci` and `ci_timeout_minutes`, `worktree_files`, `security_docs`,
-`symbol_lookup` (a code-index tool to use instead of grep), and `jira.states`. Phase 1 validates the file with `scripts/validate-config.py`, so a
+`symbol_lookup` (a code-index tool to use instead of grep), and `jira.states`.
+It can also set any profile key (`setup`, `gate`, `test_notes`, …) to override the
+profile. Phase 1 validates the file with `scripts/validate-config.py`, so a
 mistyped key is reported rather than silently ignored. See
 `skills/auto-dev/references/profiles.md`, and
 `skills/auto-dev/references/phase-1-setup.md` for the full Phase 1 procedure.
@@ -200,8 +288,9 @@ ticket is given. **CI** is monitored, with a bounded timeout, on the PR before
 merge, and again after the staging and main merges to confirm the merge itself
 didn't break the branch.
 
-Three more pauses are **conditional** and fire only when their situation
-arises: the **decomposition approval** (OVERSIZED only — a multi-PR run never
+Four more pauses are **conditional** and fire only when their situation
+arises: the **profile confirmation** (Phase 1, only on a repo with no saved
+profile), the **decomposition approval** (OVERSIZED only — a multi-PR run never
 starts unapproved), the **Jira In Progress confirmation** (Phase 1, only with a
 ticket) and the **worktree cleanup offer** (after the main merge). Everything
 else runs without check-ins.
@@ -235,7 +324,9 @@ planning artifacts can never be committed:
 echo ".auto-dev/" >> .gitignore
 ```
 
-Now ask Claude to "auto-dev" a task and the skill triggers.
+Now ask Claude to "auto-dev" a task and the skill triggers. To keep a run from
+stopping on permission prompts, add the rules in *Permissions for unattended
+runs* under *Stack profiles*.
 
 ### Install without the plugin
 
@@ -272,18 +363,20 @@ Optional tooling: **Python 3.9+** with **PyYAML** (`pip install pyyaml`), used b
 Phase 1 — a mistyped key is silently ignored otherwise. Without it the pipeline
 still runs; it checks the file by hand and reports that it went unvalidated.
 The other helpers in `skills/auto-dev/scripts/` need only Python's standard
-library. Three are run by the orchestrator: `resume-point.py` (finds where an
+library. Four are run by the orchestrator: `profile-path.py` (names the saved
+profile's path for a repo and says whether it exists), `resume-point.py` (finds where an
 interrupted run resumes, from `WORK_LOG.md`), `exclude-artifacts.py` (makes
 `.auto-dev/` self-excluding in Phase 1 and verifies it with git) and
 `check-staged.py` (the read-only check before each Phase 6a commit that nothing
 under `.auto-dev/` is staged); without `python3` the orchestrator runs the same
-steps by hand. Two are run by the Phase 5 verifier: `check-tests.py` (the
+steps by hand, except that it can't find or save a profile, so it researches one
+every run. `validate-config.py` also checks a saved profile (`--profile`). Two are run by the Phase 5 verifier: `check-tests.py` (the
 test-integrity audit) and `mutate.py` (applies mutants one at a time and restores
 every file afterwards).
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
-The Elixir profile names `dexter`; without it on your `PATH`, the orchestrator
-uses `grep`.
+The profiler names one only if the repo's ecosystem uses one and it is on your
+`PATH`; without it, the orchestrator uses `grep`.
 
 ## Models and effort
 
@@ -293,6 +386,7 @@ versions, so a new release is picked up without editing the plugin.
 
 | Worker                                   | Agent type                       | Model · effort    |
 | ---------------------------------------- | -------------------------------- | ----------------- |
+| Profiler (first run on a repo)           | `auto-dev:profiler`              | `sonnet` · medium |
 | Define agent                             | `auto-dev:define`                | `opus` · high     |
 | Define reviewer                          | `auto-dev:define-reviewer`       | `opus` · high     |
 | Planner                                  | `auto-dev:planner`               | `opus` · xhigh    |
@@ -320,7 +414,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 
 | Path | Written by | Holds |
 | ---- | ---------- | ----- |
-| `profile.md` | Phase 1 | the resolved stack, commands, branches, CI and Jira settings |
+| `profile.md` | Phase 1 | the resolved stack, where the profile came from, commands, branches, CI and Jira settings |
 | `WORK_LOG.md` | Phase 1 onward | the ledger: phase status, scope call, gate decisions, budget; the resume point |
 | `HANDOFF.md` | each session's end | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
@@ -359,7 +453,6 @@ agents/                 one agent type per worker: tools, model, effort, role
 skills/auto-dev/
   SKILL.md              the orchestrator's spine: phases, sessions, gates, rules
   references/           detail read on demand, one file per phase or topic
-  profiles/             stack profiles (elixir.md, default.md)
   scripts/              the Python helpers listed under Dependencies
   evals/                evals.json (pipeline evals, with fixtures in files/)
                         and trigger-eval.json (should / shouldn't trigger)
@@ -388,9 +481,22 @@ PR: the phase table, the worker and model table, the dependencies, the
 Branches are named `<type>/<short-kebab-description>` (`fix/mutate-mtime`), PR
 titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`,
 `chore` and `ci`. Every PR is squash-merged. No change may tie the pipeline to
-one language: stack-specific commands and syntax belong in a profile. PR
+one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 3.5
+
+3.6 removes the shipped stack profiles (Elixir, and the `default` discovery
+fallback) along with the `profiles/` folder. The first run on each repo now has the new `profiler`
+worker research the profile, and pauses once for you to confirm it, with an
+offer to save it to `~/.config/auto-dev/profiles/` so later runs skip the
+pause (see *Stack profiles*). `.auto-dev.yml` keeps every key; `stack:` now only
+names the stack and no longer selects a profile, and the
+validator warns when it is set without `setup` and `gate`. A repo whose `.auto-dev.yml`
+sets both `setup` and `gate` runs as before, with no research and no pause.
+A run in flight resumes on 3.6: Phase 1 never runs again on a resume, and its
+`profile.md` is read as written.
 
 ## Upgrading from 3.4
 

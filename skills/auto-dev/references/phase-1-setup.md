@@ -1,6 +1,7 @@
 # Phase 1 — Setup procedure
 
-Deterministic, run by the orchestrator at the start of S1. `SKILL.md` keeps the
+Run by the orchestrator at the start of S1; only the profile research in step 2
+goes to a worker. `SKILL.md` keeps the
 step list; this file holds each step's full procedure and exact commands. Phase 1
 runs **once per run** — never again for a sub-task of a multi-PR run, and never on
 a resume.
@@ -27,15 +28,20 @@ it. Full detection procedure and the script's exit handling:
    `origin` that is GitHub. Phase 6 cannot open or merge a PR without it, so a
    missing, unauthenticated, or non-GitHub setup is a **stop-and-report now**, not
    a surprise after the build.
-2. **Detect the stack & load the profile.** Match `detect` signals
-   (`references/profiles.md`) → load `profiles/<stack>.md`, else `profiles/default.md` +
-   runtime discovery. Merge in repo-doc/CI discovery, apply `.auto-dev.yml`
-   (validated first by running `<skill-dir>/scripts/validate-config.py` — exact
-   command and exit codes in `references/profiles.md`). Exit `1` (INVALID) is a
+2. **Resolve the stack profile.** auto-dev ships none; the full procedure and
+   every exit code are in `references/profiles.md`, _How Phase 1 resolves the
+   profile_. In short: run `<skill-dir>/scripts/profile-path.py <repo>` to find
+   a **saved profile** for this repo outside the checkout, and use it without
+   asking. With none, and no `.auto-dev.yml` that sets both `setup` and `gate`,
+   spawn `auto-dev:profiler` to **research** one, **confirm** it with the user
+   (the profile confirmation pause), and **save** it if they choose, showing the
+   permissions guidance. Then apply `.auto-dev.yml` (validated first by running
+   `<skill-dir>/scripts/validate-config.py`). Exit `1` (INVALID) is a
    stop-and-report; after the user fixes the file, re-run the validator on it
    before applying it and continue only on exit `0`, with the same exit handling.
-   While reading CI config, **record the CI provider** (GitHub Actions / CircleCI /
-   GitLab / none) — `profile.md` carries it and Phase 6 monitors with it.
+   **Record the CI provider** (GitHub Actions / CircleCI / GitLab / none) — from
+   the profile's `ci`, else from the repo's CI config; `profile.md` carries it and
+   Phase 6 monitors with it.
 3. **Resolve the ticket.** If the user gave a Jira key/URL, read it via the
    Atlassian MCP (`getJiraIssue`, called by its fully qualified
    `mcp__<server>__getJiraIssue` name, located as `references/gates-and-jira.md`
@@ -68,7 +74,7 @@ it. Full detection procedure and the script's exit handling:
    Then run the profile's `setup` commands. If one fails with "command not found"
    (exit `127`), the stack's toolchain isn't installed: **stop and report** the
    missing command. Don't install a toolchain yourself, and don't drop gate checks
-   to get past it (`references/profiles.md`, step 5). Derive `<slug>` from the ticket/task:
+   to get past it (`references/profiles.md`, step 7). Derive `<slug>` from the ticket/task:
    the slug is **yours alone**, since the branch and worktree exist before Phase 2
    runs. No later phase returns or renames one.
 6. **Prep `.auto-dev/`** and make it self-excluding (see `references/artifacts.md`).

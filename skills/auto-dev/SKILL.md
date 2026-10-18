@@ -28,10 +28,12 @@ Phase 5 verifier's verdicts into correction briefs. You never judge the build
 yourself: you hold the plan and every round's story, which is exactly the
 context a judge must not have.
 
-This skill is **stack-agnostic**. A **stack profile** (`profiles/*.md`, schema in
-`references/profiles.md`) supplies the setup and quality-gate commands. Phase 1
-detects the stack, loads the matching profile (else `profiles/default.md`), merges in
-runtime discovery, and honors a repo-local `.auto-dev.yml` override.
+This skill is **stack-agnostic** and ships no stack profile. A **stack profile**
+(schema in `references/profiles.md`) supplies the setup and quality-gate
+commands. Phase 1 loads the repo's **saved profile** from the user's machine,
+or has a worker research one and the user confirm it (and optionally save it,
+for every later clone or worktree), then honors a repo-local `.auto-dev.yml`
+override.
 
 External integrations are **optional and auto-detected**: Jira (status
 transitions only), a CI provider (GitHub Actions / CircleCI / GitLab), and a
@@ -41,23 +43,23 @@ staging branch. Each is used when present and skipped cleanly when not. Details 
 ## Reference files (read on demand)
 
 Keep this spine in context; open a reference only when you reach the phase that
-needs it. Bundled paths (`references/`, `profiles/`, `scripts/`) are relative to
+needs it. Bundled paths (`references/`, `scripts/`) are relative to
 `<skill-dir>` (this skill's base directory, named when it loads), never to the repo
 or worktree you are in — open or run each by its absolute path.
 
 | File | Read when | Holds |
 | ---- | --------- | ----- |
 | `references/phase-1-setup.md` | S1, before Phase 1 | the step-by-step setup procedure and its exact commands |
-| `references/profiles.md` | S1, Phase 1 step 2 | profile schema, detection precedence, monorepo rules, `.auto-dev.yml` override |
-| `profiles/<stack>.md` / `profiles/default.md` | S1, Phase 1 step 2 | the matched stack profile (e.g. `profiles/elixir.md`), or the fallback's discovery checklist |
-| `scripts/validate-config.py` | S1, Phase 1 step 2, when `.auto-dev.yml` exists | run (not read): `python3 <skill-dir>/scripts/validate-config.py <repo>/.auto-dev.yml`; needs PyYAML (without it, exit `2` — not a pass); exit codes in `references/profiles.md` |
+| `references/profiles.md` | S1, Phase 1 step 2 | resolving the profile (saved, or researched and confirmed), its schema, where saved profiles live, the permissions guidance for the user, monorepo rules, `.auto-dev.yml` override |
+| `scripts/profile-path.py` | S1, Phase 1 step 2 | run (not read): `python3 <skill-dir>/scripts/profile-path.py <repo>` names this repo's saved-profile path and whether it exists; exit codes in `references/profiles.md` |
+| `scripts/validate-config.py` | S1, Phase 1 step 2, when `.auto-dev.yml` exists or a saved profile is loaded or written | run (not read): `python3 <skill-dir>/scripts/validate-config.py <repo>/.auto-dev.yml`, or `--profile <saved-profile>`; needs PyYAML (without it, exit `2` — not a pass); exit codes in `references/profiles.md` |
 | `scripts/resume-point.py` | Phase 1's resume check; any re-entry | run (not read): `python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev [--task "<ticket or task>"]` names the resume point (`--task` only when the user named a ticket or task: the task word for word, a few words may be left out; a `NEAR-MISS` means ask); exit codes in `references/artifacts.md`, _Resuming an interrupted run_ |
 | `scripts/exclude-artifacts.py` | S1, Phase 1 step 6 | run (not read): `python3 <skill-dir>/scripts/exclude-artifacts.py <worktree>`; exit codes in `references/phase-1-setup.md`, step 6 |
 | `scripts/check-tests.py` | run by the verifier (Phase 5), never by you | audits test changes against the base: deleted, skipped or weakened tests, assertion-free new ones, tampered acceptance checks; exit codes in its `--help` |
 | `scripts/mutate.py` | run by the verifier (Phase 5), never by you | applies the verifier's mutants one at a time, runs the scoped tests, restores each file byte-for-byte; exit codes in its `--help` |
 | `scripts/check-staged.py` | S3, before every Phase 6a commit | run (not read): `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`; exit codes in `references/phase-6-ship.md`, step 4 |
 | `references/artifacts.md` | each session's start (its checklist); writing or resuming from any `.auto-dev/` file | layout, `WORK_LOG.md` ledger, resume procedure, session checklists, `HANDOFF.md`, every artifact's contract, template and strictness, the PR body, the final report |
-| `references/subagent-prompts.md` | before spawning any worker (Phases 2–6) | each worker's brief and tools, the scope decision, acting on the verifier's verdicts |
+| `references/subagent-prompts.md` | before spawning any worker (the profiler in Phase 1, then Phases 2–6) | each worker's brief and tools, the scope decision, acting on the verifier's verdicts |
 | `references/gates-and-jira.md` | before any gate or pause, Jira transition, or CI watch | gate scripts, Jira transition mapping, CI monitoring policy (timeouts, on-red) |
 | `references/correction-loop.md` | on an unmet condition, a must-fix review finding, a human blocker, or red CI | the one correction loop, what each correction invalidates, the iteration budget |
 | `references/phase-6-ship.md` | S3, before Phase 6 | the exact commit, push, staging-merge and main-merge sequences and their failure handling |
@@ -66,7 +68,7 @@ or worktree you are in — open or run each by its absolute path.
 ## Pipeline at a glance
 
 ```
-Phase 1  Setup   → detect repo + stack, resolve ticket, worktree + branch, prep .auto-dev/
+Phase 1  Setup   → detect repo, resolve the profile (saved, or researched + confirmed), ticket, worktree + branch, .auto-dev/
 Phase 2  Define  → research + the testable contract (SPEC.md); SCOPE CALL (trivial / standard / oversized)
 Phase 3  Plan    → planner writes IMPLEMENTATION.md; plan reviewer critiques;
                    acceptance tester writes + seals held-out checks from the spec  [optional gate]
@@ -173,7 +175,8 @@ Planning and build run unattended. Four gates pause for explicit approval (via
 "gate" always means one of these four; the Phase 5 checks are the **quality
 gate**, run from the profile's `gate` commands.
 
-Three **conditional** pauses fire only when their situation arises: the
+Four **conditional** pauses fire only when their situation arises: the
+**profile confirmation** (Phase 1, only when the profile was researched), the
 **decomposition approval** (OVERSIZED only — never start a multi-PR run
 unapproved), the **Jira In Progress confirmation** (only with a ticket), and the
 **worktree cleanup offer** (6c). Everything else runs without check-ins.
@@ -227,6 +230,7 @@ Write/Edit/Bash**, so an artifact writer spawned with one silently fails.
 
 | Worker                                         | Agent type                       | Model · effort    |
 | ---------------------------------------------- | -------------------------------- | ----------------- |
+| Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler`              | `sonnet` · medium |
 | Define agent (Phase 2)                         | `auto-dev:define`                | `opus` · high     |
 | Define reviewer (Phase 2)                      | `auto-dev:define-reviewer`       | `opus` · high     |
 | Planner (Phase 3)                              | `auto-dev:planner`               | `opus` · xhigh    |
@@ -297,7 +301,7 @@ session. Before every one, ask whether a worker should read it instead.
 
 ## Phase 1 — Setup
 
-Deterministic, run by the orchestrator.
+Run by the orchestrator; only the profile research goes to a worker.
 
 **First: is this a resumed run?** The control worktree is a sibling of the repo
 you start in. Run
@@ -316,8 +320,9 @@ procedure and exact commands. The steps, in order:
 
 1. **Detect the repo & branches.** **Check `gh` first** — missing,
    unauthenticated, or a non-GitHub `origin` is a **stop-and-report now**.
-2. **Detect the stack & load the profile**; apply `.auto-dev.yml` (validated);
-   record the CI provider.
+2. **Resolve the profile** — the saved one (`scripts/profile-path.py`), else
+   `auto-dev:profiler` researches one, the user confirms it and may save it;
+   apply `.auto-dev.yml` (validated); record the CI provider.
 3. **Resolve the ticket** (Jira via the Atlassian MCP, else the free-form task).
 4. **Read the repo's binding rules**; resolve the security directives.
 5. **Create the isolated worktree** on its own branch — **never the default

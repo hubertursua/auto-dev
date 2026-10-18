@@ -51,29 +51,31 @@ that a script can check, add it there.
 
 ## Keep auto-dev language-agnostic
 
-auto-dev has to work the same in a Python, Node, Go or Elixir repo. A run learns
-the repo's stack from its profile (`profiles/<stack>.md`) or from discovery
-(`profiles/default.md`). Nothing else in this repo may assume a stack. Agents
-copy what they read, so a rule or example written for one language becomes a
-default for every repo.
+auto-dev has to work the same in a Python, Node, Go or Elixir repo. It ships no
+stack profile: a run learns the repo's stack from the profile saved on the
+user's machine, or from the `profiler` worker's research, confirmed by the user
+(`skills/auto-dev/references/profiles.md`). Nothing in this repo may assume a
+stack. Agents copy what they read, so a rule or example written for one language
+becomes a default for every repo.
 
-- **Stack-specific facts live in a profile.** Commands, tool names, file
-  layouts and test-framework syntax for one stack go in `profiles/<stack>.md`.
-  `SKILL.md`, `references/`, `agents/` and the evals describe the step in
-  neutral terms ("the profile's test command", "the framework's skip marker")
-  and read the specifics from the run's `profile.md`.
+- **Stack-specific facts live in the run's profile.** Commands, tool names, file
+  layouts and test-framework syntax are researched per repo, never written into
+  this repo. `SKILL.md`, `references/`, `agents/` and the evals describe the step
+  in neutral terms ("the profile's test command", "the framework's skip marker")
+  and read the specifics from the run's `profile.md`. Don't add a shipped
+  profile back; teach the profiler's brief what to look for instead.
 - **A rule for one stack goes through the profile.** If a step needs a tool
   only one ecosystem has, add an optional profile key the step reads, with a
   stack-neutral fallback when it's absent. `symbol_lookup` is the model:
   `SKILL.md` says "use `profile.md`'s symbol lookup", which falls back to
-  `grep -n`, and only the Elixir profile names `dexter`.
+  `grep -n`, and the profiler fills it in only when the repo's ecosystem has a
+  code-index tool on PATH.
 - **Examples are in TypeScript, and say so.** An example that names a command,
   path or code uses TypeScript, a language most readers know, and is labeled
   "example in TypeScript" (or "Filled-in rows are an example in TypeScript." above
   a template). The label goes outside a template block, so an agent filling the
   template doesn't copy it. Where no example is needed, use a neutral placeholder
-  (`<test command>`, `src/<module>`). The only other language allowed is a
-  shipped profile's own (`profiles/elixir.md`), labeled the same way.
+  (`<test command>`, `src/<module>`). No other language is allowed.
 - **Scripts stay language-blind.** A helper script takes paths and commands as
   input and never hardcodes one stack's test runner or syntax. Where it has to
   recognize code (as `check-tests.py` does for skips and assertions), the
@@ -84,8 +86,8 @@ default for every repo.
 
 Before pushing, grep what you changed for one stack's terms
 (`grep -rn -i -E "elixir|exunit|mix |credo|dialyzer|\.exs?\b" skills/ agents/`,
-and the same for any other stack your change mentions). Each hit should be in a
-profile, scoped to that stack, or one example among several.
+and the same for any other stack your change mentions). Each hit should be scoped
+to that stack or one example among several.
 
 ## Every PR keeps README.md current
 
@@ -101,7 +103,7 @@ against this list and edit each README section it touches:
 | session boundaries or the context budget                   | *Three sessions, not one* |
 | the code review panel, security review or rubric           | *Review before the PR* |
 | a gate, a conditional pause, Jira, CI, or the merge method | *Human gates & integrations* |
-| a profile, or a `.auto-dev.yml` key                        | *Stack profiles* |
+| profile research, saved profiles, permissions guidance, or a `.auto-dev.yml` key | *Stack profiles* |
 | a script in `skills/auto-dev/scripts/`, or a new tool or dependency | *Dependencies* |
 | an agent's `model:` / `effort:`, or a new or renamed agent | *Models and effort* table |
 | a file in `.auto-dev/`                                     | *The `.auto-dev/` scratch directory* table |

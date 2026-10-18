@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a repo-local .auto-dev.yml against the schema in references/profiles.md.
+"""Validate a repo-local .auto-dev.yml, or a saved profile, against references/profiles.md.
 
 An unrecognized key in .auto-dev.yml is silently ignored by the pipeline, so a typo
 reads as "the override did nothing" rather than as an error. This script names the
@@ -7,19 +7,27 @@ key and suggests the one it probably meant.
 
 Usage:
     python3 <skill-dir>/scripts/validate-config.py [path/to/.auto-dev.yml]
+    python3 <skill-dir>/scripts/validate-config.py --profile <saved-profile.yml>
     python3 <skill-dir>/scripts/validate-config.py --help
+
+--profile checks a saved profile (the file scripts/profile-path.py names)
+instead: only the profile keys are allowed (stack, setup, gate, test_notes,
+worktree_files, symbol_lookup, ci), and `setup` and `gate` are required. A
+missing or empty saved profile is invalid (exit 1), not a pass.
 
 <skill-dir> is the auto-dev skill's own directory, not the target repo. The config
 path defaults to ./.auto-dev.yml relative to the current directory, so pass the
 target repo's file as an absolute path.
 
 Output:
-    stdout  `VALID: <path> overrides <keys>.`, `warning  <msg>` lines, or a note
+    stdout  `VALID: <path> overrides <keys>.` (`VALID: <path> is a profile with
+            <keys>.` with --profile), `warning  <msg>` lines, or a note
             that the file is missing/empty
     stderr  `ERROR    <msg>` lines then `INVALID: ...`, or `SKIPPED: ...`
 
 Exit codes:
-    0  valid, or no file / empty file (warnings may still be printed)
+    0  valid, or no file / empty file (warnings may still be printed); with
+       --profile, a missing or empty file is exit 1
     1  invalid — errors printed; Phase 1 should stop and report
     2  could not validate (PyYAML missing, file unreadable) — NOT a pass
 """
@@ -57,7 +65,7 @@ TYPE_NAMES = {str: "a string", list: "a list", dict: "a mapping",
 
 # key -> (type, human description). `type` is checked with isinstance.
 TOP_LEVEL = {
-    "stack": (str, "profile id to force instead of auto-detecting"),
+    "stack": (str, "the stack's name, recorded in profile.md"),
     "setup": (list, "ordered install/activation commands"),
     "gate": (list, "ordered quality-gate checks"),
     "test_notes": (str, "how tests are scoped"),
@@ -73,6 +81,12 @@ TOP_LEVEL = {
     "mutation": (dict, "max"),
     "jira": (dict, "states"),
 }
+# The keys a saved profile may hold (--profile): how the stack installs and
+# checks itself. Repo policy (branches, budget, gates, Jira) stays in .auto-dev.yml.
+PROFILE_KEYS = ("stack", "setup", "gate", "test_notes", "worktree_files",
+                "symbol_lookup", "ci")
+PROFILE_REQUIRED = ("setup", "gate")
+assert set(PROFILE_KEYS) <= set(TOP_LEVEL), "PROFILE_KEYS must be TOP_LEVEL keys"
 BRANCHES = {"base": str, "staging": str, "prefix": str}
 PR_REVIEW = {"inline_comments": bool}
 GATES = {"post_plan": bool}
@@ -123,13 +137,16 @@ def check_mapping(value, schema, where):
         check_type(val, schema[key], f"{where}.{key}")
 
 
-def check_gate(gate):
+def check_gate(gate, profile=False):
+    what = ("A saved profile's gate is the whole gate" if profile
+            else "This override replaces the resolved gate")
     if not check_type(gate, list, "gate"):
         return
     if not gate:
         errors.append("gate: is an empty list — an empty gate makes Phase 5 pass by "
-                      "having nothing to check. Omit the key to keep the profile's "
-                      "gate, or list real checks.")
+                      "having nothing to check. List real checks"
+                      + ("." if profile
+                         else ", or omit the key to keep the profile's gate."))
         return
     kinds = set()
     for i, check in enumerate(gate):
@@ -157,9 +174,8 @@ def check_gate(gate):
             warnings.append(f"{where}: report `{report}` should be a .md filename")
     if "test" not in kinds:
         errors.append(
-            "gate: no check with `kind: test`. This override replaces the resolved "
-            "gate, so Phase 5 would run no tests and pass by default. Add the test "
-            "check back.")
+            f"gate: no check with `kind: test`. {what}, so Phase 5 would run no "
+            "tests and pass by default. Add the test check back.")
 
 
 def main() -> int:
@@ -167,7 +183,14 @@ def main() -> int:
         # Without this, `--help` is taken as a missing config path and exits 0.
         print(__doc__)
         return 0
-    path = sys.argv[1] if len(sys.argv) > 1 else ".auto-dev.yml"
+    args = sys.argv[1:]
+    profile = bool(args) and args[0] == "--profile"
+    if profile:
+        args = args[1:]
+        if not args:
+            print("SKIPPED: --profile needs the saved profile's path.", file=sys.stderr)
+            return 2
+    path = args[0] if args else ".auto-dev.yml"
 
     try:
         import yaml
@@ -186,6 +209,9 @@ def main() -> int:
         with open(path, "rb") as f:
             config = yaml.safe_load(f)
     except FileNotFoundError:
+        if profile:
+            print(f"INVALID: no saved profile at {path}.", file=sys.stderr)
+            return 1
         print(f"No {path} — nothing to validate (the pipeline runs without one).")
         return 0
     except yaml.reader.ReaderError as exc:
@@ -201,6 +227,9 @@ def main() -> int:
         return 2
 
     if config is None:
+        if profile:
+            print(f"INVALID: the saved profile {path} is empty.", file=sys.stderr)
+            return 1
         print(f"{path} is empty — nothing to override.")
         return 0
     if not isinstance(config, dict):
@@ -208,13 +237,26 @@ def main() -> int:
               f"got {type(config).__name__}.", file=sys.stderr)
         return 1
 
+    if (not profile and "stack" in config
+            and not all(k in config for k in PROFILE_REQUIRED)):
+        warnings.append("stack: names the stack only; it no longer selects a shipped "
+                        "profile (removed in 3.6). Set `setup` and `gate` here, or "
+                        "let Phase 1 research and confirm the profile.")
+    if profile:
+        for required in PROFILE_REQUIRED:
+            if required not in config:
+                errors.append(f"top level: a saved profile must set `{required}`")
     for key, value in config.items():
+        if profile and key in TOP_LEVEL and key not in PROFILE_KEYS:
+            errors.append(f"top level: `{key}` is repo policy, not a profile key — "
+                          f"set it in the repo's .auto-dev.yml instead")
+            continue
         if key not in TOP_LEVEL:
-            unknown_key(key, TOP_LEVEL, "top level")
+            unknown_key(key, PROFILE_KEYS if profile else TOP_LEVEL, "top level")
             continue
         expected, _ = TOP_LEVEL[key]
         if key == "gate":
-            check_gate(value)
+            check_gate(value, profile)
         elif key in ("setup", "security_docs", "worktree_files"):
             check_str_list(value, key)
         elif key == "branches":
@@ -269,7 +311,8 @@ def main() -> int:
         return 1
 
     keys = ", ".join(sorted(config)) or "nothing"
-    print(f"VALID: {path} overrides {keys}."
+    verb = "is a profile with" if profile else "overrides"
+    print(f"VALID: {path} {verb} {keys}."
           + (f" {len(warnings)} warning(s)." if warnings else ""))
     return 0
 

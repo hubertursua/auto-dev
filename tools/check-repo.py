@@ -10,8 +10,8 @@ Checks:
 - every helper script is executable and starts with a python3 shebang;
 - every agent file has name, model, effort and tools in its frontmatter, and its
   model and effort match the worker tables in SKILL.md and README.md;
-- every file path SKILL.md and README.md name under references/, profiles/ or
-  scripts/ exists, and README.md names every helper script.
+- every file path SKILL.md and README.md name under references/ or scripts/
+  exists, and README.md names every helper script.
 """
 
 import json
@@ -118,7 +118,7 @@ def check_agents():
             fail(f"{table}: worker table names auto-dev:{agent}, which has no agents/ file")
 
 
-PATH_REF = re.compile(r"(?:skills/auto-dev/)?((?:references|profiles|scripts)/[\w.-]+\.(?:md|py))")
+PATH_REF = re.compile(r"(?:skills/auto-dev/)?((?:references|scripts)/[\w.-]+\.(?:md|py))")
 
 
 def check_paths():
