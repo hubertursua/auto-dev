@@ -29,7 +29,10 @@ Phase 2, and `in-progress` is MALFORMED (a started sub-task has a table).
 
 Output:
     stdout  `RESUME: …` plus task, ticket, mode, phase and status, session, what
-            the status means, and budget; or `COMPLETE: …` when nothing is left
+            the status means (`Action:`), and budget; or `COMPLETE: …` when
+            nothing is left. A Phase 6 result adds a `Note:` on reconciling with
+            git and gh, except Phase 6 in-progress, whose Action carries it and
+            says to resume inside the phase rather than re-run it whole
     stderr  `MISSING: …`, `MALFORMED: …` (naming the line or field),
             `MISMATCH: …`, or `ERROR: …`
 
@@ -61,7 +64,8 @@ STATUSES = {"pending", "in-progress", "done", "skipped", "n/a", "blocked"}
 COMPLETE = {"done", "skipped", "n/a"}
 
 # What resume step 3 says to do at each incomplete status, so the caller does
-# not have to re-open the procedure to act on the output.
+# not have to re-open the procedure to act on the output. Phase 6 in-progress
+# is the one exception: it prints PHASE_6_IN_PROGRESS instead (step 4).
 ACTIONS = {
     "pending": "run the phase normally",
     "in-progress": ("the phase was cut off mid-flight: re-run the whole phase "
@@ -70,9 +74,23 @@ ACTIONS = {
                 "user and ask"),
 }
 # Resume step 4: Phase 6 is reconciled against git and gh before acting.
-PHASE_6_NOTE = ("Phase 6: check the world before acting (git log, git status, "
-                "whether the branch is on the remote, gh pr view) and reconcile "
-                "the ledger to it")
+PHASE_6_CHECKS = ("check the world before acting (git log, git status, "
+                  "whether the branch is on the remote, gh pr view) and "
+                  "reconcile the ledger to it")
+PHASE_6_NOTE = f"Phase 6: {PHASE_6_CHECKS}"
+# Resume steps 4 and 6 and the HANDOFF rule: Phase 6 is the exception to
+# re-running an in-progress phase whole; it resumes inside itself once
+# reconciled. This script cannot see which gate passed, so the Action says
+# where that is recorded and what to do when nothing records it.
+PHASE_6_IN_PROGRESS = (
+    f"do not re-run blindly: {PHASE_6_CHECKS}. Find the last gate passed: a "
+    "commit or PR on the branch means the PR gate passed, a merge into "
+    "staging or the base the staging or main gate; the Notes or HANDOFF.md's "
+    "`Pick up at` line may name it. If no gate passed, start at the PR gate. "
+    "Continue after that gate, re-doing (not trusting) any step after it that "
+    "leaves an artifact, such as PR_REVIEW.md or a correction, and reusing a "
+    "commit, push or PR already made. Never repeat a gate or Jira transition "
+    "that already happened; read the issue's Jira status, do not assume it")
 
 # Which session holds each phase (SKILL.md, Session boundaries).
 SESSIONS = {1: "S1 — Plan", 2: "S1 — Plan", 3: "S1 — Plan",
@@ -383,9 +401,12 @@ def main() -> int:
                 f"  Session:   {SESSIONS[number]}"]
     if status == "blocked":
         out.append("  Blocked:   blocked — ask the user; do not start or retry it")
-    out.append(f"  Action:    {ACTIONS[status]}")
-    if number == 6:
-        out.append(f"  Note:      {PHASE_6_NOTE}")
+    if number == 6 and status == "in-progress":  # folds the Note in
+        out.append(f"  Action:    {PHASE_6_IN_PROGRESS}")
+    else:
+        out.append(f"  Action:    {ACTIONS[status]}")
+        if number == 6:
+            out.append(f"  Note:      {PHASE_6_NOTE}")
     if notes:
         out.append(f"  Notes:     {notes}")
     out.append(f"  Budget:    {budget}")
