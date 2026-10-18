@@ -2,7 +2,7 @@
 
 - **Task:** Add multi-currency support across the wallet, the ledger and the payout service
 - **Ticket:** none — wallets, ledger entries and payouts carry a currency; amounts in different currencies are never summed together
-- **Repo:** <repo-name>   **Base:** main   **Stack:** elixir
+- **Repo:** <repo-name>   **Base:** main   **Stack:** <profile>
 - **Control worktree:** <abs-path-to-control-worktree>   **Branch:** feat/multi-currency
 - **Mode:** multi-PR   **Scope call:** OVERSIZED   (`OVERSIZED` runs multi-PR)
 - **Iteration budget:** 4 total revise rounds per sub-task
