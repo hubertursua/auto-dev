@@ -10,7 +10,7 @@ do not catch ("survived") is a behavior no test pins down.
 
 Usage:
     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <file.json> --cmd "<test command>"
-                                          [--timeout <sec>] [--max <n>] [--out <results.json>]
+                                          [--max <n>] [--timeout <sec>] [--out <results.json>]
     python3 <skill-dir>/scripts/mutate.py <worktree> --restore --mutants <file.json>
     python3 <skill-dir>/scripts/mutate.py --help
 
@@ -19,19 +19,24 @@ Usage:
     {"id": "M1", "file": "lib/app/todos.ex", "line": 42,
      "find": "user_id == owner_id", "replace": "user_id != owner_id",
      "condition": "3", "cmd": "<optional per-mutant test command>"}
-`file` is relative to <worktree>; `find` must occur exactly once on `line`
-(1-based), and only that occurrence is replaced. --cmd runs through the shell in
-<worktree>; a non-zero exit means the mutant was caught. It must pass on the
-unmutated tree first (the baseline), or nothing is mutated.
+`file` is relative to <worktree> and must stay inside it. `line` is 1-based and
+counts `\\n` only, as `grep -n` does. `find` must occur exactly once on that line;
+only that occurrence is replaced, byte for byte — the rest of the file is never
+re-encoded. --cmd runs through the shell in <worktree>, in its own process
+group; a non-zero exit means the mutant was caught. It must pass on the
+unmutated tree first (the baseline), or nothing is mutated. --max (default 50)
+is the most mutants accepted; pass the run's mutation cap.
 
-Each write (mutant and restore) moves the file's mtime forward a second, so
-mtime-based build caches recompile it; a restored file has its original bytes
-and a newer mtime.
+Each write (mutant and restore) moves the file's mtime forward, so mtime-based
+build caches recompile it; a restored file has its original bytes and a newer
+mtime.
 
-Safety: before each mutant the original file is copied to a backup directory
-next to the mutants file (`<mutants file>.backup/`), and restored byte-for-byte
-afterwards, on errors and SIGTERM/SIGINT too. If a run is killed hard, the next
-run refuses to start until `--restore` puts every backed-up file back.
+Safety: before a file is mutated, its original is copied atomically to a backup
+directory next to the mutants file (`<mutants file>.backup/`), with its SHA-256
+recorded. It is restored byte-for-byte afterwards, on errors and SIGTERM/SIGINT
+too, and the restore is checked against that hash. If a run is killed hard, the
+next run refuses to start (exit 5) until `--restore` puts every backed-up file
+back.
 
 Output:
     stdout  one line per mutant: id, status, file:line, condition; then a summary
@@ -41,24 +46,30 @@ Output:
 
 Statuses:
     killed    the test command failed with the mutant in place
+    timeout   the test command ran past --timeout (its process group is
+              killed); usually the mutant made the code hang — counted as caught
     survived  the test command passed with the mutant in place
-    timeout   the test command ran past --timeout (counted as neither)
     invalid   `find` is not exactly once on `line` — the mutant was not applied
 
 Exit codes:
     0  no mutant survived
-    1  at least one mutant survived (or timed out)
-    2  usage error, bad mutants file, baseline red, or leftover backups found
+    1  at least one mutant survived
+    2  usage error or a malformed mutants file — fix the input
+    3  baseline red: the test command fails on the unmutated tree
     4  a file could not be restored — the worktree is changed: stop and report
+    5  leftover backups from a killed run — run `--restore` first
+    6  interrupted by a signal; every file was restored
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -70,40 +81,124 @@ def on_signal(signum, frame):
     raise Interrupted(f"signal {signum}")
 
 
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
 def run(cmd, cwd, timeout):
+    p = subprocess.Popen(cmd, shell=True, cwd=cwd, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, start_new_session=True)
     try:
-        r = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, timeout=timeout)
-        out = (r.stdout + r.stderr).decode("utf-8", "replace")
-        return r.returncode, out[-1500:]
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out.decode("utf-8", "replace")[-1500:]
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        p.communicate()
         return None, f"timed out after {timeout}s"
+    except BaseException:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        raise
 
 
-def touch_forward(path, after):
-    """Give the file an mtime past `after`, so mtime-based build caches
-    (compiled bytecode, mix, make) see the write even within one second."""
-    t = max(time.time(), after) + 1
+def touch_forward(path):
+    """Give the file an mtime past both now and its current mtime, so
+    mtime-based build caches (bytecode, mix, make) see the write."""
+    t = max(time.time(), os.stat(path).st_mtime) + 1
     os.utime(path, (t, t))
-    return t
+
+
+def write_atomic(path, data):
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def inside(wt, rel):
+    """The absolute path for `rel`, or None if it escapes the worktree."""
+    if not isinstance(rel, str) or not rel or os.path.isabs(rel):
+        return None
+    path = os.path.realpath(os.path.join(wt, rel))
+    return path if path.startswith(wt + os.sep) else None
+
+
+def load_index(backup_dir):
+    try:
+        with open(os.path.join(backup_dir, "index.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_index(backup_dir, index):
+    write_atomic(os.path.join(backup_dir, "index.json"),
+                 json.dumps(index, indent=2).encode("utf-8"))
 
 
 def restore_all(wt, backup_dir):
-    """Put every backed-up file back. Returns the paths that failed."""
-    failed = []
+    """Put every backed-up file back, checked against its recorded hash.
+    Returns the paths that could not be restored."""
     if not os.path.isdir(backup_dir):
-        return failed
-    for dirpath, _, names in os.walk(backup_dir):
-        for n in names:
-            src = os.path.join(dirpath, n)
-            rel = os.path.relpath(src, backup_dir)
-            try:
-                shutil.copyfile(src, os.path.join(wt, rel))
-                os.remove(src)
-            except OSError:
+        return []
+    index = load_index(backup_dir)
+    failed = []
+    for rel, digest in list(index.items()):
+        src = os.path.join(backup_dir, "files", rel)
+        dst = inside(wt, rel)
+        try:
+            with open(src, "rb") as f:
+                data = f.read()
+            if dst is None or sha(data) != digest:
                 failed.append(rel)
+                continue
+            write_atomic(dst, data)
+            touch_forward(dst)
+            with open(dst, "rb") as f:
+                if sha(f.read()) != digest:
+                    failed.append(rel)
+                    continue
+            del index[rel]
+            save_index(backup_dir, index)
+        except OSError:
+            failed.append(rel)
     if not failed:
         shutil.rmtree(backup_dir, ignore_errors=True)
     return failed
+
+
+def validate(mutants):
+    if not isinstance(mutants, list):
+        return "not a JSON list"
+    seen = set()
+    for i, m in enumerate(mutants):
+        if not isinstance(m, dict):
+            return f"entry {i} is not an object"
+        for k in ("id", "file", "find", "replace"):
+            if not isinstance(m.get(k), str) or (k != "replace" and not m[k]):
+                return f"entry {i}: `{k}` must be a non-empty string"
+        if not isinstance(m.get("line"), int) or isinstance(m["line"], bool) or m["line"] < 1:
+            return f"entry {i}: `line` must be a positive integer"
+        if m["find"] == m["replace"]:
+            return f"entry {i}: `replace` equals `find`"
+        if m["id"] in seen:
+            return f"entry {i}: duplicate id {m['id']}"
+        seen.add(m["id"])
+        if "cmd" in m and not isinstance(m["cmd"], str):
+            return f"entry {i}: `cmd` must be a string"
+    return None
 
 
 def main() -> int:
@@ -114,12 +209,15 @@ def main() -> int:
     parser.add_argument("--mutants", required=True)
     parser.add_argument("--cmd")
     parser.add_argument("--timeout", type=int, default=180)
-    parser.add_argument("--max", type=int, default=25)
+    parser.add_argument("--max", type=int, default=50)
     parser.add_argument("--out")
     parser.add_argument("--restore", action="store_true")
     args = parser.parse_args()  # bad arguments exit 2 via argparse
 
-    wt = os.path.abspath(args.worktree)
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    wt = os.path.realpath(args.worktree)
     mutants_path = os.path.abspath(args.mutants)
     backup_dir = mutants_path + ".backup"
     out_path = args.out or mutants_path + ".results.json"
@@ -132,90 +230,98 @@ def main() -> int:
         print("RESTORED: no backups left")
         return 0
 
-    if os.path.isdir(backup_dir) and any(files for _, _, files in os.walk(backup_dir)):
+    if os.path.isdir(backup_dir):
         print(f"ERROR: leftover backups in {backup_dir} — a run was killed mid-mutant. "
               f"Run with --restore first.", file=sys.stderr)
-        return 2
+        return 5
     if not args.cmd:
         print("ERROR: --cmd is required", file=sys.stderr)
         return 2
     try:
         with open(mutants_path, encoding="utf-8") as f:
             mutants = json.load(f)
-        assert isinstance(mutants, list)
-        for m in mutants:
-            assert {"id", "file", "line", "find", "replace"} <= set(m)
-    except (OSError, ValueError, AssertionError):
-        print(f"ERROR: {mutants_path} is not a JSON list of mutants with "
-              f"id, file, line, find, replace", file=sys.stderr)
+    except (OSError, ValueError) as e:
+        print(f"ERROR: cannot read {mutants_path}: {e}", file=sys.stderr)
+        return 2
+    problem = validate(mutants)
+    if problem:
+        print(f"ERROR: {mutants_path}: {problem}", file=sys.stderr)
         return 2
     if len(mutants) > args.max:
         print(f"ERROR: {len(mutants)} mutants exceeds --max {args.max}", file=sys.stderr)
         return 2
+    for m in mutants:
+        if inside(wt, m["file"]) is None:
+            print(f"ERROR: {m['id']}: `{m['file']}` is not inside the worktree", file=sys.stderr)
+            return 2
 
-    code, tail = run(args.cmd, wt, args.timeout)
+    try:
+        code, tail = run(args.cmd, wt, args.timeout)
+    except Interrupted:
+        return 6
     if code != 0:
         print(f"ERROR: baseline is not green (the test command must pass unmutated):\n{tail}",
               file=sys.stderr)
-        return 2
+        return 3
 
-    signal.signal(signal.SIGTERM, on_signal)
-    signal.signal(signal.SIGINT, on_signal)
     results = []
+    index = {}
     try:
         for m in mutants:
             rec = dict(m)
-            path = os.path.join(wt, m["file"])
+            results.append(rec)
+            path = inside(wt, m["file"])
             try:
                 with open(path, "rb") as f:
                     original = f.read()
-            except OSError:
-                rec.update(status="invalid", output="file not found")
-                results.append(rec)
+            except OSError as e:
+                rec.update(status="invalid", output=f"cannot read: {e}")
                 continue
-            lines = original.decode("utf-8", "replace").splitlines(keepends=True)
-            n = int(m["line"]) - 1
-            if not (0 <= n < len(lines)) or lines[n].count(m["find"]) != 1:
+            lines = original.split(b"\n")
+            n = m["line"] - 1
+            find, repl = m["find"].encode("utf-8"), m["replace"].encode("utf-8")
+            if not (0 <= n < len(lines)) or lines[n].count(find) != 1:
                 rec.update(status="invalid", output="`find` is not exactly once on that line")
-                results.append(rec)
                 continue
-            lines[n] = lines[n].replace(m["find"], m["replace"], 1)
-            backup = os.path.join(backup_dir, m["file"])
-            os.makedirs(os.path.dirname(backup), exist_ok=True)
-            shutil.copyfile(path, backup)
-            stamp = os.stat(path).st_mtime
+            if not os.access(path, os.W_OK):
+                rec.update(status="invalid", output="file is not writable")
+                continue
+            lines[n] = lines[n].replace(find, repl, 1)
+            # Back up atomically and record the hash BEFORE touching the file.
+            write_atomic(os.path.join(backup_dir, "files", m["file"]), original)
+            index[m["file"]] = sha(original)
+            save_index(backup_dir, index)
             try:
-                with open(path, "wb") as f:
-                    f.write("".join(lines).encode("utf-8"))
-                stamp = touch_forward(path, stamp)
+                write_atomic(path, b"\n".join(lines))
+                touch_forward(path)
                 code, tail = run(m.get("cmd") or args.cmd, wt, args.timeout)
             finally:
-                shutil.copyfile(backup, path)
-                touch_forward(path, stamp)
-                with open(path, "rb") as f:
-                    if f.read() != original:
-                        raise OSError(f"restore mismatch: {m['file']}")
-                os.remove(backup)
+                write_atomic(path, original)
+                touch_forward(path)
+            with open(path, "rb") as f:
+                if sha(f.read()) != index[m["file"]]:
+                    raise OSError(f"restore mismatch: {m['file']}")
+            del index[m["file"]]
+            save_index(backup_dir, index)
             rec["status"] = "timeout" if code is None else ("survived" if code == 0 else "killed")
             rec["output"] = tail
-            results.append(rec)
     except (Interrupted, OSError) as e:
         failed = restore_all(wt, backup_dir)
-        print(f"ERROR: stopped ({e}); "
-              + (f"could not restore: {', '.join(failed)}" if failed else "every file restored"),
-              file=sys.stderr)
-        return 4 if failed or isinstance(e, OSError) else 2
+        if failed:
+            print(f"ERROR: stopped ({e}); could not restore: {', '.join(failed)}", file=sys.stderr)
+            return 4
+        print(f"ERROR: stopped ({e}); every file restored", file=sys.stderr)
+        return 6
     shutil.rmtree(backup_dir, ignore_errors=True)
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+    write_atomic(out_path, json.dumps(results, indent=2).encode("utf-8"))
     counts = {}
     for r in results:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
         print(f"{r['id']}\t{r['status']}\t{r['file']}:{r['line']}\tcondition {r.get('condition', '-')}")
     print("SUMMARY: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
           + f" (results: {out_path})")
-    return 1 if counts.get("survived") or counts.get("timeout") else 0
+    return 1 if counts.get("survived") else 0
 
 
 if __name__ == "__main__":

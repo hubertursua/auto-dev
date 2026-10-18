@@ -651,6 +651,11 @@ acceptance-check repair / the cleanup pass / a Phase 6 correction>>. On a
 re-check, do NOT read the existing SPEC_EVAL.md: judge from scratch and overwrite
 it.
 
+0. If <artifact-dir>/evidence/mutants.json.backup exists, an earlier pass was
+   killed mid-mutant and the source may still hold its bug. Before anything
+   else run `python3 <skill-dir>/scripts/mutate.py <worktree> --restore --mutants
+   <artifact-dir>/evidence/mutants.json`. Exit 4: STOP and return MUTATION LEFT
+   CHANGES.
 1. Integrity, then install. Paths below are absolute.
    Each sealed check <artifact-dir>/acceptance/files/<path>.sealed installs at
    <worktree>/<path>.
@@ -705,37 +710,39 @@ it.
    Unjustified finding.
 6. If an acceptance check itself is defective — it asserts something SPEC.md
    does not say, or contradicts it — say so and why. Do not edit it.
-7. Mutation check (cap: <mutation cap from profile.md; TRIVIAL: at most 8>; at 0,
-   skip it and write "off"). Passing tests show the code works; mutants show the
-   tests would notice if it stopped working. Scope by mode:
-   - FIRST PASS and RE-CHECK after the cleanup pass: a fresh set over the whole
-     change.
-   - RE-CHECK after an acceptance correction or repair: the survivors listed in
-     <artifact-dir>/evidence/mutants.json.results.json, plus new mutants on the
-     lines that correction changed.
-   - RE-CHECK after a Phase 6 correction: only the lines that correction
-     changed, at most 5.
+7. Mutation check (cap: <mutation cap from profile.md; TRIVIAL: at most 8>).
+   Passing tests show the code works; mutants show the tests would notice if it
+   stopped working. Start by deleting <artifact-dir>/evidence/mutants.json and
+   its .results.json from any earlier pass. At cap 0, write "off" and stop here.
+   Every pass, first pass and re-check alike, picks a FRESH set over the whole
+   change, plus one mutant re-creating each previous survivor listed below (find
+   its line again — the code may have moved).
+   Previous survivors: <the Mutation table rows from the last SPEC_EVAL.md, or "none">
+   Keep a previous Equivalent judgment unless that code changed.
    Choose mutants on CHANGED SOURCE lines the conditions depend on — never tests,
    config, logging or docs — at most one per line, each the small edit most
    likely to break the behavior while still compiling: flip a comparison or
    boolean, drop a guard or a negation, move a boundary by one, return a
    plausible wrong value, remove a call that has an effect. Tag each with the
-   condition it threatens. Write them to <artifact-dir>/evidence/mutants.json
-   (a JSON list of {"id", "file", "line", "find", "replace", "condition"}), save
-   `git status --porcelain` and `git diff origin/<base> | sha256sum`, then run:
-     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <artifact-dir>/evidence/mutants.json --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>"
-   The scoped command must pass as-is (the script checks) and should take
-   seconds; give a mutant its own narrower "cmd" when one file's tests are
-   enough. Exit 0 none survived, 1 some survived or timed out, 2 an error (fix
-   your input; a red baseline means a test is already failing — unmet, report
-   it), 4 a file could not be restored: STOP and return MUTATION LEFT CHANGES.
-   Afterwards both saved values must be unchanged; if not, return MUTATION LEFT
-   CHANGES. Never commit, stage or keep a mutant.
+   condition it threatens. Line numbers are grep -n's. Write them to
+   <artifact-dir>/evidence/mutants.json (a JSON list of {"id", "file", "line",
+   "find", "replace", "condition"}), save `git status --porcelain` and
+   `git diff origin/<base> | sha256sum`, then run:
+     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <artifact-dir>/evidence/mutants.json --max <cap> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>"
+   The scoped command must pass as-is and should take seconds; give a mutant its
+   own narrower "cmd" when one file's tests are enough. Exit codes: 0 none
+   survived; 1 some survived; 2 your mutants file is malformed — fix it and
+   re-run; 3 the scoped tests fail unmutated — a test is already failing, which
+   is unmet, report it; 5 leftover backups — run it again with `--restore`
+   (no other flags), then re-run; 4, or 6 twice, STOP and return MUTATION LEFT
+   CHANGES. Afterwards both saved values must be unchanged; if they are not (the
+   test command itself may have written files), return MUTATION LEFT CHANGES
+   with the paths. Never commit, stage or keep a mutant.
    Judge each survivor: Equivalent (no input can tell the mutant from the code —
-   say why) or a Test gap. A timeout usually means the mutant made the code hang,
-   which a test noticed: count it as killed and say so. A Test gap on a line a
-   condition depends on makes that condition `partial` (evidence: the mutant
-   survived); any other Test gap is advisory.
+   say why) or a Test gap. A timeout counts as caught: the mutant made the code
+   hang, and the run noticed. A Test gap on a line a condition depends on makes
+   that condition `partial` (evidence: the mutant survived); any other Test gap
+   is advisory.
 
 Write <artifact-dir>/SPEC_EVAL.md to this template (strict):
 <paste the SPEC_EVAL.md template from references/artifacts.md>
@@ -778,11 +785,16 @@ spending a round), then re-run the verifier's first pass.
 If the verifier reports a **defective acceptance check**, settle it by repair
 mode (_Acceptance tester_, Phase 3), never by correcting the coder.
 
-**`MUTATION LEFT CHANGES`** means a mutant may still be in the source. Before
-anything else, run `python3 <skill-dir>/scripts/mutate.py <worktree> --restore
---mutants <artifact-dir>/evidence/mutants.json`; if it cannot restore (exit 4),
-stop and report — never let a worker build on that tree. Then re-spawn the
-verifier.
+**`MUTATION LEFT CHANGES`** means the source may no longer be the code that
+was built — a mutant could not be restored, or the test command wrote files.
+**Stop and report**, naming the paths the verifier gave: never let a worker
+build on that tree, and never guess which bytes are right. The user decides
+(`git diff`, the backups under `evidence/mutants.json.backup/`).
+
+**Pass the previous survivors.** Each verifier re-spawn's brief carries the
+Mutation table rows from the `SPEC_EVAL.md` it is replacing — the verifier's own
+earlier output, so it can re-test each Test gap and keep its Equivalent
+judgments stable. Paste the rows; add nothing of your own.
 
 The correction brief:
 

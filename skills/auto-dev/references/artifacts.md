@@ -798,7 +798,7 @@ are rows in this table — never a separate pass.
 <"None." when the audit is clean and the diff shows no gaming>
 
 ## Mutation
-<n> mutants (cap <n> | off): <n> killed · <n> survived · <n> invalid (`evidence/mutants.json.results.json`)
+<n> mutants (cap <n> | off): <n> killed · <n> timeout (counted caught) · <n> survived · <n> invalid (`evidence/mutants.json.results.json`)
 
 | Mutant | Location | Change | Condition | Judgment |
 |--------|----------|--------|-----------|----------|

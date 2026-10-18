@@ -54,7 +54,7 @@ or worktree you are in — open or run each by its absolute path.
 | `scripts/resume-point.py` | Phase 1's resume check; any re-entry | run (not read): `python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev [--task "<ticket or task>"]` names the resume point (`--task` only when the user named a ticket or task: the task word for word, a few words may be left out; a `NEAR-MISS` means ask); exit codes in `references/artifacts.md`, _Resuming an interrupted run_ |
 | `scripts/exclude-artifacts.py` | S1, Phase 1 step 6 | run (not read): `python3 <skill-dir>/scripts/exclude-artifacts.py <worktree>`; exit codes in `references/phase-1-setup.md`, step 6 |
 | `scripts/check-tests.py` | run by the verifier (Phase 5), never by you | audits test changes against the base: deleted, skipped or weakened tests, assertion-free new ones, tampered acceptance checks; exit codes in its `--help` |
-| `scripts/mutate.py` | run by the verifier (Phase 5); by you only as `--restore` after `MUTATION LEFT CHANGES` | applies the verifier's mutants one at a time, runs the scoped tests, restores each file byte-for-byte; exit codes in its `--help` |
+| `scripts/mutate.py` | run by the verifier (Phase 5), never by you | applies the verifier's mutants one at a time, runs the scoped tests, restores each file byte-for-byte; exit codes in its `--help` |
 | `scripts/check-staged.py` | S3, before every Phase 6a commit | run (not read): `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`; exit codes in `references/phase-6-ship.md`, step 4 |
 | `references/artifacts.md` | each session's start (its checklist); writing or resuming from any `.auto-dev/` file | layout, `WORK_LOG.md` ledger, resume procedure, session checklists, `HANDOFF.md`, every artifact's contract, template and strictness, the PR body, the final report |
 | `references/subagent-prompts.md` | before spawning any worker (Phases 2–6) | each worker's brief and tools, the scope decision, acting on the verifier's verdicts |
@@ -481,8 +481,8 @@ never report success you didn't verify. Default shape: `references/artifacts.md`
   created, or a seeded `worktree_files` file isn't gitignored; the resolved
   quality gate has **no test command** (an empty gate passes by checking nothing);
   a `setup` command is missing (exit `127`); the task is self-contradictory or
-  impossible as specified; the quality gate can't be made green; a mutant cannot
-  be restored (`scripts/mutate.py --restore` exits `4`); the build edited
+  impossible as specified; the quality gate can't be made green; the verifier
+  returns `MUTATION LEFT CHANGES` (the source may not be the code that was built); the build edited
   source inside a submodule; spec conditions remain unmet after the iteration
   budget; `gh pr merge` refuses (or only queues) the merge; a sub-task's scope
   call comes back OVERSIZED; the user declines a gate or merge.
