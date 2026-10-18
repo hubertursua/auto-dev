@@ -30,8 +30,8 @@ all appear in the other — a fragment like `multi-currency`, or a longer reques
 that contains the whole line — it is reported as a NEAR-MISS, which may be this
 run worded differently and is for the user to confirm, never a fresh run.
 Without --task nothing is checked: every ledger reports its resume point.
-Omit --task on a bare `auto-dev continue`; an empty or all-whitespace value
-counts as omitted.
+Omit --task on a bare `auto-dev continue` or a loose name for the run (`the
+multi-currency run`); an empty or all-whitespace value counts as omitted.
 
 On a multi-PR ledger a sub-task's phase table, where it has one, decides; one
 with no phase table goes by its summary `status`: `done`, `skipped` or `n/a` is

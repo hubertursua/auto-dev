@@ -332,17 +332,18 @@ wherever the two disagree.
    appear in the other but that is not a match — a fragment like
    `multi-currency`, or the user's longer original request containing the Task
    line — the script reports `NEAR-MISS`: possibly this run, worded differently.
-   Whenever the user states a task, pass it as `--task`, even a short one.
-   Run without `--task` only when they state none — a bare "continue" or
-   "resume", or a loose name like "the multi-currency run"; an empty `--task`
-   counts as omitted, and never pass a stand-in like "continue", which is
-   matched as task text. Without `--task` the exit code says only what a tree
-   holds: a `3` is a finished run left in place, not a candidate. List every tree
-   that exits `0` with its printed task and ticket. One plainly the run the user
-   means is the run; two or more, or any doubt, is a stop-and-ask, not a guess;
-   none (and no `MALFORMED` ledger that may be the run) means there is nothing to
-   continue — tell the user and ask what to work on rather than starting a fresh
-   Phase 1.
+   Whenever the user states the task itself (its ticket key, or what it does),
+   pass it as `--task`, even a short one. Run without `--task` only when they
+   state none: a bare "continue" or "resume", or a run they only refer to by a
+   loose name like "the multi-currency run", which names the run rather than
+   stating its task. An empty `--task` counts as omitted, and never pass a
+   stand-in like "continue", which is matched as task text. Without `--task` the
+   exit code says only what a tree holds: a `3` is a finished run left in place,
+   not a candidate. List every tree that exits `0` with its printed task and
+   ticket. One plainly the run the user means is the run; two or more, or any
+   doubt, is a stop-and-ask, not a guess; none (and no `MALFORMED` ledger that
+   may be the run) means there is nothing to continue — tell the user and ask
+   what to work on rather than starting a fresh Phase 1.
    It prints the task, ticket, the first phase not complete (`done`, `skipped` or
    `n/a`) with its status, that phase's session, and the remaining budget.
    - `0` — this tree is the run; resume where it says, handling the status as
