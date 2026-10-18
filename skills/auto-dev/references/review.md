@@ -50,8 +50,25 @@ git ls-files -z --others --exclude-standard | xargs -0 git add -N --
 | Pass | Code review panel covers | Security review covers |
 |---|---|---|
 | **First pass** | the whole change: the uncommitted working tree against `HEAD` (nothing on the branch is committed yet) | the whole change |
-| **After a review-stage fix** (before the commit) | **only the files the fix changed** (the coder's return lists them; `git status` cannot, since before the commit it lists the whole change) | the whole change |
+| **After a review-stage fix** (before the commit) | **only the files the fix changed**, from the snapshot diff below — never from the coder's return alone, and not from `git status`, which before the commit lists the whole change | the whole change |
 | **After a CI-red or human-blocker fix** (after the commit) | the fix: the uncommitted working tree against `HEAD` | the whole change |
+
+**The snapshot diff (review-stage fixes only).** Before the commit, nothing in
+git separates the fix from the rest of the change, so take a snapshot of the
+working tree just before dispatching each review-stage correction, and diff
+against it afterwards. The snapshot is a tree object written through a temporary
+index: it leaves the real index, the working tree and the branch untouched, and
+`.auto-dev/` stays out because it ignores itself.
+
+```bash
+snap() { t=$(mktemp); cp "$(git rev-parse --git-path index)" "$t"; GIT_INDEX_FILE=$t git add -A -- . && GIT_INDEX_FILE=$t git write-tree; rm -f "$t"; }
+before=$(snap)     # just before dispatching the correction; record it in the Notes
+# … the coder applies the fix …
+git diff --name-only "$before" "$(snap)"     # the files the fix changed
+```
+
+That list is the scope of the cleanup re-spawn and the next panel pass. If it
+misses a file the coder's return names, add that file too.
 
 "The whole change" for the security review is everything since the branch left
 its base, committed or not: `git diff $(git merge-base origin/<base> HEAD)`.
@@ -82,9 +99,12 @@ hole that only shows up through another file.
    each one `fixed` or `open`.
 5. **Re-vote on lone findings.** The judge marks `re-vote` on a correctness or
    test finding that only one reviewer raised and whose trigger path the judge
-   confirmed. For each reviewer slot, collect the re-vote findings that slot did
-   **not** raise, and spawn one `auto-dev:code-reviewer` in re-vote mode per slot
-   that has any, all in parallel. Each one writes `review/pass-<n>/VOTES-R<k>.md`
+   confirmed. For each reviewer slot **that wrote a usable report this pass**,
+   collect the re-vote findings that slot did **not** raise, and spawn one
+   `auto-dev:code-reviewer` in re-vote mode per such slot that has any, all in
+   parallel. A slot whose reviewer failed never re-votes: a fresh agent in its
+   place would add a voter the panel never had. With only one usable report
+   there is no one to re-vote, and every lone finding stays advisory. Each one writes `review/pass-<n>/VOTES-R<k>.md`
    with `agree` or `disagree` and a reason for each finding. A re-voter is told
    the finding, not who raised it or how anyone else voted.
 6. **Apply the votes.** This is mechanical, so do it yourself. For each re-vote
@@ -98,8 +118,9 @@ hole that only shows up through another file.
    decides them.
 8. **Open must-fix findings** go to the correction loop
    (`references/correction-loop.md`, entry _Phase 6a — review_): one correction
-   brief per pass, covering every open must-fix finding. Then run Step 1 again,
-   scoped to the files the fix changed. Exit Step 1 only when a pass leaves no
+   brief per pass, covering every open must-fix finding. Take the snapshot
+   (_What each review pass covers_) just before dispatching it. Then run Step 1
+   again, scoped to the files the snapshot diff names. Exit Step 1 only when a pass leaves no
    open must-fix finding, or the budget runs out.
 
 ## Step 2: the security review
@@ -145,14 +166,16 @@ PR gate
 - **Record each step's outcome** in the Phase 6 row's Notes, for example
   `code review pass 2: done, 0 open` or `security review: done, 1 pre-existing`,
   and each correction when it is dispatched, for example
-  `correction for pass 2 (C1, C3): dispatched, round spent`.
+  `correction for pass 2 (C1, C3): dispatched, round spent, snapshot <tree>`.
   A resumed run re-runs any review step whose completion the Notes do not record.
   A half-written report cannot be told apart from a finished one.
 - **Resuming mid-correction.** If the Notes show a correction dispatched and no
   review pass after it, the fix may be half-applied in the working tree.
   Re-dispatch the same correction to the coder against the tree as it stands,
   **without spending another round** (the Notes show it was spent), then carry on
-  with the cleanup re-spawn and the re-review.
+  with the cleanup re-spawn and the re-review. Scope them by diffing against the
+  snapshot the Notes recorded, not a new one, so the files the interrupted
+  attempt changed are covered too.
 
 ## The rubric
 

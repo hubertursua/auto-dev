@@ -27,7 +27,8 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
    brief in `references/subagent-prompts.md`). It runs `/simplify` and then the
    quality gate to green, exactly as on its first pass, and rewrites `lint/`. In
    Phase 6 its `/simplify` is scoped to the files the correction changed (below;
-   before the commit, that is the coder's file list, not the diff). In
+   before the commit, that is the snapshot diff in `references/review.md`, not
+   `git diff HEAD`). In
    Phase 5 the acceptance loop's corrections wait for the single cleanup pass
    that follows once the loop settles (Phase 5 steps 2–3), so do not spawn it per
    correction there. A Phase 5 correction made **after** that pass — a condition
@@ -112,7 +113,9 @@ reviewed and cost more than it returns. So the re-spawned agent's `/simplify`
 covers **only the files the correction changed**, and leaves the rest of the
 branch alone. After the commit, that is the correction's own uncommitted diff.
 Before the commit (a review-stage correction), `git diff HEAD` still shows the
-whole change, so the scope is the list of files the coder reports changing. The
+whole change, so the scope comes from a snapshot of the working tree taken just
+before the correction was dispatched (`references/review.md`, _What each review
+pass covers_). The
 quality gate after it still runs in full.
 
 ## Where the loop does not apply

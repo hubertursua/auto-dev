@@ -140,6 +140,11 @@ and fixed, and the PR never collects review-fix commits.
    that is still open or advisory as an inline comment at its `path:line`, with
    its verdict and confidence. Skip noise and fixed findings, and skip
    pre-existing security findings unless the user chose `Separate PR` at the gate.
+   GitHub only accepts an inline comment on a line inside the PR's diff, so a
+   finding whose line is outside it (usually a pre-existing one) goes into a
+   single general PR comment instead, one line per finding with its `path:line`.
+   If posting fails, say so in the gate or final report; the findings are still
+   on disk.
 6. **CI monitoring** — poll the PR's checks (detected provider) with a bounded
    timeout (`references/gates-and-jira.md`). On red pre-merge the response is a
    correction loop, not an immediate halt: `references/correction-loop.md`. Its

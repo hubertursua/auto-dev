@@ -539,7 +539,7 @@ Fill `<SCOPE>` for the spawn:
   (`git diff origin/<base>...HEAD` shows nothing at this point)".
 - **Phase 6a, review stage (re-spawn after a correction to a review finding,
   before the commit):** "ONLY these files, which this correction changed: <the
-  paths the coder's return lists>. The rest of the change is already reviewed, so
+  paths from the snapshot diff, `references/review.md`>. The rest of the change is already reviewed, so
   leave every other file alone. Nothing is committed yet, so `git diff HEAD` shows
   the whole change, not just this correction — work from the file list". Step 2
   still runs the quality gate in full.

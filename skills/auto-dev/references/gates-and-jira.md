@@ -128,8 +128,9 @@ wrote itself.
   these are never fixed without asking, whatever their confidence. Fixing one
   widens the PR beyond its task, so whether it belongs in this PR or a separate
   one is the user's call. Add one question per finding to the same `AskUserQuestion` call. The call
-  holds at most four questions and the gate's own options take one, so ask about
-  up to three findings and group any others into one question:
+  holds at most four questions and the gate's own options take one, so three are
+  left: with three findings or fewer, ask about each; with more, ask about the two
+  most severe and group the rest into the third question:
   `Separate PR (note it as a follow-up)` · `Fix it in this PR` · `Ignore it`.
   `Fix it in this PR` is a correction (`references/correction-loop.md`, entry
   _Phase 6a — review_): it spends a round, the fix is reviewed like any other
