@@ -1,7 +1,10 @@
 # The correction loop and the iteration budget
 
-Three things send work backwards: an unmet spec condition, a PR-review blocker
-(from `PR_REVIEW.md` or from a human reviewer on the PR), and a red CI check. They are **one loop entered at three points**, and this file
+Three things send work backwards: an unmet spec condition, a must-fix review
+finding, and a red CI check. A review finding comes from the code review panel
+(`CODE_REVIEW.md`), the security review (`SECURITY_REVIEW.md`), a pre-existing
+security finding the user chose to fix at the PR gate, or a human reviewer's
+blocker on the PR. They are **one loop entered at three points**, and this file
 is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 `references/gates-and-jira.md` point here instead of restating it.
 
@@ -23,7 +26,9 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 3. **Re-spawn the cleanup agent on the changed code** (`auto-dev:cleanup`,
    brief in `references/subagent-prompts.md`). It runs `/simplify` and then the
    quality gate to green, exactly as on its first pass, and rewrites `lint/`. In
-   Phase 6a its `/simplify` is scoped to the correction's own diff (below). In
+   Phase 6 its `/simplify` is scoped to the files the correction changed (below;
+   before the commit, that is the snapshot diff in `references/review.md`, not
+   `git diff HEAD`). In
    Phase 5 the acceptance loop's corrections wait for the single cleanup pass
    that follows once the loop settles (Phase 5 steps 2–3), so do not spawn it per
    correction there. A Phase 5 correction made **after** that pass — a condition
@@ -35,8 +40,8 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
    report, never ship red.
 4. **Refresh whatever the correction invalidated — of what already exists.** See
    the table.
-5. **Re-check the thing that failed:** re-evaluate the condition, re-read the
-   blocker, re-watch the check.
+5. **Re-check the thing that failed:** re-evaluate the condition, re-review the
+   change (`references/review.md`), re-watch the check.
 6. **Repeat or exit.** If the re-check still fails, that is another correction:
    back to step 1. Exit only when the re-check passes; then resume the pipeline
    where the loop was entered.
@@ -44,14 +49,14 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 
 Every Phase 6a "commit and re-push" in the table below uses the same
 explicit-staging sequence and `.auto-dev/` check as the first commit
-(`references/phase-6-ship.md`, step 2), and runs only after step 3's re-spawned
+(`references/phase-6-ship.md`, step 4), and runs only after step 3's re-spawned
 cleanup agent returns every `gate` check green. The paths it stages are the files
 `git status --porcelain --untracked-files=all --no-renames --ignore-submodules=dirty` shows the correction
 changed (a deleted or renamed-away path included), and
 those same paths are its `--expect` list:
 `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`.
 Commit only on exit `0`; handle `1`, `2` and `127` (no `python3`: the manual
-check) exactly as step 2 says. A correction's commit gets no lighter check.
+check) exactly as that step says. A correction's commit gets no lighter check.
 
 Step 4 is the only step that looks different at each entry point, and it differs
 only because the entry points happen at different *times*. The rule is single: a
@@ -62,11 +67,13 @@ Earlier in the pipeline there is less of it to rewrite.
 |---|---|---|---|
 | **Phase 5 — acceptance** (unmet condition) | nothing; the cleanup agent has not run | `SPEC_EVAL.md` only | not yet run — the single cleanup pass after this loop settles simplifies corrective code with everything else |
 | **Phase 5 — after the quality gate** (re-resolving the evidence finds a condition no longer met) | `SPEC_EVAL.md`, `lint/` | `SPEC_EVAL.md`, then `lint/` (rewritten by the re-spawned cleanup agent), then re-resolve the evidence again | **yes, Phase 5 scope** (the branch diff) — no human has read it yet |
-| **Phase 6a — PR review** (blocker, adversarial or human) | `SPEC_EVAL.md`, `lint/`, the commit, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: `SPEC_EVAL.md`, commit and re-push (CI re-runs — re-watch it), then the PR body | **yes, scoped to the correction's own diff** — see below |
-| **Phase 6a — CI red** (pre-merge) | `SPEC_EVAL.md`, `lint/`, the commit, the push, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: `SPEC_EVAL.md`, commit and re-push, then the PR body | **yes, scoped to the correction's own diff** |
+| **Phase 6a — review** (a must-fix finding from the code review panel or the security review, or a pre-existing finding the user chose to fix at the PR gate; **before the commit**) | `SPEC_EVAL.md`, `lint/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | `lint/` (rewritten by the re-spawned cleanup agent), then steps 1–2 of _The Phase 6a refresh_ below (`SPEC_EVAL.md`, every row), then **review again**: the code review panel on the files the fix changed, then the security review on the whole change (`references/review.md`). Nothing is committed, pushed or published yet, so the refresh stops there | **yes, scoped to the files the correction changed** — see below |
+| **Phase 6a — CI red** (pre-merge), or **Phase 6c — a human reviewer's blocker** | `SPEC_EVAL.md`, `lint/`, the review reports, the commit, the push, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: `SPEC_EVAL.md`, a review of the correction, commit and re-push (CI re-runs — re-watch it), then the PR body | **yes, scoped to the correction's own diff** — see below |
 
-**The Phase 6a refresh.** Both Phase 6a rows run it once the re-spawned cleanup
-agent returns every `gate` check green, in this order:
+**The Phase 6a refresh.** Every correction in Phase 6 runs it once the
+re-spawned cleanup agent returns every `gate` check green, in this order. A
+review-stage correction (before the commit) runs steps 1–2 only, then goes back
+to the reviews, which are its re-check:
 
 1. **Re-resolve every row of `SPEC_EVAL.md` and rewrite the file.** Not only the
    rows citing files the correction touched: a `/simplify` preserves behavior, but
@@ -77,26 +84,39 @@ agent returns every `gate` check green, in this order:
    new verdicts and `file:line` evidence back to `SPEC_EVAL.md`.
 2. **A condition no longer met joins the pending correction**, before anything is
    committed: back to step 1 of the loop, as another round of the same entry point
-   (logged against the same consumer, #4 or #5 below). The cleanup re-spawn's scope,
-   the uncommitted diff, then covers both corrections, and this refresh runs again.
-   At zero budget, step 2 stops the loop: commit, push and edit nothing — the open
-   PR keeps describing the commit it carries — and report the condition, by number,
-   as unmet at the gate (_On exhaustion_, below).
-3. **Commit and re-push**, with the sequence above.
-4. **Then refresh the PR body** — the acceptance checklist from the rewritten
-   `SPEC_EVAL.md`, the quality-gate results from `lint/` — starting from the live
+   (logged against the same consumer, #4 or #5 below). The cleanup re-spawn's scope
+   (the files the corrections changed) then covers both corrections, and this
+   refresh runs again. At zero budget, step 2 stops the loop: commit, push and edit
+   nothing — after the commit, the open PR keeps describing the commit it carries —
+   and report the condition, by number, as unmet at the gate (_On exhaustion_,
+   below).
+3. **Review the correction** before anything is committed
+   (`references/review.md`, _Later corrections_): the code review panel on the
+   uncommitted correction, then the security review on the whole change. A
+   must-fix finding joins the pending correction, exactly as step 2 says, and
+   exhaustion is handled the same way. Rewrite `CODE_REVIEW.md` and
+   `SECURITY_REVIEW.md` with the new pass.
+4. **Commit and re-push**, with the sequence above.
+5. **Then refresh the PR body** — the acceptance checklist from the rewritten
+   `SPEC_EVAL.md`, the quality-gate results from `lint/`, the review summary from
+   the two review reports — starting from the live
    body (`gh pr view <pr> --json body`) so edits made on GitHub survive, and
    publish it with `gh pr edit <pr> --body-file <file>`, the file in
-   `<artifact-dir>` or `$TMPDIR` (`references/phase-6-ship.md`, step 3). Only
+   `<artifact-dir>` or `$TMPDIR` (`references/phase-6-ship.md`, step 5). Only
    after the push, so the PR never shows results for a commit it does not carry.
 
 **Why `/simplify` is scoped to the correction in Phase 6.** Corrective code needs
 simplifying as much as any other code, so the cleanup agent re-runs after every
-Phase 6a correction. But by then a human may have read the branch's diff, and
-re-simplifying the whole branch would churn code they already reviewed and cost
-more than it returns. So the re-spawned agent's `/simplify` covers **only the files
-the correction changed**, the correction's own uncommitted diff, and leaves the
-rest of the branch alone. The quality gate after it still runs in full.
+Phase 6 correction. But by then the reviewers, and maybe a human, have read the
+branch's diff, and re-simplifying the whole branch would churn code they already
+reviewed and cost more than it returns. So the re-spawned agent's `/simplify`
+covers **only the files the correction changed**, and leaves the rest of the
+branch alone. After the commit, that is the correction's own uncommitted diff.
+Before the commit (a review-stage correction), `git diff HEAD` still shows the
+whole change, so the scope comes from a snapshot of the working tree taken just
+before the correction was dispatched (`references/review.md`, _What each review
+pass covers_). The
+quality gate after it still runs in full.
 
 ## Where the loop does not apply
 
@@ -131,8 +151,15 @@ Five things spend it, one round each:
 | 1 | Define review — re-review after fixes | 2 |
 | 2 | Plan review — re-review after fixes | 3 |
 | 3 | Acceptance corrections to the coder | 5 |
-| 4 | PR-review blocker corrections — adversarial or human | 6a |
+| 4 | Review-finding corrections — code review panel, security review, a pre-existing security finding the user chose to fix, or a human reviewer's blocker | 6a, 6c |
 | 5 | CI-red corrections, pre-merge | 6a |
+
+**Review passes never spend it** — not the first code review or security review,
+and not the re-review after a correction. A review is a check, like the quality
+gate; the correction that triggered the re-review already spent its round, and
+that is what bounds the loop. One correction brief covers every open must-fix
+finding from one review pass, so a pass with three must-fix findings spends one
+round, not three.
 
 **The cleanup agent never spends it** — not its Phase 5 pass, not its own loop to
 green however many times it re-runs a `gate` command internally (it has no view of
@@ -150,6 +177,8 @@ the loop does not run.
 
 **On exhaustion, stop and report.** Never loop past it and never merge over it.
 Say which loop ran it out, what is still unfixed, and what was tried — naming each
-unmet condition, not summarizing them. Where exhaustion coincides with a gate — blockers still
-open, CI still red — surface it **at that gate** and let the user decide, rather
-than holding silently.
+unmet condition, not summarizing them. Where exhaustion coincides with a gate — must-fix findings still open, CI still
+red — surface it **at that gate** and let the user decide, rather than holding
+silently. Must-fix findings still open when the review loop runs out of budget go
+to the PR gate, named one by one, and into the PR body if the user opens it
+anyway.

@@ -15,7 +15,7 @@
 | 3 | Plan | skipped | scope call TRIVIAL — plan written by the orchestrator |
 | 4 | Build | done | |
 | 5 | Verify | done | all conditions met; quality gate green |
-| 6 | Ship | in-progress | staging gate: n/a (no staging branch) |
+| 6 | Ship | in-progress | staging gate: n/a (no staging branch); code review pass 1: done, 0 open; security review: in progress |
 
 ## Decisions & assumptions
 - Phase 2: the message names the field as it appears in the API params.

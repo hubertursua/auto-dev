@@ -2,7 +2,7 @@
 """Check a worktree's staged set before a commit: nothing under .auto-dev/, and
 optionally exactly the expected paths.
 
-The last check before every Phase 6a commit (references/phase-6-ship.md, step 2)
+The last check before every Phase 6a commit (references/phase-6-ship.md, step 4)
 and every correction-loop commit (references/correction-loop.md). Read-only: it
 never stages or unstages anything; it prints the commands that would fix it.
 

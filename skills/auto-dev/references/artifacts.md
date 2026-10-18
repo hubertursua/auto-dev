@@ -36,7 +36,10 @@ either setup state, a ledger, or a verification report.
   - **`SPEC.md` (Phase 2, Define agent)**
   - **`IMPLEMENTATION.md` (Phase 3, planner)**
   - **`SPEC_EVAL.md` (Phase 5, orchestrator)**
-  - **`PR_REVIEW.md` (Phase 6a, PR reviewer)**
+  - **`review/pass-<n>/R<k>.md` (Phase 6a, code reviewer)**
+  - **`review/pass-<n>/VOTES-R<k>.md` (Phase 6a, code reviewer re-voting)**
+  - **`CODE_REVIEW.md` (Phase 6a, review judge)**
+  - **`SECURITY_REVIEW.md` (Phase 6a, security reviewer + review judge)**
   - **`lint/<CHECK>.md` (Phase 5, cleanup agent) — one per `gate` entry**
 - **The PR body** — who writes it in Phase 6a, and the sections it must keep.
 - **The final report** — a flexible default shape for the run's last message.
@@ -108,7 +111,12 @@ Single-PR run (the task fits one PR):
     CREDO.md              # profile, so another stack has another set
     DIALYZER.md
     TEST.md
-  PR_REVIEW.md            # adversarial self-review of the diff (Phase 6)
+  review/                 # raw code-review reports, one directory per pass (Phase 6a)
+    pass-1/
+      R1.md  R2.md  R3.md   # the three panelists' own findings
+      VOTES-R2.md           # re-votes on lone findings, when any
+  CODE_REVIEW.md          # the judge's consolidated code review: verdicts, votes, confidence (Phase 6a)
+  SECURITY_REVIEW.md      # the security review: origin, confidence, verification (Phase 6a)
 ```
 
 Multi-PR run (an oversized ticket decomposed into sub-tasks — see the
@@ -124,15 +132,17 @@ all, so each sub-task's artifacts and branch never collide:
   SPEC.md                 # the parent spec — informs the decomposition only
   tasks/
     01-<slug>/            # <artifact-dir> for sub-task 01, whose code is in its
-      SPEC.md  IMPLEMENTATION.md  SPEC_EVAL.md  lint/  PR_REVIEW.md
+      SPEC.md  IMPLEMENTATION.md  SPEC_EVAL.md  lint/  review/
+      CODE_REVIEW.md  SECURITY_REVIEW.md
     02-<slug>/            # own worktree: same file set as a single-PR run
       ...
 ```
 
 On the **TRIVIAL** fast path the file set is unchanged — `IMPLEMENTATION.md` is
 just written by the orchestrator rather than by the planner, and no Define review
-runs. The verification artifacts (`SPEC_EVAL.md`, `lint/`, `PR_REVIEW.md`) are
-produced exactly as on the standard path.
+runs. The verification artifacts (`SPEC_EVAL.md`, `lint/`, `review/`,
+`CODE_REVIEW.md`, `SECURITY_REVIEW.md`) are produced exactly as on the standard
+path.
 
 ## Never commit `.auto-dev/`
 
@@ -168,7 +178,7 @@ Phase 6 also stages source paths **explicitly**
 (`git add -- <path> …`, and `git rm --cached` for deleted paths) and never uses
 `git add -A`/`.`, and before committing
 confirms nothing under `.auto-dev/` is staged, with `scripts/check-staged.py`
-or its manual equivalent (`references/phase-6-ship.md`, step 2).
+or its manual equivalent (`references/phase-6-ship.md`, step 4).
 
 Note: `.auto-dev.yml` (the optional repo-local **override**, see
 `references/profiles.md`) is a *different* file — it lives at the repo root, is
@@ -351,7 +361,13 @@ wherever the two disagree.
 4. **Phase 6 is the exception to blind re-running.** Check the world before
    acting: `git log`, `git status`, whether the branch is on the remote,
    `gh pr view`. A PR may already be open, or already merged. Reconcile the ledger
-   to what git and `gh` actually report, then continue from there.
+   to what git and `gh` actually report, then continue from there. With no commit
+   on the branch and no PR-gate approval recorded in the Notes, the PR gate has
+   not passed: the run was in the reviews, which come before it. Resume them as
+   `references/review.md`, _The review loop_, says: re-run every review step the
+   Notes do not record as done, and never trust a review report the Notes do not
+   vouch for. A correction the Notes record as dispatched but not re-reviewed
+   is re-dispatched without spending another round.
 5. **Multi-PR runs** restart at the first sub-task that is not `done`, and within it
    at the first phase that is not `done` in **that sub-task's own phase table**. A
    sub-task with no phase table goes by its summary `status`: `done` is complete
@@ -409,12 +425,13 @@ S2 Build progress:
 
 ```
 S3 Ship progress:
-- [ ] 6a.1 PR gate
-- [ ] 6a.2 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged
-- [ ] 6a.3 Push (never --force); open PR with acceptance checklist + quality-gate results
-- [ ] 6a.4 PR reviewer (adversarial) → PR_REVIEW.md (blocker → correction loop + cleanup re-spawn + Phase 6a refresh)
-- [ ] 6a.5 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh)
-- [ ] 6a.6 Jira → In Review
+- [ ] 6a.1 Code review panel: 3 × code-reviewer (/code-review xhigh) → judge → re-votes → CODE_REVIEW.md (must-fix → correction loop + cleanup re-spawn + re-review on the fix's files)
+- [ ] 6a.2 Security review: security reviewer (/security-review) → judge verifies High/Medium → SECURITY_REVIEW.md (must-fix → correction loop, then 6a.1 on the fix's files, then 6a.2 again)
+- [ ] 6a.3 PR gate (both reviews' confidence + counts; open must-fix; pre-existing security for the user to triage)
+- [ ] 6a.4 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged
+- [ ] 6a.5 Push (never --force); open PR with acceptance checklist + quality-gate results + review summary; inline review comments only if asked or configured
+- [ ] 6a.6 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh, its fix reviewed before re-push)
+- [ ] 6a.7 Jira → In Review
 - [ ] 6b   Staging gate → direct merge → CI on staging (n/a without staging)
 - [ ] 6c.1 Read human reviews; mark the PR ready
 - [ ] 6c.2 Main gate
@@ -474,11 +491,26 @@ shape.
   loaded profile — **one per `gate` entry, all of them** (Elixir: `COMPILE.md`,
   `FORMAT.md`, `CREDO.md`, `DIALYZER.md`, `TEST.md`): the command run, final
   status, and the tail of any output that had to be fixed.
-- **`PR_REVIEW.md`** — the adversarial review of the branch diff: issues the
-  reviewer tried to find (correctness, security, scope), grouped by severity, with
-  file\:line. Written to disk; posted as inline PR comments only when the user asks
-  during the run or `.auto-dev.yml` sets `pr_review.inline_comments: true`
-  (`references/profiles.md`).
+- **`review/pass-<n>/R<k>.md`** — one code reviewer's own findings for one pass,
+  each with a trigger path, plus security leads it noticed. Raw input to the
+  judge; nothing else reads it.
+- **`review/pass-<n>/VOTES-R<k>.md`** — one reviewer's `agree` / `disagree` on
+  the lone findings it did not raise. The orchestrator counts them into
+  `CODE_REVIEW.md`.
+- **`CODE_REVIEW.md`** — the consolidated code review, across every pass: each
+  finding's verdict (must-fix, advisory, noise), votes, confidence, the judge's
+  reason, and whether a must-fix finding is `open` or `fixed`; plus the report's
+  overall confidence. Drives the review-stage correction loop and the PR gate
+  summary.
+- **`SECURITY_REVIEW.md`** — the security review of the whole change: each
+  finding's origin (introduced or pre-existing), confidence, the judge's
+  verification, and verdict (must-fix, for the user, advisory); plus the overall
+  confidence. Drives the security corrections and the PR gate's triage of
+  pre-existing findings.
+
+  Both review reports stay on disk. Their findings are posted as inline PR
+  comments only when the user asks during the run or `.auto-dev.yml` sets
+  `pr_review.inline_comments: true` (`references/profiles.md`).
 
 **Not artifacts.** Three things deliberately live outside this directory: the
 coder's **plan-deviation report**, which is part of its structured return and is
@@ -489,7 +521,7 @@ and the **PR body**, contracted below.
 
 ## Artifact templates
 
-Skeletons for the seven artifacts a worker or the orchestrator writes. They fix the
+Skeletons for the artifacts a worker or the orchestrator writes. They fix the
 *shape* — the contracts above fix the content. Keep the headings; a later phase reads
 them back (Phase 6a builds the PR checklist straight out of `SPEC_EVAL.md`).
 
@@ -510,10 +542,13 @@ A worker has no path to this file and cannot follow a reference to it.
 | `WORK_LOG.md` | strict | the resume procedure and `scripts/resume-point.py` (header lines, phase-table `Status`); every session's entry |
 | `HANDOFF.md` | strict | the next session's entry |
 | `profile.md` | strict | every phase and worker (`setup`/`gate` commands run verbatim) |
-| `SPEC.md` | strict | Define reviewer, Phase 5 acceptance check, PR-reviewer type choice (`Security/Compliance criteria`), PR body |
-| `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, PR reviewer |
+| `SPEC.md` | strict | Define reviewer, Phase 5 acceptance check, code reviewers, security-reviewer type choice (`Security/Compliance criteria`), PR body |
+| `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, code reviewers |
 | `SPEC_EVAL.md` | strict | PR body checklist, PR gate summary, the evidence re-resolve |
-| `PR_REVIEW.md` | strict | blocker count → correction loop, main gate summary |
+| `review/pass-<n>/R<k>.md` | strict | the review judge |
+| `review/pass-<n>/VOTES-R<k>.md` | strict | the orchestrator, applying the votes |
+| `CODE_REVIEW.md` | strict | open must-fix → correction loop; PR gate and main gate summaries; PR body `Review` |
+| `SECURITY_REVIEW.md` | strict | the security-verify judge; open must-fix → correction loop; PR gate triage; PR body `Review` |
 | `lint/<CHECK>.md` | strict | PR body `Quality gate`, PR gate summary |
 | PR body | required sections strict, prose flexible | the human reviewer; refreshed after a Phase 6 correction |
 | Final report | flexible | the user |
@@ -675,34 +710,121 @@ Security/compliance conditions are rows in this table — never a separate pass.
 This is what the PR body's unticked boxes are drawn from.>
 ```
 
-### `PR_REVIEW.md` (Phase 6a, PR reviewer)
+### `review/pass-<n>/R<k>.md` (Phase 6a, code reviewer)
 
 ```markdown
-# Adversarial PR review — <branch>
+# Code review R<k> — pass <n>
 
-Diff: `git diff origin/<base>...HEAD`   ·   **Blockers: <n>**
+Scope: <the scope as briefed>
+/code-review xhigh: <ran | failed: <reason>>   ·   Coverage: <full | partial: <files not covered, and why>>
 
-## Blockers
-1. **<title>** — `path/to/file.ex:120`
-   <why it is wrong, and a concrete input or sequence that triggers it>
+## Findings
+1. **<title>** — `path:line` — <correctness | tests | scope | performance | design | conventions>
+   Trigger path: <entry point `file:line` → … → the failure, with the input>
+   Why it is wrong: <one or two sentences>
 
-## Should-fix
-1. **<title>** — `path:line` — <why>
+## Security leads
+- `path:line` — <one line, unchased>
 
-## Nits
-- `path:line` — <why>
-
-## Lenses
-| Lens | Result |
-|------|--------|
-| Correctness | <finding numbers, or "nothing found"> |
-| Security | |
-| Scope | |
-| Tests | |
-| Conventions | |
+## Pre-existing
+<n> problems seen in code this change did not introduce (count only).
 ```
 
-A lens that turns up nothing says so; an empty row is an unread lens, not a clean one.
+An empty `Findings` section says `none — <what you tried>`. An empty
+`Security leads` section says `none`.
+
+### `review/pass-<n>/VOTES-R<k>.md` (Phase 6a, code reviewer re-voting)
+
+```markdown
+# Re-votes R<k> — pass <n>
+
+| Finding | Vote | Reason |
+|---------|------|--------|
+| C4 | agree | `lib/todos/list.ex:42` — `hd/1` on the empty list; nothing upstream guards it |
+| C6 | disagree | `lib/todos/save.ex:18` — the changeset already rejects a blank title |
+```
+
+### `CODE_REVIEW.md` (Phase 6a, review judge)
+
+The judge writes it, and the orchestrator updates it after the re-votes (moving
+each `Pending re-vote` row to `Must-fix` or `Advisory`, and finalizing the
+overall line). It holds every pass, so earlier must-fix findings stay visible as
+`fixed`.
+
+```markdown
+# Code review — <branch>
+
+**Overall confidence: <High | Medium | Low | provisional (re-votes pending)>** — <reviewers finished: n/3; coverage: full | partial; must-fix decided 2–1: <IDs | none>>
+Latest pass: <n> — scope: <scope>
+Must-fix: <open> open · <fixed> fixed   ·   Advisory: <n>   ·   Noise: <n>   ·   Dropped (pre-existing): <n>
+
+## Must-fix
+| ID | Finding | Location | Category | Votes | Confidence | Status |
+|----|---------|----------|----------|-------|------------|--------|
+| C1 | <title> | `path:line` | correctness | 3/3 | High | open |
+| C2 | <title> | `path:line` | tests | 2/3 (re-vote) | Medium | fixed (pass 2) |
+
+### C1 — <title>
+Trigger path: <entry point `file:line` → … → failure, as the judge confirmed it>
+Judge: <why it holds>
+
+## Pending re-vote
+| ID | Finding | Location | Category | Raised by | Re-voters | Votes |
+|----|---------|----------|----------|-----------|-----------|-------|
+
+## Advisory
+| ID | Finding | Location | Category | Votes | Confidence | Why advisory |
+|----|---------|----------|----------|-------|------------|--------------|
+
+## Noise
+| ID | Finding | Raised by | Why dismissed |
+|----|---------|-----------|---------------|
+
+## Security leads
+- `path:line` — <lead> (raised by R<k>) → passed to the security review
+
+## Passes
+| Pass | Scope | Reviewers finished | Must-fix found | Re-votes |
+|------|-------|--------------------|----------------|----------|
+| 1 | whole change | 3/3 | 2 | 1 |
+```
+
+An empty section says `none`; an empty table is a section nobody filled, not a
+clean one. `Pending re-vote` is empty once the orchestrator has applied the votes.
+
+### `SECURITY_REVIEW.md` (Phase 6a, security reviewer + review judge)
+
+The security reviewer writes it with every `Verified` cell `pending`; the
+security-verify judge fills those cells, corrects any origin, and recomputes the
+header.
+
+```markdown
+# Security review — <branch>
+
+**Overall confidence: <High | Medium | Low>** — <finished: yes | no; coverage: full | partial; High/Medium verified: <n>/<n>>
+Run <n> — reviewer: <security-reviewer | security-reviewer-sensitive> — scope: the whole change since `<merge-base>`
+Must-fix: <open> open · <fixed> fixed   ·   For the user (pre-existing): <n>   ·   Advisory: <n>
+
+## Findings
+| ID | Finding | Location | Origin | Confidence | Verified | Verdict | Status |
+|----|---------|----------|--------|------------|----------|---------|--------|
+| S1 | <title> | `path:line` | introduced | High | confirmed | must-fix | open |
+| S2 | <title> | `path:line` | pre-existing | Medium | confirmed | for the user | — |
+| S3 | <title> | `path:line` | introduced | Low | — | advisory | — |
+
+### S1 — <title>
+Path: <untrusted input → `file:line` → … → the exploit>
+Depends on: <the configuration or assumption — Medium only>
+Verified: <the judge's reason>
+
+## Panel leads checked
+| Lead | Result |
+|------|--------|
+| `path:line` — <lead> | <finding ID, or "not a vulnerability: <why>"> |
+
+## Coverage
+<what was covered; any file not covered, and why>
+```
 
 ### `lint/<CHECK>.md` (Phase 5, cleanup agent) — one per `gate` entry
 
@@ -730,12 +852,13 @@ Phase 6a from artifacts that are about to become invisible to everyone but itsel
 
 **Who writes it.** The orchestrator, in Phase 6a, whatever route opens the PR —
 directly with `gh pr create`, or through a fitting skill from its available-skills
-list (`references/phase-6-ship.md`, step 3, has the full requirements). Where the
+list (`references/phase-6-ship.md`, step 5, has the full requirements). Where the
 repo has a PR template, fill it and carry these sections inside it; otherwise use
 this shape as-is, attribution line included. Brevity rules may trim the Summary,
-but nothing drops the two sections this pipeline reads back: **Acceptance
-conditions** and **Quality gate**. So: those two sections and the attribution line
-are **strict**; the Summary and Assumptions prose is **flexible**.
+but nothing drops the three sections this pipeline reads back: **Acceptance
+conditions**, **Quality gate** and **Review**. So: those three sections and the
+attribution line are **strict**; the Summary and Assumptions prose is
+**flexible**.
 
 ```markdown
 ## Summary
@@ -749,6 +872,16 @@ are **strict**; the Summary and Assumptions prose is **flexible**.
 ## Quality gate
 <one line per `gate` command: the command and its final status, from lint/*.md>
 
+## Review
+<two lines, from CODE_REVIEW.md and SECURITY_REVIEW.md: each review's overall
+confidence, and its must-fix findings fixed and still open>
+- Code review — confidence <High | Medium | Low>: <n> must-fix fixed, <n> open
+- Security review — confidence <High | Medium | Low>: <n> must-fix fixed, <n> open
+<then one line per must-fix finding still open: what it is, where, and why it is
+being shipped anyway. Advisory and noise findings stay in .auto-dev/. A
+pre-existing security finding appears here only if the user chose `Separate PR`
+(listed as a follow-up) or `Fix it in this PR` (listed as fixed) at the PR gate.>
+
 ## Assumptions
 <the unresolved assumptions from SPEC.md a reviewer should sanity-check>
 
@@ -758,8 +891,8 @@ Generated with [Claude Code](https://claude.com/claude-code)
 **Ship the unticked box rather than a tidy list.** A condition surfaced as unmet
 is a decision the reviewer gets to make; a condition quietly dropped from the
 checklist is the one failure of this pipeline nobody can catch downstream. If a
-Phase 6 correction lands, the checklist and the quality-gate lines are part of what it
-invalidates (`references/correction-loop.md`) — refresh them on the open PR with
+Phase 6 correction lands, the checklist, the quality-gate lines and the review
+summary are part of what it invalidates (`references/correction-loop.md`) — refresh them on the open PR with
 `gh pr edit <pr> --body-file <file>`, since the PR already exists by then and
 re-running PR creation would open a second one.
 
@@ -778,10 +911,13 @@ a stop-and-report condition) uses the same shape and says where it stopped.
 - **Built:** <what changed, 1–3 sentences>
 - **Scope call:** <TRIVIAL | STANDARD | OVERSIZED → n sub-tasks>
 - **Quality gate:** <each check and its final status>
+- **Review:** code <confidence>, <n> must-fix fixed, <n> open · security <confidence>, <n> must-fix fixed, <n> open, <n> pre-existing for the user
 - **Jira:** <transitions performed | none — no ticket>
 - **Iteration budget:** <remaining>/<total>
 
 **Assumptions:** <the ones a reviewer should know about>
 
-**Unresolved / skipped:** <unmet conditions, open blockers, skipped steps — or "none">
+**Unresolved / skipped:** <unmet conditions, open must-fix findings, skipped steps — or "none">
+
+**Follow-ups:** <pre-existing security findings the user sent to a separate PR — or "none">
 ```

@@ -9,18 +9,40 @@ _The PR body_.
 
 ## Contents
 
-- 6a — PR **[gate]** — the commit sequence and its staged check
-  (`scripts/check-staged.py`), push, PR requirements, adversarial review, CI and
-  Jira.
+- 6a — Review, then PR **[gate]** — the code review panel and the security
+  review (procedure in `references/review.md`), the commit sequence and its staged
+  check (`scripts/check-staged.py`), push, PR requirements, CI and Jira.
 - 6b — Staging **[gate]** (skip if no staging branch) — the direct-merge sequence
   and its failure handling.
 - 6c — Main **[gate]** — reading human reviews, the draft flag, `gh pr merge`,
   confirming it merged, and a refused merge.
 
-## 6a — PR **[gate]**
+## 6a — Review, then PR **[gate]**
 
-1. **Gate:** pause for approval to open the PR (`references/gates-and-jira.md`).
-2. **Commit** — stage source paths **explicitly**, confirm nothing under
+Steps 1–2 run on the **uncommitted** working tree. Nothing is committed or pushed
+before the PR gate, so the user approves a change that has already been reviewed
+and fixed, and the PR never collects review-fix commits.
+
+1. **Code review panel** → `<artifact-dir>/CODE_REVIEW.md`: three independent
+   `auto-dev:code-reviewer`s running `/code-review xhigh`, the
+   `auto-dev:review-judge`, and re-votes on lone findings. Must-fix findings go
+   through the correction loop (entry _Phase 6a — review_), then the panel runs
+   again on the fix's files. Procedure and rubric: `references/review.md`.
+2. **Security review** → `<artifact-dir>/SECURITY_REVIEW.md`: one security
+   reviewer running `/security-review` over the whole change, then the judge
+   verifies every High/Medium finding. Introduced and confirmed → must-fix,
+   through the correction loop, then step 1 on the fix's files and this step
+   again. Pre-existing → the PR gate, for the user. Procedure:
+   `references/review.md`.
+
+   Findings stay on disk. They are posted as inline PR comments (step 5) **only**
+   if the user asks during the run, or `.auto-dev.yml` sets
+   `pr_review.inline_comments: true`.
+3. **Gate:** pause for approval to open the PR (`references/gates-and-jira.md`).
+   The summary carries both reviews: each one's overall confidence, the must-fix
+   findings fixed and still open, and any pre-existing security finding for the
+   user to triage.
+4. **Commit** — stage source paths **explicitly**, confirm nothing under
    `.auto-dev/` is staged, then commit with a conventional message. Run exactly
    this sequence; only the paths and the message vary:
    ```bash
@@ -75,14 +97,16 @@ _The PR body_.
      `git status --porcelain --untracked-files=all --no-renames --ignore-submodules=dirty`
      must show no line with a second-column change or `??` outside `.auto-dev/`. Commit only
      once all three hold.
-3. **Push** the branch (`git push -u origin HEAD` — never `--force`), then
+5. **Push** the branch (`git push -u origin HEAD` — never `--force`), then
    **open exactly one PR** for it. These are the pipeline's requirements, whatever
    route opens it:
    - **Body** to the PR-body contract (`references/artifacts.md`, _The PR body_):
      summary, unresolved assumptions, and — as required content — the **acceptance
      checklist** (the spec's conditions, ticked from `SPEC_EVAL.md`, unticked ones
-     left unticked) and the **quality-gate results**. Brevity rules may trim the
-     _prose_; they never drop those two sections.
+     left unticked), the **quality-gate results**, and the **review summary**
+     (each review's overall confidence, the must-fix findings fixed, and any left
+     open — from `CODE_REVIEW.md` and `SECURITY_REVIEW.md`). Brevity rules may
+     trim the _prose_; they never drop those three sections.
    - **Repo PR template:** detect it (`.github/pull_request_template.md`,
      `.github/PULL_REQUEST_TEMPLATE/`, `docs/` or the repo root) and fill it,
      carrying the contract's sections inside it. No template → the contract's shape.
@@ -109,17 +133,25 @@ _The PR body_.
    open a second — and afterwards read the result back
    (`gh pr view <pr> --json url,isDraft,baseRefName,title,body`) and fix any
    requirement it misses, including a `baseRefName` that isn't `<base>`.
-4. **PR reviewer** (adversarial) → `.auto-dev/PR_REVIEW.md` — briefed to _find_
-   problems (correctness, security, scope), not rubber-stamp. This is the only
-   check briefed to find what no checklist names. Findings stay on disk: post them
-   as inline PR comments **only** if the user asks during the run, or
-   `.auto-dev.yml` sets `pr_review.inline_comments: true`.
-5. **CI monitoring** — poll the PR's checks (detected provider) with a bounded
+
+   **Inline review comments**, only if the user asked for them during the run or
+   `.auto-dev.yml` sets `pr_review.inline_comments: true`: once the PR is
+   confirmed, post each finding from `CODE_REVIEW.md` and `SECURITY_REVIEW.md`
+   that is still open or advisory as an inline comment at its `path:line`, with
+   its verdict and confidence. Skip noise and fixed findings, and skip
+   pre-existing security findings unless the user chose `Separate PR` at the gate.
+   GitHub only accepts an inline comment on a line inside the PR's diff, so a
+   finding whose line is outside it (usually a pre-existing one) goes into a
+   single general PR comment instead, one line per finding with its `path:line`.
+   If posting fails, say so in the gate or final report; the findings are still
+   on disk.
+6. **CI monitoring** — poll the PR's checks (detected provider) with a bounded
    timeout (`references/gates-and-jira.md`). On red pre-merge the response is a
-   correction loop, not an immediate halt: `references/correction-loop.md`.
+   correction loop, not an immediate halt: `references/correction-loop.md`. Its
+   fix is reviewed (both steps) before it is committed and re-pushed.
    "No checks reported" is not red, and a CI provider of `none` skips the watch
    (`references/gates-and-jira.md`, _Poll commands_).
-6. **Jira → In Review.**
+7. **Jira → In Review.**
 
 ## 6b — Staging **[gate]** (skip if no staging branch)
 
@@ -154,8 +186,9 @@ the push unasked.
    Phase 6a polled actually ran; if they only started once the draft flag came off,
    monitor them now rather than merging on a stale green.
    Put unresolved review comments and any `CHANGES_REQUESTED` in the gate summary. A
-   human blocker is handled exactly like a `PR_REVIEW.md` blocker — through the
-   correction loop (`references/correction-loop.md`), never merged over.
+   human blocker is handled exactly like a must-fix review finding — through the
+   correction loop (`references/correction-loop.md`), its fix reviewed before it
+   is pushed, never merged over.
 2. **Gate:** pause for approval.
 3. **Merge to main** via `gh pr merge` (respects branch protection and required
    reviews — never a local push to main):
