@@ -113,10 +113,19 @@ def run(cmd, cwd, timeout):
         raise
 
 
-def touch_forward(path):
-    """Give the file an mtime past both now and its current mtime, so
-    mtime-based build caches (bytecode, mix, make) see the write."""
-    t = max(time.time(), os.stat(path).st_mtime) + 1
+def mtime(path):
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
+
+
+def touch_forward(path, before):
+    """Give the file an mtime past both now and `before` (its mtime before the
+    write, taken by the caller: write_atomic resets it to now), so mtime-based
+    build caches (bytecode, mix, make) see every write, even several within
+    one second."""
+    t = max(time.time(), before) + 1
     os.utime(path, (t, t))
 
 
@@ -197,8 +206,9 @@ def restore_all(wt, backup_dir):
                       f"not overwriting it; the original is at {src}", file=sys.stderr)
                 failed.append(rel)
                 continue
+            before = mtime(dst)
             write_atomic(dst, data, mode)
-            touch_forward(dst)
+            touch_forward(dst, before)
             with open(dst, "rb") as f:
                 if sha(f.read()) != digest:
                     failed.append(rel)
@@ -382,12 +392,14 @@ def run_locked(args, wt, mutants_path, backup_dir, out_path):
                                 "mutant_sha256": sha(mutated)}
             save_index(backup_dir, index)
             try:
+                before = mtime(path)
                 write_atomic(path, mutated)
-                touch_forward(path)
+                touch_forward(path, before)
                 code, tail = run(m.get("cmd") or args.cmd, wt, args.timeout)
             finally:
+                before = mtime(path)
                 write_atomic(path, original, mode)
-                touch_forward(path)
+                touch_forward(path, before)
             with open(path, "rb") as f:
                 if sha(f.read()) != index[m["file"]]["sha256"] or \
                         os.stat(path).st_mode & 0o7777 != mode:
@@ -409,7 +421,8 @@ def run_locked(args, wt, mutants_path, backup_dir, out_path):
     counts = {}
     for r in results:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
-        print(f"{r['id']}\t{r['status']}\t{r['file']}:{r['line']}\tcondition {r.get('condition', '-')}")
+        print(f"{r['id']}\t{r['status']}\t{r['file']}:{r['line']}\t"
+              f"condition {r.get('condition', '-')}")
     print("SUMMARY: " + ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
           + f" (results: {out_path})")
     if counts.get("survived"):
