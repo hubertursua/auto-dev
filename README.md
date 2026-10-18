@@ -112,13 +112,8 @@ A **rubric** decides what must be fixed and what is noise:
   performance and design findings are advisory. Problems the change didn't
   introduce are dropped.
 - **Security findings.** One this change introduced, with a traced path, is
-  must-fix. So is one that was already there if it is rated High: it is fixed
-  automatically and reported to you afterwards. A pre-existing Medium one is
-  shown to you at the PR gate to triage: leave it, fix it in this PR, or ignore
-  it.
-- **No approval needed for fixes.** Every must-fix finding is fixed
-  automatically. The PR gate shows you what was fixed; it only asks about
-  pre-existing Medium security findings.
+  must-fix. One that was already there is shown to you at the PR gate to triage:
+  leave it, fix it in this PR, or ignore it.
 - **Confidence.** Every finding carries a confidence level (High, Medium or
   Low), and so does each report as a whole. A report whose confidence is Low
   (say, a reviewer failed) is flagged at the gate as a warning, never shown as a

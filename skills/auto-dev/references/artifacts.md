@@ -426,7 +426,7 @@ S2 Build progress:
 S3 Ship progress:
 - [ ] 6a.1 Code review panel: 3 × code-reviewer (/code-review xhigh) → judge → re-votes → CODE_REVIEW.md (must-fix → correction loop + cleanup re-spawn + re-review on the fix's files)
 - [ ] 6a.2 Security review: security reviewer (/security-review) → judge verifies High/Medium → SECURITY_REVIEW.md (must-fix → correction loop, then 6a.1 on the fix's files, then 6a.2 again)
-- [ ] 6a.3 PR gate (both reviews' confidence + counts; open must-fix; pre-existing High fixed automatically, reported; pre-existing Medium for the user to triage)
+- [ ] 6a.3 PR gate (both reviews' confidence + counts; open must-fix; pre-existing security for the user to triage)
 - [ ] 6a.4 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged
 - [ ] 6a.5 Push (never --force); open PR with acceptance checklist + quality-gate results + review summary; inline review comments only if asked or configured
 - [ ] 6a.6 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh, its fix reviewed before re-push)
@@ -809,7 +809,6 @@ Must-fix: <open> open · <fixed> fixed   ·   For the user (pre-existing): <n>  
 |----|---------|----------|--------|------------|----------|---------|--------|
 | S1 | <title> | `path:line` | introduced | High | confirmed | must-fix | open |
 | S2 | <title> | `path:line` | pre-existing | Medium | confirmed | for the user | — |
-| S4 | <title> | `path:line` | pre-existing | High | confirmed | must-fix | fixed (run 2) |
 | S3 | <title> | `path:line` | introduced | Low | — | advisory | — |
 
 ### S1 — <title>
@@ -878,10 +877,9 @@ confidence, and its must-fix findings fixed and still open>
 - Code review — confidence <High | Medium | Low>: <n> must-fix fixed, <n> open
 - Security review — confidence <High | Medium | Low>: <n> must-fix fixed, <n> open
 <then one line per must-fix finding still open: what it is, where, and why it is
-being shipped anyway, and one line per pre-existing High security finding fixed
-automatically, since it widens the PR beyond its task. Advisory and noise findings
-stay in .auto-dev/. A pre-existing Medium security finding appears here only if
-the user chose that at the PR gate.>
+being shipped anyway. Advisory and noise findings stay in .auto-dev/. A
+pre-existing security finding appears here only if the user chose that at the PR
+gate.>
 
 ## Assumptions
 <the unresolved assumptions from SPEC.md a reviewer should sanity-check>

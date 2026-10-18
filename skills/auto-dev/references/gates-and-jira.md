@@ -108,9 +108,8 @@ wrote itself.
 - **The two reviews (before asking):** from `CODE_REVIEW.md` and
   `SECURITY_REVIEW.md`. For each, give the overall confidence with its reason,
   the must-fix findings fixed, and any still open, named one by one with their
-  confidence. Report the pre-existing High security findings that were fixed
-  automatically, as fixed, with no question attached. Then list the pre-existing
-  Medium security findings for the user, each with its confidence and location. Leave advisory findings and noise out; say
+  confidence. Then list the pre-existing security findings for the user, each
+  with its confidence and location. Leave advisory findings and noise out; say
   only how many there are and where they are. A **Low** overall confidence is a
   warning, never a clean pass: say what failed. For example:
   ```
@@ -118,15 +117,14 @@ wrote itself.
     Must-fix: 0 open · 2 fixed (C1 High, C2 Medium)
     Advisory: 4 (in CODE_REVIEW.md)
   Security review — confidence: High
-    Must-fix: 0 open · 2 fixed (S1 High; S3 High, pre-existing — fixed automatically)
+    Must-fix: 0 open · 1 fixed (S1 High)
     Pre-existing, for you: 1 — S2 (Medium) lib/auth.ex:88, session token not rotated on login
   ```
   A must-fix finding is open here only when the iteration budget ran out
   (`references/correction-loop.md`, _On exhaustion_). Say so, and that `Open PR`
   ships it listed in the PR body's `Review` section.
 - **Options:** `Open PR` · `Hold (don't push yet)` · `Stop`.
-- **Triage, only when there are pre-existing Medium security findings for the
-  user** (a pre-existing High one is already fixed and is never asked about):
+- **Triage, only when there are pre-existing security findings for the user:**
   add one question per finding to the same `AskUserQuestion` call. The call
   holds at most four questions and the gate's own options take one, so ask about
   up to three findings and group any others into one question:
