@@ -649,9 +649,11 @@ intent-to-add, every file the coder _created_ is invisible to `git diff` —
 usually most of the change. Mark the untracked files only, never `git add -N .`:
 that also stages every deletion — real staged changes, not intent-to-add markers,
 made before the PR gate approved any commit. And `git diff origin/<base>...HEAD`
-reports an **empty** diff, because nothing is committed yet. Diff against
-`origin/<base>` — the ref Phase 1 cut the worktree from — not the local branch,
-which may be stale. (Phase 6a's reviews run before the commit too, so they also
+reports an **empty** diff, because nothing is committed yet. Diff against the
+commit Phase 1 cut the worktree from, `$(git merge-base origin/<base> HEAD)` —
+not `origin/<base>` itself, which moves whenever anything fetches (worktrees
+share refs) and would make upstream commits look like this branch reverting
+them, and not the local branch, which may be stale. (Phase 6a's reviews run before the commit too, so they also
 read the working tree; `references/review.md`, _What each review pass covers_.)
 
 ```
@@ -675,11 +677,17 @@ acceptance-check repair / the cleanup pass / a Phase 6 correction>>. On a
 re-check, do NOT read the existing SPEC_EVAL.md: judge from scratch and overwrite
 it.
 
-0. If <artifact-dir>/evidence/mutants.json.backup exists, an earlier pass was
-   killed mid-mutant and the source may still hold its bug. Before anything
-   else run `python3 <skill-dir>/scripts/mutate.py <worktree> --restore --mutants
-   <artifact-dir>/evidence/mutants.json`. Exit 4: STOP and return MUTATION LEFT
-   CHANGES.
+Throughout, CUT means the commit the worktree was cut from:
+`CUT=$(git merge-base origin/<base> HEAD)`. Never diff against origin/<base>
+directly — it moves when anything fetches.
+
+0. If <artifact-dir>/evidence/mutants.json.backup or mutants.json.lock exists,
+   an earlier pass's run is still going or was killed mid-mutant, and the source
+   may hold its bug. Before anything else run `python3
+   <skill-dir>/scripts/mutate.py <worktree> --restore --mutants
+   <artifact-dir>/evidence/mutants.json`. Exit 9: that run is still alive —
+   wait (check every few minutes) until it ends, then run this step again; never
+   start anything while it runs. Exit 4: STOP and return MUTATION LEFT CHANGES.
 1. Integrity, then install. Paths below are absolute.
    Each sealed check <artifact-dir>/acceptance/files/<path>.sealed installs at
    <worktree>/<path>.
@@ -690,12 +698,12 @@ it.
      the audit (below).
    - RE-CHECK: run the audit first, then re-copy every sealed check over its
      installed path (this undoes any edit; the audit has already recorded it).
-   Audit: python3 <skill-dir>/scripts/check-tests.py <worktree> --base origin/<base> --acceptance <artifact-dir>/acceptance
+   Audit: python3 <skill-dir>/scripts/check-tests.py <worktree> --base $CUT --acceptance <artifact-dir>/acceptance
    Exit 0 clean, 1 findings, 3 an acceptance check missing or modified, 2 an
    error (report it; do not guess). Save its output to <artifact-dir>/evidence/integrity.txt.
 2. The change set: run
      git ls-files -z --others --exclude-standard | xargs -0 git add -N --
-     git diff origin/<base>
+     git diff $CUT
    and read it whole (spill it to $TMPDIR if long). Never `git add -N .`.
 3. Run the acceptance checks with the profile's test command scoped to their
    files; save the output to <artifact-dir>/evidence/acceptance.txt. Confirm the
@@ -741,7 +749,7 @@ it.
    The set of mutants is FIXED across passes, so the loop converges instead of
    finding new gaps by resampling:
    - FIRST PASS (or no evidence/mutation-set.json yet): choose the set as below,
-     then save it as evidence/mutation-set.json and save `git diff origin/<base>`
+     then save it as evidence/mutation-set.json and save `git diff $CUT`
      as evidence/mutation-base.diff.
    - RE-CHECK: re-create every entry of evidence/mutation-set.json at its current
      line (find the code again — it may have moved; drop an entry whose code is
@@ -761,7 +769,7 @@ it.
    mutate.log, so a stale exit file is never read as this run's. Write them to
    <artifact-dir>/evidence/mutants.json (a JSON list of {"id", "file", "line",
    "find", "replace", "condition"}), save `git status --porcelain` and
-   `git diff origin/<base> | sha256sum`, then run:
+   `git diff $CUT | sha256sum`, then run:
      python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <artifact-dir>/evidence/mutants.json --max <cap> --timeout <about 3× one COLD scoped run, in seconds: touch one changed source file, then time the scoped command, since every mutant forces a rebuild> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>" > <artifact-dir>/evidence/mutate.log 2>&1; echo $? > <artifact-dir>/evidence/mutate.exit
    The whole run can take longer than 5 minutes (one test run per mutant), so
    start it in the background and check <artifact-dir>/evidence/mutate.exit every
@@ -781,7 +789,8 @@ it.
    it, do not retry; 8 every mutant was invalid (lines moved or `find` text
    wrong) — re-read the lines and re-write them, and if a second run is still
    all invalid, write the mutation check as "not run" with the reason; 4, or
-   any other code (a crash), STOP and return MUTATION LEFT CHANGES. Afterwards both saved values must be unchanged; if they are not (the
+   9 another run is still alive — do as step 0 says; any other code (a crash),
+   STOP and return MUTATION LEFT CHANGES. Afterwards both saved values must be unchanged; if they are not (the
    test command itself may have written files), return MUTATION LEFT CHANGES
    with the paths. Never commit, stage or keep a mutant.
    Judge each survivor: Equivalent (no input can tell the mutant from the code —
@@ -904,7 +913,9 @@ did.
 ```
 You are the SIMPLIFY + QUALITY-GATE phase. Work inside the worktree at <worktree>.
 
-Step 1 — Simplify: run /simplify over <SCOPE — one of the two below>. Apply
+Step 1 — Simplify: run /simplify over <SCOPE — one of the two below>. Never
+simplify, reformat or otherwise edit an acceptance check (<installed paths from
+MANIFEST.md>), whatever the scope says. Apply
 behavior-preserving simplifications only
 (clarity, DRY, remove dead/over-built code). Do NOT change what the code does.
 
@@ -956,8 +967,10 @@ Fill `<SCOPE>` for the spawn:
   code changed on this branch. Nothing is committed
   yet, so the change set is the working tree: run
   `git ls-files -z --others --exclude-standard | xargs -0 git add -N --` and then
-  `git diff origin/<base>` to see it, new files included
-  (`git diff origin/<base>...HEAD` shows nothing at this point)".
+  `git diff $(git merge-base origin/<base> HEAD)` to see it, new files included
+  (`git diff origin/<base>...HEAD` shows nothing at this point). Leave the
+  acceptance checks out of the simplify — <installed paths from MANIFEST.md>:
+  nobody may edit them".
 - **Phase 6a, review stage (re-spawn after a correction to a review finding,
   before the commit):** "ONLY these files, which this correction changed: <the
   paths from the snapshot diff, `references/review.md`>. The rest of the change is already reviewed, so

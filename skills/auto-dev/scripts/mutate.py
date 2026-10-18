@@ -63,6 +63,9 @@ Exit codes:
     7  an I/O error (e.g. disk full, unwritable backup dir); every file was
        restored — fix the cause, do not just retry
     8  every mutant was invalid, so nothing was tested — fix the mutants
+    9  another run on the same mutants file is still alive (a lock file,
+       `<mutants file>.lock`, holds its pid) — wait for it; never restore
+       or start a second run over it
 """
 
 import argparse
@@ -209,6 +212,40 @@ def restore_all(wt, backup_dir):
     return failed
 
 
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def take_lock(lock_path):
+    """Claim the run. Returns None on success, or the live owner's pid.
+    A lock left by a dead process is stale and is taken over."""
+    for _ in range(2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(fd, "w") as f:
+                f.write(str(os.getpid()))
+            return None
+        except FileExistsError:
+            try:
+                with open(lock_path) as f:
+                    owner = int(f.read().strip() or 0)
+            except (OSError, ValueError):
+                owner = 0
+            if owner and owner != os.getpid() and pid_alive(owner):
+                return owner
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
+    return -1
+
+
 def validate(mutants):
     if not isinstance(mutants, list):
         return "not a JSON list"
@@ -252,6 +289,22 @@ def main() -> int:
     backup_dir = mutants_path + ".backup"
     out_path = args.out or mutants_path + ".results.json"
 
+    lock_path = mutants_path + ".lock"
+    owner = take_lock(lock_path)
+    if owner:
+        print(f"ERROR: another mutate.py run (pid {owner}) is using {mutants_path} — "
+              f"wait for it to finish; do not restore or start another", file=sys.stderr)
+        return 9
+    try:
+        return run_locked(args, wt, mutants_path, backup_dir, out_path)
+    finally:
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
+
+
+def run_locked(args, wt, mutants_path, backup_dir, out_path):
     if args.restore:
         failed = restore_all(wt, backup_dir)
         if failed:
