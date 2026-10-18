@@ -70,6 +70,13 @@ git diff --name-only "$before" "$(snap)"     # the files the fix changed
 That list is the scope of the cleanup re-spawn and the next panel pass. If it
 misses a file the coder's return names, add that file too.
 
+**One snapshot per pending correction, not per dispatch.** When a further round
+joins a correction that has not been reviewed yet (the verifier re-check finds
+a condition no longer met, `references/correction-loop.md`, _The Phase 6a
+refresh_, step 2), do **not** take a new snapshot: keep the one taken before the
+first of them, so the diff covers every chained correction's files. Take a new
+snapshot only after a panel pass has reviewed the previous one.
+
 "The whole change" for the security review is everything since the branch left
 its base, committed or not: `git diff $(git merge-base origin/<base> HEAD)`.
 The security review always covers the whole change. A fix in one file can open a
@@ -173,7 +180,8 @@ PR gate
   review pass after it, the fix may be half-applied in the working tree.
   Re-dispatch the same correction to the coder against the tree as it stands,
   **without spending another round** (the Notes show it was spent), then carry on
-  with the cleanup re-spawn and the re-review. Scope them by diffing against the
+  with the cleanup re-spawn, the verifier re-check (the Phase 6a refresh, steps
+  1–2, `references/correction-loop.md`) and the re-review. Scope them by diffing against the
   snapshot the Notes recorded, not a new one, so the files the interrupted
   attempt changed are covered too.
 

@@ -8,7 +8,8 @@ never appear in a commit, a staged diff, or a PR (see the guardrails in
 
 The pipeline keeps **two** descriptions of the work — `SPEC.md` (what) and
 `IMPLEMENTATION.md` (how) — and nothing in between. Every other file here is
-either setup state, a ledger, or a verification report.
+either setup state, a ledger, or verification: the held-out acceptance checks
+and the reports that judge the build.
 
 ## Contents
 
@@ -35,7 +36,8 @@ either setup state, a ledger, or a verification report.
   - **`profile.md` (Phase 1, orchestrator)**
   - **`SPEC.md` (Phase 2, Define agent)**
   - **`IMPLEMENTATION.md` (Phase 3, planner)**
-  - **`SPEC_EVAL.md` (Phase 5, orchestrator)**
+  - **`acceptance/MANIFEST.md` (Phase 3, acceptance tester)**
+  - **`SPEC_EVAL.md` (Phase 5, verifier)**
   - **`review/pass-<n>/R<k>.md` (Phase 6a, code reviewer)**
   - **`review/pass-<n>/VOTES-R<k>.md` (Phase 6a, code reviewer re-voting)**
   - **`CODE_REVIEW.md` (Phase 6a, review judge)**
@@ -59,9 +61,16 @@ them into one document collapses both into a single, weaker check.
 
 **The coder builds from the plan, never the spec.** The plan is _required_ to
 cover every condition (Phase 3), so this is not information-hiding — it is
-**language**-hiding: the coder cannot satisfy the acceptance check by echoing the
-spec's own wording back in a test name. The Phase 5 acceptance check is
-independent because the context that runs it did not write the code.
+**language**-hiding: the coder cannot satisfy the Phase 5 check by echoing the
+spec's own wording back in a test name.
+
+**A third description sits beside them: the held-out acceptance checks**
+(`acceptance/`), executable tests written from `SPEC.md` alone before any code
+exists, each new-behavior check proven to fail on the untouched tree. The coder
+never sees them during the build. The Phase 5 verifier installs and runs them,
+and it never sees the plan or the coder's account of the build: it judges the
+code against the contract, with neither the builder's story nor the
+orchestrator's correction history in its context.
 
 ## Where artifacts live: `<worktree>` vs. `<artifact-dir>`
 
@@ -104,7 +113,11 @@ Single-PR run (the task fits one PR):
   HANDOFF.md              # brief for the NEXT session; overwritten at each session boundary
   SPEC.md                 # the testable contract: context, conditions, assumptions, security (Phase 2)
   IMPLEMENTATION.md       # the technical plan — how (Phase 3)
-  SPEC_EVAL.md            # code vs. spec; drives the Phase 5 correction loop
+  acceptance/             # held-out checks from SPEC.md alone (Phase 3, acceptance tester)
+    MANIFEST.md           # condition → check, kind, base-run result; what is not automatable
+    files/<repo-path>.sealed  # the sealed copy of each check; the verifier installs it at <repo-path>
+  SPEC_EVAL.md            # code vs. spec, with an evidence tier per condition (Phase 5, verifier)
+  evidence/               # what the verifier ran and saw: integrity.txt, acceptance.txt, C<n>.txt, mutants.json(+.results.json)
   lint/                   # one report per quality-gate check (Phase 5)
     COMPILE.md            # one file per check in the profile's `gate` list —
     FORMAT.md             # Elixir's five shown; the filenames come from the
@@ -132,7 +145,7 @@ all, so each sub-task's artifacts and branch never collide:
   SPEC.md                 # the parent spec — informs the decomposition only
   tasks/
     01-<slug>/            # <artifact-dir> for sub-task 01, whose code is in its
-      SPEC.md  IMPLEMENTATION.md  SPEC_EVAL.md  lint/  review/
+      SPEC.md  IMPLEMENTATION.md  acceptance/  SPEC_EVAL.md  evidence/  lint/  review/
       CODE_REVIEW.md  SECURITY_REVIEW.md
     02-<slug>/            # own worktree: same file set as a single-PR run
       ...
@@ -140,9 +153,9 @@ all, so each sub-task's artifacts and branch never collide:
 
 On the **TRIVIAL** fast path the file set is unchanged — `IMPLEMENTATION.md` is
 just written by the orchestrator rather than by the planner, and no Define review
-runs. The verification artifacts (`SPEC_EVAL.md`, `lint/`, `review/`,
-`CODE_REVIEW.md`, `SECURITY_REVIEW.md`) are produced exactly as on the standard
-path.
+runs. The verification artifacts (`acceptance/`, `SPEC_EVAL.md`, `evidence/`,
+`lint/`, `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md`) are produced exactly as
+on the standard path.
 
 ## Never commit `.auto-dev/`
 
@@ -221,7 +234,7 @@ from the phase tables' `Status` column, so a renamed field or column breaks it.
 |---|-------|--------|-------|
 | 1 | Setup | done | |
 | 2 | Define | in-progress | |
-| 3 | Plan | skipped | scope call TRIVIAL — plan written by the orchestrator |
+| 3 | Plan | done | TRIVIAL: plan by orchestrator; planner and plan review skipped; acceptance checks sealed |
 | 4 | Build | pending | |
 | 5 | Verify | pending | |
 | 6 | Ship | pending | staging gate: n/a (no staging branch) |
@@ -248,7 +261,7 @@ below it — the same six-row shape a single-PR run uses.
 | # | Phase | Status | Notes |
 |---|-------|--------|-------|
 | 2 | Define | done | scope call TRIVIAL |
-| 3 | Plan | skipped | plan written by the orchestrator |
+| 3 | Plan | done | TRIVIAL: plan by orchestrator; planner and plan review skipped; acceptance checks sealed |
 | 4 | Build | in-progress | |
 | 5 | Verify | pending | |
 | 6 | Ship | pending | staging gate: n/a (no staging branch) |
@@ -274,7 +287,8 @@ created when the sub-task starts, not when the decomposition is approved
 (`references/subagent-prompts.md`).
 
 `status` values: `pending` → `in-progress` → `done`. Also valid: `skipped` (the
-phase was deliberately bypassed — e.g. Phase 3 on the TRIVIAL path), `n/a` (the
+phase was deliberately bypassed; never Phase 3 on the TRIVIAL path, which still
+runs the acceptance tester), `n/a` (the
 step cannot apply — e.g. the staging gate with no staging branch, recorded in the
 Phase 6 row's Notes since Phase 6 is one row), and `blocked`
 (with a note). Never leave a phase that will never run sitting at `pending`.
@@ -410,16 +424,18 @@ S1 Plan progress (on a sub-task, cut and prepare its worktree as 1.5 does, then 
 - [ ] 2.2 Define review (STANDARD only)
 - [ ] 3.1 Planner → IMPLEMENTATION.md (TRIVIAL: write it yourself)
 - [ ] 3.2 Plan review (not on TRIVIAL)
-- [ ] 3.3 Post-plan gate (only if enabled for this run)
+- [ ] 3.3 Acceptance tester → acceptance/ (every scope; checks sealed, worktree unchanged)
+- [ ] 3.4 Post-plan gate (only if enabled for this run)
 - [ ] Boundary: update WORK_LOG.md → overwrite HANDOFF.md → tell the user → STOP
 ```
 
 ```
 S2 Build progress:
-- [ ] 4   Coder builds from IMPLEMENTATION.md only; note plan deviations
-- [ ] 5.1 Acceptance vs. SPEC.md → SPEC_EVAL.md (unmet → correction loop, re-check)
+- [ ] 4   Coder builds from IMPLEMENTATION.md only; settle any BLOCKED step; note plan deviations
+- [ ] 5.1 Verifier (first pass) → SPEC_EVAL.md (unmet / partial / unjustified integrity → correction + verifier re-check)
 - [ ] 5.2 Simplify (cleanup agent, after the acceptance loop settles — not per correction; no budget)
-- [ ] 5.3 Quality gate to green → lint/*.md; re-resolve SPEC_EVAL.md evidence (unmet → correction + cleanup re-spawn)
+- [ ] 5.3 Quality gate to green → lint/*.md (never by weakening a test)
+- [ ] 5.4 Verifier re-check over the final code (unmet → correction + cleanup re-spawn + re-check)
 - [ ] Boundary: update WORK_LOG.md → overwrite HANDOFF.md → tell the user → STOP
 ```
 
@@ -453,7 +469,7 @@ shape.
 - **`profile.md`** — the resolved project profile from Phase 1: detected stack and
   which `profiles/*.md` was loaded, the exact `setup`/`gate` commands (post-override)
   and any check dropped for a missing tool, base/staging/prefix, CI provider and
-  timeout, the iteration budget, the resolved security-directive sources, and Jira
+  timeout, the iteration budget, the mutation cap, the resolved security-directive sources, and Jira
   availability + state mapping. Every later phase reads this instead of re-detecting.
 - **`HANDOFF.md`** — the brief the *next* session reads. It, `WORK_LOG.md` and
   `profile.md` are what a session opens on entry; everything else in here is read
@@ -463,7 +479,7 @@ shape.
   open assumptions, and the one command to re-enter. It is a pointer sheet, not a
   summary: never restate `SPEC.md` or `IMPLEMENTATION.md` in it. A session that
   needs their content either opens them where its own phase requires it (the
-  Phase 5 acceptance check, the Phase 6a checklist) or spawns a worker that reads
+  Phase 5 correction briefs, the Phase 6a checklist) or spawns a worker that reads
   them — copying them into the handoff just pays for them twice.
 - **`SPEC.md`** — *the testable contract*, and the only statement of what the task
   asks. Four sections: **Context** (the ticket restated, links, and the research
@@ -473,20 +489,46 @@ shape.
   ambiguity); and **Security/Compliance criteria** when the task touches a
   sensitive path (controls pulled from the security-directive sources `profile.md`
   names). Written in Phase 2; **withheld from the coder**; the basis of the
-  Phase 5 acceptance check and of the PR body's checklist.
+  acceptance checks, the Phase 5 verifier's verdicts and the PR body's checklist.
 - **`IMPLEMENTATION.md`** — the technical *how*, self-contained: files to
   create/modify, design, data flow, the ordered build sequence (which is the
   coder's worklist), test plan (which test proves which behavior, and where),
   migrations/config. Buildable without the spec; every spec condition maps to a
   build step and a test. Written by the planner in Phase 3 — or, on the TRIVIAL
   fast path, by the orchestrator as a short files-plus-test note.
-- **`SPEC_EVAL.md`** — the acceptance check against `SPEC.md` (which the coder
-  never saw): per-condition **met / partial / unmet**, with evidence
-  (file\:line, test) — including the security/compliance conditions. Drives the
-  Phase 5 correction loop back into the coder. Nothing is committed at this point, so the
-  evidence comes from the working tree rather than a commit range —
-  `references/subagent-prompts.md`, _Acceptance check_, gives the exact invocation
-  and why each half of it matters.
+- **`acceptance/`** — the held-out checks (Phase 3, acceptance tester).
+  `MANIFEST.md` maps each `SPEC.md` condition to its checks, each check's kind
+  (`fail-to-pass` or `pass-to-pass`) and its run on the untouched tree, and lists
+  the conditions no check can drive, with an observable proxy where one exists.
+  `files/` holds the **sealed** copy of each check at its repo-relative path plus
+  `.sealed`, a suffix no test runner collects; the worktree holds no copy until
+  the verifier installs them in Phase 5. The coder is never given the path, but
+  `.auto-dev/` is in its worktree on a single-PR run: like `SPEC.md`, the checks
+  are withheld by the brief, not by the filesystem. Once
+  installed they ship in the PR like any other test, and
+  `scripts/check-tests.py` fails any run where an installed copy differs from its
+  sealed one.
+- **`SPEC_EVAL.md`** — the verifier's judgment of the build against `SPEC.md`
+  (which the coder never saw): per condition, security/compliance criteria
+  included, a verdict (**met / partial / unmet / manual**), an **evidence tier**
+  (**Strong** — the held-out checks passed; **Adequate** — something the verifier
+  ran itself matched its stated expectation; **Weak** — a citation nobody ran,
+  which caps the verdict at partial), and the evidence; plus the test-integrity
+  audit, each finding judged justified or not, and the mutation check, each
+  surviving mutant judged equivalent or a test gap (a test gap on a condition's
+  lines caps it at partial). Drives the Phase 5 correction loop
+  back into the coder. Rewritten in full by every verifier re-spawn. Nothing is
+  committed at this point, so the evidence comes from the working tree rather than
+  a commit range — `references/subagent-prompts.md`, _Verifier_, gives the exact
+  invocation and why each half of it matters.
+- **`evidence/`** — what the verifier ran and saw: the audit output
+  (`integrity.txt`), the acceptance run (`acceptance.txt`), and per condition its
+  stated expectation, the command and the result (`C<n>.txt`), and the mutants it
+  ran with their results (`mutants.json`, `mutants.json.results.json`), plus the
+  fixed mutant set and the diff it was chosen from (`mutation-set.json`,
+  `mutation-base.diff`), kept across passes so re-checks re-run the same
+  mutants and only add new ones for code written since.
+  `SPEC_EVAL.md` cites these; the correction brief quotes them.
 - **`lint/<CHECK>.md`** — one report per quality-gate command, named per the
   loaded profile — **one per `gate` entry, all of them** (Elixir: `COMPILE.md`,
   `FORMAT.md`, `CREDO.md`, `DIALYZER.md`, `TEST.md`): the command run, final
@@ -513,8 +555,8 @@ shape.
   `pr_review.inline_comments: true` (`references/profiles.md`).
 
 **Not artifacts.** Three things deliberately live outside this directory: the
-coder's **plan-deviation report**, which is part of its structured return and is
-read as context for the acceptance check rather than filed; the reviewers'
+coder's **report** (deviations, test changes, `BLOCKED` steps), which is part of
+its structured return, read by the orchestrator and never by the verifier; the reviewers'
 findings (Define review, plan review), which are returned to the orchestrator and
 applied as edits to `SPEC.md` / `IMPLEMENTATION.md` rather than written to disk;
 and the **PR body**, contracted below.
@@ -542,9 +584,10 @@ A worker has no path to this file and cannot follow a reference to it.
 | `WORK_LOG.md` | strict | the resume procedure and `scripts/resume-point.py` (header lines, phase-table `Status`); every session's entry |
 | `HANDOFF.md` | strict | the next session's entry |
 | `profile.md` | strict | every phase and worker (`setup`/`gate` commands run verbatim) |
-| `SPEC.md` | strict | Define reviewer, Phase 5 acceptance check, code reviewers, security-reviewer type choice (`Security/Compliance criteria`), PR body |
-| `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, code reviewers |
-| `SPEC_EVAL.md` | strict | PR body checklist, PR gate summary, the evidence re-resolve |
+| `SPEC.md` | strict | Define reviewer, acceptance tester, verifier, code reviewers, security-reviewer type choice (`Security/Compliance criteria`), PR body |
+| `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, acceptance tester (entry points only), code reviewers |
+| `acceptance/MANIFEST.md` | strict | verifier (tiers, install), post-plan gate summary, correction briefs (the paths not to touch) |
+| `SPEC_EVAL.md` | strict | the orchestrator's correction briefs, the next verifier re-check, PR body checklist, PR gate summary |
 | `review/pass-<n>/R<k>.md` | strict | the review judge |
 | `review/pass-<n>/VOTES-R<k>.md` | strict | the orchestrator, applying the votes |
 | `CODE_REVIEW.md` | strict | open must-fix → correction loop; PR gate and main gate summaries; PR body `Review` |
@@ -601,6 +644,7 @@ session does not need it.
 - **Repo:** <repo-name>   **CI:** <github-actions|circleci|gitlab|none>   **CI timeout:** <n> min
 - **Base:** <branch>   **Staging:** <branch | n/a — no staging branch>   **Prefix:** <prefix>
 - **Iteration budget:** <n> per task
+- **Mutation cap:** <n> mutants per verifier pass (default 20; TRIVIAL uses at most 8) | off (`mutation.max: 0`)
 - **Worktree files seeded:** <paths copied from the main checkout | none>
 - **`.auto-dev.yml`:** <validated | not machine-validated: <reason> — checked by hand | none>
 - **Post-plan gate:** <on | off> — <which condition enabled it>
@@ -637,17 +681,28 @@ constraints. Stakeholder-readable; no technical design.>
 
 ## Conditions
 1. <observable, testable condition in plain language — no file names, no signatures>
+   - Example: Given <starting state>, when <action>, then <observable result>.
+   - Edge: <negative, boundary or error case> → <observable result>
+     (or `none — <why the condition has no edge>`)
+   - Verify by: <unit | integration | end-to-end | manual — <why no agent can observe it>>
 2. <…>
 
-<where a condition is hard to observe, say so and give the closest observable proxy>
+<where a condition is hard to observe, say so in Verify by and give the closest
+observable proxy>
 
 ## Assumptions
 - <each ambiguity resolved, and how it was resolved>
 
 ## Security/Compliance criteria
-<the specific controls, pulled from the sources profile.md names. Omit this section
-entirely when the task touches no sensitive path.>
+S1. <the specific control, pulled from the sources profile.md names>
+   - Example: Given <state>, when <the abusive or unauthorized action>, then <it is refused, and how>.
+   - Verify by: <unit | integration | end-to-end | manual — <why>>
+<Omit this section entirely when the task touches no sensitive path.>
 ```
+
+Every condition and criterion carries its Example, Verify by and (conditions)
+Edge lines: they are what the acceptance tester turns into checks, so a condition
+without them leaves the tester to guess what the spec meant.
 
 ### `IMPLEMENTATION.md` (Phase 3, planner)
 
@@ -685,30 +740,91 @@ note keeps `Files` and `Test plan` and may drop the rest.
 Cite spec conditions **by number only**, never by their wording: the coder reads
 this file, and the spec's language stays out of it (*Why two documents*).
 
-### `SPEC_EVAL.md` (Phase 5, orchestrator)
+### `acceptance/MANIFEST.md` (Phase 3, acceptance tester)
+
+```markdown
+# Acceptance checks — <task>
+
+Written from SPEC.md alone, run on the untouched tree at `origin/<base>` (<short sha>).
+Sealed copies are under `files/`; the verifier installs them after the build.
+
+| # | Condition | Check (path :: test name) | Kind | Base run |
+|---|-----------|---------------------------|------|----------|
+| 1 | <condition, in the spec's own words> | `test/app/acceptance/todo_delete_acceptance_test.exs` :: "owner deleting a todo removes it from the list" | fail-to-pass | failed: `UndefinedFunctionError Todos.delete/2` |
+| 2 | <condition> | <path :: name> | pass-to-pass | passed |
+| S1 | <security/compliance criterion> | <path :: name> | fail-to-pass | failed: expected 404, got 200 |
+
+A fail-to-pass check whose Base run is not a right-reason failure does not belong
+here. A repaired check reads `not re-run (repair)`.
+
+## Not automatable
+| # | Condition | Why no check can drive it | Proxy a verifier can run |
+|---|-----------|---------------------------|--------------------------|
+| <n> | <condition> | <reason> | <command, request or log line — or "none"> |
+
+<"None." when every condition has a check>
+
+## Assumptions
+- <each choice made about entry points or expected values, and why>
+```
+
+### `SPEC_EVAL.md` (Phase 5, verifier)
 
 ```markdown
 # Acceptance evaluation — <task>
 
-Read from the working tree against `origin/<base>`; nothing is committed yet (a Phase 6a rewrite reads the correction's uncommitted tree).
+Read from the working tree against `origin/<base>`; nothing is committed yet.
+Pass: <first | re-check after <what changed>> · acceptance run: <n passed / n total> (`evidence/acceptance.txt`)
 
-| # | Condition | Verdict | Evidence |
-|---|-----------|---------|----------|
-| 1 | <condition, in the spec's own words> | met | `lib/foo.ex:42`, `test/foo_test.exs:18` |
-| 2 | <condition> | partial | <what holds; what does not> |
-| 3 | <condition> | unmet | <what is missing> |
+| # | Condition | Verdict | Tier | Evidence |
+|---|-----------|---------|------|----------|
+| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todo_delete_acceptance_test.exs` :: "owner deleting…" passed (`evidence/C1.txt`) |
+| 2 | <condition> | met | Adequate | expected `GET /todos` without the deleted id; saw it (`evidence/C2.txt`) |
+| 3 | <condition> | partial | Weak | <what holds, what was not run, and why> |
+| 4 | <condition> | unmet | Strong | acceptance check failed: <the failing assertion, one line> |
+| 5 | <condition> | manual | — | a human must check: <exactly what, and how> |
+| S1 | <security/compliance criterion> | met | Strong | <check passed> |
 
-Security/compliance conditions are rows in this table — never a separate pass.
+Verdicts: `met` needs every acceptance check for the condition passing AND Strong
+or Adequate evidence AND no surviving mutant judged a test gap on its lines; Weak evidence caps a condition at `partial`; a failing
+acceptance check is `unmet`; `manual` only for a condition MANIFEST.md lists as not
+automatable that could not be observed here either. Security/compliance criteria
+are rows in this table — never a separate pass.
 
-## Corrections dispatched
-| Round | Condition | Brief | Outcome |
-|-------|-----------|-------|---------|
-| 1 | 3 | <one line> | met |
+## Test integrity
+`check-tests.py` exit <0 | 1 | 3> (`evidence/integrity.txt`)
+
+| Finding | Location | Judgment | Reason |
+|---------|----------|----------|--------|
+| REMOVED_ASSERTION | `test/app/todos_test.exs:-42` | Justified | condition 3 changes the response to 404 |
+| ADDED_SKIP | `test/app/list_test.exs:10` | Unjustified | no condition removes this behavior |
+
+<"None." when the audit is clean and the diff shows no gaming>
+
+## Mutation
+<n> mutants (cap <n> | off): <n> killed · <n> timeout (counted caught) · <n> survived · <n> invalid (`evidence/mutants.json.results.json`)
+
+| Mutant | Location | Change | Condition | Judgment |
+|--------|----------|--------|-----------|----------|
+| M4 | `lib/app/todos.ex:58` | `n <= 10` → `n < 10` | 2 | Test gap — no test accepts exactly 10; condition 2 partial |
+| M7 | `lib/app/todos.ex:71` | `Enum.sort/1` → `Enum.sort(&>=/2)` | — | Equivalent — the list has at most one element here |
+
+<list survivors only; "None survived." when none did>
+
+## Defective acceptance checks
+<each check that asserts something SPEC.md does not say, and why — or "None.">
 
 ## Unresolved
-<every condition still partial or unmet when the loop settled, and what was tried.
-This is what the PR body's unticked boxes are drawn from.>
+<every condition still partial or unmet, and every Unjustified finding, as this
+pass found them, then every `manual` condition. This is what the PR body's
+unticked boxes are drawn from.>
 ```
+
+The verifier rewrites the whole file on every pass, from scratch and without
+reading the previous version: its verdicts must not lean on the last pass's.
+The correction history — what each round was dispatched for and what it
+bought — lives in `WORK_LOG.md`, which the verifier never reads; the final
+report and the stop-and-report's "what was tried" come from there.
 
 ### `review/pass-<n>/R<k>.md` (Phase 6a, code reviewer)
 
@@ -865,9 +981,13 @@ attribution line are **strict**; the Summary and Assumptions prose is
 <what changed and why, 2–4 sentences — drawn from SPEC.md's Context>
 
 ## Acceptance conditions
-<one checkbox per SPEC.md condition; ticked only where SPEC_EVAL.md says `met`>
-- [x] <condition, in the spec's own words>
+<one checkbox per SPEC.md condition; ticked only where SPEC_EVAL.md says `met`,
+each with its evidence tier>
+- [x] <condition, in the spec's own words> — <Strong | Adequate>: <the check or what was run>
 - [ ] <partial or unmet — say which it is, and why it is being shipped anyway>
+- [ ] Needs a human check: <condition> — <exactly what to check, from SPEC_EVAL.md>
+Mutation: <n> killed of <n> (<n> equivalent survivors) | off
+<then one line per Unjustified test-integrity finding still open, if any>
 
 ## Quality gate
 <one line per `gate` command: the command and its final status, from lint/*.md>

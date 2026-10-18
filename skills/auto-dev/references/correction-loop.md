@@ -1,7 +1,8 @@
 # The correction loop and the iteration budget
 
-Three things send work backwards: an unmet spec condition, a must-fix review
-finding, and a red CI check. A review finding comes from the code review panel
+Three things send work backwards: an unmet spec condition (or an unjustified
+test-integrity finding, which the verifier reports alongside it), a must-fix
+review finding, and a red CI check. A review finding comes from the code review panel
 (`CODE_REVIEW.md`), the security review (`SECURITY_REVIEW.md`), a pre-existing
 security finding the user chose to fix at the PR gate, or a human reviewer's
 blocker on the PR. They are **one loop entered at three points**, and this file
@@ -21,6 +22,11 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 1. **Re-dispatch the coder** with a targeted correction brief (template in
    `references/subagent-prompts.md`, under Phase 5). Describe the required
    behavior concretely; never quote the spec verbatim. One correction, one brief.
+   The one exception: a finding about an **acceptance check itself** — from the
+   verifier, a reviewer or a human — is never the coder's to fix. If you agree
+   against `SPEC.md` that the check is wrong, the acceptance tester repairs it
+   instead (`references/subagent-prompts.md`, _Acceptance tester_, repair mode);
+   it spends the same round.
 2. **Spend a round** from the shared budget (below) *before* dispatching. At zero,
    do not dispatch — stop and report.
 3. **Re-spawn the cleanup agent on the changed code** (`auto-dev:cleanup`,
@@ -32,16 +38,18 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
    Phase 5 the acceptance loop's corrections wait for the single cleanup pass
    that follows once the loop settles (Phase 5 steps 2–3), so do not spawn it per
    correction there. A Phase 5 correction made **after** that pass — a condition
-   the evidence re-resolve finds no longer met (`references/subagent-prompts.md`,
-   _Re-resolve the acceptance evidence_) — does re-spawn it, with its Phase 5
-   scope, before Phase 6; then re-resolve again. **A cleanup re-spawn never spends the budget.** Do not
+   the verifier's re-check finds no longer met (`references/subagent-prompts.md`,
+   _Re-verify after cleanup_) — does re-spawn it, with its Phase 5
+   scope, before Phase 6; then re-verify again. **A cleanup re-spawn never spends the budget.** Do not
    re-run `gate` commands yourself as the correction's check; the cleanup agent
    does it. If it returns a check still at fail, the quality gate is red: stop and
    report, never ship red.
 4. **Refresh whatever the correction invalidated — of what already exists.** See
    the table.
-5. **Re-check the thing that failed:** re-evaluate the condition, re-review the
-   change (`references/review.md`), re-watch the check.
+5. **Re-check the thing that failed:** re-spawn the verifier in re-check mode
+   (`references/subagent-prompts.md`, _Verifier_), re-review the change
+   (`references/review.md`), re-watch the check. A verifier re-spawn, like a
+   review pass, never spends the budget.
 6. **Repeat or exit.** If the re-check still fails, that is another correction:
    back to step 1. Exit only when the re-check passes; then resume the pipeline
    where the loop was entered.
@@ -65,24 +73,23 @@ Earlier in the pipeline there is less of it to rewrite.
 
 | Entered at | Written by then | Refresh | `/simplify` |
 |---|---|---|---|
-| **Phase 5 — acceptance** (unmet condition) | nothing; the cleanup agent has not run | `SPEC_EVAL.md` only | not yet run — the single cleanup pass after this loop settles simplifies corrective code with everything else |
-| **Phase 5 — after the quality gate** (re-resolving the evidence finds a condition no longer met) | `SPEC_EVAL.md`, `lint/` | `SPEC_EVAL.md`, then `lint/` (rewritten by the re-spawned cleanup agent), then re-resolve the evidence again | **yes, Phase 5 scope** (the branch diff) — no human has read it yet |
-| **Phase 6a — review** (a must-fix finding from the code review panel or the security review, or a pre-existing finding the user chose to fix at the PR gate; **before the commit**) | `SPEC_EVAL.md`, `lint/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | `lint/` (rewritten by the re-spawned cleanup agent), then steps 1–2 of _The Phase 6a refresh_ below (`SPEC_EVAL.md`, every row), then **review again**: the code review panel on the files the fix changed, then the security review on the whole change (`references/review.md`). Nothing is committed, pushed or published yet, so the refresh stops there | **yes, scoped to the files the correction changed** — see below |
-| **Phase 6a — CI red** (pre-merge), or **Phase 6c — a human reviewer's blocker** | `SPEC_EVAL.md`, `lint/`, the review reports, the commit, the push, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: `SPEC_EVAL.md`, a review of the correction, commit and re-push (CI re-runs — re-watch it), then the PR body | **yes, scoped to the correction's own diff** — see below |
+| **Phase 5 — acceptance** (unmet or partial condition, unjustified integrity finding) | `SPEC_EVAL.md`, `evidence/`; the cleanup agent has not run | `SPEC_EVAL.md` and `evidence/` (the verifier's re-check rewrites both) | not yet run — the single cleanup pass after this loop settles simplifies corrective code with everything else |
+| **Phase 5 — after the quality gate** (the verifier's re-check finds a condition no longer met) | `SPEC_EVAL.md`, `evidence/`, `lint/` | `lint/` (rewritten by the re-spawned cleanup agent), then the verifier's re-check again | **yes, Phase 5 scope** (the branch diff) — no human has read it yet |
+| **Phase 6a — review** (a must-fix finding from the code review panel or the security review, or a pre-existing finding the user chose to fix at the PR gate; **before the commit**) | `SPEC_EVAL.md`, `lint/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | `lint/` (rewritten by the re-spawned cleanup agent), then steps 1–2 of _The Phase 6a refresh_ below (the verifier's re-check of every row), then **review again**: the code review panel on the files the fix changed, then the security review on the whole change (`references/review.md`). Nothing is committed, pushed or published yet, so the refresh stops there | **yes, scoped to the files the correction changed** — see below |
+| **Phase 6a — CI red** (pre-merge), or **Phase 6c — a human reviewer's blocker** | `SPEC_EVAL.md`, `lint/`, the review reports, the commit, the push, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: the verifier's re-check, a review of the correction, commit and re-push (CI re-runs — re-watch it), then the PR body | **yes, scoped to the correction's own diff** — see below |
 
 **The Phase 6a refresh.** Every correction in Phase 6 runs it once the
 re-spawned cleanup agent returns every `gate` check green, in this order. A
 review-stage correction (before the commit) runs steps 1–2 only, then goes back
 to the reviews, which are its re-check:
 
-1. **Re-resolve every row of `SPEC_EVAL.md` and rewrite the file.** Not only the
-   rows citing files the correction touched: a `/simplify` preserves behavior, but
-   a correction changes it on purpose, and a `met` condition can depend on a file
-   its evidence never names. Re-check each `met` row against the code it cites, and
-   re-evaluate each `partial` or `unmet` row too — its Evidence cell names what is
-   missing rather than a file, and the correction may have supplied it. Write the
-   new verdicts and `file:line` evidence back to `SPEC_EVAL.md`.
-2. **A condition no longer met joins the pending correction**, before anything is
+1. **Re-spawn the verifier in re-check mode** ("after a Phase 6 correction"). It
+   re-runs the acceptance checks and the test audit and rewrites every row of
+   `SPEC_EVAL.md`: a correction changes behavior on purpose, and a `met` condition
+   can depend on a file its evidence never names. The `partial` and `unmet` rows
+   are re-judged too — the correction may have supplied what they lacked.
+2. **A condition no longer met, or a new unjustified integrity finding, joins the
+   pending correction**, before anything is
    committed: back to step 1 of the loop, as another round of the same entry point
    (logged against the same consumer, #4 or #5 below). The cleanup re-spawn's scope
    (the files the corrections changed) then covers both corrections, and this
@@ -123,9 +130,12 @@ quality gate after it still runs in full.
 - **Post-merge CI failures (Phases 6b–6c).** No human gate is left to hold, and
   re-pushing the branch cannot fix merged code. Report and stop; recovery is the
   user's call (`references/gates-and-jira.md`).
-- **Plan deviations reported by the coder (Phase 4).** Information for the
-  acceptance check, not defects. Do not spend budget reconciling code with a plan
-  it improved on.
+- **Plan deviations reported by the coder (Phase 4).** Information, not defects;
+  the verifier judges the code against the spec and never sees them. Do not spend
+  budget reconciling code with a plan it improved on. (A `BLOCKED` step is
+  different: it is a correction, consumer #3.)
+- **A `manual` verdict.** Nothing the coder writes makes it observable here; it
+  goes to the PR gate as a check for a human.
 - **The two review phases (Define, plan).** You apply their findings by editing
   the artifact; no agent is re-dispatched. They still spend a round.
 - **A plan revision the user asks for at the post-plan gate.** You edit
@@ -149,13 +159,14 @@ Five things spend it, one round each:
 | # | Consumer | Phase |
 |---|---|---|
 | 1 | Define review — re-review after fixes | 2 |
-| 2 | Plan review — re-review after fixes | 3 |
-| 3 | Acceptance corrections to the coder | 5 |
+| 2 | Plan review — re-review after fixes, and an acceptance-tester re-spawn to fill a coverage gap (a re-spawn after a post-plan-gate revision spends none, like the revision) | 3 |
+| 3 | Build and acceptance corrections to the coder — an unmet or partial condition (a surviving mutant's test gap included), an unjustified integrity finding, an install conflict, a `BLOCKED` step (with its plan revision) — and an acceptance-check repair in Phase 4–5 | 4–5 |
 | 4 | Review-finding corrections — code review panel, security review, a pre-existing security finding the user chose to fix, or a human reviewer's blocker | 6a, 6c |
 | 5 | CI-red corrections, pre-merge | 6a |
 
-**Review passes never spend it** — not the first code review or security review,
-and not the re-review after a correction. A review is a check, like the quality
+**Review and verifier passes never spend it** — not the first code review,
+security review or verifier pass, and not the re-review or re-check after a
+correction. A review is a check, like the quality
 gate; the correction that triggered the re-review already spent its round, and
 that is what bounds the loop. One correction brief covers every open must-fix
 finding from one review pass, so a pass with three must-fix findings spends one

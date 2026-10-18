@@ -12,7 +12,7 @@
 |---|-------|--------|-------|
 | 1 | Setup | done | CI provider: none (no CI config found) |
 | 2 | Define | done | scope call TRIVIAL |
-| 3 | Plan | skipped | scope call TRIVIAL — plan written by the orchestrator |
+| 3 | Plan | done | TRIVIAL: plan by orchestrator; planner and plan review skipped; acceptance checks sealed |
 | 4 | Build | done | |
 | 5 | Verify | done | all conditions met; quality gate green |
 | 6 | Ship | pending | staging gate: n/a (no staging branch) |

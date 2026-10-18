@@ -74,7 +74,12 @@ Enable for the run when **any** of these holds, and record which one in
   the change touches auth, payments, access control, or a data migration.
 
 - **Summary:** task, `SPEC.md` + `IMPLEMENTATION.md` paths, key assumptions, main
-  risks, files the plan will touch.
+  risks, files the plan will touch, and the acceptance coverage from
+  `acceptance/MANIFEST.md` (checks per condition; each not-automatable condition
+  by name). A revision that changes an entry point the checks call re-runs the
+  acceptance tester for those checks before the gate re-fires (nothing is
+  installed yet, so with their base run); like the revision, it spends no
+  round.
 - **Options:** `Approve & build` · `Revise plan (tell me what to change)` · `Stop`.
 
 Once enabled it fires on the TRIVIAL path too, on the short plan the orchestrator
@@ -87,8 +92,8 @@ wrote itself.
   and a submodule with only uncommitted content inside it is left out, since
   nothing can stage that; this is the list the commit stages), any submodule the
   check below names as not committed, quality-gate results (each check pass),
-  acceptance status from `SPEC_EVAL.md`, **the two reviews** (below), and any
-  unresolved assumptions. Read
+  acceptance status from `SPEC_EVAL.md` (**the acceptance block**, below),
+  **the two reviews** (below), and any unresolved assumptions. Read
   the quality-gate results from `lint/*.md`: there must be one report per `gate`
   command in `profile.md`, each `pass`. A missing or failing report means Phase 5
   never reached green. Do not ask this gate on it; that is Phase 5's
@@ -105,6 +110,22 @@ wrote itself.
   **stop and report** — the pipeline never commits inside a submodule. If it is
   only generated output (from `setup` or a build), name the submodule in the
   summary as not committed.
+- **The acceptance block (before asking):** from `SPEC_EVAL.md`. Give the count
+  of conditions per verdict and per evidence tier, then name one by one: every
+  condition not `met`, every `met` condition resting on Adequate evidence (what
+  was run instead of a held-out check), every `manual` condition with exactly
+  what the human must check, and every test-integrity finding judged Justified,
+  with its reason, so the user can disagree. An Unjustified finding still open
+  means Phase 5 did not settle: say so, never present it as a pass. For example:
+  Then the mutation line: killed of total, and each surviving mutant judged
+  equivalent, with its reason, so the user can disagree.
+  ```
+  Acceptance — 5 met (4 Strong, 1 Adequate) · 0 partial · 0 unmet · 1 manual
+    Mutation: 14 of 15 killed · 1 equivalent (M7: sort of a one-element list)
+    C2 Adequate: no held-out check (repaired); verifier observed GET /todos
+    C6 manual: open /settings on a phone and check the toggle is visible
+    Test changes: 1 justified — todos_test.exs:-42 assertion changed (C3 makes it 404)
+  ```
 - **The two reviews (before asking):** from `CODE_REVIEW.md` and
   `SECURITY_REVIEW.md`. For each, give the overall confidence with its reason,
   the must-fix findings fixed, and any still open, named one by one with their
@@ -172,12 +193,14 @@ signs off on the change itself.
 Never start a multi-PR run unapproved.
 - **Summary:** why the ticket exceeds one PR, the proposed ordered sub-tasks with
   their dependencies, that each becomes its own branch and PR, and **what it will
-  cost**: roughly 8–9 or 11–12 worker spawns per sub-task depending on how each is
-  likely to size up (the Phase 6a reviews alone are at least 5: three code
+  cost**: roughly 11–12 or 14–15 worker spawns per sub-task depending on how each
+  is likely to size up (the Phase 6a reviews alone are at least 5: three code
   reviewers, the judge and the security reviewer, plus re-votes, a verification,
-  and a re-review after every fix), plus the approvals it will ask for — a PR gate
-  and a main gate per sub-task, and a staging gate too where the repo has one. Six
-  sub-tasks is on the order of sixty to seventy workers and fifteen gates. Say the numbers before asking; they
+  and a re-review after every fix; verification adds at least 3 more: the
+  acceptance tester and two verifier passes, plus a re-check after every fix),
+  plus the approvals it will ask for — a PR gate and a main gate per sub-task, and
+  a staging gate too where the repo has one. Six sub-tasks is on the order of
+  eighty to ninety workers and fifteen gates. Say the numbers before asking; they
   are what the decision actually turns on.
 - **Options:** `Run them in order` · `Adjust the breakdown` · `Do it as one PR
   anyway` · `Stop`.

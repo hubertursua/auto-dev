@@ -13,16 +13,19 @@ when absent.
 
 The main agent stays the orchestrator and never writes code itself — it spawns a
 fresh worker per delegated job and hands off through files in `.auto-dev/`,
-never shared memory. Phase 1 and the Phase 5 acceptance check are its own work.
+never shared memory. Phase 1 and the correction briefs are its own work; judging
+the build is not — it holds the plan and the story of every round, which is the
+context a judge must not have.
 
 ```
 Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the human gates
 │
 ├─ Phase 1  Setup ......... detect repo + stack, resolve ticket, worktree, .auto-dev/
 ├─ Phase 2  Define agent .. SPEC.md — the testable contract + SCOPE CALL  (→ reviewer)
-├─ Phase 3  Planner ....... IMPLEMENTATION.md — the technical how  (→ reviewer) [optional gate]
+├─ Phase 3  Planner ....... IMPLEMENTATION.md — the technical how  (→ reviewer)
+│           Acceptance tester  held-out checks from the spec, proven to fail, sealed [optional gate]
 ├─ Phase 4  Coder ......... code + tests (given only the plan)
-├─ Phase 5  orch + cleanup  acceptance vs. the withheld spec → /simplify → quality gate
+├─ Phase 5  Verifier + cleanup  RUN the checks vs. the withheld spec → /simplify → quality gate → re-check
 └─ Phase 6  orch + reviewers  code review panel → security review → [GATE] PR + CI → [GATE] staging → [GATE] main
 ```
 
@@ -33,9 +36,47 @@ miss the outcome — so the pipeline checks both.
 
 The coder builds from the plan, never the contract. The plan is *required* to
 cover every condition, so this isn't information-hiding — it's **language**-hiding:
-the coder can't satisfy the acceptance check by echoing the contract's own wording
-back in a test name. The check is independent because the context that runs it
-didn't write the code.
+the coder can't satisfy the check by echoing the contract's own wording back in a
+test name.
+
+## How the build is verified
+
+Tests the coder wrote are evidence the coder produced, so they can't be the main
+proof that the work is right. Agents are known to mark work done too early and to
+make tests pass by weakening them. Verification is built around that:
+
+- **A spec written to be tested.** Every condition in `SPEC.md` carries a
+  concrete example (Given / When / Then), its tricky edge case, and how it should
+  be verified (unit, integration, end-to-end or manual). The Define reviewer runs
+  an ambiguity probe: if two different implementations both fit a condition's
+  words, the condition is rewritten before anything is built.
+- **Held-out acceptance checks.** After planning, an acceptance tester turns each
+  spec condition into a black-box test from the spec alone. Every check for new
+  behavior must **fail on the untouched code for the right reason**, since a test
+  that passes before the change exists proves nothing. The checks are then sealed
+  out of the worktree (stored where no test runner collects them), and the
+  coder's brief never names them.
+- **An independent verifier that runs things.** After the build, a fresh verifier
+  installs the checks and **runs** them. It never sees the plan or the coder's
+  report. Each condition gets a verdict and an evidence tier: **Strong** (the
+  held-out checks passed), **Adequate** (it ran something itself and saw what it
+  predicted beforehand) or **Weak** (a code citation, which can never count as
+  met). A condition no agent can observe is marked `manual` and handed to you at
+  the PR gate as a check to make.
+- **A test-integrity audit.** `scripts/check-tests.py` flags deleted or skipped
+  tests, removed assertions, new tests that assert nothing, and any edit to a
+  sealed check. Each finding must be justified by the spec or it goes back to the
+  coder. The coder and cleanup agent are told never to game tests, and the coder
+  has a `BLOCKED` exit for when a step can't be done honestly.
+- **Targeted mutation testing.** Passing tests show the code works; they don't
+  show the tests would notice if it broke. The verifier plants a few small bugs
+  in the changed lines (a flipped comparison, a boundary moved by one) with
+  `scripts/mutate.py`, which restores every file afterwards. A bug no test
+  catches on a line a condition depends on is a test gap and goes back to the
+  coder. Capped at 20 mutants per pass by default; set `mutation.max` in
+  `.auto-dev.yml` (0 turns it off).
+- **Re-checked after every change.** The verifier runs again after `/simplify`
+  and after every later fix, so the PR checklist always reflects the final code.
 
 ## What it does
 
@@ -47,9 +88,9 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 |-------|--------|--------|
 | 1 Setup | orchestrator | detect repo/stack, load profile, resolve ticket, isolated worktree + branch, `.auto-dev/` |
 | 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **scope call** |
-| 3 Plan | planner + plan reviewer | `IMPLEMENTATION.md` — the technical how (optional approval gate) |
+| 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
-| 5 Verify | orchestrator, then cleanup agent | acceptance review vs. the withheld spec (correction loop to Phase 4), then `/simplify` + the profile's quality gate to green |
+| 5 Verify | verifier, then cleanup agent | the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4), then `/simplify` + the profile's quality gate to green, then a verifier re-check |
 | 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then staging, then main + Jira Done — pausing at each gate |
 
 ## Three sessions, not one
@@ -71,16 +112,16 @@ which is also what makes an interrupted run resumable.
 Phase 2 returns one of three calls, and the pipeline adapts:
 
 - **TRIVIAL** — one subsystem, one behavior, no new abstraction or interface, no
-  migration or config change, and an existing test file covers it. The Define review
-  and the Phase 3 agents are skipped; the orchestrator writes a short plan itself.
-  **6 worker roles.**
-- **STANDARD** — the full path. **9 worker roles.** (Roles, not spawns —
+  migration or config change, and an existing test file covers it. The Define
+  review, planner and plan reviewer are skipped; the orchestrator writes a short
+  plan itself. **8 worker roles.**
+- **STANDARD** — the full path. **11 worker roles.** (Roles, not spawns —
   the code review panel alone spawns three reviewers and a judge, and a
   correction round re-spawns workers.)
 - **OVERSIZED** — too big for one PR: you get a proposed breakdown into ordered
   sub-tasks, tracked in `.auto-dev/WORK_LOG.md`, and on approval the pipeline runs
   per sub-task as separate PRs. Each sub-task gets its *own* scope call, so the
-  cost is **1 role for the parent Define, then 6 or 9 per sub-task** depending on
+  cost is **1 role for the parent Define, then 8 or 11 per sub-task** depending on
   how each one sizes up — a number the approval prompt shows you before you agree to
   it, alongside how many times it will stop for your approval. A sub-task can be
   TRIVIAL but never OVERSIZED: decomposing inside a decomposition means the
@@ -238,8 +279,10 @@ versions, so a new release is picked up without editing the plugin.
 | Define reviewer                          | `auto-dev:define-reviewer`       | `opus` · high     |
 | Planner                                  | `auto-dev:planner`               | `opus` · xhigh    |
 | Plan reviewer                            | `auto-dev:plan-reviewer`         | `opus` · high     |
+| Acceptance tester                        | `auto-dev:acceptance-tester`     | `opus` · high     |
 | Coder (STANDARD build, all corrections)  | `auto-dev:coder`                 | `opus` · high     |
 | Coder (TRIVIAL first build)              | `auto-dev:coder-trivial`         | `sonnet` · medium |
+| Verifier                                 | `auto-dev:verifier`              | `opus` · high     |
 | Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · medium |
 | Code reviewer (×3 panel, and re-votes)   | `auto-dev:code-reviewer`         | `opus` · xhigh    |
 | Review judge                             | `auto-dev:review-judge`          | `opus` · xhigh    |
@@ -273,6 +316,23 @@ resolved quality gate with no test command in it, since that would pass Phase 5 
 having nothing to check. It merges to main only through a PR, only after your
 approval, and if `gh pr merge` is refused it tells you why instead of working around
 branch protection.
+
+## Upgrading from 3.3
+
+3.4 adds Example, Edge and Verify by lines under every `SPEC.md` condition, an
+ambiguity probe in the Define review, and a mutation step in the verifier
+(`scripts/mutate.py`, the `mutation.max` key in `.auto-dev.yml`). A run with a
+3.3 `SPEC.md` still works: the acceptance tester falls back to the condition's
+own words, and the mutation step needs nothing from the spec.
+
+## Upgrading from 3.2
+
+3.3 moves the Phase 5 acceptance check from the orchestrator to two new workers:
+the `acceptance-tester`, which runs at the end of Phase 3, and the `verifier`.
+It adds `acceptance/` and `evidence/` to `.auto-dev/`, an evidence tier and a
+test-integrity section to `SPEC_EVAL.md`, and `scripts/check-tests.py`. A run
+whose Phase 3 is already done has no sealed checks: finish it on 3.2, or re-run
+its Phase 3 on 3.3 before the build.
 
 ## Upgrading from 3.1
 

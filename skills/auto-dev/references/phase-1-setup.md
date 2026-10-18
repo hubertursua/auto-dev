@@ -96,7 +96,10 @@ it. Full detection procedure and the script's exit handling:
    _file_, not a directory, so that command fails outright — and the shared file
    it resolves to would leak into every other worktree.
 7. **Write `.auto-dev/profile.md`** (fully-resolved profile) and initialize
-   `.auto-dev/WORK_LOG.md` — whose header carries the normalized ticket.
+   `.auto-dev/WORK_LOG.md` — whose header carries the normalized ticket. Resolve
+   the non-stack settings into it too: the iteration budget
+   (`iteration_budget`, default 4) and the **mutation cap** (`mutation.max`,
+   default 20; `0` records `off`) — the verifier reads the cap from here.
 8. **Jira → In Progress** (if a ticket exists), confirmed with the user as part of
    starting work (`references/gates-and-jira.md`).
 
