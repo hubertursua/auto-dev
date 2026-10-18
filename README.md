@@ -361,14 +361,28 @@ skills/auto-dev/
   scripts/              the Python helpers listed under Dependencies
   evals/                evals.json (pipeline evals, with fixtures in files/)
                         and trigger-eval.json (should / shouldn't trigger)
+tests/                  unit tests for the helper scripts
+tools/check-repo.py     checks that the repo's files agree with each other
+ruff.toml               lint config
+.github/                CI workflow and PR template
+CLAUDE.md               conventions for agents (and people) changing this repo
 ```
 
 ## Contributing
 
+Before pushing, run the same checks CI runs:
+
+```
+ruff check .
+python3 tools/check-repo.py
+python3 -m unittest discover -s tests
+```
+
 Every change that alters how the pipeline behaves updates this README in the same
 PR: the phase table, the worker and model table, the dependencies, the
-`.auto-dev/` layout, and an *Upgrading* note for a version bump. The full
-checklist is in `CLAUDE.md`.
+`.auto-dev/` layout, and an *Upgrading* note for a version bump. PR conventions,
+the full README checklist and the rules for changing a script are in
+`CLAUDE.md`.
 
 ## Upgrading from 3.3
 

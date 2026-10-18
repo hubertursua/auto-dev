@@ -1,8 +1,53 @@
 # auto-dev — notes for agents working on this repo
 
 This repo is the auto-dev plugin: an orchestration skill (`skills/auto-dev/`) and
-its worker agent types (`agents/`). `README.md` is the user-facing description of
-the pipeline, and it is the file most often left stale.
+its worker agent types (`agents/`). Most of it is Markdown that another agent
+follows; the rest is six helper scripts (`skills/auto-dev/scripts/`). `README.md`
+is the user-facing description of the pipeline, and it is the file most often
+left stale.
+
+## Before every push
+
+Run all three from the repo root. CI (`.github/workflows/checks.yml`) runs the
+same on Python 3.9 and 3.13, and a PR isn't ready until they pass.
+
+```
+ruff check .                              # lint (config: ruff.toml)
+python3 tools/check-repo.py               # files agree with each other
+python3 -m unittest discover -s tests     # helper-script tests
+```
+
+`tools/check-repo.py` catches drift a reviewer would miss: the model tables in
+`SKILL.md` and `README.md` against `agents/*.md`, paths the docs name that don't
+exist, a script the README doesn't mention, a script that isn't executable, and
+`plugin.json` / `marketplace.json` disagreeing. When you add a sync rule below
+that a script can check, add it there.
+
+## Changing a helper script
+
+- **Standard library only**, Python 3.9+ (`validate-config.py` alone may use
+  PyYAML). Users run these with whatever `python3` they have.
+- **Keep the CLI contract.** Each script's docstring is its `--help` and lists
+  its exit codes; the skill's docs tell the orchestrator what each code means.
+  If you change an exit code or an output line, update the docstring and every
+  reference file that quotes it (`grep -rn "<script>.py" skills/`).
+- **Add a test** in `tests/test_scripts.py` for every fix or new behavior, and
+  check that it fails without your change. Tests run the script as a subprocess,
+  the way the pipeline does, and build throwaway git repos in a temp dir.
+- **Fail safe.** "Could not run" is exit 2, never a pass. Never leave the user's
+  tree changed (see how `mutate.py` backs up and restores).
+- Keep the file executable and its `#!/usr/bin/env python3` line.
+
+## Changing the skill's Markdown
+
+- `SKILL.md` is the spine the orchestrator always holds; keep detail in
+  `references/` and point to it. Say each rule in one place and link to it,
+  rather than repeating it (a repeated rule drifts).
+- After editing a rule, grep for other places that state it
+  (`grep -rn "<key phrase>" skills/ agents/ README.md`) and make them agree.
+- Behavior changes need matching eval expectations (`skills/auto-dev/evals/`).
+  The full eval suite is slow and needs a GitHub-hosted fixture repo, so PRs
+  usually don't run it. Say so in the PR's Testing section.
 
 ## Every PR keeps README.md current
 
@@ -43,8 +88,24 @@ wrong about something? If yes, fix the README.
   description.
 - **Evals.** When behavior changes, update the expectations in
   `skills/auto-dev/evals/evals.json` that describe it.
-- **Scripts** stay standard-library Python (except `validate-config.py`, which
-  needs PyYAML) and executable (`chmod +x`).
+
+## Branches, commits and PRs
+
+- **One topic per PR.** Unrelated fixes go in separate PRs, even small ones.
+  PRs are squash-merged, so the PR title becomes the commit on `main`.
+- **Titles** are a plain imperative sentence saying what changes, with no
+  `feat:`-style prefix: "Return exit 2 when resume-point cannot stat the
+  artifact dir". A release adds the version: "… (3.3 → 3.4)".
+- **Bodies** follow `.github/pull_request_template.md`: *Summary* (what and
+  why), *Testing* (what you ran and saw, before and after for a fix, and what
+  was not tested), *Docs*, and *Not included* when something is left for
+  later.
+- **Commit messages** inside a PR: a short imperative subject, then a body
+  explaining why. Fix review findings in new commits; don't force-push over a
+  branch someone is reviewing.
+- **Versioning** (semver in `plugin.json`): patch for fixes and wording,
+  minor for a new behavior, artifact or worker, major for a change that breaks
+  resuming a run in flight.
 
 ## Writing style
 
