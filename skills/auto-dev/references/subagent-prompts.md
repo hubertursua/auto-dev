@@ -260,6 +260,23 @@ Branch on the **SCOPE CALL**:
      `depends on` column its meaning — by the time a dependent sub-task starts, its
      dependency is already on `origin/<base>`.
 
+     Then **prepare that worktree the way Phase 1 step 5 prepares the control
+     worktree** (`references/phase-1-setup.md`): seed the `worktree_files` from the
+     main checkout and confirm git ignores each one, then run the profile's `setup`
+     commands — stopping and reporting wherever that step says to. A bare
+     `worktree add` has neither, and the sub-task's tests would then fail in ways
+     that read exactly like broken code. Only the seeding, ignore check and `setup`
+     carry over: the slug is the run's, and `profile.md` is the run's shared record
+     — leave it alone and note what was seeded in the Notes of the sub-task's
+     Phase 2 row instead.
+
+     Write the sub-task's phase table only once that prep has succeeded, so a run
+     cut off mid-prep still reads as never started. On resume, if
+     `git worktree list` already shows this sub-task's worktree, skip the
+     `worktree add` (its branch exists too) and redo the prep in place. If prep
+     stops, write the phase table with Phase 2 `blocked` and the reason in its
+     Notes; once the user resolves it, redo the prep before Define runs.
+
      **A sub-task's own scope call may not be OVERSIZED.** If one comes back that
      way, the parent decomposition was wrong — and that decomposition is the thing
      the user approved. Stop, report which sub-task exceeds one PR and why, and
@@ -533,6 +550,10 @@ correction brief (it spends a round), then **re-spawn the cleanup agent** with t
 Phase 5 scope (free of budget), so the corrective code is simplified and the
 quality gate re-runs, then re-resolve again. Only then end S2 for Phase 6
 (`references/correction-loop.md`).
+
+After a Phase 6a correction the re-resolve is wider — every row, not only those
+citing touched files — and a condition no longer met is a Phase 6a correction:
+`references/correction-loop.md`, _The Phase 6a refresh_.
 
 ---
 
