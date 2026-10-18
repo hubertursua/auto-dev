@@ -282,7 +282,8 @@ Deterministic, run by the orchestrator.
 you start in. Run
 `python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"`
 on each tree in `git worktree list` — omit `--task` on a bare `auto-dev
-continue`, where the user named none; then only an exit `0` counts, several is a
+continue` or a loose name for the run ("the multi-currency run"), where the user
+named no ticket or task; then only an exit `0` counts, several is a
 stop-and-ask, and none means there is nothing to continue (ask, don't start fresh).
 If one matches, do not re-run Phase 1 — continue from its ledger
 (`references/artifacts.md`, _Resuming an interrupted run_). A `NEAR-MISS` may be
