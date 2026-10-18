@@ -51,12 +51,13 @@ or worktree you are in — open or run each by its absolute path.
 | `scripts/validate-config.py` | S1, Phase 1 step 2, when `.auto-dev.yml` exists | run (not read): `python3 <skill-dir>/scripts/validate-config.py <repo>/.auto-dev.yml`; needs PyYAML (without it, exit `2` — not a pass); exit codes in `references/profiles.md` |
 | `scripts/resume-point.py` | Phase 1's resume check; any re-entry | run (not read): `python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev [--task "<ticket or task>"]` names the resume point (`--task` only when the user named a ticket or task: the task word for word, a few words may be left out; a `NEAR-MISS` means ask); exit codes in `references/artifacts.md`, _Resuming an interrupted run_ |
 | `scripts/exclude-artifacts.py` | S1, Phase 1 step 6 | run (not read): `python3 <skill-dir>/scripts/exclude-artifacts.py <worktree>`; exit codes in `references/phase-1-setup.md`, step 6 |
-| `scripts/check-staged.py` | S3, before every Phase 6a commit | run (not read): `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`; exit codes in `references/phase-6-ship.md`, step 2 |
+| `scripts/check-staged.py` | S3, before every Phase 6a commit | run (not read): `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`; exit codes in `references/phase-6-ship.md`, step 4 |
 | `references/artifacts.md` | each session's start (its checklist); writing or resuming from any `.auto-dev/` file | layout, `WORK_LOG.md` ledger, resume procedure, session checklists, `HANDOFF.md`, every artifact's contract, template and strictness, the PR body, the final report |
 | `references/subagent-prompts.md` | before spawning any worker (Phases 2–6) | each worker's brief and tools, the scope decision, the acceptance check |
 | `references/gates-and-jira.md` | before any gate or pause, Jira transition, or CI watch | gate scripts, Jira transition mapping, CI monitoring policy (timeouts, on-red) |
-| `references/correction-loop.md` | on an unmet condition, a PR blocker, or red CI | the one correction loop, what each correction invalidates, the iteration budget |
+| `references/correction-loop.md` | on an unmet condition, a must-fix review finding, a human blocker, or red CI | the one correction loop, what each correction invalidates, the iteration budget |
 | `references/phase-6-ship.md` | S3, before Phase 6 | the exact commit, push, staging-merge and main-merge sequences and their failure handling |
+| `references/review.md` | S3, before Phase 6a's reviews | the code review panel, the security review, the review loop, and **the rubric** that sorts must-fix findings from noise, with confidence levels |
 
 ## Pipeline at a glance
 
@@ -66,7 +67,7 @@ Phase 2  Define  → research + the testable contract (SPEC.md); SCOPE CALL (tri
 Phase 3  Plan    → planner writes IMPLEMENTATION.md; plan reviewer critiques         [optional gate]
 Phase 4  Build   → coder implements + tests, given only the plan
 Phase 5  Verify  → acceptance vs. the withheld spec → simplify → quality gate to green
-Phase 6  Ship    → [GATE] commit + PR + adversarial review + CI → [GATE] staging → [GATE] main + Jira
+Phase 6  Ship    → code review panel → security review → [GATE] commit + PR + CI → [GATE] staging → [GATE] main + Jira
 ```
 
 Run phases in order; each depends on the previous. Track them in
@@ -108,8 +109,9 @@ At the end of S1 and S2, do exactly this and then stop:
 On entry to S2 or S3, read `WORK_LOG.md`, `HANDOFF.md` and `profile.md` (the
 resolved `gate` commands, CI provider and Jira mapping — never re-derive them).
 Beyond those, read an artifact only when a phase **of yours** needs it: in S2,
-`SPEC.md` for the acceptance check; in S3, `SPEC.md`, `SPEC_EVAL.md` and
-`lint/*.md` for the PR body and the PR gate summary. `IMPLEMENTATION.md` is the
+`SPEC.md` for the acceptance check; in S3, `SPEC.md`, `SPEC_EVAL.md`,
+`lint/*.md`, `CODE_REVIEW.md` and `SECURITY_REVIEW.md` for the PR body and the PR
+gate summary. `IMPLEMENTATION.md` is the
 coder's, never yours. For anything else — including a question _about_ one of
 those files outside the phase that needs it — spawn a worker that reads it and
 returns an answer.
@@ -149,8 +151,8 @@ worktrees, `<artifact-dir>` per sub-task, an OVERSIZED sub-task), are in
 OVERSIZED call.
 
 > **The scope call thins the planning head, never the verification tail.**
-> Phase 5 (acceptance + simplify + quality gate) and Phase 6 (adversarial review +
-> CI + human gates) run identically at every scope.
+> Phase 5 (acceptance + simplify + quality gate) and Phase 6 (code review panel +
+> security review + CI + human gates) run identically at every scope.
 
 ## Human gates
 
@@ -171,7 +173,8 @@ every gate decision, and its reason, in `WORK_LOG.md`.
 
 ## Corrections and the iteration budget
 
-An unmet spec condition, a PR-review blocker, and a red CI check are **one
+An unmet spec condition, a must-fix review finding (from the code review panel,
+the security review, or a human reviewer on the PR), and a red CI check are **one
 correction loop entered at three points**, drawing on **a single budget of
 revise rounds per task** (default **4**, overridable via `.auto-dev.yml`; per
 sub-task on a multi-PR run), shared with the Phase 2/3 re-reviews. Each re-review
@@ -219,8 +222,10 @@ Write/Edit/Bash**, so an artifact writer spawned with one silently fails.
 | Coder: STANDARD build, every correction        | `auto-dev:coder`                 | `opus` · high     |
 | Coder: TRIVIAL first build                     | `auto-dev:coder-trivial`         | `sonnet` · medium |
 | Cleanup agent (Phase 5, re-spawned on fixes)   | `auto-dev:cleanup`               | `sonnet` · medium |
-| PR reviewer (Phase 6)                          | `auto-dev:pr-reviewer`           | `opus` · xhigh    |
-| PR reviewer, sensitive paths (Phase 6)         | `auto-dev:pr-reviewer-sensitive` | `fable` · high    |
+| Code reviewer, ×3 panel + re-votes (Phase 6a)  | `auto-dev:code-reviewer`         | `opus` · xhigh    |
+| Review judge (Phase 6a)                        | `auto-dev:review-judge`          | `opus` · xhigh    |
+| Security reviewer (Phase 6a)                   | `auto-dev:security-reviewer`     | `opus` · xhigh    |
+| Security reviewer, sensitive paths (Phase 6a)  | `auto-dev:security-reviewer-sensitive` | `fable` · high |
 | Your read-and-answer lookups                   | `auto-dev:lookup`                | `sonnet` · low    |
 
 **Resolving a type.** The table and the rules below write each type as
@@ -235,9 +240,10 @@ to `sonnet` (why: `references/subagent-prompts.md`, _Models_). Two routing rules
 
 - **Corrections always go to `auto-dev:coder`**, TRIVIAL runs included. A TRIVIAL
   build that failed acceptance was not as trivial as the scope call said.
-- **Use `auto-dev:pr-reviewer-sensitive`** when `SPEC.md`'s
+- **Use `auto-dev:security-reviewer-sensitive`** when `SPEC.md`'s
   `Security/Compliance criteria` section lists controls for a sensitive path, and
-  `auto-dev:pr-reviewer` otherwise.
+  `auto-dev:security-reviewer` otherwise. The code review panel is always three
+  `auto-dev:code-reviewer`s.
 
 **Never pass the Agent tool's `model` parameter** when spawning a worker: it
 overrides the type's model. To change a worker's model or effort, edit its
@@ -365,20 +371,37 @@ brief and the evidence re-check.
 ## Phase 6 — Ship **[three human gates]**
 
 **Before starting Phase 6, read `references/phase-6-ship.md`** — the exact commit,
-push, staging-merge and main-merge sequences and what to do when each fails — and
+push, staging-merge and main-merge sequences and what to do when each fails —
+`references/review.md` for the two reviews and their rubric, and
 `references/gates-and-jira.md` for the gate scripts, Jira transitions and CI policy.
 
-### 6a — PR **[gate]**
+### 6a — Review, then PR **[gate]**
 
-1. **Gate:** pause for approval to open the PR.
-2. **Commit** — stage source paths **explicitly** (never `git add -A`/`.`); commit
+Both reviews run on the **uncommitted** working tree: nothing is committed or
+pushed until they settle and the user approves.
+
+1. **Code review panel** → `.auto-dev/CODE_REVIEW.md`. Three
+   `auto-dev:code-reviewer`s run `/code-review xhigh` independently; the
+   `auto-dev:review-judge` merges them, confirms each trigger path and applies the
+   rubric; a correctness or test finding only one reviewer raised goes to the other
+   two for a re-vote. Must-fix → the correction loop, then the panel again on the
+   fix's files.
+2. **Security review** → `.auto-dev/SECURITY_REVIEW.md`. One security reviewer runs
+   `/security-review` over the whole change; the judge verifies every High/Medium
+   finding. An introduced, confirmed finding is must-fix → the correction loop,
+   then Step 1 on the fix's files, then this step again. A pre-existing one goes to
+   the user at the PR gate.
+3. **Gate:** pause for approval to open the PR. The summary carries both reports'
+   confidence and counts, any open must-fix, and the pre-existing security
+   findings for the user to triage.
+4. **Commit** — stage source paths **explicitly** (never `git add -A`/`.`); commit
    only once `scripts/check-staged.py --expect <paths>` passes.
-3. **Push** — **never `--force`** — and open **exactly one** PR, a draft by
-   default, carrying the **acceptance checklist** and the **quality-gate results**.
-4. **PR reviewer** (adversarial) → `.auto-dev/PR_REVIEW.md`. A blocker → the
-   correction loop, whose Phase 6a refresh re-resolves all of `SPEC_EVAL.md`.
-5. **CI monitoring**, bounded. Red pre-merge → the correction loop, the same way.
-6. **Jira → In Review.**
+5. **Push** — **never `--force`** — and open **exactly one** PR, a draft by
+   default, carrying the **acceptance checklist**, the **quality-gate results** and
+   the **review summary**.
+6. **CI monitoring**, bounded. Red pre-merge → the correction loop, whose fix is
+   reviewed (both steps) before the Phase 6a refresh commits and re-pushes it.
+7. **Jira → In Review.**
 
 ### 6b — Staging **[gate]** (skip if no staging branch)
 
@@ -388,7 +411,7 @@ resolve conflicts on staging or force the push unasked.
 ### 6c — Main **[gate]**
 
 1. **Read what humans said**; mark the PR ready. A human blocker goes through the
-   correction loop, never merged over.
+   correction loop (its fix reviewed like any other), never merged over.
 2. **Gate:** pause for approval.
 3. **Merge to main** only via `gh pr merge` with an explicit method — **never
    `--admin`**. Refused → report the PR unmergeable and stop. Then confirm it is

@@ -99,11 +99,14 @@ PHASE_6_IN_PROGRESS = (
     f"do not re-run blindly: {PHASE_6_CHECKS}. Find the last gate passed: a "
     "commit or PR on the branch means the PR gate passed, a merge into "
     "staging or the base the staging or main gate; the Notes or HANDOFF.md's "
-    "`Pick up at` line may name it. If no gate passed, start at the PR gate. "
-    "Continue after that gate, re-doing (not trusting) any step after it that "
-    "leaves an artifact, such as PR_REVIEW.md or a correction, and reusing a "
-    "commit, push or PR already made. Never repeat a gate or Jira transition "
-    "that already happened; read the issue's Jira status, do not assume it")
+    "`Pick up at` line may name it. If no gate passed, the run was in the "
+    "code review or security review that come before the PR gate: re-run "
+    "each review step the Notes do not record as done, then the PR gate. "
+    "Continue after the last gate passed, re-doing (not trusting) any step "
+    "after it that leaves an artifact, such as CODE_REVIEW.md, "
+    "SECURITY_REVIEW.md or a correction, and reusing a commit, push or PR "
+    "already made. Never repeat a gate or Jira transition that already "
+    "happened; read the issue's Jira status, do not assume it")
 
 # Which session holds each phase (SKILL.md, Session boundaries).
 SESSIONS = {1: "S1 — Plan", 2: "S1 — Plan", 3: "S1 — Plan",

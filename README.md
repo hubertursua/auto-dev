@@ -23,7 +23,7 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
 ├─ Phase 3  Planner ....... IMPLEMENTATION.md — the technical how  (→ reviewer) [optional gate]
 ├─ Phase 4  Coder ......... code + tests (given only the plan)
 ├─ Phase 5  orch + cleanup  acceptance vs. the withheld spec → /simplify → quality gate
-└─ Phase 6  orch + PR reviewer  [GATE] PR + adversarial review + CI → [GATE] staging → [GATE] main
+└─ Phase 6  orch + reviewers  code review panel → security review → [GATE] PR + CI → [GATE] staging → [GATE] main
 ```
 
 Two documents describe the work, and they answer different questions: `SPEC.md`
@@ -50,7 +50,7 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 | 3 Plan | planner + plan reviewer | `IMPLEMENTATION.md` — the technical how (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
 | 5 Verify | orchestrator, then cleanup agent | acceptance review vs. the withheld spec (correction loop to Phase 4), then `/simplify` + the profile's quality gate to green |
-| 6 Ship | orchestrator + PR reviewer | commit + draft PR + adversarial review + CI, then staging, then main + Jira Done — pausing at each |
+| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then staging, then main + Jira Done — pausing at each gate |
 
 ## Three sessions, not one
 
@@ -73,13 +73,14 @@ Phase 2 returns one of three calls, and the pipeline adapts:
 - **TRIVIAL** — one subsystem, one behavior, no new abstraction or interface, no
   migration or config change, and an existing test file covers it. The Define review
   and the Phase 3 agents are skipped; the orchestrator writes a short plan itself.
-  **4 worker roles.**
-- **STANDARD** — the full path. **7 worker roles.** (Roles, not spawns —
-  a correction round re-spawns a worker.)
+  **6 worker roles.**
+- **STANDARD** — the full path. **9 worker roles.** (Roles, not spawns —
+  the code review panel alone spawns three reviewers and a judge, and a
+  correction round re-spawns workers.)
 - **OVERSIZED** — too big for one PR: you get a proposed breakdown into ordered
   sub-tasks, tracked in `.auto-dev/WORK_LOG.md`, and on approval the pipeline runs
   per sub-task as separate PRs. Each sub-task gets its *own* scope call, so the
-  cost is **1 role for the parent Define, then 4 or 7 per sub-task** depending on
+  cost is **1 role for the parent Define, then 6 or 9 per sub-task** depending on
   how each one sizes up — a number the approval prompt shows you before you agree to
   it, alongside how many times it will stop for your approval. A sub-task can be
   TRIVIAL but never OVERSIZED: decomposing inside a decomposition means the
@@ -90,6 +91,39 @@ and Phase 6 run identically at every scope — skipping planning on a small chan
 is cheap, skipping verification is how a small change ships broken.
 
 `WORK_LOG.md` is also the resume point if a run is interrupted.
+
+## Review before the PR
+
+Nothing is committed or pushed until the change has been reviewed twice, on the
+uncommitted working tree, and you have seen the results:
+
+1. **Code review panel.** Three reviewers run `/code-review xhigh` on the change
+   independently. A judge merges their findings and checks each trigger path in
+   the code. A correctness or test finding that only one reviewer raised goes to
+   the other two for a re-vote.
+2. **Security review.** One security reviewer runs `/security-review` over the
+   whole change, and the judge double-checks every finding rated High or Medium.
+
+A **rubric** decides what must be fixed and what is noise:
+
+- **Code findings.** Only correctness bugs and missing or weak tests can be
+  must-fix. Each one needs a concrete trigger path, a real input or sequence that
+  leads to the failure, and at least 2 of the 3 reviewers' votes. Scope,
+  performance and design findings are advisory. Problems the change didn't
+  introduce are dropped.
+- **Security findings.** One this change introduced, with a traced path, is
+  must-fix. One that was already there is shown to you at the PR gate to triage:
+  leave it, fix it in this PR, or ignore it.
+- **Confidence.** Every finding carries a confidence level (High, Medium or
+  Low), and so does each report as a whole. A report whose confidence is Low
+  (say, a reviewer failed) is flagged at the gate as a warning, never shown as a
+  clean pass.
+
+Must-fix findings go back to the coder through the same correction loop as an
+unmet spec condition, and the fix is reviewed again before anything moves on.
+Fixes made after the PR is open, for red CI or a human reviewer's comment, are
+reviewed the same way before they are pushed. The procedure and the full rubric
+are in `skills/auto-dev/references/review.md`.
 
 ## Stack profiles
 
@@ -170,7 +204,8 @@ Link `skills/auto-dev` into `~/.claude/skills/` too.
 
 Built-in tools only — no plugins required: `TodoWrite`, `Task`/`Agent`, `Bash`,
 `Read`, `Edit`, `Write`, `Grep`, `Glob`, `AskUserQuestion`, and the `Skill` tool
-(the Phase 5 cleanup agent runs `/simplify` with it). `gh` must be on your `PATH`
+(the Phase 5 cleanup agent runs `/simplify` with it, the code reviewers
+`/code-review`, and the security reviewer `/security-review`). `gh` must be on your `PATH`
 and authenticated: Phase 1 checks, and stops before doing any work if it isn't.
 Optional integrations: the Atlassian MCP (Jira transitions) and a CI provider CLI.
 The Jira tools are found by base name (`getJiraIssue`, …) with `ToolSearch`, so
@@ -205,8 +240,10 @@ versions, so a new release is picked up without editing the plugin.
 | Coder (STANDARD build, all corrections)  | `auto-dev:coder`                 | `opus` · high     |
 | Coder (TRIVIAL first build)              | `auto-dev:coder-trivial`         | `sonnet` · medium |
 | Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · medium |
-| PR reviewer                              | `auto-dev:pr-reviewer`           | `opus` · xhigh    |
-| PR reviewer (sensitive paths)            | `auto-dev:pr-reviewer-sensitive` | `fable` · high    |
+| Code reviewer (×3 panel, and re-votes)   | `auto-dev:code-reviewer`         | `opus` · xhigh    |
+| Review judge                             | `auto-dev:review-judge`          | `opus` · xhigh    |
+| Security reviewer                        | `auto-dev:security-reviewer`     | `opus` · xhigh    |
+| Security reviewer (sensitive paths)      | `auto-dev:security-reviewer-sensitive` | `fable` · high |
 | Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · low    |
 
 The orchestrator runs on the session's model, which you pick when starting each
@@ -235,6 +272,15 @@ resolved quality gate with no test command in it, since that would pass Phase 5 
 having nothing to check. It merges to main only through a PR, only after your
 approval, and if `gh pr merge` is refused it tells you why instead of working around
 branch protection.
+
+## Upgrading from 3.1
+
+3.2 replaces the single PR reviewer, which ran after the PR was opened, with a
+code review panel and a separate security review that run before the PR gate.
+`PR_REVIEW.md` is replaced by `CODE_REVIEW.md` and `SECURITY_REVIEW.md`, and the
+`pr-reviewer` agents by `code-reviewer`, `review-judge`, `security-reviewer` and
+`security-reviewer-sensitive`. A run that has not reached Phase 6 resumes
+normally. A run already in Phase 6 should be finished on 3.1.
 
 ## Upgrading from 2.x
 

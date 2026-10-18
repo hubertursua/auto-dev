@@ -42,8 +42,13 @@ the Agent tool's `model` parameter. The type fixes the worker's model and effort
     correction brief.
   - **Cleanup agent (simplify + quality gate)** — writes `lint/<CHECK>.md`.
   - **Re-resolve the acceptance evidence (orchestrator)**
-- **Phase 6 — Ship**
-  - **PR reviewer (adversarial)** — writes `PR_REVIEW.md`.
+- **Phase 6 — Ship** (the procedure and the rubric are in `references/review.md`)
+  - **Code reviewer: review mode** — one of three; writes `review/pass-<n>/R<k>.md`.
+  - **Code reviewer: re-vote mode** — writes `review/pass-<n>/VOTES-R<k>.md`.
+  - **Review judge: consolidate** — writes `CODE_REVIEW.md`.
+  - **Security reviewer** — writes `SECURITY_REVIEW.md`.
+  - **Review judge: security-verify** — fills `SECURITY_REVIEW.md`'s `Verified`
+    cells.
 
 ## Models
 
@@ -51,8 +56,10 @@ Judgment stays on `opus`: a weak reviewer returns "no findings," which
 is indistinguishable from a clean pass, and a weak plan spends revise rounds
 downstream. Only work that a later check verifies moves down to `sonnet`: the
 TRIVIAL build (acceptance and the quality gate catch it), the cleanup agent (the
-quality gate catches it), and lookups (they only report). The routing rules (corrections always
-to `auto-dev:coder`; `auto-dev:pr-reviewer-sensitive` for sensitive paths) are in
+quality gate catches it), and lookups (they only report). The review panel, the
+judge and the security reviewer are all judgment, so all stay on `opus` (or
+`fable` for the sensitive-path security reviewer). The routing rules (corrections always
+to `auto-dev:coder`; `auto-dev:security-reviewer-sensitive` for sensitive paths) are in
 `SKILL.md` and on each brief's `_Agent type:_` line below.
 
 The types name model **families** (`opus`, `sonnet`, `fable`), never a version, so
@@ -78,9 +85,15 @@ below state the same thing; change them together:
 - **Coder (Phase 4):** Read, Write, Edit, Bash, Grep, Glob.
 - **Cleanup agent (Phase 5, re-spawned after later corrections):** Read, Edit, Write, Bash, Grep,
   Glob, plus the **Skill** tool to run `/simplify`.
-- **PR reviewer (Phase 6):** Read, Grep, Glob, Bash (`git diff`, `gh`), Write —
-  read-only **w.r.t. source**, but it must be able to write its one artifact,
-  `.auto-dev/PR_REVIEW.md`.
+- **Code reviewer (Phase 6a):** Read, Grep, Glob, Bash (`git diff`, `git blame`),
+  Write, plus the **Skill** tool to run `/code-review` — read-only **w.r.t.
+  source**; it writes only its own report under `review/pass-<n>/`.
+- **Review judge (Phase 6a):** Read, Grep, Glob, Bash (`git diff`, `git blame`),
+  Write — read-only w.r.t. source; it writes `CODE_REVIEW.md`, or edits
+  `SECURITY_REVIEW.md` in security-verify mode.
+- **Security reviewer (Phase 6a), both types:** Read, Grep, Glob, Bash, Write, plus
+  the **Skill** tool to run `/security-review` — read-only w.r.t. source; it writes
+  `SECURITY_REVIEW.md`.
 - **Lookup (any phase):** Read, Grep, Glob, Bash — answers a question, writes
   nothing.
 
@@ -417,8 +430,9 @@ any commit. With no untracked
 files the line is a harmless no-op. And
 `git diff origin/<base>...HEAD` reports an **empty** diff, because nothing is
 committed yet. Diff against `origin/<base>` — the ref Phase 1 cut the worktree
-from — not the local branch, which may be stale. (Phase 6's PR reviewer does use
-the three-dot form, and is correct to — by then the branch is committed.)
+from — not the local branch, which may be stale. (Phase 6a's reviews run before
+the commit too, so they also read the working tree; `references/review.md`,
+_What each review pass covers_.)
 
 Write `<artifact-dir>/SPEC_EVAL.md` to the template in `references/artifacts.md`:
 per condition, **met / partial / unmet** with evidence (file:line or test name),
@@ -467,8 +481,9 @@ _Tools: Read, Edit, Write, Bash, Grep, Glob, plus the **Skill** tool to run `/si
 
 Runs after the Phase 5 correction loop settles, so corrective code gets simplified too,
 is re-spawned after any Phase 5 correction made after that pass (_Re-resolve the
-acceptance evidence_, below), and is **re-spawned after every Phase 6a correction**
-(a PR-review blocker or red CI) on the code that correction changed. No spawn of it spends the iteration budget.
+acceptance evidence_, below), and is **re-spawned after every Phase 6 correction**
+(a must-fix review finding, a human blocker or red CI) on the code that correction
+changed. No spawn of it spends the iteration budget.
 `/simplify` is *meant* to preserve behavior; Step 2's quality gate is what checks that it
 did.
 
@@ -521,7 +536,14 @@ Fill `<SCOPE>` for the spawn:
   `git ls-files -z --others --exclude-standard | xargs -0 git add -N --` and then
   `git diff origin/<base>` to see it, new files included
   (`git diff origin/<base>...HEAD` shows nothing at this point)".
-- **Phase 6a (re-spawn after a correction):** "ONLY the files this correction
+- **Phase 6a, review stage (re-spawn after a correction to a review finding,
+  before the commit):** "ONLY these files, which this correction changed: <the
+  paths the coder's return lists>. The rest of the change is already reviewed, so
+  leave every other file alone. Nothing is committed yet, so `git diff HEAD` shows
+  the whole change, not just this correction — work from the file list". Step 2
+  still runs the quality gate in full.
+- **Phase 6a/6c, after the commit (re-spawn after a CI-red or human-blocker
+  correction):** "ONLY the files this correction
   changed. The branch is committed and already reviewed, so leave every other file
   alone. The correction is the uncommitted working tree: run
   `git ls-files -z --others --exclude-standard | xargs -0 git add -N --` and
@@ -559,51 +581,238 @@ citing touched files — and a condition no longer met is a Phase 6a correction:
 
 ## Phase 6 — Ship
 
-### PR reviewer (adversarial)
-_Agent type: `auto-dev:pr-reviewer-sensitive` when `SPEC.md`'s
-`Security/Compliance criteria` section lists controls for a sensitive path,
-otherwise `auto-dev:pr-reviewer`._
-_Tools: Read, Grep, Glob, Bash (`git diff`, `gh`), Write — read-only **w.r.t.
-source**, but it writes `<artifact-dir>/PR_REVIEW.md`._
-Briefed to **find problems, not rubber-stamp**. Runs after the PR is opened. This
-is the only check in the pipeline briefed to find what no checklist names.
+Phase 6a's two reviews run before the commit. **Read `references/review.md`
+first**: it says when each brief below is spawned, how many, with which scope, and
+what happens to the findings. Every brief below gets two things pasted in, because
+a worker cannot follow a pointer to a reference file:
+
+- **the rubric**: `references/review.md`, _The rubric_. Paste the code-review and
+  overall-confidence parts for the code reviewers and the consolidating judge, and
+  the security and overall-confidence parts for the security reviewer and the
+  security-verify judge;
+- **the report template** it writes, from `references/artifacts.md`, with its
+  strictness line.
+
+Fill `<scope>` with one of these, matching the pass
+(`references/review.md`, _What each review pass covers_):
+
+- **First pass:** "the whole change. Nothing on the branch is committed yet, so it
+  is the uncommitted working tree against HEAD (`git diff HEAD`). New files are
+  marked intent-to-add, so the diff shows them."
+- **After a review-stage fix:** "only these files, which a correction just
+  changed: <paths>. Review the code in them, and the callers of anything the
+  correction changed."
+- **After a CI-red or human-blocker fix:** "the uncommitted correction: the working
+  tree against HEAD (`git diff HEAD`), new files included."
+
+### Code reviewer: review mode
+_Agent type: `auto-dev:code-reviewer`. Spawn three, in parallel, in one message;
+only `<k>` differs._
+_Tools: Read, Grep, Glob, Bash, Write, Skill._
 
 ```
-You are the ADVERSARIAL PR-REVIEW phase. Work inside the worktree at <worktree>.
-Your job is to FIND PROBLEMS in the change on this branch — not to approve it.
+You are code reviewer R<k>, one of three on the CODE-REVIEW panel. Work inside the
+worktree at <worktree>; <artifact-dir> is the one other path you may write to. Two
+other reviewers review the same change independently. You will not see their
+reports and they will not see yours. Your job is to FIND PROBLEMS, not to approve.
 Assume there ARE bugs and go looking for them.
 
-Read the diff (`git diff origin/<base>...HEAD` — the branch is committed by now, so
-the three-dot form is the right one here), the changed files, and the tests. Read
-<artifact-dir>/SPEC.md, <artifact-dir>/IMPLEMENTATION.md, and the binding rules (<summary>)
-plus the security directives named in <artifact-dir>/profile.md.
+Scope: <scope>
 
-Hunt across these lenses and actively try to break each:
-- Correctness: edge cases, error paths, off-by-one, nil/empty/boundary inputs,
-  concurrency, wrong assumptions. Name an input that breaks it.
-- Security: injection, authz gaps, secret/PII exposure, unsafe deserialization,
-  weakened TLS/crypto — check against the security directives in profile.md.
-- Scope: anything built beyond the spec, or a spec condition not actually met.
-- Tests: do they PROVE the behavior, or are they tautological / missing the
-  important cases?
-- Conventions: deviations from repo patterns.
+1. Run the /code-review skill with the Skill tool at effort xhigh on that scope:
+   args `xhigh` for the uncommitted working tree, or `xhigh <path> …` for a list
+   of files. Its findings are your starting point, not your answer.
+2. Then go further yourself. Read the changed files and their tests,
+   <artifact-dir>/SPEC.md, <artifact-dir>/IMPLEMENTATION.md, and the binding rules
+   (<summary>). Try to break the change:
+   - Correctness: edge cases, error paths, off-by-one, nil/empty/boundary inputs,
+     concurrency, data loss, wrong assumptions about callers.
+   - Tests: does each changed behavior have a test that would FAIL if the
+     behavior broke? Tautological tests, and tests that miss the case the change
+     is about, count.
+   Scope, performance, design and convention problems may be reported, but they
+   are advisory.
+   Do NOT review security. A security concern you notice goes under
+   "Security leads", one line each, unchased. A separate security review
+   follows.
+3. Keep only findings this change introduced: in lines it adds or modifies, or
+   caused by it. Check with `git diff` and `git blame`. Count pre-existing
+   problems, but do not list them.
+4. For every finding, write its trigger path: a specific input or sequence,
+   starting from a real caller or entry point (file:line), that leads to the
+   failure. For a test finding, the changed behavior (file:line) and the input no
+   test exercises. A finding you cannot trace, drop.
 
-Write <artifact-dir>/PR_REVIEW.md: findings grouped blocker / should-fix / nit, each
-with file:line and a concrete "why this is wrong / how to trigger it." For example:
-  Blocker:    **Any user can delete any todo** — `src/todos/delete.js:31` — no
-              ownership check; signed in as A, deleting B's todo id succeeds.
-  Should-fix: **Blank titles accepted** — `src/todos/validate.js:12` — "   " passes,
-              and no test covers it.
-  Nit:        `src/todos/delete.js:8` — `res` shadows the outer response variable.
-If a lens
-genuinely turns up nothing, say so briefly — but default to skepticism. Do NOT
-modify code. Return the blocker count.
+How your findings will be judged:
+<paste the rubric: code review findings + overall report confidence>
+
+Write <artifact-dir>/review/pass-<n>/R<k>.md to this template (strict):
+<paste the R<k>.md template>
+
+Do NOT modify code. Spill long output to $TMPDIR and quote only what matters.
+Return: your finding count by category, the security-lead count, and anything
+you could not cover.
 ```
 
-If the review returns blockers, feed them back to the **coder**
-(`auto-dev:coder`) using the Phase 5 correction brief above. A Phase 6 correction lands *after* `/simplify` and
-the `lint/` reports were written, so it invalidates more than a Phase 5 one does —
-which reports to refresh, the cleanup agent's re-spawn (its `/simplify` scoped to the
-correction's own diff), and what happens when
-the budget runs out with blockers still open are all in
+For example, a finding with a usable trigger path:
+
+```
+1. **Deleting the last todo crashes the list page** — `lib/todos/list.ex:42` — correctness
+   Trigger path: `TodoController.delete/2` (`lib/web/todo_controller.ex:30`)
+   redirects to `index`, which calls `List.page/1` with `[]`; `hd/1` at
+   `lib/todos/list.ex:42` raises on the empty list.
+   Why it is wrong: the page should render empty, not 500.
+```
+
+### Code reviewer: re-vote mode
+_Agent type: `auto-dev:code-reviewer`. One per reviewer slot that has findings to
+vote on, in parallel (`references/review.md`, Step 1)._
+_Tools: Read, Grep, Glob, Bash, Write, Skill (unused in this mode)._
+
+```
+You are code reviewer R<k>, casting RE-VOTES. Work inside the worktree at
+<worktree>. Another reviewer on the panel raised each finding below, and no one
+else did. Judge each one yourself, from the code. You are not told who raised it
+or how anyone else voted.
+
+For each finding: read the code at its location, follow the trigger path, and
+vote:
+- agree: the path is real and the failure happens. It must be fixed.
+- disagree: the path does not hold, the code already handles it, or it is not a
+  correctness or test problem.
+Give one or two sentences of reason, citing file:line.
+
+Findings:
+<for each: the ID, title, location, category, and the trigger path as the judge
+recorded it>
+
+Write <artifact-dir>/review/pass-<n>/VOTES-R<k>.md to this template (strict):
+<paste the VOTES-R<k>.md template>
+
+Do NOT modify code. Return: your votes, one line each.
+```
+
+### Review judge: consolidate
+_Agent type: `auto-dev:review-judge`._
+_Tools: Read, Grep, Glob, Bash, Write._
+
+```
+You are the REVIEW JUDGE for code-review pass <n>. Work inside the worktree at
+<worktree>. Reviewers <R1, R2, R3 — or name the one that failed> reviewed this
+scope independently: <scope>. Their reports are in <artifact-dir>/review/pass-<n>/.
+Read every one. <Pass 2 or later: also read the previous
+<artifact-dir>/CODE_REVIEW.md.>
+
+1. Merge duplicates. The same root cause at the same place is one finding,
+   however each reviewer worded it. List which reviewers raised it.
+2. Trace every finding's trigger path in the code yourself. Record whether you
+   confirmed or refuted it, and why. Be as ready to refute as to confirm: noise
+   that reaches the coder costs a revise round.
+3. Apply the rubric below to give each finding a verdict and a confidence:
+   - must-fix High: correctness or tests, introduced, path confirmed, raised by 3.
+   - must-fix Medium: the same, raised by 2.
+   - re-vote: the same, raised by 1. The orchestrator collects the votes and
+     decides it; put it under "Pending re-vote".
+   - advisory Low: an advisory category (scope, performance, design,
+     conventions, style).
+   - noise: path refuted, or the code already handles it. Give the reason.
+   - dropped: pre-existing and not security. Add it to the count only.
+   - Security concerns get no verdict. List them under "Security leads".
+<Pass 2 or later: 4. For each must-fix finding from earlier passes, check the
+   current code and mark it `fixed (pass <n>)` or `open`. Carry every earlier row
+   forward, so the file holds the whole review history.>
+5. Set the overall confidence by the rubric. While re-votes are pending, write
+   "provisional (re-votes pending)"; the orchestrator finalizes it.
+
+The rubric:
+<paste the rubric: code review findings + overall report confidence>
+
+Write <artifact-dir>/CODE_REVIEW.md to this template (strict):
+<paste the CODE_REVIEW.md template>
+
+Do NOT modify code. Return: counts by verdict, and each re-vote finding's ID with
+the slot that raised it.
+```
+
+### Security reviewer
+_Agent type: `auto-dev:security-reviewer-sensitive` when `SPEC.md`'s
+`Security/Compliance criteria` section lists controls for a sensitive path,
+otherwise `auto-dev:security-reviewer`._
+_Tools: Read, Grep, Glob, Bash, Write, Skill._
+
+```
+You are the SECURITY REVIEW. Work inside the worktree at <worktree>. Your job is
+to find vulnerabilities in this change. Assume there is a hole and try to exploit
+it.
+
+The change is everything since the branch left its base, committed or not:
+`git diff $(git merge-base origin/<base> HEAD)`. New files are marked
+intent-to-add, so the diff shows them.
+
+1. Run the /security-review skill with the Skill tool. Tell it the base branch
+   is <base>, and that uncommitted changes are part of the change. Its findings
+   are your starting point, not your answer.
+2. Then go further yourself. Read SPEC.md's Security/Compliance criteria
+   (<artifact-dir>/SPEC.md), the security directives named in
+   <artifact-dir>/profile.md, and the binding rules (<summary>). Try to exploit:
+   injection, missing authz or authn, secret or PII exposure, unsafe
+   deserialization, weakened TLS or crypto, path traversal, SSRF, mass
+   assignment, anything the directives name.
+3. Check each lead from the code review panel: <leads, or "none">.
+4. For every finding, say:
+   - Origin: introduced (the vulnerable code is in lines this change adds or
+     modifies, or the change exposes old code to new untrusted input) or
+     pre-existing. Check with `git diff` and `git blame`.
+   - Confidence, by the rubric below.
+   - The path from untrusted input to the exploit, file:line by file:line. For
+     Medium, name the configuration or assumption it depends on.
+<Run 2 or later: 5. Read the previous <artifact-dir>/SECURITY_REVIEW.md. For each
+   must-fix finding in it, check the current code and mark it `fixed (run <n>)` or
+   `open`. Carry the earlier rows forward.>
+
+The rubric:
+<paste the rubric: security findings + overall report confidence>
+
+Write <artifact-dir>/SECURITY_REVIEW.md to this template (strict):
+<paste the SECURITY_REVIEW.md template>
+Leave every Verified cell as `pending`; the judge fills them in.
+
+Do NOT modify code. Return: counts by origin and confidence, and anything you
+could not cover.
+```
+
+### Review judge: security-verify
+_Agent type: `auto-dev:review-judge`. Spawn once per security-review run that has
+any High or Medium finding._
+_Tools: Read, Grep, Glob, Bash, Write._
+
+```
+You are the REVIEW JUDGE, verifying SECURITY findings. Work inside the worktree at
+<worktree>. Read <artifact-dir>/SECURITY_REVIEW.md. Only one agent reviewed
+security, so nothing voted on these findings. You are the second pair of eyes.
+
+For each finding rated High or Medium, introduced or pre-existing:
+1. Trace the path from untrusted input to the exploit in the code yourself.
+2. Check the origin claim with `git diff $(git merge-base origin/<base> HEAD)`
+   and `git blame`. If it is wrong, correct it and say so.
+3. Write `confirmed` or `refuted` in its Verified cell, and your reason under
+   its detail heading. A refuted finding's verdict becomes `advisory`.
+Then recompute the header counts and the overall confidence.
+
+The rubric:
+<paste the rubric: security findings + overall report confidence>
+
+Edit only <artifact-dir>/SECURITY_REVIEW.md, and keep its template. Do NOT modify
+code. Return: each finding's ID with confirmed or refuted, and the corrected
+counts.
+```
+
+Must-fix findings from either review go back to the **coder**
+(`auto-dev:coder`) using the Phase 5 correction brief above, one brief per review
+pass covering every open must-fix finding. Describe each one as the required
+behavior and where, as that brief says, and include its trigger path as the case
+the fix's test must cover. A review-stage correction lands after `/simplify` and
+the `lint/` reports were written, so it invalidates more than a Phase 5 one does.
+Which reports to refresh, the cleanup agent's scoped re-spawn, the re-review, and
+what happens when the budget runs out with findings still open are all in
 `references/correction-loop.md`.

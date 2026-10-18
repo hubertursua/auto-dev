@@ -87,7 +87,8 @@ wrote itself.
   and a submodule with only uncommitted content inside it is left out, since
   nothing can stage that; this is the list the commit stages), any submodule the
   check below names as not committed, quality-gate results (each check pass),
-  acceptance status from `SPEC_EVAL.md`, and any unresolved assumptions. Read
+  acceptance status from `SPEC_EVAL.md`, **the two reviews** (below), and any
+  unresolved assumptions. Read
   the quality-gate results from `lint/*.md`: there must be one report per `gate`
   command in `profile.md`, each `pass`. A missing or failing report means Phase 5
   never reached green. Do not ask this gate on it; that is Phase 5's
@@ -104,7 +105,35 @@ wrote itself.
   **stop and report** — the pipeline never commits inside a submodule. If it is
   only generated output (from `setup` or a build), name the submodule in the
   summary as not committed.
+- **The two reviews (before asking):** from `CODE_REVIEW.md` and
+  `SECURITY_REVIEW.md`. For each, give the overall confidence with its reason,
+  the must-fix findings fixed, and any still open, named one by one with their
+  confidence. Then list the pre-existing security findings for the user, each
+  with its confidence and location. Leave advisory findings and noise out; say
+  only how many there are and where they are. A **Low** overall confidence is a
+  warning, never a clean pass: say what failed. For example:
+  ```
+  Code review — confidence: High (3/3 reviewers, full diff)
+    Must-fix: 0 open · 2 fixed (C1 High, C2 Medium)
+    Advisory: 4 (in CODE_REVIEW.md)
+  Security review — confidence: High
+    Must-fix: 0 open · 1 fixed (S1 High)
+    Pre-existing, for you: 1 — S2 (Medium) lib/auth.ex:88, session token not rotated on login
+  ```
+  A must-fix finding is open here only when the iteration budget ran out
+  (`references/correction-loop.md`, _On exhaustion_). Say so, and that `Open PR`
+  ships it listed in the PR body's `Review` section.
 - **Options:** `Open PR` · `Hold (don't push yet)` · `Stop`.
+- **Triage, only when there are pre-existing security findings for the user:**
+  ask a second question in the same `AskUserQuestion` call, one per finding (up
+  to four; group the rest into one question if there are more):
+  `Leave it (note in the PR body)` · `Fix it in this PR` · `Ignore it`.
+  `Fix it in this PR` is a correction (`references/correction-loop.md`, entry
+  _Phase 6a — review_): it spends a round, the fix is reviewed like any other
+  (`references/review.md`), and the gate fires again on the result. `Leave it`
+  adds the finding to the PR body's `Review` section. `Ignore it` records the
+  decision in `WORK_LOG.md` and nothing else. Record every triage decision, and
+  its reason, in `WORK_LOG.md`.
 
 ### Staging gate — Phase 6b (skip entirely if no staging branch)
 - **Summary:** PR link, PR CI status, target `staging` branch, that this is a
@@ -116,7 +145,8 @@ Collect the human review state before asking (`gh pr view --json
 isDraft,reviewDecision,reviews,comments,mergeable,mergeStateStatus`) — this gate is the only
 place a teammate's feedback enters the pipeline.
 - **Summary:** PR link, CI status (must be green, or `CI: none`), **`reviewDecision` and any
-  unresolved review comments**, `PR_REVIEW.md` blocker count, `mergeable` /
+  unresolved review comments**, the open must-fix counts from `CODE_REVIEW.md` and
+  `SECURITY_REVIEW.md` (with their overall confidence), `mergeable` /
   `mergeStateStatus`, and that the merge is via `gh pr merge` respecting branch
   protection.
 - **Options:** `Merge PR to main` · `Hold` · `Stop`.
@@ -134,10 +164,12 @@ signs off on the change itself.
 Never start a multi-PR run unapproved.
 - **Summary:** why the ticket exceeds one PR, the proposed ordered sub-tasks with
   their dependencies, that each becomes its own branch and PR, and **what it will
-  cost**: roughly 4 or 7 workers per sub-task depending on how each is likely to
-  size up, plus the approvals it will ask for — a PR gate and a main gate per
-  sub-task, and a staging gate too where the repo has one. Six sub-tasks is on the
-  order of forty workers and fifteen gates. Say the numbers before asking; they
+  cost**: roughly 9 or 12 worker spawns per sub-task depending on how each is
+  likely to size up (the Phase 6a reviews alone are at least 5: three code
+  reviewers, the judge and the security reviewer, plus re-votes, a verification,
+  and a re-review after every fix), plus the approvals it will ask for — a PR gate
+  and a main gate per sub-task, and a staging gate too where the repo has one. Six
+  sub-tasks is on the order of sixty to seventy workers and fifteen gates. Say the numbers before asking; they
   are what the decision actually turns on.
 - **Options:** `Run them in order` · `Adjust the breakdown` · `Do it as one PR
   anyway` · `Stop`.
@@ -269,11 +301,12 @@ regardless of provider on a GitHub repo.
 - Wrap watching in a **bounded timeout** — default **30 min**, overridable with
   `ci_timeout_minutes:` in `.auto-dev.yml` and recorded in `profile.md`. Poll every
   ~30s; never block indefinitely.
-- **On green:** continue to the step after the watch — Phase 6a step 6 (Jira →
+- **On green:** continue to the step after the watch — Phase 6a step 7 (Jira →
   In Review) pre-merge, or the next step of 6b/6c post-merge.
 - **On red, pre-merge (Phase 6a):** surface the failing checks (name + link),
-  then enter the correction loop — the steps, the reports to refresh, and the
-  commit-and-re-push are specified once in `references/correction-loop.md`.
+  then enter the correction loop — the steps, the reports to refresh, the review
+  of the fix, and the commit-and-re-push are specified once in
+  `references/correction-loop.md`.
   Two things stop the loop before the budget does: a failure the coder cannot fix
   (infrastructure, a flaky external service, a missing secret), and a budget that
   has run out. In both cases **hold at the gate** and say which it was. Never
