@@ -10,8 +10,13 @@ Checks:
 - every helper script is executable and starts with a python3 shebang;
 - every agent file has name, model, effort and tools in its frontmatter, and its
   model and effort match the worker tables in SKILL.md and README.md;
-- every file path SKILL.md and README.md name under references/ or scripts/
-  exists, and README.md names every helper script.
+- every file path SKILL.md and README.md name under references/, scripts/ or
+  templates/ exists, and README.md names every helper script;
+- every agent file's {{slots}} are slots `autodev.py brief` knows (AUTO, CALLER
+  or OPTIONAL in scripts/lib/briefs.py), its Result block lists exactly the
+  `next` tokens briefs.RESULTS allows, and every templates/<file> it names
+  exists; every worker in briefs.RESULTS has an agent file and vice versa;
+- every template a script parses exists in templates/.
 """
 
 import json
@@ -118,7 +123,7 @@ def check_agents():
             fail(f"{table}: worker table names auto-dev:{agent}, which has no agents/ file")
 
 
-PATH_REF = re.compile(r"(?:skills/auto-dev/)?((?:references|scripts)/[\w.-]+\.(?:md|py))")
+PATH_REF = re.compile(r"(?:skills/auto-dev/)?((?:references|scripts|templates)/[\w.-]+\.(?:md|py))")
 
 
 def check_paths():
@@ -133,12 +138,58 @@ def check_paths():
             fail(f"README.md: does not mention scripts/{path.name} (see Dependencies)")
 
 
+# Templates a script reads by name (scripts/lib/artifacts.py and cmd_*.py).
+PARSED_TEMPLATES = ("SPEC.md", "IMPLEMENTATION.md", "MANIFEST.md", "SPEC_EVAL.md",
+                    "R.md", "VOTES.md", "CODE_REVIEW.md", "SECURITY_REVIEW.md", "lint.md",
+                    "corrections.md", "fix.md", "pr-body.md", "rubric.md")
+TEMPLATE_REF = re.compile(r"templates/([\w.-]+\.md)")
+NEXT_LINE = re.compile(r"^next: (.+)$", re.MULTILINE)
+
+
+def load_briefs():
+    sys.path.insert(0, str(SKILL_DIR / "scripts"))
+    from lib import briefs  # the scripts dir is only on sys.path from here
+    return briefs
+
+
+def check_briefs():
+    briefs = load_briefs()
+    agents = {p.stem: p.read_text(encoding="utf-8") for p in (ROOT / "agents").glob("*.md")}
+    for worker in sorted(set(briefs.RESULTS) - set(agents)):
+        fail(f"scripts/lib/briefs.py: RESULTS names {worker}, which has no agents/ file")
+    for worker, text in sorted(agents.items()):
+        rel = f"agents/{worker}.md"
+        if worker not in briefs.RESULTS:
+            fail(f"{rel}: no entry in scripts/lib/briefs.py RESULTS")
+            continue
+        for slot in sorted(set(briefs.SLOT_RE.findall(text))):
+            if briefs.kind(worker, slot) is None:
+                fail(f"{rel}: slot {{{{{slot}}}}} is not AUTO, CALLER or OPTIONAL in "
+                     "scripts/lib/briefs.py")
+        block = re.search(r"```auto-dev-result\n(.*?)```", text, re.DOTALL)
+        if not block:
+            fail(f"{rel}: no ```auto-dev-result block in its Result section")
+        else:
+            line = NEXT_LINE.search(block.group(1))
+            tokens = {t.strip() for t in line.group(1).split("|")} if line else set()
+            if tokens != briefs.RESULTS[worker]:
+                fail(f"{rel}: Result block's next tokens {sorted(tokens)} differ from "
+                     f"briefs.RESULTS {sorted(briefs.RESULTS[worker])}")
+        for name in sorted(set(TEMPLATE_REF.findall(text))):
+            if not (SKILL_DIR / "templates" / name).exists():
+                fail(f"{rel}: names templates/{name}, which does not exist")
+    for name in PARSED_TEMPLATES:
+        if not (SKILL_DIR / "templates" / name).exists():
+            fail(f"templates/{name} is missing: a script parses it")
+
+
 def main():
     check_json()
     check_plugin_metadata()
     check_scripts()
     check_agents()
     check_paths()
+    check_briefs()
     for msg in errors:
         print(f"FAIL {msg}")
     if errors:

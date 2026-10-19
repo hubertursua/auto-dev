@@ -209,8 +209,9 @@ open, a **triager** reads what the orchestrator never sees: a red CI run's logs
 code goes to the coder) and human reviewers' comments (blocker, nit, question,
 already addressed, or about a held-out check). Comment text never reaches the
 orchestrator, so a comment can't steer the run. Those fixes are reviewed the
-same way before they are pushed. The procedure and the full rubric
-are in `skills/auto-dev/references/review.md`.
+same way before they are pushed. The procedure is in
+`skills/auto-dev/references/review.md` and the full rubric in
+`skills/auto-dev/templates/rubric.md`.
 
 ## Stack profiles
 
@@ -449,8 +450,13 @@ conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
 `spec-overlap` (refuses a brief or plan that copies `SPEC.md`'s wording),
 `votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`),
 `review-scope` (the snapshot a correction is diffed against) and `gate-summary`
-(checks a gate's preconditions and prints its summary and question). Shared
-code lives in `skills/auto-dev/scripts/lib/`.
+(checks a gate's preconditions and prints its summary and question). For
+workers: `brief` (writes a worker's brief file from state, refusing when a value
+only the orchestrator can give is missing, and prints the one-line prompt to
+spawn it with), `record` (checks the result a worker wrote against the
+artifact it wrote, and stops on a mismatch) and `check-artifact` (workers check
+what they wrote against its template before returning). Shared code lives in
+`skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
 The profiler names one only if the repo's ecosystem uses one and it is on your
@@ -496,6 +502,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `state.json` | `autodev.py`, Phase 1 onward | the run's state: phases, size check, gates, budget and every round spent; written only by `autodev.py` |
 | `WORK_LOG.md` | generated from `state.json` | the ledger for people to read: phase status, size check, high-risk flag, gate decisions, budget |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
+| `briefs/`, `returns/` | `autodev.py brief`, each worker | each worker's brief file, and the result it returned |
 | `HANDOFF.md` | each session's end | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
@@ -534,10 +541,11 @@ branch protection.
 
 ```
 .claude-plugin/         plugin.json (name, version) and marketplace.json
-agents/                 one agent type per worker: tools, model, effort, role
+agents/                 one agent type per worker: tools, model, effort, and its whole brief
 skills/auto-dev/
   SKILL.md              the orchestrator's spine: phases, sessions, gates, rules
   references/           detail read on demand, one file per phase or topic
+  templates/            the artifact templates and the review rubric workers read by path
   scripts/              the Python helpers listed under Dependencies
     lib/                shared code for autodev.py (not run directly)
   evals/                evals.json (pipeline evals, with fixtures in files/)
@@ -593,6 +601,11 @@ rules for changing a script are in `CLAUDE.md`.
   FIX blocks that a script applies; the planner settles a `BLOCKED` step; a new
   `triager` worker reads red CI and human PR comments. The orchestrator no
   longer writes correction briefs or edits `SPEC.md` and `IMPLEMENTATION.md`.
+- **Briefs live in the agent files.** Each worker's instructions are in
+  `agents/<name>.md` (its system prompt); `autodev.py brief` writes only the
+  values that vary, and the spawn prompt is one line. Every worker ends with an
+  `auto-dev-result` block, which `autodev.py record` checks against what it
+  wrote. Templates and the rubric moved to `skills/auto-dev/templates/`.
 
 A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
 and start again.

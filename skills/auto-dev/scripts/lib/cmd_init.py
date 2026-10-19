@@ -153,6 +153,7 @@ def main(args):
         "inline_comments": bool(config.get("pr_review", {}).get("inline_comments",
                                                                 False)),
         "jira_states": config.get("jira", {}).get("states", {}),
+        "test_notes": config.get("test_notes", ""),
         "setup": config.get("setup", []),
         "gate": config.get("gate", []),
     }

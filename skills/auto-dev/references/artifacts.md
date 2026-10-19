@@ -32,7 +32,7 @@ and the reports that judge the build.
 - **Stamps: which code each result checked** — the `Tree:` line on every report
   that judges the code, when `scripts/check-fresh.py` compares it with the code
   now, and what its exit codes mean.
-- **Artifact templates** — skeletons to paste into briefs, and how strict each
+- **Artifact templates** — where the skeletons live (`templates/`), and how strict each
   output is (strict vs. flexible, and what reads it back):
   - **`HANDOFF.md` (end of S1 and S2, or a context checkpoint; orchestrator)**
   - **`profile.md` (Phase 1, orchestrator)**
@@ -119,6 +119,8 @@ brief** — always substitute `<artifact-dir>`.
   CODE_REVIEW.md          # the judge's consolidated code review: verdicts, votes, confidence (Phase 6a)
   SECURITY_REVIEW.md      # the security review: origin, confidence, verification (Phase 6a)
   triage/                 # the triager's required changes: ci-<n>.md, human-<n>.md (Phase 6)
+  briefs/                 # each worker's brief file, <worker>-<n>.md (autodev.py brief)
+  returns/                # each worker's result, <worker>-<n>.json
   lookups/                # lookup answers, <n>.md (any phase)
 ```
 
@@ -457,8 +459,8 @@ shape.
   below). Drives the Phase 5 correction loop
   back into the coder. Rewritten in full by every verifier re-spawn. Nothing is
   committed at this point, so the evidence comes from the working tree rather than
-  a commit range — `references/subagent-prompts.md`, _Verifier_, gives the exact
-  invocation and why each half of it matters.
+  a commit range — `agents/verifier.md` gives the exact invocation, and
+  `references/subagent-prompts.md`, _Verifier_, why each half of it matters.
 - **`evidence/`** — what the verifier ran and saw: the audit output
   (`integrity.txt`), the acceptance run (`acceptance.txt`), and per condition its
   stated expectation, the command, the result and the last lines of output
@@ -518,8 +520,9 @@ writer that checks over a while compares the tree before and after, and writes
 verifier does this itself. The two reviews are checked by other agents before
 their writer runs, so you take the hash: run `--print-tree` just before
 spawning the code review panel, and again before spawning the security
-reviewer, and paste it into the judge's or the security reviewer's brief. The
-writer writes it only if its own `--print-tree` still matches.
+reviewer: `autodev.py brief` fills it into the judge's and the security
+reviewer's `tree` slot. The writer writes it only if its own `--print-tree`
+still matches.
 
 **Why a tree hash.** The checks run before anything is committed, so there is no
 commit to name yet. A tree hash names the exact contents of every file, committed
@@ -578,8 +581,9 @@ Skeletons for the artifacts a worker or the orchestrator writes. They fix the
 *shape* — the contracts above fix the content. Keep the headings; a later phase reads
 them back (Phase 6a builds the PR body straight out of `SPEC_EVAL.md`).
 
-**Paste the relevant template into the worker's brief, with its strictness line.**
-A worker has no path to this file and cannot follow a reference to it.
+**The templates are files in `templates/`.** Each worker's agent file names the
+one it writes, and the worker reads it there by path; `autodev.py
+check-artifact` checks the result against it.
 
 **How strict each template is.** Match the output to its consumer:
 
@@ -687,34 +691,7 @@ session does not need it.
 
 ### `SPEC.md` (Phase 2, Define agent)
 
-```markdown
-# Spec — <task>
-
-## Context
-<the ticket restated, links, and the research findings needed to act on it: where
-this lives in the code, the modules and flows involved, similar precedents,
-constraints. Stakeholder-readable; no technical design.>
-
-## Conditions
-1. <observable, testable condition in plain language — no file names, no signatures>
-   - Example: Given <starting state>, when <action>, then <observable result>.
-   - Edge: <negative, boundary or error case> → <observable result>
-     (or `none — <why the condition has no edge>`)
-   - Verify by: <unit | integration | end-to-end | manual — <why no agent can observe it>>
-2. <…>
-
-<where a condition is hard to observe, say so in Verify by and give the closest
-observable proxy>
-
-## Assumptions
-- <each ambiguity resolved, and how it was resolved>
-
-## Security/Compliance criteria
-S1. <the specific control, pulled from the sources profile.md names>
-   - Example: Given <state>, when <the abusive or unauthorized action>, then <it is refused, and how>.
-   - Verify by: <unit | integration | end-to-end | manual — <why>>
-<Omit this section entirely when the task touches no sensitive path.>
-```
+Template: `templates/SPEC.md`, which the worker reads by path.
 
 Every condition and criterion carries its Example, Verify by and (conditions)
 Edge lines: they are what the acceptance tester turns into checks, so a condition
@@ -727,124 +704,18 @@ the coder works `Build sequence` top to bottom, and the plan reviewer checks
 `Build sequence` and `Test plan` against the spec. What goes under `Design` and
 `Data flow` adapts to the task.
 
-```markdown
-# Implementation plan — <task>
-
-## Files
-- `<path>` — <create | modify>: <what changes there>
-
-## Design
-<modules, functions, data structures — and why this shape, where it is not obvious>
-
-## Data flow
-<how a request, event or record moves through the change, end to end>
-
-## Build sequence
-1. <small, independently verifiable unit> — test: `<test file>`
-2. <…>
-
-## Test plan
-| Test | Location | Proves | Spec condition |
-|------|----------|--------|----------------|
-| <test name> | `<path>` | <the behavior, in the plan's own words> | <#> |
-
-## Migrations / config
-<schema migrations, config or env changes — or "none">
-```
+Template: `templates/IMPLEMENTATION.md`, which the worker reads by path.
 
 Cite spec conditions **by number only**, never by their wording: the coder reads
 this file, and the spec's language stays out of it (*Why two documents*).
 
 ### `acceptance/MANIFEST.md` (Phase 3, acceptance tester)
 
-Filled-in rows are an example in TypeScript.
-
-```markdown
-# Acceptance checks — <task>
-
-Written from SPEC.md alone, run on the untouched tree at <short sha> (`git rev-parse HEAD` before any check was written: the commit the worktree was cut from).
-Sealed copies are under `files/`; the verifier installs them after the build.
-Each condition's run on that tree is in `base-run/C<n>.txt`.
-
-| # | Condition | Check (path :: test name) | Covers | Level | Kind | Base run |
-|---|-----------|---------------------------|--------|-------|------|----------|
-| 1 | <condition, in the spec's own words> | `src/todos/todo-delete.acceptance.test.ts` :: "owner deleting a todo removes it from the list" | Example | integration | fail-to-pass | failed: `TypeError: todos.delete is not a function` |
-| 1 | <same condition> | `src/todos/todo-delete.acceptance.test.ts` :: "deleting a todo that does not exist returns not found" | Edge | integration | fail-to-pass | failed: `TypeError: todos.delete is not a function` |
-| 2 | <condition> | <path :: name> | <Example, Edge, or Other: <which part>> | <unit, integration or end-to-end> | pass-to-pass | passed |
-| S1 | <security/compliance criterion> | <path :: name> | Example | integration | fail-to-pass | failed: expected 404, got 200 |
-
-A fail-to-pass check whose Base run is not a right-reason failure does not belong
-here. A repaired check reads `not re-run (repair)`. Covers may name more than
-one part (`Example, Edge`) when one check covers both.
-
-## Not automatable
-| # | Condition | Why no check can drive it | Proxy a verifier can run |
-|---|-----------|---------------------------|--------------------------|
-| <n> | <condition> | <reason> | <command, request or log line — or "none"> |
-| <n> (Edge) | <the condition's Edge line> | <reason> | <proxy — or "none"> |
-
-<"None." when every condition, and every Edge, has a check>
-
-## Assumptions
-- <each choice made about entry points or expected values, and why>
-```
+Template: `templates/MANIFEST.md`, which the worker reads by path.
 
 ### `SPEC_EVAL.md` (Phase 5, verifier)
 
-Filled-in rows are an example in TypeScript.
-
-```markdown
-# Acceptance evaluation — <task>
-
-Read from the working tree, against the commit the worktree was cut from (`<CUT sha>`).
-Tree: <hash from check-fresh.py --print-tree after your last run>
-Pass: <first | re-check after <what changed>> · acceptance run: <n passed / n total> (`evidence/acceptance.txt`)
-
-| # | Condition | Verdict | Tier | Evidence | In plain words |
-|---|-----------|---------|------|----------|----------------|
-| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todo-delete.acceptance.test.ts` :: "owner deleting…" passed (`evidence/C1.txt`) | the test written before the code passes |
-| 2 | <condition> | met | Adequate | expected `GET /todos` without the deleted id; saw it (`evidence/C2.txt`) | checked by listing the todos after a delete |
-| 3 | <condition> | partial | Weak | <what holds, what was not run, and why> | <the same, for a reader who doesn't know this pipeline> |
-| 4 | <condition> | unmet | Strong | acceptance check failed: <the failing assertion, one line> | <what still fails, in a sentence> |
-| 5 | <condition> | manual | — | a human must check: <exactly what, and how> | <what a person should check> |
-| S1 | <security/compliance criterion> | met | Strong | <check passed> | <one sentence> |
-
-Verdicts: `met` needs every acceptance check for the condition passing AND Strong
-or Adequate evidence AND no surviving mutant judged a test gap on its lines; Weak evidence caps a condition at `partial`; a failing
-acceptance check is `unmet`; `manual` only for a condition MANIFEST.md lists as not
-automatable that could not be observed here either. Security/compliance criteria
-are rows in this table — never a separate pass.
-
-## Test integrity
-`check-tests.py` exit <0 | 1 | 3> (`evidence/integrity.txt`)
-
-| Finding | Location | Judgment | Reason |
-|---------|----------|----------|--------|
-| REMOVED_ASSERTION | `src/todos/todos.test.ts:-42` | Justified | condition 3 changes the response to 404 |
-| ADDED_SKIP | `src/todos/list.test.ts:10` | Unjustified | no condition removes this behavior |
-
-<"None." when the audit is clean and the diff shows no gaming>
-
-## Mutation
-<n> mutants (cap <n> | off): <n> killed · <n> timeout (counted caught) · <n> survived · <n> invalid (`evidence/mutants.json.results.json`)
-
-| Mutant | Location | Change | Condition | Judgment |
-|--------|----------|--------|-----------|----------|
-| M4 | `src/todos/todos.ts:58` | `n <= 10` → `n < 10` | 2 | Test gap — no test accepts exactly 10; condition 2 partial |
-| M7 | `src/todos/todos.ts:71` | `items.sort(byDue)` → `items.sort((a, b) => byDue(b, a))` | — | Equivalent — the list has at most one element here |
-
-<list survivors only; "None survived." when none did>
-
-## Defective acceptance checks
-<each check that asserts something SPEC.md does not say, or is too weak for
-what MANIFEST.md says it covers, and why — or "None.">
-
-## Unresolved
-<every condition still partial or unmet, and every Unjustified finding, as this
-pass found them, then every `manual` condition, then every Edge left for a
-person (a met condition whose `<n> (Edge)` you could not observe). This is
-what the PR body's unticked boxes are drawn from.>
-```
+Template: `templates/SPEC_EVAL.md`, which the worker reads by path.
 
 The verifier rewrites the whole file on every pass, from scratch and without
 reading the previous version: its verdicts must not lean on the last pass's.
@@ -854,39 +725,14 @@ report and the stop-and-report's "what was tried" come from there.
 
 ### `review/pass-<n>/R<k>.md` (Phase 6a, code reviewer)
 
-```markdown
-# Code review R<k> — pass <n>
-
-Scope: <the scope as briefed>
-/code-review xhigh: <ran | failed: <reason>>   ·   Coverage: <full | partial: <files not covered, and why>>
-
-## Findings
-1. **<title>** — `path:line` — <correctness | tests | scope | performance | design | conventions>
-   Trigger path: <entry point `file:line` → … → the failure, with the input>
-   Why it is wrong: <one or two sentences>
-
-## Security leads
-- `path:line` — <one line, unchased>
-
-## Pre-existing
-<n> problems seen in code this change did not introduce (count only).
-```
+Template: `templates/R.md`, which the worker reads by path.
 
 An empty `Findings` section says `none — <what you tried>`. An empty
 `Security leads` section says `none`.
 
 ### `review/pass-<n>/VOTES-R<k>.md` (Phase 6a, code reviewer re-voting)
 
-Filled-in rows are an example in TypeScript.
-
-```markdown
-# Re-votes R<k> — pass <n>
-
-| Finding | Vote | Reason |
-|---------|------|--------|
-| C4 | agree | `src/todos/list.ts:42` — `items[0].id` on the empty list; nothing upstream guards it |
-| C6 | disagree | `src/todos/save.ts:18` — the schema already rejects a blank title |
-```
+Template: `templates/VOTES.md`, which the worker reads by path.
 
 ### `CODE_REVIEW.md` (Phase 6a, review judge)
 
@@ -895,46 +741,7 @@ each `Pending re-vote` row to `Must-fix` or `Advisory`, and finalizing the
 overall line). It holds every pass, so earlier must-fix findings stay visible as
 `fixed`.
 
-```markdown
-# Code review — <branch>
-
-**Overall confidence: <High | Medium | Low | provisional (re-votes pending)>** — <reviewers finished: n/3; coverage: full | partial; must-fix decided 2–1: <IDs | none>>
-Latest pass: <n> — scope: <scope>
-Tree: <hash from check-fresh.py --print-tree for this pass>
-Must-fix: <open> open · <fixed> fixed   ·   Advisory: <n>   ·   Noise: <n>   ·   Dropped (pre-existing): <n>
-
-## Must-fix
-| ID | Finding | Location | Category | Votes | Confidence | Status |
-|----|---------|----------|----------|-------|------------|--------|
-| C1 | <title> | `path:line` | correctness | 3/3 | High | open |
-| C2 | <title> | `path:line` | tests | 2/3 (re-vote) | Medium | fixed (pass 2) |
-
-### C1 — <title>
-Trigger path: <entry point `file:line` → … → failure, as the judge confirmed it>
-Judge: <why it holds>
-Required change: <what the code must do and where, for the coder>
-In plain words: <one sentence for the PR's reader>
-
-## Pending re-vote
-| ID | Finding | Location | Category | Raised by | Re-voters | Votes |
-|----|---------|----------|----------|-----------|-----------|-------|
-
-## Advisory
-| ID | Finding | Location | Category | Votes | Confidence | Why advisory |
-|----|---------|----------|----------|-------|------------|--------------|
-
-## Noise
-| ID | Finding | Raised by | Why dismissed |
-|----|---------|-----------|---------------|
-
-## Security leads
-- `path:line` — <lead> (raised by R<k>) → passed to the security review
-
-## Passes
-| Pass | Scope | Reviewers finished | Must-fix found | Re-votes |
-|------|-------|--------------------|----------------|----------|
-| 1 | whole change | 3/3 | 2 | 1 |
-```
+Template: `templates/CODE_REVIEW.md`, which the worker reads by path.
 
 An empty section says `none`; an empty table is a section nobody filled, not a
 clean one. `Pending re-vote` is empty once the orchestrator has applied the votes.
@@ -945,55 +752,11 @@ The security reviewer writes it with every `Verified` cell `pending`; the
 security-verify judge fills those cells, corrects any origin, and recomputes the
 header.
 
-```markdown
-# Security review — <branch>
-
-**Overall confidence: <High | Medium | Low>** — <finished: yes | no; coverage: full | partial; High/Medium verified: <n>/<n>>
-Run <n> — reviewer: <security-reviewer | security-reviewer-sensitive> — scope: the whole change since `<merge-base>`
-Tree: <hash from check-fresh.py --print-tree for this run>
-Must-fix: <open> open · <fixed> fixed   ·   For the user (pre-existing): <n>   ·   Advisory: <n>
-
-## Findings
-| ID | Finding | Location | Origin | Confidence | Verified | Verdict | Status |
-|----|---------|----------|--------|------------|----------|---------|--------|
-| S1 | <title> | `path:line` | introduced | High | confirmed | must-fix | open |
-| S2 | <title> | `path:line` | pre-existing | Medium | confirmed | for the user | — |
-| S3 | <title> | `path:line` | introduced | Low | — | advisory | — |
-
-### S1 — <title>
-Path: <untrusted input → `file:line` → … → the exploit>
-Depends on: <the configuration or assumption — Medium only>
-Verified: <the judge's reason>
-Required change: <confirmed, introduced must-fix only: what the code must do and where>
-In plain words: <one sentence for the PR's reader>
-
-## Panel leads checked
-| Lead | Result |
-|------|--------|
-| `path:line` — <lead> | <finding ID, or "not a vulnerability: <why>"> |
-
-## Coverage
-<what was covered; any file not covered, and why>
-```
+Template: `templates/SECURITY_REVIEW.md`, which the worker reads by path.
 
 ### `lint/<CHECK>.md` (Phase 5, cleanup agent) — one per `gate` entry
 
-```markdown
-# <CHECK> — <pass | fail>
-
-- **Command:** `<the exact command from profile.md, run verbatim>`
-- **Final status:** pass
-- **Runs:** <n>
-- **Tree:** <hash from check-fresh.py --print-tree, once every check's final run is done>
-
-## Fixed to get here
-- `path:line` — <what the check flagged, and the change that cleared it>
-
-## Output tail (final run)
-<the last lines of output, fenced>
-
-**Suppressions:** <none | the narrowest suppression applied, and why it was needed>
-```
+Template: `templates/lint.md`, which the worker reads by path.
 
 ## The PR body
 
@@ -1070,109 +833,7 @@ inventing one; its test link still lets the reader check. Tests written before
 test's lines there show it before it was corrected: leave those lines out,
 and the block too if nothing else is left.
 
-````markdown
-## Summary
-<what changed and why, 2–4 sentences — drawn from SPEC.md's Context>
-
-## Acceptance conditions
-**How this was checked.** Before any code was written, a test was written from
-the requirements alone for each requirement below that a test could check, and
-run on the old code (`<base>` at <old sha>), where the tests for new behavior
-failed. The code was first written without those tests in view; then they were
-added back, and any later fix had to make them pass without changing them.
-Checked at commit <sha>: every result below was produced on this code.
-
-**Start review with** the tests written before the code. They state what this
-change must do: [`<path>`](<link>), [`<path>`](<link>)
-
-<When no requirement could be checked by a test, replace both paragraphs above
-with: "No requirement here could be checked by an automated test, so each one
-is under _Checks for a person_. Checked at commit <sha>.">
-
-- [x] **<condition, in the spec's own words>**
-  Test written before the code: [`<path>` › <test name>](<link to its line>) —
-  old code: <failed: <the one-line reason> | passed: it guards behavior that must not change> · now: passes
-  <details><summary>Command and output</summary>
-
-  On the old code, ran `<the base run's command>`:
-  ```
-  <the lines of its output that show this condition's tests failing or passing>
-  ```
-  Now, ran `<command>`, expecting <the expectation>.
-  ```
-  <the last lines of output>
-  ```
-  <for each further run in evidence/C<n>.txt: Also ran `<command>`, expecting
-  <the expectation>, and the same kind of block>
-  </details>
-- [x] **<condition no test written before the code checks in full>**
-  <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
-  <it covers only part of this | it was wrong and was corrected, so it never ran on the old code |
-  it runs at a lower level than this needs, because <why> | its run on the old code didn't
-  show it failing for the reason it should> · now: passes>
-  Checked by running <what, in a few words>: expected <the expectation>, saw
-  <the result>. <when no test could drive it: why>
-  <details>…the same block…</details>
-- [ ] **<condition>** — <partly met | not met>: <what holds, what doesn't, and
-  why it is being shipped anyway>
-  <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
-  old code: <…> · now: <passes | fails: <the failing assertion, one line>>>
-  <details>…the same block, when something was run…</details>
-
-### Checks for a person
-<"None: every requirement was checked automatically." — or, per requirement or
-edge case no automated check could observe:>
-- [ ] **<condition, or the edge case, in the spec's own words>**
-  1. <what to do>
-  2. <what you should see>
-
-  Already checked automatically: <what was run instead and what it showed |
-  nothing could be, because <reason>>
-
-### Changes to tests
-<"No existing test was deleted, skipped or weakened, and every new test checks
-something." — only when SPEC_EVAL.md's Test integrity section is "None.". A
-clean new test is not listed: it is in the diff. Otherwise one line per finding
-in that section, whatever it is about (an existing test changed, a new test
-that asserts nothing, a change to the test setup):>
-- [`<path>`](<link to the line>): <what changed, in plain words> — <because
-  <the requirement that changes this behavior> | not justified: <why it is
-  being shipped anyway>>
-
-### Test strength
-We put <n> small deliberate bugs into the changed code (for example, a
-comparison flipped or a boundary moved by one) and ran the tests against each.
-They caught <n>. <"Every one was caught." — or, per bug they missed:>
-- `<path>:<line>`, `<original>` changed to `<bug>`: <harmless: no input can tell
-  the two apart, because <reason> | not caught: no test checks <the behavior>,
-  so <the requirement above is partly met | it affects no requirement above>>
-<or: "Not run: <reason>." when the check was off or could not run>
-
-## Quality gate
-The repo's own checks, run on commit <short sha>:
-- `<command>`: <passed | failed: <one line>>
-  <details><summary>Output</summary>
-
-  ```
-  <the last lines of output>
-  ```
-  </details>
-
-## Review
-- Code review (<n> independent reviewers) — confidence <High | Medium | Low>:
-  <its one-line reason>. <n> problems that had to be fixed: <n> fixed, <n> open
-- Security review — confidence <High | Medium | Low>: <its one-line reason>.
-  <n> problems that had to be fixed: <n> fixed, <n> open
-<then one line per problem still open: what it is, where, and why it is being
-shipped anyway. Minor suggestions stay out. A security problem that predates
-this change appears here only if the user chose `Separate PR` (listed as a
-follow-up) or `Fix it in this PR` (listed as fixed) at the PR gate.>
-
-## Assumptions
-<the unresolved assumptions from SPEC.md a reviewer should sanity-check>
-
-Generated with [Claude Code](https://claude.com/claude-code)
-````
+Template: `templates/pr-body.md`, which the worker reads by path.
 
 **One box per condition.** Every `SPEC.md` condition, security/compliance
 criteria included, appears exactly once: ticked under _Acceptance conditions_

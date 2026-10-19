@@ -32,6 +32,9 @@ Subcommands:
     votes              plan the code-review re-votes, or apply them
     review-scope       snapshot the tree before a correction; list what it changed
     gate-summary       check a gate's preconditions; print its summary and question
+    brief              write a worker's brief file and print the prompt to spawn it with
+    record             check a worker's result against its artifacts; update state
+    check-artifact     check an artifact against its template before returning it
 
 Every subcommand takes --json. Exit codes, the same for all:
     0  success
@@ -54,6 +57,7 @@ from lib import (
     cmd_review,
     cmd_ship,
     cmd_state,
+    cmd_work,
 )
 from lib.output import CANNOT_RUN, Fail, report_failure
 from lib.proc import CommandError
@@ -83,9 +87,12 @@ COMMANDS = {
     "votes": (cmd_review, cmd_review.votes),
     "review-scope": (cmd_review, cmd_review.review_scope),
     "gate-summary": (cmd_review, cmd_review.gate_summary),
+    "brief": (cmd_work, cmd_work.brief),
+    "record": (cmd_work, cmd_work.record),
+    "check-artifact": (cmd_work, cmd_work.check_artifact),
 }
 # Modules whose add_arguments() also takes the subcommand's name.
-NAMED = (cmd_state, cmd_ship, cmd_checks, cmd_review)
+NAMED = (cmd_state, cmd_ship, cmd_checks, cmd_review, cmd_work)
 
 
 # One line per subcommand, from the "Subcommands:" list in this docstring.
