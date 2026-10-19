@@ -24,6 +24,13 @@ Subcommands:
     merge-pr  merge the PR locked to the checked commit, never --admin
     pr-body   --check: lint a PR description before it is published
     cleanup-worktree   remove the worktree after the final report
+    check-manifest     check the acceptance tester's MANIFEST.md against SPEC.md
+    eval-status        turn SPEC_EVAL.md into ALL_MET, CORRECT, REPAIR or STOP
+    apply-fix          apply a reviewer's FIX blocks to SPEC.md or IMPLEMENTATION.md
+    spec-overlap       refuse a brief or plan that copies SPEC.md's wording
+    votes              plan the code-review re-votes, or apply them
+    review-scope       snapshot the tree before a correction; list what it changed
+    gate-summary       check a gate's preconditions; print its summary and question
 
 Every subcommand takes --json. Exit codes, the same for all:
     0  success
@@ -38,7 +45,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import cmd_handoff, cmd_init, cmd_resume, cmd_ship, cmd_state
+from lib import (
+    cmd_checks,
+    cmd_handoff,
+    cmd_init,
+    cmd_resume,
+    cmd_review,
+    cmd_ship,
+    cmd_state,
+)
 from lib.output import CANNOT_RUN, Fail, report_failure
 from lib.proc import CommandError
 from lib.state import StateError
@@ -59,9 +74,22 @@ COMMANDS = {
     "merge-pr": (cmd_ship, cmd_ship.merge_pr),
     "pr-body": (cmd_ship, cmd_ship.pr_body),
     "cleanup-worktree": (cmd_ship, cmd_ship.cleanup_worktree),
+    "check-manifest": (cmd_checks, cmd_checks.check_manifest),
+    "eval-status": (cmd_checks, cmd_checks.eval_status),
+    "apply-fix": (cmd_checks, cmd_checks.apply_fix),
+    "spec-overlap": (cmd_checks, cmd_checks.spec_overlap),
+    "votes": (cmd_review, cmd_review.votes),
+    "review-scope": (cmd_review, cmd_review.review_scope),
+    "gate-summary": (cmd_review, cmd_review.gate_summary),
 }
 # Modules whose add_arguments() also takes the subcommand's name.
-NAMED = (cmd_state, cmd_ship)
+NAMED = (cmd_state, cmd_ship, cmd_checks, cmd_review)
+
+
+# One line per subcommand, from the "Subcommands:" list in this docstring.
+SUMMARIES = dict(
+    line.strip().split(None, 1) for line in
+    __doc__.split("Subcommands:")[1].split("\n\n")[0].strip().splitlines())
 
 
 class Parser(argparse.ArgumentParser):
@@ -79,7 +107,7 @@ def build_parser():
     sub = parser.add_subparsers(dest="command", parser_class=Parser)
     for name, (module, _) in COMMANDS.items():
         doc = module.__doc__
-        child = sub.add_parser(name, description=doc, help=doc.splitlines()[0],
+        child = sub.add_parser(name, description=doc, help=SUMMARIES.get(name, ""),
                                formatter_class=argparse.RawDescriptionHelpFormatter)
         if module in NAMED:
             module.add_arguments(child, name)

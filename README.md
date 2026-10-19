@@ -428,7 +428,16 @@ green), `merge-staging` (direct merge, never forced, always back on the
 branch), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
 `--admin`, then confirms it merged), `pr-body --check` (lints a PR description:
 strict sections, the checked commit, size, no internal IDs, paths or secrets)
-and `cleanup-worktree`. Shared code lives in `skills/auto-dev/scripts/lib/`.
+and `cleanup-worktree`. Parsers that turn a worker's artifact into a decision:
+`check-manifest` (the acceptance tester's `MANIFEST.md` against `SPEC.md`: which
+conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
+`CORRECT`, `REPAIR` or `STOP`, with the survivors to carry forward), `apply-fix`
+(applies a reviewer's exact old → new FIX blocks, all or nothing),
+`spec-overlap` (refuses a brief or plan that copies `SPEC.md`'s wording),
+`votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`),
+`review-scope` (the snapshot a correction is diffed against) and `gate-summary`
+(checks a gate's preconditions and prints its summary and question). Shared
+code lives in `skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
 The profiler names one only if the repo's ecosystem uses one and it is on your
