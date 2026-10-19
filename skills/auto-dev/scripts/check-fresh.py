@@ -93,9 +93,12 @@ def working_tree_hash(top):
         temp_index = Path(tmpdir) / "index"
         # Start from the real index, not an empty one: it keeps skip-worktree
         # entries (sparse checkouts) and uninitialized submodules, which have
-        # nothing on disk for `git add` to find.
+        # nothing on disk for `git add` to find. Keep its mtime (copy2): git
+        # re-reads a file changed in the same second as the index was written
+        # only because the index's mtime says so. A fresh mtime makes it trust
+        # the cached stat and miss a same-size edit.
         if index.exists():
-            shutil.copyfile(index, temp_index)
+            shutil.copy2(index, temp_index)
         env = {**os.environ, "GIT_INDEX_FILE": str(temp_index)}
         git(top, "add", "-A", "--", ".", f":(exclude){ARTIFACTS_DIR}/", env=env)
         # Drop anything under .auto-dev/ the real index somehow held.

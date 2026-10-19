@@ -187,6 +187,17 @@ class CheckFreshTest(GitRepoCase):
         self.assertIn("STALE: SPEC_EVAL.md", r.stderr)
         self.assertIn("src/app.py", r.stderr)  # what changed since the check
 
+    def test_same_size_edit_right_after_commit_is_seen(self):
+        # git trusts a file's cached stat unless the index's own mtime says it
+        # may be stale ("racy git"); a copied index must keep that mtime.
+        for i in range(30):
+            self.write("src/app.py", f"x = {i % 10}a\n")
+            self.git("add", "src/app.py")
+            self.git("commit", "-q", "-m", f"c{i}")
+            self.write("src/app.py", f"x = {i % 10}b\n")
+            self.assertNotEqual(self.tree(), self.git("rev-parse", "HEAD^{tree}").strip(),
+                                f"try {i}: a same-size edit was missed")
+
     def test_new_untracked_file_is_stale(self):
         self.stamp()
         self.write("src/extra.py", "y = 2\n")

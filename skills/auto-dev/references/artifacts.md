@@ -631,9 +631,11 @@ lists each report that checked something else.
   pass: fix the cause it names and re-run it.
 - `127` — `python3` isn't installed. Get the hash by hand and compare it with the
   first `Tree:` line of each report (`grep -m1 'Tree:' <report>`). The working
-  tree's hash, written through a temporary index so the real one is untouched:
+  tree's hash, written through a temporary index so the real one is untouched
+  (`cp -p` keeps the index's mtime, without which git can miss an edit made in
+  the same second):
   ```bash
-  t=$(mktemp); cp "$(git rev-parse --git-path index)" "$t"; GIT_INDEX_FILE=$t git add -A -- . ':(exclude).auto-dev/' && GIT_INDEX_FILE=$t git write-tree; rm -f "$t"
+  t=$(mktemp); cp -p "$(git rev-parse --git-path index)" "$t"; GIT_INDEX_FILE=$t git add -A -- . ':(exclude).auto-dev/' && GIT_INDEX_FILE=$t git write-tree; rm -f "$t"
   ```
   A commit's: `git rev-parse <rev>^{tree}`.
 
