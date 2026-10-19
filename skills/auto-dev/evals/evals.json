@@ -17,18 +17,18 @@
         "The Define reviewer, planner and plan reviewer are each spawned with their auto-dev agent type, never general-purpose, and without the Agent tool's model parameter",
         "The S1 session ends after writing HANDOFF.md, without spawning the coder",
         "The coder's brief names IMPLEMENTATION.md and does not name or include SPEC.md",
-        "An auto-dev:acceptance-tester is spawned in S1 after the plan review; acceptance/MANIFEST.md maps every SPEC.md condition to a check or lists it under Not automatable, gives each check a Covers part (Example, Edge or Other) and a Level no lower than its condition's Verify by, every fail-to-pass check records a base-run failure, and at S1's end git status in the worktree shows none of the checks",
-        "Every SPEC.md condition with an Edge line that is not `none` has a MANIFEST.md check covering Edge, or an `<n> (Edge)` row under Not automatable",
-        "acceptance/base-run/C<n>.txt exists for every condition with a check, with Commit, Command, Result and Output parts; its Commit is the base commit MANIFEST.md names, and each fail-to-pass check's Result there reads failed",
+        "An auto-dev:acceptance-tester is spawned in S1 after the plan review; acceptance/MANIFEST.md maps every SPEC.md condition to a check or lists it under Not automatable, gives each check a Covers part (Example, Edge or Other) and a Level no lower than its condition's Verify by unless the Level says why, every fail-to-pass check records a base-run failure, and at S1's end git status in the worktree shows none of the checks",
+        "Every SPEC.md condition with an Edge line that doesn't start with `none`, and that isn't wholly under Not automatable, has a MANIFEST.md check covering Edge, or an `<n> (Edge)` row under Not automatable",
+        "acceptance/base-run/C<n>.txt exists for every condition with a check, with Commit, Command, Result and Output parts; its Commit is the base commit MANIFEST.md names, and each check's Result there reads failed for a fail-to-pass check, passed for a pass-to-pass one, or `not re-run (repair)` for a repaired one",
         "The coder's brief does not name acceptance/ or any acceptance check path",
         "SPEC_EVAL.md is written by an auto-dev:verifier whose brief does not name IMPLEMENTATION.md or include the coder's report, and it gives a verdict and an evidence tier (Strong / Adequate / Weak) with evidence for every SPEC.md condition; no condition is met on Weak evidence",
-        "No SPEC_EVAL.md row is Strong unless MANIFEST.md shows checks covering that condition's Example and, when its Edge line is not `none`, its Edge; the verifier does not run the acceptance checks on the base commit",
+        "No SPEC_EVAL.md row is Strong unless MANIFEST.md shows checks covering that condition's Example and, when its Edge line doesn't start with `none`, its Edge; the verifier does not run the acceptance checks on the base commit",
         "The verifier runs scripts/check-tests.py and the installed acceptance checks, and SPEC_EVAL.md records the audit's exit code; the verifier is spawned again after the cleanup agent",
         "The acceptance checks are in the commit, byte-identical to their sealed copies under acceptance/files/",
         "lint/ holds one <CHECK>.md per gate command in profile.md, and every one reports green",
         "The PR is opened as a draft against the base branch, and its body has an Acceptance conditions section (with Checks for a person, Changes to tests and Test strength subsections), a Quality gate section and a Review section",
         "The PR body contains no condition, finding or mutant IDs (such as C1, M3, S1), no .auto-dev/ path, and no evidence tier (Strong, Adequate, Weak) used as a label for a result",
-        "Each ticked condition with a test written before the code names that test as `<path> › <test name>`, linked to the file at the checked commit, with its result on the old code and now, and a collapsed <details> block holding the old code's run (from acceptance/base-run/) and the current command and the end of its output",
+        "Each ticked condition with a test written before the code names that test as `<path> › <test name>`, linked to the file at the checked commit, with its result on the old code and now, and a collapsed <details> block holding the old code's run (from acceptance/base-run/, except for a corrected test) and the current command and the end of its output",
         "The PR body's Changes to tests section lists each finding in SPEC_EVAL.md's Test integrity section with its reason, or, only when that section is None, says no existing test was deleted, skipped or weakened",
         "Each evidence/C<n>.txt has Expected, Command and Result parts, and an Output part unless its Command is `none` with a reason",
         "Nothing under .auto-dev/ appears in the commit",
@@ -156,7 +156,7 @@
       "session": "S3 (CI none)",
       "setup": "Run eval 5 through S2 in a fixture repo with no CI config (profile.md records `CI provider: none`), as in files/. Run interactively so the PR gate can be approved; decline the main gate.",
       "prompt": "auto-dev continue",
-      "expected_output": "S3 reads WORK_LOG.md, HANDOFF.md and profile.md, then SPEC.md, SPEC_EVAL.md, lint/*.md, acceptance/MANIFEST.md and evidence/C<n>.txt for the PR body. It runs the code review panel and the security review first (CODE_REVIEW.md, SECURITY_REVIEW.md), then pauses at the PR gate; on approval it stages explicit paths (deleted paths via `git rm --cached`), passes scripts/check-staged.py --expect, commits, pushes without --force, and opens one draft PR with `gh pr create --base <base> --title … --body-file … --draft` (or a fitting PR skill that meets the same requirements). Because the CI provider is `none` it skips the CI watch entirely and records that; it does not poll `gh pr checks` or treat 'no checks reported' as red. The staging gate is n/a. Before the main gate it fetches the PR branch and runs scripts/check-fresh.py --ref origin/<branch>, which exits 0 (nobody else pushed), and the gate summary names the PR's head commit as the one every result checked. At the main gate it is declined: it stops with the PR open, without merging or moving Jira.",
+      "expected_output": "S3 reads WORK_LOG.md, HANDOFF.md and profile.md, then SPEC.md, SPEC_EVAL.md, lint/*.md, acceptance/MANIFEST.md, acceptance/base-run/C<n>.txt and evidence/C<n>.txt for the PR body. It runs the code review panel and the security review first (CODE_REVIEW.md, SECURITY_REVIEW.md), then pauses at the PR gate; on approval it stages explicit paths (deleted paths via `git rm --cached`), passes scripts/check-staged.py --expect, commits, pushes without --force, and opens one draft PR with `gh pr create --base <base> --title … --body-file … --draft` (or a fitting PR skill that meets the same requirements). Because the CI provider is `none` it skips the CI watch entirely and records that; it does not poll `gh pr checks` or treat 'no checks reported' as red. The staging gate is n/a. Before the main gate it fetches the PR branch and runs scripts/check-fresh.py --ref origin/<branch>, which exits 0 (nobody else pushed), and the gate summary names the PR's head commit as the one every result checked. At the main gate it is declined: it stops with the PR open, without merging or moving Jira.",
       "files": [
         "evals/files/ci-none/WORK_LOG.md"
       ],
@@ -283,13 +283,13 @@
     {
       "id": 17,
       "session": "S2 (an Edge left uncovered)",
-      "setup": "Run eval 1's S1 to completion (or build the equivalent state by hand). Pick a condition whose Edge line is not `none` and that has a separate check covering its Edge: delete that check's sealed file from acceptance/files/ (or, if the file also holds other checks, remove only that test from it), its MANIFEST.md row and its line in the condition's acceptance/base-run/C<n>.txt, as if the tester had left the Edge out.",
+      "setup": "Run eval 1's S1 to completion (or build the equivalent state by hand). Pick a condition whose Edge line doesn't start with `none` and that has a separate check covering its Edge: delete that check's sealed file from acceptance/files/ (or, if the file also holds other checks, remove only that test from it), its MANIFEST.md row, and its Result line and output lines in the condition's acceptance/base-run/C<n>.txt, as if the tester had left the Edge out. Score the verifier's first pass in S2 (its return, and SPEC_EVAL.md before any correction).",
       "prompt": "auto-dev continue",
-      "expected_output": "S2 builds as usual. The verifier reads MANIFEST.md's Covers column and finds no check covering that condition's Edge, so it does not rate the condition Strong. It observes the Edge itself (a test in the change or a direct run) and rates the condition Adequate if that matched its stated expectation, or partial if it could not, and says in the Evidence cell that the held-out checks leave the Edge out. Its other conditions are unaffected.",
+      "expected_output": "S2 builds as usual. The verifier reads MANIFEST.md's Covers column and finds no check covering that condition's Edge, so it does not rate the condition Strong. It observes the Edge itself (a test in the change or a direct run), records that second run in the condition's evidence/C<n>.txt, and rates the condition Adequate, saying in the Evidence cell that the held-out checks leave the Edge out. Its other conditions are unaffected.",
       "files": [],
       "expectations": [
-        "SPEC_EVAL.md's row for the chosen condition is not Strong, and its Evidence names the Edge as not covered by the held-out checks",
-        "evidence/C<n>.txt for that condition shows a command the verifier ran for the Edge, or the row is partial",
+        "SPEC_EVAL.md's row for the chosen condition is met at Adequate, not Strong, and its Evidence names the Edge as not covered by the held-out checks",
+        "evidence/C<n>.txt for that condition holds the acceptance run and a second Expected / Command / Result / Output group for the run the verifier made for the Edge",
         "Other conditions whose checks cover their Example and Edge are still rated Strong"
       ]
     },
@@ -301,8 +301,8 @@
       "expected_output": "The run resumes without asking the tester to run again. The verifier finds no base-run/ files and, for each fail-to-pass check, takes MANIFEST.md's Base run note as the run on the old code, saying so in the Evidence cell; it never re-runs the checks on the base commit. With no Covers column it reads each check against the condition's Example and Edge itself. The PR body gives each test's result on the old code from that note and leaves out the old-code output block.",
       "files": [],
       "expectations": [
-        "No auto-dev:acceptance-tester is spawned in S2, and the verifier runs no command against the base commit or a second worktree",
-        "SPEC_EVAL.md's Evidence for each Strong condition says the old-code result comes from MANIFEST.md's note",
+        "No auto-dev:acceptance-tester is spawned in S2 except in repair mode for a check SPEC_EVAL.md reports defective, and the verifier runs no command against the base commit or a second worktree",
+        "For each condition rated Strong that has a fail-to-pass check, SPEC_EVAL.md's Evidence says the old-code result comes from MANIFEST.md's note",
         "The PR body gives each test's result on the old code, and no <details> block holds an old-code run"
       ]
     }

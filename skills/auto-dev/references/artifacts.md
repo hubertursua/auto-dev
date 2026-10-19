@@ -119,7 +119,7 @@ Single-PR run (the task fits one PR):
   IMPLEMENTATION.md       # the technical plan — how (Phase 3)
   acceptance/             # held-out checks from SPEC.md alone (Phase 3, acceptance tester)
     MANIFEST.md           # condition → check, what it covers, level, kind, base-run result; what is not automatable
-    base-run/C<n>.txt     # each condition's checks run on the untouched tree: command, result, output
+    base-run/C<n>.txt     # each condition's checks run on the untouched tree: command, result, output (<n> is MANIFEST's #: C2, CS1)
     files/<repo-path>.sealed  # the sealed copy of each check; the verifier installs it at <repo-path>
   SPEC_EVAL.md            # code vs. spec, with an evidence tier per condition (Phase 5, verifier)
   evidence/               # what the verifier ran and saw: integrity.txt, acceptance.txt, C<n>.txt, mutants.json(+.results.json)
@@ -540,9 +540,8 @@ shape.
 - **`SPEC_EVAL.md`** — the verifier's judgment of the build against `SPEC.md`
   (which the coder never saw): per condition, security/compliance criteria
   included, a verdict (**met / partial / unmet / manual**), an **evidence tier**
-  (**Strong** — the held-out checks passed, covered the condition's Example and
-  Edge, and each one for new behavior failed on the untouched tree;
-  **Adequate** — something the verifier
+  (**Strong** — the held-out checks passed and prove the whole condition, as
+  the verifier's brief defines it; **Adequate** — something the verifier
   ran itself matched its stated expectation; **Weak** — a citation nobody ran,
   which caps the verdict at partial), and the evidence; plus the test-integrity
   audit, each finding judged justified or not, and the mutation check, each
@@ -867,9 +866,8 @@ Each condition's run on that tree is in `base-run/C<n>.txt`.
 | S1 | <security/compliance criterion> | <path :: name> | Example | integration | fail-to-pass | failed: expected 404, got 200 |
 
 A fail-to-pass check whose Base run is not a right-reason failure does not belong
-here. A repaired check reads `not re-run (repair)`. A condition with an Edge
-line that is not `none` has a check covering Edge, or its Edge is listed below
-as `<n> (Edge)`. No check's Level is lower than its condition's Verify by.
+here. A repaired check reads `not re-run (repair)`. Covers may name more than
+one part (`Example, Edge`) when one check covers both.
 
 ## Not automatable
 | # | Condition | Why no check can drive it | Proxy a verifier can run |
@@ -930,14 +928,14 @@ are rows in this table — never a separate pass.
 <list survivors only; "None survived." when none did>
 
 ## Defective acceptance checks
-<each check that asserts something SPEC.md does not say, is too weak for what
-MANIFEST.md says it covers, runs below its condition's Verify by level, or did
-not fail on the untouched tree for the right reason, and why — or "None.">
+<each check that asserts something SPEC.md does not say, or is too weak for
+what MANIFEST.md says it covers, and why — or "None.">
 
 ## Unresolved
 <every condition still partial or unmet, and every Unjustified finding, as this
-pass found them, then every `manual` condition. This is what the PR body's
-unticked boxes are drawn from.>
+pass found them, then every `manual` condition, then every Edge left for a
+person (a met condition whose `<n> (Edge)` you could not observe). This is
+what the PR body's unticked boxes are drawn from.>
 ```
 
 The verifier rewrites the whole file on every pass, from scratch and without
@@ -1143,7 +1141,7 @@ body is for everyone else, and an ID there names a file they can't see.
 | Each condition, ticked or not | `SPEC.md` (the wording), `SPEC_EVAL.md` (the verdict) |
 | The tests written before the code, and each one's result on the old code | `acceptance/MANIFEST.md` (`Check`, `Base run`), `acceptance/base-run/C<n>.txt` (the command and output) |
 | What was run, what was expected, what came out | `evidence/C<n>.txt` |
-| Checks for a person | `SPEC_EVAL.md`'s `manual` rows, `MANIFEST.md`'s _Not automatable_ proxy, `evidence/C<n>.txt` |
+| Checks for a person | `SPEC_EVAL.md`'s `manual` rows and the Edges its _Unresolved_ leaves for a person, `MANIFEST.md`'s _Not automatable_ proxy, `evidence/C<n>.txt` |
 | Changes to tests | `SPEC_EVAL.md`, _Test integrity_ |
 | Test strength | `SPEC_EVAL.md`, _Mutation_ |
 | Quality gate | `lint/*.md` (status, _Output tail (final run)_) |
@@ -1155,8 +1153,9 @@ it), `<old sha>` the commit the tests written before the code ran on
 `<sha>` the commit the body describes. An evidence file written before 3.8
 may hold no `Output` part: leave that condition's output block out rather than
 inventing one; its test link still lets the reader check. Tests written before
-3.9 have no `base-run/` files, and a corrected test's file shows the test
-before it was corrected: in both cases leave the old-code block out.
+3.9 have no `base-run/` files: leave the old-code block out. A corrected
+test's lines there show it before it was corrected: leave those lines out,
+and the block too if nothing else is left.
 
 ````markdown
 ## Summary
@@ -1190,6 +1189,8 @@ is under _Checks for a person_. Checked at commit <sha>.">
   ```
   <the last lines of output>
   ```
+  <when evidence/C<n>.txt has a second run: Also ran `<command>`, expecting
+  <the expectation>, and the same kind of block>
   </details>
 - [x] **<condition no test written before the code checks in full>**
   <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
@@ -1204,9 +1205,9 @@ is under _Checks for a person_. Checked at commit <sha>.">
   <details>…the same block, when something was run…</details>
 
 ### Checks for a person
-<"None: every requirement was checked automatically." — or, per requirement no
-automated check could observe:>
-- [ ] **<condition, in the spec's own words>**
+<"None: every requirement was checked automatically." — or, per requirement or
+edge case no automated check could observe:>
+- [ ] **<condition, or the edge case, in the spec's own words>**
   1. <what to do>
   2. <what you should see>
 
@@ -1261,7 +1262,10 @@ Generated with [Claude Code](https://claude.com/claude-code)
 **One box per condition.** Every `SPEC.md` condition, security/compliance
 criteria included, appears exactly once: ticked under _Acceptance conditions_
 when `SPEC_EVAL.md` says `met`, unticked there when `partial` or `unmet`, and
-unticked under _Checks for a person_ when `manual`. A condition checked by more
+unticked under _Checks for a person_ when `manual`. The one exception: a met
+condition whose Edge `SPEC_EVAL.md` leaves for a person is ticked under
+_Acceptance conditions_ and also has a box for that Edge alone under _Checks
+for a person_, worded as the Edge. A condition checked by more
 than one test written before the code gets one test line each and one output
 block, from the run of all of them. "Start review with" lists each file those
 tests are in once, corrected ones included.

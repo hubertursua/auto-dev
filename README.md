@@ -54,25 +54,29 @@ make tests pass by weakening them. Verification is built around that:
   words, the condition is rewritten before anything is built.
 - **Held-out acceptance checks.** After planning, an acceptance tester turns each
   spec condition into a black-box test from the spec alone, one for its example
-  and one for its edge case, at the level the spec asks for or above. Every
+  and one for its edge case, at the level the spec asks for (or the highest the
+  repo's tests reach, saying why). Every
   check for new behavior must **fail on the untouched code for the right
   reason**, since a test that passes before the change exists proves nothing.
-  The tester saves that run (the command and its output) next to the checks,
-  and the orchestrator sends it back for any edge case it left out. The checks
+  The tester saves that run (the command and its output) next to the checks.
+  The orchestrator reads it and sends the tester back for an edge case left
+  out without a reason, or a check that failed for the wrong reason. The checks
   are then sealed out of the worktree (stored where no test runner collects
   them), and the coder's brief never names them.
 - **An independent verifier that runs things.** After the build, a fresh verifier
   installs the checks and **runs** them. It never sees the plan or the coder's
   report. Each condition gets a verdict and an evidence tier: **Strong** (the
-  held-out checks passed, they cover both the example and the edge case, and the
-  saved run shows each check for new behavior failing on the old code for the
-  right reason), **Adequate** (it ran something itself and saw what it
-  predicted beforehand) or **Weak** (a code citation, which can never count as
-  met). The verifier reads the saved run rather than running the checks on the
-  old code again, which would need a second setup of the repo. It reports a
-  held-out check that is too weak to prove what it claims, which sends it back
-  to the tester. A condition no agent can observe is marked `manual` and handed
-  to you at the PR gate as a check to make.
+  held-out checks passed, they cover both the example and the edge case at the
+  level the spec asks for, and the saved run shows each check for new behavior
+  failing on the old code for the right reason), **Adequate** (it ran
+  something itself for what the checks don't prove and saw what it predicted
+  beforehand) or **Weak** (a code citation, which can never count as met). The
+  verifier reads the saved run rather than running the checks on the old code
+  again, which would need a second setup of the repo. A held-out check too weak
+  to prove what it claims is reported; the tester repairs it only when the
+  condition can't be shown to hold any other way. A condition no agent can
+  observe is marked `manual` and handed to you at the PR gate as a check to
+  make, and so is an edge case no agent can observe.
 - **A test-integrity audit.** `scripts/check-tests.py` flags deleted or skipped
   tests, removed assertions, new tests that assert nothing, and any edit to a
   sealed check. Each finding must be justified by the spec or it goes back to the
@@ -533,15 +537,19 @@ rules for changing a script are in `CLAUDE.md`.
 the build is verified*). The acceptance tester saves each condition's run on
 the untouched tree as `acceptance/base-run/C<n>.txt`, and `MANIFEST.md` gains
 *Covers* and *Level* columns. The orchestrator checks that every edge case has
-a check, and the verifier rates a condition Strong only when its checks cover
+a check or a reason it can't have one, and the verifier rates a condition Strong only when its checks cover
 both its example and its edge case and the saved run shows them failing for
 the right reason. The PR description quotes that run.
 
 A run in flight resumes on 3.9. A run whose Phase 3 finished on 3.8 has no
-`base-run/` and no *Covers* column: the tester is not run again. The verifier
+`base-run/` and no *Covers* column, and the tester is not run again to add
+them. The verifier
 trusts `MANIFEST.md`'s one-line *Base run* note, as before, and says so in
 `SPEC_EVAL.md`; it reads each check to see what it covers. The PR description
-then leaves out the old-code output.
+then leaves out the old-code output. A verifier re-check on 3.9 can rate a
+condition lower than 3.8 did (Adequate instead of Strong, when no check covers
+its edge case) and can report a held-out check as too weak; a repair that
+follows spends a round as usual.
 
 ## Upgrading from 3.7
 

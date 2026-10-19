@@ -378,10 +378,9 @@ On **TRIVIAL**, skip steps 1–2 and write a short `IMPLEMENTATION.md` yourself
    `acceptance/base-run/`. It then **seals** them — removes them from the
    worktree and keeps the only copy under `acceptance/files/` as
    `<path>.sealed` — and writes `MANIFEST.md`, which says what part of its
-   condition each check covers. Before Phase 4, check that
-   every Edge is covered and no check is below its Verify by level
-   (`references/subagent-prompts.md`, _Acceptance tester_); a gap re-spawns the
-   tester for those conditions.
+   condition each check covers. Check its return against `SPEC.md` before
+   Phase 4 (`references/subagent-prompts.md`, _Acceptance tester_); a gap
+   re-spawns the tester for those conditions.
 4. **Optional post-plan gate**, if enabled for this run — **independent of the
    scope call**, so it fires on TRIVIAL too.
 
@@ -405,9 +404,9 @@ correction brief, and the cleanup agent's brief.
    sealed checks, audits every test change (`scripts/check-tests.py`), **runs**
    the evidence for each `SPEC.md` condition and writes `.auto-dev/SPEC_EVAL.md`:
    a verdict (`met` / `partial` / `unmet` / `manual`) and an **evidence tier**
-   per condition — **Strong** (held-out checks covering its Example and Edge
-   passed, and each one for new behavior failed on the untouched tree, per the
-   tester's saved run), **Adequate** (it ran
+   per condition — **Strong** (held-out checks passed that prove the whole
+   condition, checked against the tester's saved run on the untouched tree),
+   **Adequate** (it ran
    something itself and saw what it predicted), **Weak** (a citation; caps the
    verdict at `partial`). It also plants **targeted mutants** in the changed
    lines (`scripts/mutate.py`, capped by `mutation.max`): one the tests don't
