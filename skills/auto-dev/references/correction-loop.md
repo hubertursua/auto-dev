@@ -108,8 +108,8 @@ to the reviews, which are its re-check:
 4. **Commit and re-push**, with the sequence above.
 5. **Then refresh the PR body** — every section the pipeline writes, from the
    rewritten reports and their sources (`references/artifacts.md`, _The PR
-   body_, _Where each part comes from_), with every link pointing at the new
-   commit — starting from the live
+   body_, _Where each part comes from_, and its _Links_ and _Size_ rules), with
+   every link at the old commit pointing at the new one — starting from the live
    body (`gh pr view <pr> --json body`) so edits made on GitHub survive, and
    publish it with `gh pr edit <pr> --body-file <file>`, the file in
    `<artifact-dir>` or `$TMPDIR` (`references/phase-6-ship.md`, step 5). Only
@@ -196,7 +196,8 @@ every report.
   budget reconciling code with a plan it improved on. (A `BLOCKED` step is
   different: it is a correction, consumer #3.)
 - **A `manual` verdict.** Nothing the coder writes makes it observable here; it
-  goes to the PR gate as a check for a human.
+  goes to the PR gate as a check for a human, and to the PR body's _Checks for a
+  person_.
 - **The two review phases (Define, plan).** You apply their findings by editing
   the artifact; no agent is re-dispatched. They still spend a round.
 - **A plan revision the user asks for at the post-plan gate.** You edit

@@ -829,10 +829,13 @@ directly — it moves when anything fetches.
      Result: <what you saw, in one line>
      Output (last lines):
      <the last 30 lines or fewer, enough to show the result>
-   For a condition with acceptance checks, the command is the acceptance run
-   scoped to all of its checks, and the output shows each of them passing or
-   failing. When you ran nothing for it (Weak evidence, or `manual`), write
-   `Command: none — <why>` and leave Output out.
+   For a condition with acceptance checks, do not run them again: the command
+   is step 3's acceptance run, and the output is the lines of
+   evidence/acceptance.txt that name this condition's checks, passing or
+   failing. A `manual` condition whose proxy (MANIFEST.md, Not automatable) you
+   ran records that run like any other. Only when you ran nothing for it (Weak
+   evidence, or `manual` with no proxy run), write `Command: none — <why>` and
+   leave Output out.
    - Strong: the condition's acceptance checks all passed in step 3, and each
      fail-to-pass one failed on the base per MANIFEST.md.
    - Adequate: no usable Strong evidence (the condition is not automatable, a
@@ -1065,7 +1068,8 @@ ACCEPTANCE CHECK FAILS GATE with the file and the error: the orchestrator has it
 repaired.
 
 For each check, write <artifact-dir>/lint/<REPORT>.md: the exact command, final status
-(pass/fail), and the tail of any output you had to fix. Re-run until every `gate`
+(pass/fail), what you fixed, and the last lines (20 at most) of its FINAL run's
+output, whether or not it ever failed: the PR description quotes them. Re-run until every `gate`
 command is green. A check's final run must come after your last edit to any file:
 if you change anything after a check passed, run that check again. Then run
 python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>
@@ -1084,7 +1088,7 @@ umbrella/monorepo scope, slow tiers>. Ensure prerequisites are up before running
 
 Run the quality gate IN FULL — do not scope or sample it; it is the Definition of Done.
 Where a command is slow, run it in the background rather than blocking on it, and
-redirect its output to a file under $TMPDIR, reading back only the failing tail.
+redirect its output to a file under $TMPDIR, reading back only its tail.
 Never paste a full suite or type-checker log into your return.
 
 Return: what you simplified, **any simplification you reverted and which check

@@ -557,7 +557,8 @@ shape.
 - **`lint/<CHECK>.md`** — one report per quality-gate command, named per the
   loaded profile — **one per `gate` entry, all of them** (example in
   TypeScript: `TYPECHECK.md`, `LINT.md`, `FORMAT.md`, `TEST.md`): the command run, final
-  status, and the tail of any output that had to be fixed.
+  status, what had to be fixed, and the tail of the final run's output, which
+  the PR body quotes.
 - **`review/pass-<n>/R<k>.md`** — one code reviewer's own findings for one pass,
   each with a trigger path, plus security leads it noticed. Raw input to the
   judge; nothing else reads it.
@@ -1095,6 +1096,11 @@ but nothing drops the three sections this pipeline writes and refreshes:
   condition.
 - **No `.auto-dev/` paths.** Nobody else can open them. Quote what the reader
   needs from those files instead.
+- **Clean pasted output before it goes in.** The PR may be public. In every
+  output block, replace the worktree's absolute path with `.` and a home
+  directory with `~`, and drop any line holding a token, password, key,
+  connection string or other secret-looking value. When you can't tell whether
+  a line is safe, leave the block out and say the output was withheld.
 - **Every claim points at something the reader can open:** a test in the diff,
   linked; a commit, linked; or the command and the end of its output, pasted in
   a collapsed `<details>` block.
@@ -1105,7 +1111,9 @@ by its full sha, never at the branch, which would show whatever the branch holds
 later: `<repo-url>/blob/<sha>/<path>#L<line>`, with `<line>` where the test
 starts (`grep -n` its name). A line the change removed, or a file it deleted,
 exists only in the old code: link it at `<cut>` instead, with its old line
-number. A refresh re-points every link at the new commit.
+number. Name a commit by its full sha in plain text, not in backticks: GitHub
+links it by itself. A refresh re-points every link at `<sha>` to the new
+commit; links into the old code stay as they are.
 
 **Why the PR gate uses IDs and the body doesn't.** The PR gate summary is for
 the user running auto-dev, who can open the run's files and ask the orchestrator
@@ -1120,13 +1128,15 @@ body is for everyone else, and an ID there names a file they can't see.
 | The tests written before the code, and each one's result on the old code | `acceptance/MANIFEST.md` (`Check`, `Base run`) |
 | What was run, what was expected, what came out | `evidence/C<n>.txt` |
 | Checks for a person | `SPEC_EVAL.md`'s `manual` rows, `MANIFEST.md`'s _Not automatable_ proxy, `evidence/C<n>.txt` |
-| Changes to existing tests | `SPEC_EVAL.md`, _Test integrity_ |
+| Changes to tests | `SPEC_EVAL.md`, _Test integrity_ |
 | Test strength | `SPEC_EVAL.md`, _Mutation_ |
-| Quality gate | `lint/*.md` (status, _Output tail_) |
+| Quality gate | `lint/*.md` (status, _Output tail (final run)_) |
 | Review | `CODE_REVIEW.md`, `SECURITY_REVIEW.md` |
 
-`<cut>` is the commit the worktree was cut from (`SPEC_EVAL.md`'s header names
-it), `<sha>` the commit the body describes. An evidence file written before 3.8
+`<cut>` is the commit the change is measured from (`SPEC_EVAL.md`'s header names
+it), `<old sha>` the commit the tests written before the code ran on
+(`MANIFEST.md`'s header names it; after a base merge it is older than `<cut>`),
+`<sha>` the commit the body describes. An evidence file written before 3.8
 may hold no `Output` part: leave that condition's output block out rather than
 inventing one; its test link still lets the reader check.
 
@@ -1137,14 +1147,17 @@ inventing one; its test link still lets the reader check.
 ## Acceptance conditions
 **How this was checked.** Before any code was written, a test was written from
 the requirements alone for each requirement below that a test could check, and
-run on the old code ([`<base>` at `<short cut sha>`](<repo-url>/commit/<cut>)),
-where the tests for new behavior failed. The code was then written without
-being shown those tests, and they were added back to check it.
-Checked at commit [`<short sha>`](<repo-url>/commit/<sha>): every result below
-was produced on this code.
+run on the old code (`<base>` at <old sha>), where the tests for new behavior
+failed. The code was first written without those tests in view; then they were
+added back, and any later fix had to make them pass without changing them.
+Checked at commit <sha>: every result below was produced on this code.
 
 **Start review with** the tests written before the code. They state what this
 change must do: [`<path>`](<link>), [`<path>`](<link>)
+
+<When no requirement could be checked by a test, replace both paragraphs above
+with: "No requirement here could be checked by an automated test, so each one
+is under _Checks for a person_. Checked at commit <sha>.">
 
 - [x] **<condition, in the spec's own words>**
   Test written before the code: [`<path>` › <test name>](<link to its line>) —
@@ -1164,6 +1177,8 @@ change must do: [`<path>`](<link>), [`<path>`](<link>)
   <details>…the same block…</details>
 - [ ] **<condition>** — <partly met | not met>: <what holds, what doesn't, and
   why it is being shipped anyway>
+  <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
+  old code: <…> · now: <passes | fails: <the failing assertion, one line>>>
   <details>…the same block, when something was run…</details>
 
 ### Checks for a person
@@ -1176,10 +1191,12 @@ automated check could observe:>
   Already checked automatically: <what was run instead and what it showed |
   nothing could be, because <reason>>
 
-### Changes to existing tests
-<"No existing test was deleted, skipped or weakened." — when the test audit
-found nothing. New tests, including ones added to existing files, are not
-listed: they are in the diff. Otherwise one line per finding:>
+### Changes to tests
+<"No existing test was deleted, skipped or weakened, and every new test checks
+something." — only when SPEC_EVAL.md's Test integrity section is "None.". A
+clean new test is not listed: it is in the diff. Otherwise one line per finding
+in that section, whatever it is about (an existing test changed, a new test
+that asserts nothing, a change to the test setup):>
 - [`<path>`](<link to the line>): <what changed, in plain words> — <because
   <the requirement that changes this behavior> | not justified: <why it is
   being shipped anyway>>
@@ -1233,7 +1250,8 @@ tests are in once, corrected ones included.
 hang was noticed.
 
 **Filled in.** An example in TypeScript, for one met condition and one test
-change (an assertion the change removed, so it links to the old code):
+change (an assertion the change removed, so it links to the old code). Its
+output block holds only the lines of the acceptance run that name this test:
 
 ````markdown
 - [x] **A user cannot delete another user's todo**
@@ -1241,15 +1259,13 @@ change (an assertion the change removed, so it links to the old code):
   old code: failed: expected 404, got 200 · now: passes
   <details><summary>Command and output</summary>
 
-  Ran `npx vitest run src/todos/todo-delete.acceptance.test.ts`, expecting all 3 tests to pass.
+  Ran `npx vitest run src/todos/*.acceptance.test.ts`, expecting this test to pass.
   ```
-   ✓ src/todos/todo-delete.acceptance.test.ts (3 tests) 41ms
-   Test Files  1 passed (1)
-        Tests  3 passed (3)
+   ✓ src/todos/todo-delete.acceptance.test.ts > deleting another user's todo returns not found 12ms
   ```
   </details>
 
-### Changes to existing tests
+### Changes to tests
 - [`src/todos/todos.test.ts`](https://github.com/acme/todos/blob/9b1e4d7c2a6f8e3b5d0c7a9f1e2b4d6c8a0f3e5b/src/todos/todos.test.ts#L42): the assertion that deleting any todo returns 200 was replaced by one that expects 404 for someone else's todo — because a user can no longer delete another user's todo
 ````
 
@@ -1267,7 +1283,11 @@ refresh, or a resume that finds no id noted, first looks for that comment
 (`gh pr view <pr> --json comments`: a body starting `Command output for
 commit`, its id at the end of its `url`) and edits it
 (`gh api -X PATCH repos/{owner}/{repo}/issues/comments/<id> -F body=@<file>`;
-`gh` fills in `{owner}/{repo}`) rather than posting another.
+`gh` fills in `{owner}/{repo}`) rather than posting another. When a refreshed
+body fits with its blocks inline, edit that comment to one line instead:
+`Superseded: the description holds the output for commit <short sha>.` A body
+still over 60,000 with every block moved out is not published cut short: report
+it at the gate, or in the final report after the PR gate.
 
 **The body describes one commit, and says which.** Its `Checked at commit` line
 names the commit whose code the results checked, and the body is written or
@@ -1283,7 +1303,8 @@ invalidates (`references/correction-loop.md`). Refresh them on the open PR with
 `gh pr edit <pr> --body-file <file>`, since the PR already exists by then and
 re-running PR creation would open a second one. Replace those sections whole,
 from the template, in the live body, and keep the rest, so edits made on GitHub
-survive. A body written before 3.8 has the older shape inside those sections
+survive. One thing inside them survives too: a _Checks for a person_ box someone
+ticked on GitHub stays ticked while its condition and steps are unchanged. A body written before 3.8 has the older shape inside those sections
 (tier names, `Needs a human check:` items, a `Mutation:` line): the same
 replacement rewrites them, subsections included.
 

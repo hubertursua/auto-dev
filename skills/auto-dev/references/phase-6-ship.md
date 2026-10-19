@@ -118,14 +118,10 @@ and fixed, and the PR never collects review-fix commits.
    **open exactly one PR** for it. These are the pipeline's requirements, whatever
    route opens it:
    - **Body** to the PR-body contract (`references/artifacts.md`, _The PR body_),
-     written for a developer who has never heard of auto-dev: no condition or
-     finding IDs, no `.auto-dev/` paths, and every result backed by something
-     the reader can open. It names the commit its results were checked on
-     (`Checked at commit <sha>`, the commit step 4 verified), and carries every
-     section the contract marks strict: the acceptance conditions with their
-     tests and results, unticked ones left unticked, and the quality-gate and
-     review results. Brevity rules may trim the _prose_; they never drop those
-     sections. Check its size before publishing (the contract's _Size_ rule).
+     which says who it is written for, what it must hold and how long it may be.
+     Its `Checked at commit` line names the commit step 4 verified. Brevity
+     rules may trim the _prose_; they never drop a section the contract marks
+     strict.
    - **Repo PR template:** detect it (`.github/pull_request_template.md`,
      `.github/PULL_REQUEST_TEMPLATE/`, `docs/` or the repo root) and fill it,
      carrying the contract's sections inside it. No template → the contract's shape.

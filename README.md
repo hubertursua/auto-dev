@@ -95,8 +95,9 @@ make tests pass by weakening them. Verification is built around that:
   condition or mutant IDs. For each requirement it links the test written
   before the code, at the checked commit, with that test's result on the old
   code and now, and the command and its output in a collapsed block. It lists
-  every change to an existing test with its reason, says how many small
-  deliberate bugs the tests caught and why each one they missed is harmless,
+  every test change the audit flagged with its reason, says how many small
+  deliberate bugs the tests caught and, for each one they missed, why it is
+  harmless or what no test checks,
   and turns each check left to a person into steps. It tells the reviewer to
   start with the tests written before the code. A description too long for
   GitHub moves its output blocks into one PR comment. The PR gate keeps the
