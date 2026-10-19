@@ -821,7 +821,16 @@ directly — it moves when anything fetches.
 4. For each SPEC.md condition (Security/Compliance criteria included), decide its
    evidence tier. Before running anything for it, write down the outcome you
    expect; then run and compare. Save what you ran and saw to
-   <artifact-dir>/evidence/C<n>.txt.
+   <artifact-dir>/evidence/C<n>.txt, in this shape (the PR description quotes
+   it, for a reader who has only the PR):
+     Expected: <the outcome you wrote down>
+     Command: <each command as run from the worktree root, with repo-relative
+       paths, so a reader can run it too>
+     Result: <what you saw, in one line>
+     Output (last lines):
+     <the last 30 lines or fewer, enough to show the result>
+   For a condition with acceptance checks, the command is the acceptance run
+   scoped to its checks, and the output shows each of them passing or failing.
    - Strong: the condition's acceptance checks all passed in step 3, and each
      fail-to-pass one failed on the base per MANIFEST.md.
    - Adequate: no usable Strong evidence (the condition is not automatable, a
@@ -1127,7 +1136,7 @@ Once the quality gate is green, **re-spawn the verifier in re-check mode** ("aft
 the cleanup pass"). `/simplify` is meant to preserve behavior, and the cleanup
 agent may have fixed things forward; the quality gate shows the tests still pass,
 but only the verifier re-runs the acceptance checks, re-audits the tests and
-rewrites the evidence Phase 6a builds the PR checklist from. It re-checks every
+rewrites the evidence Phase 6a builds the PR body from. It re-checks every
 row, not only the ones citing files simplify touched: a `met` condition can depend
 on a file its evidence never names, and re-running is cheap next to reading.
 

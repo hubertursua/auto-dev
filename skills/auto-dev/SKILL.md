@@ -121,7 +121,8 @@ resolved `gate` commands, CI provider and Jira mapping — never re-derive them)
 Beyond those, read an artifact only when a phase **of yours** needs it: in S2,
 `SPEC.md` and `SPEC_EVAL.md` for the correction briefs; in S3, `SPEC.md`, `SPEC_EVAL.md`,
 `lint/*.md`, `CODE_REVIEW.md` and `SECURITY_REVIEW.md` for the PR body and the PR
-gate summary, and `review/pass-<n>/VOTES-R<k>.md` to apply the re-votes. On entry
+gate summary, `acceptance/MANIFEST.md` and `evidence/C<n>.txt` for the PR body,
+and `review/pass-<n>/VOTES-R<k>.md` to apply the re-votes. On entry
 to S3, while nothing is committed, first run `scripts/check-fresh.py <worktree>
 <artifact-dir> --phase 5`: if the code changed since Phase 5 checked it, re-run
 those checks before the reviews start (`references/correction-loop.md`, _Stale
@@ -457,8 +458,12 @@ pushed until they settle and the user approves.
    `scripts/check-staged.py --expect <paths>` passes. Push only once
    `scripts/check-fresh.py --ref HEAD` shows the commit carries the checked code.
 5. **Push** — **never `--force`** — and open **exactly one** PR, a draft by
-   default, naming the commit its results were checked on and carrying the
-   **acceptance checklist**, the **quality-gate results** and the **review summary**.
+   default. Its body is written for a developer who has never heard of
+   auto-dev (`references/artifacts.md`, _The PR body_): it names the commit its
+   results were checked on and carries the **acceptance conditions** (each with
+   the test that checks it, and that test's result on the old code and now),
+   the **changes to existing tests**, the **test strength**, the
+   **quality-gate results** and the **review summary**.
 6. **CI monitoring**, bounded. Red pre-merge → the correction loop, whose fix is
    reviewed (both steps) before the Phase 6a refresh commits and re-pushes it.
 7. **Jira → In Review.**

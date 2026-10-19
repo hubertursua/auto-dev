@@ -106,9 +106,10 @@ to the reviews, which are its re-check:
    exhaustion is handled the same way. Rewrite `CODE_REVIEW.md` and
    `SECURITY_REVIEW.md` with the new pass.
 4. **Commit and re-push**, with the sequence above.
-5. **Then refresh the PR body** — the acceptance checklist from the rewritten
-   `SPEC_EVAL.md`, the quality-gate results from `lint/`, the review summary from
-   the two review reports — starting from the live
+5. **Then refresh the PR body** — every section the pipeline writes, from the
+   rewritten reports and their sources (`references/artifacts.md`, _The PR
+   body_, _Where each part comes from_), with every link pointing at the new
+   commit — starting from the live
    body (`gh pr view <pr> --json body`) so edits made on GitHub survive, and
    publish it with `gh pr edit <pr> --body-file <file>`, the file in
    `<artifact-dir>` or `$TMPDIR` (`references/phase-6-ship.md`, step 5). Only

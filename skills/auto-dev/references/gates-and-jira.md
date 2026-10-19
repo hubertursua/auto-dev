@@ -136,6 +136,9 @@ wrote itself.
     C6 manual: open /settings on a phone and check the toggle is visible
     Test changes: 1 justified — todos.test.ts:-42 assertion changed (C3 makes it 404)
   ```
+  The IDs (`C2`, `M7`) are for you, since you can open the run's files. The PR
+  body says the same things in plain words for reviewers who can't
+  (`references/artifacts.md`, _The PR body_).
 - **The two reviews (before asking):** from `CODE_REVIEW.md` and
   `SECURITY_REVIEW.md`. For each, give the overall confidence with its reason,
   the must-fix findings fixed, and any still open, named one by one with their

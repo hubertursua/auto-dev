@@ -78,7 +78,8 @@ make tests pass by weakening them. Verification is built around that:
   coder. Capped at 20 mutants per pass by default; set `mutation.max` in
   `.auto-dev.yml` (0 turns it off).
 - **Re-checked after every change.** The verifier runs again after `/simplify`
-  and after every later fix, so the PR checklist always reflects the final code.
+  and after every later fix, so the PR description always reflects the final
+  code.
 - **Every result names the code it checked.** `SPEC_EVAL.md`, each quality-gate
   report and both review reports carry a `Tree:` line: the git tree hash of the
   code when it was checked. `scripts/check-fresh.py` compares those stamps with
@@ -89,6 +90,16 @@ make tests pass by weakening them. Verification is built around that:
   run again before anything relies on it. Those re-runs spend no iteration
   budget; anything they find is fixed like any other problem. The PR description
   names the commit its results were checked on.
+- **A PR description a stranger can check.** It is written for a reviewer who
+  has never heard of auto-dev and can't see `.auto-dev/`: plain words, no
+  condition or mutant IDs. For each requirement it links the test written
+  before the code, at the checked commit, with that test's result on the old
+  code and now, and the command and its output in a collapsed block. It lists
+  every change to an existing test with its reason, says how many small
+  deliberate bugs the tests caught and why each one they missed is harmless,
+  and turns each check left to a person into steps. It tells the reviewer to
+  start with the tests written before the code. The PR gate keeps the short
+  IDs (`C2`, `M7`), since you can open the run's files.
 
 ## What it does
 
@@ -505,6 +516,16 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 3.7
+
+3.8 rewrites the PR description for reviewers who don't know auto-dev (see
+*How the build is verified*). The verifier now writes each `evidence/C<n>.txt`
+in a fixed shape (expected, command, result, the last lines of output) for the
+description to quote. A run in flight resumes on 3.8: only the description
+changes. An evidence file written by an older verifier may have no output in
+it; that requirement's entry then leaves the output block out. A PR opened on
+3.7 gets the new sections the next time its description is refreshed.
 
 ## Upgrading from 3.6
 

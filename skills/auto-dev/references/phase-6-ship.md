@@ -117,15 +117,20 @@ and fixed, and the PR never collects review-fix commits.
 5. **Push** the branch (`git push -u origin HEAD` — never `--force`), then
    **open exactly one PR** for it. These are the pipeline's requirements, whatever
    route opens it:
-   - **Body** to the PR-body contract (`references/artifacts.md`, _The PR body_):
-     the commit its results were checked on (`Checked at commit <sha>`, the
-     commit step 4 verified), summary, unresolved assumptions, and — as required content — the **acceptance
-     checklist** (the spec's conditions, ticked from `SPEC_EVAL.md` with each
-     one's evidence tier, unticked ones left unticked, `manual` ones listed as
-     checks for a human), the **quality-gate results**, and the **review summary**
-     (each review's overall confidence, the must-fix findings fixed, and any left
-     open — from `CODE_REVIEW.md` and `SECURITY_REVIEW.md`). Brevity rules may
-     trim the _prose_; they never drop those three sections.
+   - **Body** to the PR-body contract (`references/artifacts.md`, _The PR body_),
+     written for a developer who has never heard of auto-dev: no condition or
+     finding IDs, no `.auto-dev/` paths, and every result backed by something
+     the reader can open. It holds the commit its results were checked on
+     (`Checked at commit <sha>`, the commit step 4 verified), summary,
+     unresolved assumptions, and — as required content — the **acceptance
+     conditions** (each one ticked from `SPEC_EVAL.md`, with the test written
+     before the code and its result on the old code and now, or what was run
+     instead; unticked ones left unticked), the **checks for a person**, the
+     **changes to existing tests**, the **test strength**, the **quality-gate
+     results**, and the **review summary** (each review's overall confidence,
+     the must-fix findings fixed, and any left open). Brevity rules may trim the
+     _prose_; they never drop those sections. Check its size before publishing
+     (the contract's _Size_ rule).
    - **Repo PR template:** detect it (`.github/pull_request_template.md`,
      `.github/PULL_REQUEST_TEMPLATE/`, `docs/` or the repo root) and fill it,
      carrying the contract's sections inside it. No template → the contract's shape.
