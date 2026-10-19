@@ -443,6 +443,11 @@ class ShipTest(RunCase):
         r = self.watch("--max-wait", "0")
         self.assertEqual(r.returncode, 3)
         self.assertIn("PENDING", r.stdout)
+        self.checks([{"name": "deploy", "bucket": "cancel", "state": "CANCELLED",
+                      "link": "https://ci/2"}])
+        r = self.watch()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("likely infrastructure", r.stdout)
 
     def test_ci_timeout_holds(self):
         self.set_settings(ci="github-actions", ci_timeout=0)

@@ -342,10 +342,12 @@ regardless of provider on a GitHub repo.
   ~30s; never block indefinitely.
 - **On green:** continue to the step after the watch — Phase 6a step 7 (Jira →
   In Review) pre-merge, or the next step of 6b/6c post-merge.
-- **On red, pre-merge (Phase 6a):** surface the failing checks (name + link),
-  then enter the correction loop — the steps, the reports to refresh, the review
-  of the fix, and the commit-and-re-push are specified once in
-  `references/correction-loop.md`.
+- **On red, pre-merge (Phase 6a):** spawn the triager in CI mode with the
+  failing checks `autodev.py ci-watch` printed (name + link). On `CLASS: CODE`,
+  enter the correction loop with its `triage/ci-<n>.md` — the steps, the
+  reports to refresh, the review of the fix, and the commit-and-re-push are
+  specified once in `references/correction-loop.md`. Any other class (`INFRA`,
+  `FLAKY`, `SECRET`, `UNKNOWN`) is not the coder's to fix: hold at the gate.
   Two things stop the loop before the budget does: a failure the coder cannot fix
   (infrastructure, a flaky external service, a missing secret), and a budget that
   has run out. In both cases **hold at the gate** and say which it was. Never

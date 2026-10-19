@@ -152,6 +152,16 @@ class EvalStatusTest(ArtifactCase):
         self.assertIn("no row for condition(s) S1", r.stderr)
 
 
+class SecurityReviewerTest(ArtifactCase):
+    def test_security_criteria_pick_the_sensitive_reviewer(self):
+        r = self.cmd("security-reviewer")
+        self.assertIn("AGENT: auto-dev:security-reviewer-sensitive", r.stdout)
+        spec = self.dir / "SPEC.md"
+        spec.write_text(spec.read_text().split("## Security/Compliance criteria")[0])
+        r = self.cmd("security-reviewer")
+        self.assertIn("AGENT: auto-dev:security-reviewer\n", r.stdout)
+
+
 class ApplyFixTest(ArtifactCase):
     def fix(self, old, new, fix_id="1"):
         return self.write("fix.md", f"FIX {fix_id}\n<<<<<<< OLD\n{old}\n=======\n{new}\n"
@@ -221,8 +231,24 @@ class VotesTest(ArtifactCase):
         self.assertIn("**Overall confidence: Medium**", text)
         self.assertIn("must-fix decided 2–1: C4", text)
         self.assertIn("Must-fix: 2 open · 0 fixed   ·   Advisory: 1", text)
-        pending = text.split("## Pending re-vote")[1].split("## Advisory")[0]
-        self.assertNotIn("C4", pending)
+        pending = text.split("## Pending re-vote")[1].split("### C4")[0]
+        self.assertNotIn("| C4 |", pending)
+        corrections = (self.dir / "review" / "pass-1" / "corrections.md").read_text()
+        self.assertIn("1. C4: in `src/list.ts`, return an empty page", corrections)
+        self.assertNotIn("C6", corrections)
+
+    def test_apply_needs_a_required_change_for_new_must_fix(self):
+        path = self.dir / "CODE_REVIEW.md"
+        path.write_text(path.read_text().replace(
+            "Required change: in `src/list.ts`", "Note: in `src/list.ts`"))
+        table = "| Finding | Vote | Reason |\n|---|---|---|\n"
+        self.write("review/pass-1/VOTES-R1.md", table + "| C6 | disagree | fine |\n")
+        self.write("review/pass-1/VOTES-R2.md", table + "| C4 | agree | unguarded |\n")
+        self.write("review/pass-1/VOTES-R3.md", table + "| C4 | agree | yes |\n"
+                                                        "| C6 | disagree | fine |\n")
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no `Required change:` line", r.stderr)
 
     def test_apply_refuses_a_missing_vote(self):
         r = self.cmd("votes", "--apply")

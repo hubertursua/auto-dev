@@ -13,8 +13,11 @@ votes --apply
     CODE_REVIEW.md: the reviewer who raised it plus every `agree` reaching 2 is
     must-fix, Medium; fewer is advisory, Low. Then recomputes the header counts
     and the overall confidence (High: 3/3 reviewers, full coverage, nothing
-    decided 2-1; Low: fewer than 2 reviewers; Medium otherwise).
-    Exit: 0 applied; 1 a re-voter's file is missing or malformed.
+    decided 2-1; Low: fewer than 2 reviewers; Medium otherwise), and adds each
+    new must-fix finding's `Required change:` line to
+    review/pass-<n>/corrections.md.
+    Exit: 0 applied; 1 a re-voter's file is missing or malformed, or a new
+    must-fix finding has no Required change line (re-spawn the judge).
 
 review-scope --snapshot | --files | --clear | --next-pass
     --snapshot  marks untracked files intent-to-add, then records the working
@@ -197,9 +200,36 @@ def apply_votes(args, path, text, pass_dir, pending):
     tmp = path.with_name(".CODE_REVIEW.md.votes")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
+    add_corrections(text, pass_dir / "corrections.md",
+                    [r.split("|")[1].strip() for r in must])
     emit(args.json, "APPLIED", f"{len(must)} must-fix, {len(advisory)} advisory",
          must_fix=", ".join(r.split("|")[1].strip() for r in must) or "none")
     return 0
+
+
+def add_corrections(text, path, ids):
+    """Append each new must-fix finding's Required change to corrections.md."""
+    if not ids:
+        return
+    entries = []
+    for fid in ids:
+        block = re.search(rf"^### {re.escape(fid)}\b.*?(?=^### |^## |\Z)", text,
+                          re.MULTILINE | re.DOTALL)
+        change = re.search(r"^Required change:\s*(.+)$", block.group(0),
+                           re.MULTILINE) if block else None
+        if not change:
+            raise art.ArtifactError(f"CODE_REVIEW.md: {fid} has no `Required change:` "
+                                    "line under its heading; re-spawn the judge")
+        location = re.search(r"Trigger path:\s*(.+)$", block.group(0), re.MULTILINE)
+        entries.append(f"{fid}: {change.group(1).strip()}"
+                       + (f"\n   Now: {location.group(1).strip()}" if location else ""))
+    existing = path.read_text(encoding="utf-8") if path.exists() else "# Required changes\n"
+    existing = re.sub(r"^None\.\s*$", "", existing, flags=re.MULTILINE).rstrip() + "\n"
+    count = len(re.findall(r"^\d+\. ", existing, re.MULTILINE))
+    for i, entry in enumerate(entries, count + 1):
+        existing += f"{i}. {entry}\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(existing, encoding="utf-8")
 
 
 def section_span(lines, name):

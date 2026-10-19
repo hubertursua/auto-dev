@@ -1,6 +1,6 @@
 ---
 name: auto-dev-planner
-description: auto-dev pipeline only — Phase 3 planner. Writes IMPLEMENTATION.md, the self-contained technical plan the coder builds from. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 3 planner. Writes IMPLEMENTATION.md, the self-contained technical plan the coder builds from; in revise mode, revises it from review fixes or the user's direction; in blocked mode, settles a step the coder stopped. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: xhigh
 tools: Read, Grep, Glob, Write

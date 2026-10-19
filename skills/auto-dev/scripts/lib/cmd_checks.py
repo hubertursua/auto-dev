@@ -51,6 +51,12 @@ spec-overlap <file> [--spec SPEC.md] [--words N]
     Exit: 0 no overlap; 1 overlap (the copied words are printed): rewrite it as
     concrete behavior.
 
+security-reviewer
+    Prints the security reviewer to spawn: `auto-dev:security-reviewer-sensitive`
+    when SPEC.md's Security/Compliance criteria section lists any criterion (the
+    Define agent writes it only for a sensitive path), else
+    `auto-dev:security-reviewer`. Exit: 0.
+
 All exit 2 when they could not run (a file missing, unreadable) — never a pass.
 """
 
@@ -300,6 +306,16 @@ def spec_overlap(args):
              "code must do and where, in your own words", copied=hits)
         return FAILED
     emit(args.json, "CLEAN", f"{args.file} copies no condition's wording")
+    return 0
+
+
+@wrap
+def security_reviewer(args):
+    criteria = [c for c in art.spec_conditions(Path(args.dir) / "SPEC.md")
+                if c["id"].startswith("S")]
+    agent = ("auto-dev:security-reviewer-sensitive" if criteria
+             else "auto-dev:security-reviewer")
+    emit(args.json, "AGENT", agent, criteria=len(criteria))
     return 0
 
 

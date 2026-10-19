@@ -15,9 +15,11 @@ when absent.
 
 The main agent stays the orchestrator and never writes code itself — it spawns a
 fresh worker per delegated job and hands off through files in `.auto-dev/`,
-never shared memory. Phase 1 and the correction briefs are its own work; judging
-the build is not — it holds the plan and the story of every round, which is the
-context a judge must not have.
+never shared memory. Phase 1 is its own work. Correction briefs come from the
+workers that found the problem (the verifier, the review judge, the triager),
+and the orchestrator passes them on unedited. Judging the build is not its job
+either — it holds the plan and the story of every round, which is the context a
+judge must not have.
 
 ```
 Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the human gates
@@ -29,6 +31,7 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
 ├─ Phase 4  Coder ......... code + tests (given only the plan)
 ├─ Phase 5  Verifier + cleanup  RUN the checks vs. the withheld spec → /simplify → quality gate → re-check
 └─ Phase 6  orch + reviewers  code review panel → security review → [GATE] PR + CI → [GATE] staging → [GATE] main
+            Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
 ```
 
 Two documents describe the work, and they answer different questions: `SPEC.md`
@@ -89,6 +92,11 @@ make tests pass by weakening them. Verification is built around that:
   catches on a line a condition depends on is a test gap and goes back to the
   coder. Capped at 20 mutants per pass by default; set `mutation.max` in
   `.auto-dev.yml` (0 turns it off).
+- **Fixes described by the verifier.** Once its verdicts are final, the
+  verifier writes `evidence/corrections.md`: what the code must do, where, the
+  failure it saw and the test to add, in its own words, never the spec's. The
+  coder gets that file unedited. A script refuses one that copies the spec's
+  wording, which would let the coder echo it back in a test name.
 - **Re-checked after every change.** The verifier runs again after `/simplify`
   and after every later fix, so the PR description always reflects the final
   code.
@@ -128,7 +136,7 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
 | 5 Verify | verifier, then cleanup agent | the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4), then `/simplify` + the profile's quality gate to green, then a verifier re-check |
-| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then staging, then main + Jira Done — pausing at each gate |
+| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then staging, then main + Jira Done — pausing at each gate |
 
 ## Three sessions, not one
 
@@ -193,10 +201,15 @@ A **rubric** decides what must be fixed and what is noise:
   (say, a reviewer failed) is flagged at the gate as a warning, never shown as a
   clean pass.
 
-Must-fix findings go back to the coder through the same correction loop as an
-unmet spec condition, and the fix is reviewed again before anything moves on.
-Fixes made after the PR is open, for red CI or a human reviewer's comment, are
-reviewed the same way before they are pushed. The procedure and the full rubric
+The judge writes a **required change** for each must-fix finding, and those go
+back to the coder unedited, through the same correction loop as an unmet spec
+condition; the fix is reviewed again before anything moves on. After the PR is
+open, a **triager** reads what the orchestrator never sees: a red CI run's logs
+(is it the code, the infrastructure, a flaky test or a missing secret? only the
+code goes to the coder) and human reviewers' comments (blocker, nit, question,
+already addressed, or about a held-out check). Comment text never reaches the
+orchestrator, so a comment can't steer the run. Those fixes are reviewed the
+same way before they are pushed. The procedure and the full rubric
 are in `skills/auto-dev/references/review.md`.
 
 ## Stack profiles
@@ -464,7 +477,8 @@ versions, so a new release is picked up without editing the plugin.
 | Review judge                             | `auto-dev:review-judge`          | `opus` · xhigh    |
 | Security reviewer                        | `auto-dev:security-reviewer`     | `opus` · xhigh    |
 | Security reviewer (sensitive paths)      | `auto-dev:security-reviewer-sensitive` | `fable` · high |
-| Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · low    |
+| Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
+| Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · medium |
 
 The orchestrator runs on the session's model, which you pick when starting each
 session: `opus` at high effort for Plan and Build, `sonnet` at medium for Ship.
@@ -488,7 +502,11 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code |
 | `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and evidence tiers, and what it ran |
 | `lint/` | Phase 5 | one report per quality-gate check |
-| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review |
+| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes |
+| `fixes/` | Phases 2–3 | the Define and plan reviewers' FIX blocks |
+| `evidence/corrections.md` | Phase 5 | the verifier's required changes for the coder |
+| `triage/` | Phase 6 | the triager's required changes for red CI and human blockers |
+| `lookups/` | any phase | lookup answers |
 
 The full layout and every artifact's contract are in
 `skills/auto-dev/references/artifacts.md`. This is scratch, not part of your
@@ -570,6 +588,11 @@ rules for changing a script are in `CLAUDE.md`.
   generated from it for people to read. Its header has `Worktree`, `Size` and
   `High risk` lines in place of `Control worktree` and `Mode`.
 - **Python 3.9+ and PyYAML are required** by `autodev.py`.
+- **Workers write the fixes.** The verifier and the review judge write the
+  required changes the coder gets; the Define and plan reviewers write exact
+  FIX blocks that a script applies; the planner settles a `BLOCKED` step; a new
+  `triager` worker reads red CI and human PR comments. The orchestrator no
+  longer writes correction briefs or edits `SPEC.md` and `IMPLEMENTATION.md`.
 
 A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
 and start again.
