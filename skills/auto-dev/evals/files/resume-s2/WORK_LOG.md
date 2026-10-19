@@ -3,15 +3,15 @@
 - **Task:** Reject record creation when the requested value isn't in the context's allowed set
 - **Ticket:** none — creating a record with a value outside its context's allowed set returns a typed/handled error instead of throwing
 - **Repo:** <repo-name>   **Base:** main   **Stack:** <profile>
-- **Control worktree:** <abs-path-to-worktree>   **Branch:** feat/allowed-set-guard
-- **Mode:** single-PR   **Scope call:** STANDARD   (`OVERSIZED` runs multi-PR)
+- **Worktree:** <abs-path-to-worktree>   **Branch:** feat/allowed-set-guard
+- **Size:** FITS   **High risk:** no
 - **Iteration budget:** 4 total revise rounds (4 remaining)
 
 ## Phase status
 | # | Phase | Status | Notes |
 |---|-------|--------|-------|
 | 1 | Setup | done | |
-| 2 | Define | done | scope call STANDARD; define review clean on first pass |
+| 2 | Define | done | size FITS; define review clean on first pass |
 | 3 | Plan | done | plan review clean on first pass; post-plan gate off |
 | 4 | Build | pending | |
 | 5 | Verify | pending | |

@@ -251,8 +251,5 @@ the push unasked.
    that (queued, or auto-merge pending) and stop: don't poll for it, and don't
    move Jira.
 5. Monitor CI on main, transition **Jira → Done**, and offer to remove the worktree
-   (confirmed, not automatic). On a single-PR run the worktree is the control
-   worktree, so make the offer only **after the final report** is delivered:
-   removing it deletes the gitignored `.auto-dev/` ledger. On a multi-PR run this runs **per sub-task**, and the offer covers
-   that sub-task's build worktree only — the control worktree holds the ledger and
-   stays until the final report.
+   (confirmed, not automatic). Make the offer only **after the final report** is
+   delivered: removing the worktree deletes the gitignored `.auto-dev/` ledger.

@@ -1,12 +1,12 @@
 # Handoff — allowed-set guard → S2 Build (next session)
 
 Re-enter with: `cd <abs-path-to-worktree>`
-Branch: feat/allowed-set-guard   Base: origin/main   Sub-task: n/a
+Branch: feat/allowed-set-guard   Base: origin/main
 Iteration budget remaining: 4/4
 
 ## Done
 - Phase 1: worktree created, <profile> profile loaded, .auto-dev/ excluded.
-- Phase 2: SPEC.md written; scope call STANDARD; define review clean.
+- Phase 2: SPEC.md written; size FITS; define review clean.
 - Phase 3: IMPLEMENTATION.md written; plan review clean; acceptance checks sealed
   (acceptance/MANIFEST.md: every condition covered).
 

@@ -294,8 +294,8 @@ in, which is the main checkout, also when the run works in a worktree.
   package the task actually touches. Detect the sub-package from the task/ticket
   and the files in play, record the chosen package and its own `gate` in
   `profile.md`, and note in `WORK_LOG.md` that other packages were out of scope.
-  If the task genuinely spans packages, that's a decomposition signal (see the
-  task-orchestration layer in `SKILL.md`).
+  If the task genuinely spans packages, that's a sign it is OVERSIZED (the Define
+  agent's size check, `SKILL.md`).
 - When scoping is ambiguous, surface it rather than guess.
 
 ## Repo-local override — `.auto-dev.yml`
@@ -318,7 +318,7 @@ branches:
   prefix: feature             # branch-name prefix
 ci: circleci                  # github-actions | circleci | gitlab | none
 ci_timeout_minutes: 30        # bound on CI watching before it reports and holds
-iteration_budget: 4           # revise rounds per task (per sub-task on a multi-PR run)
+iteration_budget: 4           # revise rounds per task
 worktree_files: [".env"]      # gitignored files to seed every new worktree with
 symbol_lookup:                # code-index commands instead of grep; <symbol> is the name
   definition: "<index-tool> definition <symbol>"
