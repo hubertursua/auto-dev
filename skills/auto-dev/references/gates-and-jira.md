@@ -123,8 +123,9 @@ wrote itself.
 - **The acceptance block (before asking):** from `SPEC_EVAL.md`. Give the count
   of conditions per verdict and per evidence tier, then name one by one: every
   condition not `met`, every `met` condition resting on Adequate evidence (what
-  was run instead of a held-out check), every `manual` condition with exactly
-  what the human must check, and every test-integrity finding judged Justified,
+  was run instead of a held-out check), every `manual` condition and every Edge
+  `SPEC_EVAL.md`'s _Unresolved_ leaves for a person, with exactly what the
+  human must check, and every test-integrity finding judged Justified,
   with its reason, so the user can disagree. An Unjustified finding still open
   means Phase 5 did not settle: say so, never present it as a pass.
   Then the mutation line: killed of total, and each surviving mutant judged

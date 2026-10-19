@@ -534,22 +534,22 @@ rules for changing a script are in `CLAUDE.md`.
 ## Upgrading from 3.8
 
 3.9 keeps the proof that the held-out checks failed on the old code (see *How
-the build is verified*). The acceptance tester saves each condition's run on
-the untouched tree as `acceptance/base-run/C<n>.txt`, and `MANIFEST.md` gains
-*Covers* and *Level* columns. The orchestrator checks that every edge case has
-a check or a reason it can't have one, and the verifier rates a condition Strong only when its checks cover
-both its example and its edge case and the saved run shows them failing for
-the right reason. The PR description quotes that run.
+the build is verified*). The acceptance tester saves each condition's run on the
+untouched tree as `acceptance/base-run/C<n>.txt`, and `MANIFEST.md` gains
+*Covers* and *Level* columns. The orchestrator checks that every edge case has a
+check or a reason it can't have one, and the verifier rates a condition Strong
+only when its checks cover both its example and its edge case and the saved run
+shows them failing for the right reason. The PR description quotes that run.
 
 A run in flight resumes on 3.9. A run whose Phase 3 finished on 3.8 has no
-`base-run/` and no *Covers* column, and the tester is not run again to add
-them. The verifier
-trusts `MANIFEST.md`'s one-line *Base run* note, as before, and says so in
-`SPEC_EVAL.md`; it reads each check to see what it covers. The PR description
-then leaves out the old-code output. A verifier re-check on 3.9 can rate a
-condition lower than 3.8 did (Adequate instead of Strong, when no check covers
-its edge case) and can report a held-out check as too weak; a repair that
-follows spends a round as usual.
+`base-run/` and no *Covers* column, and the tester is not run again to add them.
+The verifier trusts `MANIFEST.md`'s one-line *Base run* note, as before, and
+says so in `SPEC_EVAL.md`; it reads each check to see what it covers. The PR
+description then leaves out the old-code output. A verifier re-check on 3.9 can
+rate a condition lower than 3.8 did (Adequate instead of Strong, when no check
+covers its edge case or a check is below the level the spec asks for) and can
+report a held-out check as too weak; a repair that follows spends a round as
+usual.
 
 ## Upgrading from 3.7
 

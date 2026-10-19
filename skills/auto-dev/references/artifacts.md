@@ -854,7 +854,7 @@ Filled-in rows are an example in TypeScript.
 ```markdown
 # Acceptance checks — <task>
 
-Written from SPEC.md alone, run on the untouched tree at `origin/<base>` (<short sha>).
+Written from SPEC.md alone, run on the untouched tree at <short sha> (`git rev-parse HEAD` before any check was written: the commit the worktree was cut from).
 Sealed copies are under `files/`; the verifier installs them after the build.
 Each condition's run on that tree is in `base-run/C<n>.txt`.
 
@@ -1149,7 +1149,8 @@ body is for everyone else, and an ID there names a file they can't see.
 
 `<cut>` is the commit the change is measured from (`SPEC_EVAL.md`'s header names
 it), `<old sha>` the commit the tests written before the code ran on
-(`MANIFEST.md`'s header names it; after a base merge it is older than `<cut>`),
+(`MANIFEST.md`'s header names it, and a base-run file's `Commit` line gives it
+in full; after a base merge it is older than `<cut>`),
 `<sha>` the commit the body describes. An evidence file written before 3.8
 may hold no `Output` part: leave that condition's output block out rather than
 inventing one; its test link still lets the reader check. Tests written before
@@ -1189,12 +1190,14 @@ is under _Checks for a person_. Checked at commit <sha>.">
   ```
   <the last lines of output>
   ```
-  <when evidence/C<n>.txt has a second run: Also ran `<command>`, expecting
+  <for each further run in evidence/C<n>.txt: Also ran `<command>`, expecting
   <the expectation>, and the same kind of block>
   </details>
 - [x] **<condition no test written before the code checks in full>**
   <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
-  <it covers only part of this | it was wrong and was corrected, so it never ran on the old code> · now: passes>
+  <it covers only part of this | it was wrong and was corrected, so it never ran on the old code |
+  it runs at a lower level than this needs, because <why> | its run on the old code didn't
+  show it failing for the reason it should> · now: passes>
   Checked by running <what, in a few words>: expected <the expectation>, saw
   <the result>. <when no test could drive it: why>
   <details>…the same block…</details>
