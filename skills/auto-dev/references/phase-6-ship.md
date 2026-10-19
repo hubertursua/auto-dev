@@ -40,8 +40,8 @@ and fixed, and the PR never collects review-fix commits.
    if the user asks during the run, or `.auto-dev.yml` sets
    `pr_review.inline_comments: true`.
 3. **Gate:** pause for approval to open the PR (`references/gates-and-jira.md`).
-   The summary carries the acceptance block (verdicts, evidence tiers, `manual`
-   checks, justified test changes) and both reviews: each one's overall
+   The summary carries the acceptance block (verdicts, evidence tiers, checks
+   left for a person, justified test changes) and both reviews: each one's overall
    confidence, the must-fix findings fixed and still open, and any pre-existing
    security finding for the user to triage.
 4. **Commit** — first, on the commit right after the PR gate (the gate may have

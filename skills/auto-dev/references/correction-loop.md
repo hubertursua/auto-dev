@@ -195,9 +195,10 @@ every report.
   the verifier judges the code against the spec and never sees them. Do not spend
   budget reconciling code with a plan it improved on. (A `BLOCKED` step is
   different: it is a correction, consumer #3.)
-- **A `manual` verdict.** Nothing the coder writes makes it observable here; it
-  goes to the PR gate as a check for a human, and to the PR body's _Checks for a
-  person_.
+- **A `manual` verdict, or an Edge left for a person.** Nothing the coder
+  writes makes it observable here: a `manual` condition, or the Edge of a met
+  condition that `SPEC_EVAL.md`'s _Unresolved_ leaves for a person, goes to the
+  PR gate as a check for a human, and to the PR body's _Checks for a person_.
 - **The two review phases (Define, plan).** You apply their findings by editing
   the artifact; no agent is re-dispatched. They still spend a round.
 - **A plan revision the user asks for at the post-plan gate.** You edit
@@ -221,7 +222,7 @@ Five things spend it, one round each:
 | # | Consumer | Phase |
 |---|---|---|
 | 1 | Define review — re-review after fixes | 2 |
-| 2 | Plan review — re-review after fixes, and an acceptance-tester re-spawn to fill a coverage gap (a re-spawn after a post-plan-gate revision spends none, like the revision) | 3 |
+| 2 | Plan review — re-review after fixes, and an acceptance-tester re-spawn to fill a gap in its return (coverage, a level, or a base run that failed for the wrong reason; a re-spawn after a post-plan-gate revision spends none, like the revision) | 3 |
 | 3 | Build and acceptance corrections to the coder — an unmet or partial condition (a surviving mutant's test gap included), an unjustified integrity finding, an install conflict, a `BLOCKED` step (with its plan revision) — and an acceptance-check repair in Phase 4–5 | 4–5 |
 | 4 | Review-finding corrections — code review panel, security review, a pre-existing security finding the user chose to fix, or a human reviewer's blocker | 6a, 6c |
 | 5 | CI-red corrections, pre-merge | 6a |

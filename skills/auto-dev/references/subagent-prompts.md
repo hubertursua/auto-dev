@@ -534,15 +534,21 @@ Inputs:
 Binding rules: <summary>. Use synthetic test data only.
 
 Scope: <ALL CONDITIONS | ONLY conditions <numbers>, because <a coverage gap /
-the other reading of an ambiguous condition / a plan revision changed their
-entry points>>.
+a check that failed on this tree for the wrong reason, runs below its
+condition's Verify by without saying why, or has no saved run (name the check
+and quote what is wrong) / the other reading of an ambiguous condition / a plan
+revision changed their entry points>>.
 - ALL CONDITIONS: start clean. If <artifact-dir>/acceptance/ exists from an
   earlier, cut-off run, delete it, and remove from the worktree any untracked
   test file with `acceptance` in its name that `git status --porcelain
   --untracked-files=all` shows. The worktree must hold no change before you begin.
 - ONLY named conditions: keep <artifact-dir>/acceptance/ — every other
-  condition's sealed checks and MANIFEST rows stay exactly as they are. Replace
-  only the named conditions' sealed files and rows.
+  condition's sealed checks, MANIFEST rows and base-run files stay exactly as
+  they are. Replace only the named conditions' sealed files, rows and base-run
+  files. If MANIFEST.md has no Covers column (it was written before 3.9), keep
+  its columns as they are for the rows you write. Still save their base runs
+  when the tree is untouched; in repair mode there is none to save (see Repair
+  mode).
 
 For every SPEC.md condition, Security/Compliance criteria included:
 1. Write at least one black-box check that fails if the condition does not hold.
@@ -550,8 +556,16 @@ For every SPEC.md condition, Security/Compliance criteria included:
    HTTP request or controller test, a CLI invocation, the public API), not
    internal helpers. Take expected values from the spec's words, never from how
    the code computes them. Each condition's Example is your first check, with its
-   values; its Edge line is your second. Its Verify by line names the level to
-   test at (a `manual` one goes straight to Not automatable, step 4).
+   values; its Edge line is your second, unless it starts with `none` (a
+   security criterion has no Edge line). A check may also cover another part of
+   the condition. MANIFEST's Covers column says which part or parts each check
+   covers. An Edge no check can drive goes under Not automatable as
+   `<n> (Edge)`, the way step 4 says.
+   The condition's Verify by line names the level to test at (unit is lowest,
+   end-to-end highest; a `manual` one goes straight to Not automatable, step
+   4). Test at that level or above. If the repo's tests cannot reach it, test at the
+   highest level they can, and write the Level as `<that level> (below
+   <Verify by>: <why>)`.
    If a condition reads two ways — two implementations could both satisfy its
    words yet differ on some input — pick the reading its Example supports, test
    that one, and report AMBIGUOUS with both readings.
@@ -565,7 +579,8 @@ For every SPEC.md condition, Security/Compliance criteria included:
 3. Run your checks with the profile's test command scoped to your files, output
    to $TMPDIR. A fail-to-pass check must fail FOR THE RIGHT REASON: an assertion,
    or the entry point being absent or returning the wrong result (a compile error
-   that names the missing entry point counts). A syntax error, a broken fixture or
+   that names the missing entry point counts). This is what "the right reason"
+   means wherever a later step judges a base run. A syntax error, a broken fixture or
    a setup crash in the check itself is a broken check: fix it. A pass-to-pass
    check must pass. If you cannot make a check behave, drop it and list the
    condition under Not automatable with the reason.
@@ -575,6 +590,21 @@ For every SPEC.md condition, Security/Compliance criteria included:
    from the entry point not existing yet are expected; never hide them with a
    suppression (`@ts-expect-error`, `# type: ignore`, a cast), which would turn
    into an error once the code exists.
+   Last, with the checks in their final form, run each condition's checks once
+   more on this same untouched tree, scoped to the files that hold them, with
+   the runner set to name every test it runs and its result (its verbose
+   reporter, if the default one only counts passing tests), and save that run
+   to <artifact-dir>/acceptance/base-run/C<n>.txt, where <n> is the row's # as
+   written (C2.txt, CS1.txt). It is the proof that the change was needed, and
+   the PR description quotes it, so write it in this shape:
+     Commit: <git rev-parse HEAD, the untouched tree it ran on>
+     Command: <each command as run from the worktree root, with repo-relative
+       paths>
+     Result: <one line per check: <test name>: failed: <reason> | passed>
+     Output:
+     <the run's output; over 100 lines, keep the lines that name this
+     condition's checks and their failure messages>
+   Its Results are the Base run column of MANIFEST.md.
 4. A condition no check can drive (visual layout, an external service with no
    test double, wording only a human can judge) goes under Not automatable, with
    the closest observable proxy a later agent could run, if there is one (a CLI
@@ -593,13 +623,26 @@ Write <artifact-dir>/acceptance/MANIFEST.md to this template (strict):
 Spill long output to $TMPDIR; quote only failing tails. Keep each command under
 5 minutes.
 
-Return: the checks per condition (path :: test name, kind), each check's base-run
-result, the not-automatable conditions, AMBIGUOUS (each condition, both readings,
+Return: the checks per condition (path :: test name, what it covers, level,
+kind), each check's base-run result, the not-automatable conditions and edges, AMBIGUOUS (each condition, both readings,
 the one you tested — or "none"), and your assumptions.
 ```
 
-Check the return before moving on: every condition is either covered by a check
-or listed under Not automatable, and `git status` in the worktree is unchanged.
+Check the return, and MANIFEST.md against SPEC.md, before moving on:
+- every condition is covered by a check or listed under Not automatable;
+- every condition with an Edge line that doesn't start with `none`, and that
+  isn't wholly under Not automatable, has a check covering its Edge, or a
+  `<n> (Edge)` row under Not automatable with a reason;
+- no check's Level is below its condition's Verify by, unless the Level says
+  why;
+- every check has its base-run/C<n>.txt, with a Result line that matches its
+  kind: a pass-to-pass check passed, and a fail-to-pass check failed for the
+  right reason (step 3). Read the Output to judge the reason, not just the word
+  `failed`. A repaired check reads `not re-run (repair)`;
+- `git status` in the worktree is unchanged.
+Anything short of this is a gap. A MANIFEST.md written before 3.9 has no Covers
+or Level column and no base-run/ beside it. On a resumed run, keep it as it is
+and don't re-spawn the tester for that; the verifier works from what it has.
 For each **AMBIGUOUS** condition, decide against the ticket which reading is
 meant — on TRIVIAL runs this is the only ambiguity probe the spec gets. If the
 tester's reading is right, record it in `SPEC.md`'s Assumptions (no round). If
@@ -611,26 +654,37 @@ first pass is not a round; a re-spawn spends one, consumer #2 in
 CONDITIONS; every re-spawn names its conditions, or it would wipe the rest.
 
 **Repair mode.** A check is repaired, never edited by the coder, when you agree
-against `SPEC.md` that it is wrong. Three things lead here: the verifier reports
-it defective (_Acting on SPEC_EVAL.md_, below); a `BLOCKED` plan revision or a
+against `SPEC.md` that it is wrong or too weak. Four things lead here: the
+verifier reports it defective (_Acting on SPEC_EVAL.md_, below); a `BLOCKED` plan revision or a
 post-plan-gate revision changes an entry point it calls; or, in Phase 6, a
 must-fix review finding or a human reviewer's blocker is about the check itself;
 or the cleanup agent returns ACCEPTANCE CHECK FAILS GATE — then the repair is
 to make the check pass the gate without changing what it asserts, and the
 cleanup agent is re-spawned after it (free).
-If you disagree, the check stands and its failure is the coder's to fix. To
+If you disagree, the check stands: a failure is the coder's to fix, and a
+check reported too weak stays as it is, with your reason noted once in
+`WORK_LOG.md` so a later pass's same report isn't decided again. A check
+reported too weak whose condition is still met (the verifier observed the
+missing case itself, so it is Adequate) is not repaired either: a repair would
+spend a round and could reach Adequate at most. Note it in `WORK_LOG.md`
+the same way. To
 repair, re-spawn this agent with the same brief, Scope "ONLY conditions <the
 checks' conditions>", plus: "The tree now holds the built change and
 these checks are installed at their paths. Fix each one IN PLACE at its
 installed path, then copy it over its sealed copy so the two stay
 byte-identical; do not remove it from the worktree. Skip the base run and
-record its Base run as `not re-run (repair)`. Update its MANIFEST row; leave
-every other check alone." Checks are installed only from Phase 5 on. Before
-that, nothing is installed, so the repair re-runs the brief with Scope "ONLY
+record its Base run as `not re-run (repair)`. Update its MANIFEST row; in its
+base-run/C<n>.txt, if there is one, change its Result line to `<test name>:
+not re-run (repair)` and leave the Output, which shows the check before the
+repair; never create one. Leave every other check alone." Checks are
+installed only from Phase 5 on. Before that, nothing is installed, so the repair re-runs the brief with Scope "ONLY
 conditions <those checks' conditions>" and seals as on a first run (removing
 the checks from the worktree again): after a post-plan-gate revision, with
 the base run; after a Phase 4 `BLOCKED` revision, the tree already holds
-partial code, so record the Base run as `not re-run (repair)`. Then re-spawn the verifier in re-check mode. A repaired
+partial code, so record the Base run as `not re-run (repair)`, and in its
+base-run/C<n>.txt write `Commit: none`, `Command: none — not re-run (repair)`
+and one Result line per check of the condition, `<test name>: not re-run
+(repair)`. Then re-spawn the verifier in re-check mode. A repaired
 check no longer proves the change was needed, so the verifier counts it as
 Adequate evidence at most, never Strong. A repair spends a round from the entry
 point that led to it (consumer #3 in Phase 4–5, #4 or #5 in Phase 6); a
@@ -639,8 +693,8 @@ post-plan-gate revision's spends none, like the revision itself.
 ### Optional post-plan gate (orchestrator)
 If enabled for this run, pause here (`AskUserQuestion`) for the user to approve
 `SPEC.md` + `IMPLEMENTATION.md` before any code is written, with
-`acceptance/MANIFEST.md`'s coverage (checks per condition, and what is not
-automatable) in the summary. Off by default; see
+`acceptance/MANIFEST.md`'s coverage (checks per condition, and each condition
+or Edge that is not automatable) in the summary. Off by default; see
 `references/gates-and-jira.md`.
 
 **This gate is independent of the scope call.** On the TRIVIAL path the agents
@@ -770,8 +824,9 @@ or tests: your only writes are installing the sealed acceptance checks,
 You did not build this change and you have not seen its plan. Your job is to find
 the condition that is NOT met. Missing evidence means not met.
 
-Read: <artifact-dir>/SPEC.md (the contract), <artifact-dir>/acceptance/MANIFEST.md
-and the sealed checks under <artifact-dir>/acceptance/files/, <artifact-dir>/profile.md
+Read: <artifact-dir>/SPEC.md (the contract), <artifact-dir>/acceptance/MANIFEST.md,
+the sealed checks under <artifact-dir>/acceptance/files/ and their runs on the
+untouched tree under <artifact-dir>/acceptance/base-run/, <artifact-dir>/profile.md
 (test command, test_notes), and the binding rules (<summary>). Do NOT read
 IMPLEMENTATION.md or any other file under <artifact-dir>, except what you write
 under evidence/ — including evidence/mutation-set.json and
@@ -832,19 +887,43 @@ directly — it moves when anything fetches.
    For a condition with acceptance checks, do not run them again: the command
    is step 3's acceptance run, and the output is the lines of
    evidence/acceptance.txt that name this condition's checks, passing or
-   failing. A `manual` condition whose proxy (MANIFEST.md, Not automatable) you
-   ran records that run like any other. Only when you ran nothing for it (Weak
-   evidence, or `manual` with no proxy run), write `Command: none — <why>` and
-   leave Output out.
-   - Strong: the condition's acceptance checks all passed in step 3, and each
-     fail-to-pass one failed on the base per MANIFEST.md.
-   - Adequate: no usable Strong evidence (the condition is not automatable, a
-     check was repaired, or the checks cover only part of it), but you ran
-     something yourself and it matched your stated expectation — a test in the
-     change (read it first: it must assert the condition's observable outcome,
-     not a mock of the code under test), or a direct observation such as a CLI
-     call, a request against a test server, or a script through the project's
-     runner.
+   failing. For each run you also made yourself for a part the checks don't
+   prove (Adequate, below), add one more Expected / Command / Result / Output
+   group after the first. A `manual` condition whose proxy (MANIFEST.md, Not
+   automatable) you ran records that run like any other. Only when you ran
+   nothing for it (Weak evidence, or `manual` with no proxy run), write
+   `Command: none — <why>` and leave Output out.
+   - Strong: all four hold.
+     (a) The condition's acceptance checks all passed in step 3.
+     (b) Each check's run on the untouched tree matches its kind. Read the
+     condition's acceptance/base-run/C<n>.txt: its Command runs the check, and
+     its Output shows a pass-to-pass check passing and a fail-to-pass check
+     failing for the right reason, as the acceptance tester's brief defines it
+     (an assertion; the entry point absent or wrong; a compile error that names
+     it), not a crash in the check's own setup. A missing base-run file fails
+     (b), with one exception: a MANIFEST.md written before 3.9 (it has no
+     Covers column) never had them, so its Base run note is all there is;
+     trust it and say so in the Evidence cell. Never re-run the checks on the
+     old code yourself. A repaired check never meets (b).
+     (c) Together the checks cover the whole condition: its Example and its
+     Edge (a security criterion has no Edge line; an Edge line starting with
+     `none` needs no check). MANIFEST.md's Covers column says which check
+     covers which (one written before 3.9 has no such column: tell from the
+     checks). Confirm each by reading the check (step 6).
+     (d) No check's Level is below the condition's Verify by (a MANIFEST.md
+     written before 3.9 has no Level column: tell from the checks).
+   - Adequate: not Strong, but everything the condition asks was observed:
+     its acceptance checks passed in step 3 (a repaired check counts once you
+     have read it against SPEC.md), and you ran something yourself for each
+     part they don't prove (an Edge they leave out, the case a too-weak check
+     claims to cover) and it matched your stated expectation. That something is
+     a test in the change (read it first: it must assert the condition's
+     observable outcome, not a mock of the code under test), or a direct
+     observation such as a CLI call, a request against a test server, or a
+     script through the project's runner. A condition with no acceptance check
+     is Adequate on such a run alone. An Edge MANIFEST.md lists as `<n> (Edge)`
+     that you could not observe either does not hold the condition back: list
+     it under Unresolved as a check for a person.
    - Weak: a code citation you did not execute.
    Verdict:
    - unmet — any acceptance check for it fails, or the behavior is absent or
@@ -862,8 +941,17 @@ directly — it moves when anything fetches.
    production code branching on values that appear only in tests, checks for a
    test environment, logic stubbed out or returning a constant. Each is an
    Unjustified finding.
-6. If an acceptance check itself is defective — it asserts something SPEC.md
-   does not say, or contradicts it — say so and why. Do not edit it.
+6. If an acceptance check itself is defective, say so and why. Do not edit it.
+   A check is defective when it:
+   - asserts something SPEC.md does not say, or contradicts it;
+   - is too weak for what MANIFEST.md says it covers: a wrong implementation of
+     that case would pass it too. For example, it checks that a call succeeds
+     but not the result the spec gives, or it runs a different case from the
+     Example or Edge it claims.
+   A defective check is no Strong evidence for its condition. When it is all
+   that keeps its condition from `met`, say so in the condition's row. A check
+   whose base run doesn't match its kind (Strong (b)), or whose Level is below
+   Verify by, is not defective: it only keeps its condition from Strong.
 7. Mutation check (cap: <mutation cap from profile.md; TRIVIAL: at most 8>).
    Passing tests show the code works; mutants show the tests would notice if it
    stopped working. Start by deleting <artifact-dir>/evidence/mutants.json and
@@ -956,7 +1044,8 @@ correction loop's Phase 5 entry; consumer #3):
 
 One brief covers every open item from one verifier pass. A condition at
 `manual` is **not** a correction — nothing the coder writes can make it
-observable here. It goes to the PR gate, and to the PR body's _Checks for a
+observable here — and neither is an Edge `SPEC_EVAL.md`'s _Unresolved_ leaves
+for a person. Both go to the PR gate, and to the PR body's _Checks for a
 person_.
 
 If a verdict looks wrong to you against `SPEC.md`, re-spawn the verifier once,
@@ -966,7 +1055,10 @@ at an acceptance check's path: correct the coder to move its file (a correction,
 spending a round), then re-run the verifier's first pass.
 
 If the verifier reports a **defective acceptance check**, settle it by repair
-mode (_Acceptance tester_, Phase 3), never by correcting the coder.
+mode (_Acceptance tester_, Phase 3), never by correcting the coder. A condition
+that is `partial` only because of that check (its row says so) is settled by
+the repair alone: leave it out of the coder's correction, so one weak check
+spends one round, not two.
 
 **`MUTATION LEFT CHANGES`** means the source may no longer be the code that
 was built — a mutant could not be restored, or the test command wrote files.
