@@ -12,6 +12,8 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 ## Contents
 
 - **The loop** — the correction steps, and what each correction invalidates.
+- **Stale results** — what to re-run when `scripts/check-fresh.py` finds a report
+  that checked other code than the tree now holds.
 - **Where the loop does not apply** — post-merge CI, plan deviations, review
   phases, and post-plan-gate revisions.
 - **The iteration budget** — what spends a round, the accounting, and what to do
@@ -110,7 +112,9 @@ to the reviews, which are its re-check:
    body (`gh pr view <pr> --json body`) so edits made on GitHub survive, and
    publish it with `gh pr edit <pr> --body-file <file>`, the file in
    `<artifact-dir>` or `$TMPDIR` (`references/phase-6-ship.md`, step 5). Only
-   after the push, so the PR never shows results for a commit it does not carry.
+   after the push, so the PR never shows results for a commit it does not carry,
+   and only once `scripts/check-fresh.py <worktree> <artifact-dir> --ref HEAD`
+   exits `0` (`references/artifacts.md`, _The PR body_).
 
 **Why `/simplify` is scoped to the correction in Phase 6.** Corrective code needs
 simplifying as much as any other code, so the cleanup agent re-runs after every
@@ -124,6 +128,51 @@ whole change, so the scope comes from a snapshot of the working tree taken just
 before the correction was dispatched (`references/review.md`, _What each review
 pass covers_). The
 quality gate after it still runs in full.
+
+## Stale results
+
+`scripts/check-fresh.py` exits `1` when a report checked other code than the
+code now holds (`references/artifacts.md`, _Stamps: which code each result
+checked_). The loop above never leaves one behind on its own, because every
+correction re-runs its checks before the next step. So a stale report means the
+code moved outside the pipeline: a person edited the worktree, a teammate pushed
+to the PR branch, GitHub merged the base into it, or a run was cut off between a
+fix and its re-check. Its results describe code that no longer exists. Produce
+them again before anything relies on them:
+
+1. **Bring in commits the PR has and the worktree lacks** (when the check ran
+   with `--ref origin/<branch>`): `git merge --ff-only origin/<branch>` in the
+   worktree. Never rebase or reset. If it can't fast-forward, the worktree holds
+   commits the PR doesn't: stop and report.
+2. **Re-run the writer of each stale report, and of every report after it**, in
+   this order, over the code as it stands. None of these spends a round; they are
+   checks:
+   - `lint/*.md` → the cleanup agent with the _Outside changes_ scope
+     (`references/subagent-prompts.md`, _Cleanup agent_): it skips `/simplify`,
+     since a person wrote this code and it isn't the pipeline's to rewrite, and
+     runs the quality gate in full.
+   - `SPEC_EVAL.md` → the verifier in re-check mode ("after changes made outside
+     the pipeline").
+   - `CODE_REVIEW.md` → a code review panel pass (`references/review.md`) on the
+     files the check listed as changed since that report's stamp, leaving out
+     any that are not part of the change (`git diff --name-only $(git merge-base
+     origin/<base> HEAD)`), such as files a merge of the base brought in; the
+     whole change when it says `unknown`.
+   - `SECURITY_REVIEW.md` → the security review on the whole change.
+
+   After a `--phase 5` check, re-run only the first two now; the check before
+   the PR gate covers the reviews.
+3. **What they find is an ordinary correction.** An unmet condition, a red
+   quality gate or a must-fix finding enters the loop above at its usual point,
+   and spends a round there.
+4. **After the commit, publish what changed.** If the re-runs changed code (a
+   quality-gate fix, a correction), commit and push it as _The Phase 6a refresh_,
+   step 4, does. Then refresh the PR body (step 5), since it describes the old
+   code.
+5. **Run the check again.** On `0`, carry on from where the check fired. A
+   report stale again straight after its own re-run means something rewrites the
+   code on every run (a test writing files outside `.gitignore`, say): stop and
+   report, naming the files the check lists.
 
 ## Where the loop does not apply
 

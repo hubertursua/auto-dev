@@ -57,6 +57,7 @@ or worktree you are in — open or run each by its absolute path.
 | `scripts/exclude-artifacts.py` | S1, Phase 1 step 6 | run (not read): `python3 <skill-dir>/scripts/exclude-artifacts.py <worktree>`; exit codes in `references/phase-1-setup.md`, step 6 |
 | `scripts/check-tests.py` | run by the verifier (Phase 5), never by you | audits test changes against the base: deleted, skipped or weakened tests, assertion-free new ones, tampered acceptance checks; exit codes in its `--help` |
 | `scripts/mutate.py` | run by the verifier (Phase 5), never by you | applies the verifier's mutants one at a time, runs the scoped tests, restores each file byte-for-byte; exit codes in its `--help` |
+| `scripts/check-fresh.py` | end of S2, entry to S3, before the PR gate, after every Phase 6 commit, before writing the PR body, before the main gate | run (not read): `python3 <skill-dir>/scripts/check-fresh.py <worktree> <artifact-dir> [--phase 5] [--ref <rev>]` says whether every report still checked the code as it is now; workers stamp reports with its `--print-tree`; when to run it and exit codes in `references/artifacts.md`, _Stamps: which code each result checked_ |
 | `scripts/check-staged.py` | S3, before every Phase 6a commit | run (not read): `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`; exit codes in `references/phase-6-ship.md`, step 4 |
 | `references/artifacts.md` | each session's start (its checklist); writing or resuming from any `.auto-dev/` file | layout, `WORK_LOG.md` ledger, resume procedure, session checklists, `HANDOFF.md`, every artifact's contract, template and strictness, the PR body, the final report |
 | `references/subagent-prompts.md` | before spawning any worker (the profiler in Phase 1, then Phases 2–6) | each worker's brief and tools, the scope decision, acting on the verifier's verdicts |
@@ -120,7 +121,11 @@ resolved `gate` commands, CI provider and Jira mapping — never re-derive them)
 Beyond those, read an artifact only when a phase **of yours** needs it: in S2,
 `SPEC.md` and `SPEC_EVAL.md` for the correction briefs; in S3, `SPEC.md`, `SPEC_EVAL.md`,
 `lint/*.md`, `CODE_REVIEW.md` and `SECURITY_REVIEW.md` for the PR body and the PR
-gate summary, and `review/pass-<n>/VOTES-R<k>.md` to apply the re-votes. `IMPLEMENTATION.md` is the
+gate summary, and `review/pass-<n>/VOTES-R<k>.md` to apply the re-votes. On entry
+to S3, while nothing is committed, first run `scripts/check-fresh.py <worktree>
+<artifact-dir> --phase 5`: if the code changed since Phase 5 checked it, re-run
+those checks before the reviews start (`references/correction-loop.md`, _Stale
+results_). `IMPLEMENTATION.md` is the
 coder's, never yours. For anything else — including a question _about_ one of
 those files outside the phase that needs it — spawn a worker that reads it and
 returns an answer.
@@ -413,7 +418,10 @@ correction brief, and the cleanup agent's brief.
 4. **Re-check.** Re-spawn the verifier (no budget): it re-runs the checks and the
    audit over the final code and rewrites `SPEC_EVAL.md`. A condition no longer
    met is a Phase 5 correction, followed by a free cleanup re-spawn and another
-   re-check.
+   re-check. Before S2 ends, `scripts/check-fresh.py <worktree> <artifact-dir>
+   --phase 5` must exit `0`: every Phase 5 report carries a `Tree:` stamp naming
+   the code it checked, and they must all name the code as it is now (stale →
+   `references/correction-loop.md`, _Stale results_).
 
 ## Phase 6 — Ship **[three human gates]**
 
@@ -438,16 +446,18 @@ pushed until they settle and the user approves.
    finding. An introduced, confirmed finding is must-fix → the correction loop,
    then Step 1 on the fix's files, then this step again. A pre-existing one goes to
    the user at the PR gate.
-3. **Gate:** pause for approval to open the PR. The summary carries the
+3. **Gate:** first, `scripts/check-fresh.py` must exit `0`: every report checked
+   the code the commit will carry. Then pause for approval to open the PR. The summary carries the
    acceptance verdicts with their evidence tiers, every `manual` check a human
    must make, the justified test changes, both reports' confidence and counts,
    any open must-fix, and the pre-existing security findings for the user to
    triage.
 4. **Commit** — stage source paths **explicitly** (never `git add -A`/`.`); commit
-   only once `scripts/check-staged.py --expect <paths>` passes.
+   only once `scripts/check-staged.py --expect <paths>` passes. Push only once
+   `scripts/check-fresh.py --ref HEAD` shows the commit carries the checked code.
 5. **Push** — **never `--force`** — and open **exactly one** PR, a draft by
-   default, carrying the **acceptance checklist**, the **quality-gate results** and
-   the **review summary**.
+   default, naming the commit its results were checked on and carrying the
+   **acceptance checklist**, the **quality-gate results** and the **review summary**.
 6. **CI monitoring**, bounded. Red pre-merge → the correction loop, whose fix is
    reviewed (both steps) before the Phase 6a refresh commits and re-pushes it.
 7. **Jira → In Review.**
@@ -461,11 +471,17 @@ resolve conflicts on staging or force the push unasked.
 
 1. **Read what humans said**; mark the PR ready. A human blocker goes through the
    correction loop (its fix reviewed like any other), never merged over.
-2. **Gate:** pause for approval.
-3. **Merge to main** only via `gh pr merge` with an explicit method — **never
-   `--admin`**. Refused → report the PR unmergeable and stop. Then confirm it is
-   `MERGED`; queued or auto-merge → report and stop, without moving Jira.
-4. Monitor CI on main, **Jira → Done**, and offer to remove the worktree —
+2. **Check the PR still holds the checked code:** fetch the branch and run
+   `scripts/check-fresh.py --ref origin/<branch>`. Commits pushed from outside the
+   pipeline are brought into the worktree, checked like any change, and the PR
+   body refreshed before the gate (`references/correction-loop.md`, _Stale results_).
+3. **Gate:** pause for approval.
+4. **Merge to main** only via `gh pr merge` with an explicit method and
+   `--match-head-commit <the checked commit>` — **never `--admin`**. The head
+   moved → back to step 2. Refused otherwise → report the PR unmergeable and
+   stop. Then confirm it is `MERGED`; queued or auto-merge → report and stop,
+   without moving Jira.
+5. Monitor CI on main, **Jira → Done**, and offer to remove the worktree —
    confirmed, and never the control worktree before the final report (multi-PR:
    each sub-task's build worktree; single-PR: this worktree *is* the control
    worktree, so offer it after the report).
@@ -490,7 +506,9 @@ never report success you didn't verify. Default shape: `references/artifacts.md`
   a `setup` command is missing (exit `127`); the task is self-contradictory or
   impossible as specified; the quality gate can't be made green; the verifier
   returns `MUTATION LEFT CHANGES` (the source may not be the code that was built); the build edited
-  source inside a submodule; spec conditions remain unmet after the iteration
+  source inside a submodule; a commit that does not carry the code that was
+  checked (`check-fresh.py --ref HEAD` exits `1`), or a report stale again right
+  after its own re-run; spec conditions remain unmet after the iteration
   budget; `gh pr merge` refuses (or only queues) the merge; a sub-task's scope
   call comes back OVERSIZED; the user declines a gate or merge.
 - **Never weaken security to finish** — no disabled TLS/cert/signature checks, no

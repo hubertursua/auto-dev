@@ -137,6 +137,131 @@ class CheckStagedTest(GitRepoCase):
         self.assertEqual(r.returncode, 1)  # src/other.py staged but not expected
 
 
+class CheckFreshTest(GitRepoCase):
+    """check-fresh.py: reports stamped with the tree they checked."""
+
+    REPORTS = ("SPEC_EVAL.md", "lint/TEST.md", "CODE_REVIEW.md", "SECURITY_REVIEW.md")
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(run("exclude-artifacts.py", self.repo).returncode, 0)
+        self.artifacts = self.repo / ".auto-dev"
+        self.write("src/app.py", "def add(a, b):\n    return b + a\n")
+
+    def tree(self, *extra):
+        r = run("check-fresh.py", "--print-tree", self.repo, *extra)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def stamp(self, tree=None, reports=REPORTS):
+        tree = tree or self.tree()
+        for name in reports:
+            path = self.artifacts / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # lint reports carry it as a list item, the others as a plain line.
+            line = f"- **Tree:** `{tree}`" if name.startswith("lint/") else f"Tree: {tree}"
+            path.write_text(f"# {name}\n\n{line}\n")
+        return tree
+
+    def check(self, *extra):
+        return run("check-fresh.py", self.repo, self.artifacts, *extra)
+
+    def test_fresh(self):
+        self.stamp()
+        r = self.check()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("FRESH: 4 report(s)", r.stdout)
+
+    def test_print_tree_leaves_the_index_alone(self):
+        self.write("src/new.py", "x = 1\n")
+        before = self.git("status", "--porcelain")
+        self.tree()
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        self.assertIn("?? src/new.py", before)
+
+    def test_edited_file_is_stale(self):
+        self.stamp()
+        self.write("src/app.py", "def add(a, b):\n    return a - b\n")
+        r = self.check()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("STALE: SPEC_EVAL.md", r.stderr)
+        self.assertIn("src/app.py", r.stderr)  # what changed since the check
+
+    def test_new_untracked_file_is_stale(self):
+        self.stamp()
+        self.write("src/extra.py", "y = 2\n")
+        r = self.check()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/extra.py", r.stderr)
+
+    def test_missing_report_or_stamp_is_stale(self):
+        self.stamp(reports=self.REPORTS[:3])
+        r = self.check()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("MISSING: SECURITY_REVIEW.md", r.stderr)
+        (self.artifacts / "SECURITY_REVIEW.md").write_text("# Security review\n")
+        r = self.check()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("NO STAMP: SECURITY_REVIEW.md", r.stderr)
+
+    def test_phase_5_checks_only_its_own_reports(self):
+        self.stamp(reports=self.REPORTS[:2])
+        self.assertEqual(self.check().returncode, 1)
+        r = self.check("--phase", "5")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_phase_5_needs_a_lint_report(self):
+        self.stamp(reports=self.REPORTS[:1])
+        r = self.check("--phase", "5")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("MISSING: lint/", r.stderr)
+
+    def test_changes_under_auto_dev_are_ignored(self):
+        self.stamp()
+        (self.artifacts / "WORK_LOG.md").write_text("# Work Log\n")
+        # Even if its self-exclusion were lost, .auto-dev/ is not part of the code.
+        (self.artifacts / ".gitignore").unlink()
+        r = self.check()
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_ref_head_matches_after_commit(self):
+        tree = self.stamp()
+        self.git("add", "src/app.py")
+        self.git("commit", "-q", "-m", "change")
+        self.assertEqual(self.tree("--ref", "HEAD"), tree)
+        r = self.check("--ref", "HEAD")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_ref_sees_a_commit_the_check_never_saw(self):
+        self.stamp()
+        self.git("add", "src/app.py")
+        self.git("commit", "-q", "-m", "change")
+        self.write("src/app.py", "def add(a, b):\n    return 0\n")
+        self.git("commit", "-q", "-am", "someone else's push")
+        r = self.check("--ref", "HEAD")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("src/app.py", r.stderr)
+
+    def test_unknown_ref_cannot_run(self):
+        self.stamp()
+        r = self.check("--ref", "no-such-branch")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ERROR", r.stderr)
+
+    def test_not_a_git_tree(self):
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        for args in (("--print-tree", plain), (plain, self.artifacts)):
+            r = run("check-fresh.py", *args)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("ERROR", r.stderr)
+
+    def test_needs_an_artifact_dir_or_print_tree(self):
+        r = run("check-fresh.py", self.repo)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ERROR", r.stderr)
+
+
 class CheckTestsTest(GitRepoCase):
     def audit(self, *extra):
         return run("check-tests.py", self.repo, "--base", "HEAD", *extra)

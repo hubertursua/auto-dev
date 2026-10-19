@@ -56,12 +56,14 @@ git ls-files -z --others --exclude-standard | xargs -0 git add -N --
 **The snapshot diff (review-stage fixes only).** Before the commit, nothing in
 git separates the fix from the rest of the change, so take a snapshot of the
 working tree just before dispatching each review-stage correction, and diff
-against it afterwards. The snapshot is a tree object written through a temporary
-index: it leaves the real index, the working tree and the branch untouched, and
-`.auto-dev/` stays out because it ignores itself.
+against it afterwards. The snapshot is the working tree's tree hash, the same
+one every report is stamped with (`references/artifacts.md`, _Stamps: which code
+each result checked_, which also gives the by-hand command without `python3`).
+Taking it leaves the real index, the working tree and the branch untouched, and
+`.auto-dev/` stays out.
 
 ```bash
-snap() { t=$(mktemp); cp "$(git rev-parse --git-path index)" "$t"; GIT_INDEX_FILE=$t git add -A -- . && GIT_INDEX_FILE=$t git write-tree; rm -f "$t"; }
+snap() { python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>; }
 before=$(snap)     # just before dispatching the correction; record it in the Notes
 # … the coder applies the fix …
 git diff --name-only "$before" "$(snap)"     # the files the fix changed

@@ -2,7 +2,7 @@
 
 This repo is the auto-dev plugin: an orchestration skill (`skills/auto-dev/`) and
 its worker agent types (`agents/`). Most of it is Markdown that another agent
-follows; the rest is six helper scripts (`skills/auto-dev/scripts/`). `README.md`
+follows; the rest is eight helper scripts (`skills/auto-dev/scripts/`). `README.md`
 is the user-facing description of the pipeline, and it is the file most often
 left stale.
 
