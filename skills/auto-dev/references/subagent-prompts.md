@@ -830,7 +830,9 @@ directly — it moves when anything fetches.
      Output (last lines):
      <the last 30 lines or fewer, enough to show the result>
    For a condition with acceptance checks, the command is the acceptance run
-   scoped to its checks, and the output shows each of them passing or failing.
+   scoped to all of its checks, and the output shows each of them passing or
+   failing. When you ran nothing for it (Weak evidence, or `manual`), write
+   `Command: none — <why>` and leave Output out.
    - Strong: the condition's acceptance checks all passed in step 3, and each
      fail-to-pass one failed on the base per MANIFEST.md.
    - Adequate: no usable Strong evidence (the condition is not automatable, a
@@ -951,7 +953,8 @@ correction loop's Phase 5 entry; consumer #3):
 
 One brief covers every open item from one verifier pass. A condition at
 `manual` is **not** a correction — nothing the coder writes can make it
-observable here. It goes to the PR gate and the PR body as a check for a human.
+observable here. It goes to the PR gate, and to the PR body's _Checks for a
+person_.
 
 If a verdict looks wrong to you against `SPEC.md`, re-spawn the verifier once,
 naming the condition and what to re-examine — never your reasons for thinking it

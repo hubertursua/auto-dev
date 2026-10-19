@@ -98,8 +98,9 @@ make tests pass by weakening them. Verification is built around that:
   every change to an existing test with its reason, says how many small
   deliberate bugs the tests caught and why each one they missed is harmless,
   and turns each check left to a person into steps. It tells the reviewer to
-  start with the tests written before the code. The PR gate keeps the short
-  IDs (`C2`, `M7`), since you can open the run's files.
+  start with the tests written before the code. A description too long for
+  GitHub moves its output blocks into one PR comment. The PR gate keeps the
+  short IDs (`C2`, `M7`), since you can open the run's files.
 
 ## What it does
 

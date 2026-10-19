@@ -459,11 +459,8 @@ pushed until they settle and the user approves.
    `scripts/check-fresh.py --ref HEAD` shows the commit carries the checked code.
 5. **Push** — **never `--force`** — and open **exactly one** PR, a draft by
    default. Its body is written for a developer who has never heard of
-   auto-dev (`references/artifacts.md`, _The PR body_): it names the commit its
-   results were checked on and carries the **acceptance conditions** (each with
-   the test that checks it, and that test's result on the old code and now),
-   the **changes to existing tests**, the **test strength**, the
-   **quality-gate results** and the **review summary**.
+   auto-dev, names the commit its results were checked on, and keeps every
+   section `references/artifacts.md`, _The PR body_, marks strict.
 6. **CI monitoring**, bounded. Red pre-merge → the correction loop, whose fix is
    reviewed (both steps) before the Phase 6a refresh commits and re-pushes it.
 7. **Jira → In Review.**

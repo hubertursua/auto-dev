@@ -120,17 +120,12 @@ and fixed, and the PR never collects review-fix commits.
    - **Body** to the PR-body contract (`references/artifacts.md`, _The PR body_),
      written for a developer who has never heard of auto-dev: no condition or
      finding IDs, no `.auto-dev/` paths, and every result backed by something
-     the reader can open. It holds the commit its results were checked on
-     (`Checked at commit <sha>`, the commit step 4 verified), summary,
-     unresolved assumptions, and — as required content — the **acceptance
-     conditions** (each one ticked from `SPEC_EVAL.md`, with the test written
-     before the code and its result on the old code and now, or what was run
-     instead; unticked ones left unticked), the **checks for a person**, the
-     **changes to existing tests**, the **test strength**, the **quality-gate
-     results**, and the **review summary** (each review's overall confidence,
-     the must-fix findings fixed, and any left open). Brevity rules may trim the
-     _prose_; they never drop those sections. Check its size before publishing
-     (the contract's _Size_ rule).
+     the reader can open. It names the commit its results were checked on
+     (`Checked at commit <sha>`, the commit step 4 verified), and carries every
+     section the contract marks strict: the acceptance conditions with their
+     tests and results, unticked ones left unticked, and the quality-gate and
+     review results. Brevity rules may trim the _prose_; they never drop those
+     sections. Check its size before publishing (the contract's _Size_ rule).
    - **Repo PR template:** detect it (`.github/pull_request_template.md`,
      `.github/PULL_REQUEST_TEMPLATE/`, `docs/` or the repo root) and fill it,
      carrying the contract's sections inside it. No template → the contract's shape.
