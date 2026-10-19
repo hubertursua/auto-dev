@@ -44,8 +44,12 @@ and fixed, and the PR never collects review-fix commits.
    checks, justified test changes) and both reviews: each one's overall
    confidence, the must-fix findings fixed and still open, and any pre-existing
    security finding for the user to triage.
-4. **Commit** — stage source paths **explicitly**, confirm nothing under
-   `.auto-dev/` is staged, then commit with a conventional message. Run exactly
+4. **Commit** — first, on the commit right after the PR gate (the gate may have
+   waited a while, and a person may have edited the code meanwhile), run
+   `scripts/check-fresh.py <worktree> <artifact-dir>` once more; on `1`, re-run
+   the stale results (`references/correction-loop.md`, _Stale results_) and ask
+   the PR gate again. Then stage source paths **explicitly**, confirm nothing under
+   `.auto-dev/` is staged, and commit with a conventional message. Run exactly
    this sequence; only the paths and the message vary:
    ```bash
    git add -- <path> …                             # named paths that exist on disk — never -A or .
@@ -207,8 +211,11 @@ the push unasked.
 2. **Check the PR still holds the code that was checked.** Someone may have
    pushed to the branch since, or GitHub's _Update branch_ may have merged the
    base into it. Either way the PR would merge code no result checked:
+   If step 1 found the PR already merged or closed, report that and stop.
+   Otherwise fetch the base too, so the change is still measured from where the
+   branch now leaves it:
    ```bash
-   git fetch origin <branch>
+   git fetch origin <branch> <base>
    python3 <skill-dir>/scripts/check-fresh.py <worktree> <artifact-dir> --ref origin/<branch>
    ```
    `0` — the PR's head carries exactly the checked code: its commit

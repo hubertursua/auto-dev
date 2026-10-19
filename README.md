@@ -459,8 +459,8 @@ multi-PR run gets its own), and the pipeline stops and reports
 rather than committing a red build or weakening any security control. It also
 stops if the mutation step may have left a planted bug in the tree, if the
 build edited source inside a submodule, or if a commit holds code that no result
-checked. It never shows you, or a PR reviewer, a result that was checked on
-other code than the code in front of you. It refuses a
+checked. It never asks you at a gate, or writes a PR description, on results
+that were checked on other code. It refuses a
 resolved quality gate with no test command in it, since that would pass Phase 5 by
 having nothing to check. It merges to main only through a PR, only after your
 approval, and if `gh pr merge` is refused it tells you why instead of working around

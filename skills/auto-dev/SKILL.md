@@ -453,7 +453,8 @@ pushed until they settle and the user approves.
    any open must-fix, and the pre-existing security findings for the user to
    triage.
 4. **Commit** — stage source paths **explicitly** (never `git add -A`/`.`); commit
-   only once `scripts/check-staged.py --expect <paths>` passes. Push only once
+   only once `scripts/check-fresh.py` still passes after the gate's wait and
+   `scripts/check-staged.py --expect <paths>` passes. Push only once
    `scripts/check-fresh.py --ref HEAD` shows the commit carries the checked code.
 5. **Push** — **never `--force`** — and open **exactly one** PR, a draft by
    default, naming the commit its results were checked on and carrying the
@@ -471,7 +472,7 @@ resolve conflicts on staging or force the push unasked.
 
 1. **Read what humans said**; mark the PR ready. A human blocker goes through the
    correction loop (its fix reviewed like any other), never merged over.
-2. **Check the PR still holds the checked code:** fetch the branch and run
+2. **Check the PR still holds the checked code:** fetch the branch and base, and run
    `scripts/check-fresh.py --ref origin/<branch>`. Commits pushed from outside the
    pipeline are brought into the worktree, checked like any change, and the PR
    body refreshed before the gate (`references/correction-loop.md`, _Stale results_).

@@ -18,8 +18,11 @@ Usage:
 
 The tree hash covers every file git would stage with `git add -A`, tracked or
 untracked, minus ignored files and anything under .auto-dev/. It is computed
-through a copy of the worktree's index, so the real index is left alone. A
-submodule counts by the commit it has checked out; edits inside it don't count.
+through a copy of the worktree's index, so the real index is left alone (git
+does store the files' contents in .git/objects, as `git add` would). A submodule
+counts by the commit it has checked out; edits inside it don't count, and nor do
+edits inside a nested repository that is not a submodule, or to a file marked
+assume-unchanged.
 With --ref, the hash is `<rev>^{tree}` instead: the code a commit carries
 (`--ref HEAD` after a commit, `--ref origin/<branch>` for what a PR holds).
 
@@ -67,14 +70,22 @@ HASH = re.compile(r"`?([0-9a-f]{64}|[0-9a-f]{40})`?")
 MAX_PATHS_SHOWN = 50
 
 
+def shown(path):
+    """A path as printable text, whatever bytes its name holds."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
 class CannotRun(Exception):
     """An expected failure that stops the script before it can check."""
 
 
 def git(cwd, *args, env=None):
     try:
+        # surrogateescape: a file name that isn't valid UTF-8 must not crash
+        # the check (a crash would exit 1, which reads as "stale", not 2).
         result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True,
-                                text=True, env=env, check=False)
+                                text=True, errors="surrogateescape", env=env,
+                                check=False)
     except OSError as exc:
         raise CannotRun(f"could not run git: {exc}") from None
     if result.returncode != 0:
@@ -215,7 +226,7 @@ def main() -> int:
             else:
                 print(f"  changed since: {len(paths)} file(s)", file=sys.stderr)
                 for p in paths[:MAX_PATHS_SHOWN]:
-                    print(f"    {p}", file=sys.stderr)
+                    print(f"    {shown(p)}", file=sys.stderr)
                 if len(paths) > MAX_PATHS_SHOWN:
                     print(f"    … and {len(paths) - MAX_PATHS_SHOWN} more",
                           file=sys.stderr)

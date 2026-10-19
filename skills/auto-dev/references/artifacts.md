@@ -382,15 +382,21 @@ wherever the two disagree.
    `gh pr view`. A PR may already be open, or already merged. Reconcile the ledger
    to what git and `gh` actually report, then continue from there. With no commit
    on the branch and no PR-gate approval recorded in the Notes, the PR gate has
-   not passed: the run was in the reviews, which come before it. Then, before
-   anything else, check that Phase 5's results still match the code:
-   `scripts/check-fresh.py <worktree> <artifact-dir> --phase 5` (_Stamps_,
-   below); on `1`, re-run them first (`references/correction-loop.md`, _Stale
-   results_). Once a commit exists, the PR body and main gate checks cover it. Resume them as
+   not passed: the run was in the reviews, which come before it. Resume them as
    `references/review.md`, _The review loop_, says: re-run every review step the
    Notes do not record as done, and never trust a review report the Notes do not
    vouch for. A correction the Notes record as dispatched but not re-reviewed
    is re-dispatched without spending another round.
+
+   **Before resuming, check the results still match the code** (_Stamps_,
+   below). With no commit yet, run `scripts/check-fresh.py <worktree>
+   <artifact-dir> --phase 5`; on `1`, re-run them first
+   (`references/correction-loop.md`, _Stale results_). Skip it when a correction
+   is being re-dispatched: that correction's refresh re-runs and restamps every
+   report anyway. With a commit the Notes don't record as `verified commit
+   <sha>`, run `check-fresh.py <worktree> <artifact-dir> --ref HEAD` before any
+   push; on `1`, push nothing, and stop and report. A verified commit needs
+   nothing more here: the PR body and main gate checks cover it.
 5. **Multi-PR runs** restart at the first sub-task that is not `done`, and within it
    at the first phase that is not `done` in **that sub-task's own phase table**. A
    sub-task with no phase table goes by its summary `status`: `done` is complete
@@ -455,14 +461,14 @@ S3 Ship progress:
 - [ ] 6a.1 Code review panel: 3 × code-reviewer (/code-review xhigh) → judge → re-votes → CODE_REVIEW.md (must-fix → correction loop + cleanup re-spawn + re-review on the fix's files)
 - [ ] 6a.2 Security review: security reviewer (/security-review) → judge verifies High/Medium → SECURITY_REVIEW.md (must-fix → correction loop, then 6a.1 on the fix's files, then 6a.2 again)
 - [ ] 6a.3 PR gate, once check-fresh.py exits 0 (both reviews' confidence + counts; open must-fix; pre-existing security for the user to triage)
-- [ ] 6a.4 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged;
+- [ ] 6a.4 Commit: check-fresh.py again first (stale → re-run them, re-ask the gate); explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged;
            then check-fresh.py --ref HEAD exits 0 (1 → don't push: stop and report)
 - [ ] 6a.5 Push (never --force); open PR with "Checked at commit" + acceptance checklist + quality-gate results + review summary; inline review comments only if asked or configured
 - [ ] 6a.6 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh, its fix reviewed before re-push)
 - [ ] 6a.7 Jira → In Review
 - [ ] 6b   Staging gate → direct merge → CI on staging (n/a without staging)
 - [ ] 6c.1 Read human reviews; mark the PR ready
-- [ ] 6c.2 Fetch the PR branch; check-fresh.py --ref origin/<branch> exits 0
+- [ ] 6c.2 PR merged/closed → report, stop; fetch the PR branch and base; check-fresh.py --ref origin/<branch> exits 0
            (outside commits → merge them in, re-run the stale results, refresh the PR body)
 - [ ] 6c.3 Main gate
 - [ ] 6c.4 gh pr merge, explicit method, --match-head-commit <checked sha>, never --admin
@@ -586,7 +592,17 @@ Four reports carry one: `SPEC_EVAL.md` (the verifier), each `lint/<CHECK>.md`
 (the cleanup agent), `CODE_REVIEW.md` (the review judge) and `SECURITY_REVIEW.md`
 (the security reviewer). The writer gets the hash from
 `python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>`, and the
-templates below show where the line goes.
+templates below show where the line goes. Without `python3`, its brief gets the
+by-hand command at the end of this section instead.
+
+**The stamp is the code that was checked, not the code at writing time.** A
+writer that checks over a while compares the tree before and after, and writes
+`Tree: changed during the run` (read as no stamp, so stale) if they differ. The
+verifier does this itself. The two reviews are checked by other agents before
+their writer runs, so you take the hash: run `--print-tree` just before
+spawning the code review panel, and again before spawning the security
+reviewer, and paste it into the judge's or the security reviewer's brief. The
+writer writes it only if its own `--print-tree` still matches.
 
 **Why a tree hash.** The checks run before anything is committed, so there is no
 commit to name yet. A tree hash names the exact contents of every file, committed
@@ -1128,6 +1144,7 @@ a stop-and-report condition) uses the same shape and says where it stopped.
 - **Built:** <what changed, 1–3 sentences>
 - **Scope call:** <TRIVIAL | STANDARD | OVERSIZED → n sub-tasks>
 - **Quality gate:** <each check and its final status>
+- **Checked at:** <the verified commit, from WORK_LOG.md: every result here was produced on it>
 - **Review:** code <confidence>, <n> must-fix fixed, <n> open · security <confidence>, <n> must-fix fixed, <n> open, <n> pre-existing for the user
 - **Jira:** <transitions performed | none — no ticket>
 - **Iteration budget:** <remaining>/<total>

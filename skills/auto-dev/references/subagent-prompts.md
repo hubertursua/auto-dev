@@ -1017,16 +1017,17 @@ _Tools: Read, Edit, Write, Bash, Grep, Glob, plus the **Skill** tool to run `/si
 
 Runs after the Phase 5 correction loop settles, so corrective code gets simplified too,
 is re-spawned after any Phase 5 correction made after that pass (_Re-verify after
-cleanup_, below), and is **re-spawned after every Phase 6 correction**
+cleanup_, below), is **re-spawned after every Phase 6 correction**
 (a must-fix review finding, a human blocker or red CI) on the code that correction
-changed. No spawn of it spends the iteration budget.
+changed, and is re-spawned with no simplify step when its reports go stale
+because the code changed outside the pipeline (the _Outside changes_ scope). No spawn of it spends the iteration budget.
 `/simplify` is *meant* to preserve behavior; Step 2's quality gate is what checks that it
 did.
 
 ```
 You are the SIMPLIFY + QUALITY-GATE phase. Work inside the worktree at <worktree>.
 
-Step 1 — Simplify: run /simplify over <SCOPE — one of the two below>. Never
+Step 1 — Simplify: run /simplify over <SCOPE — one of the scopes below>. Never
 simplify, reformat or otherwise edit an acceptance check (<installed paths from
 MANIFEST.md>), whatever the scope says. Apply
 behavior-preserving simplifications only
@@ -1286,9 +1287,11 @@ Read every one. <Pass 2 or later: also read the previous
    forward, so the file holds the whole review history.>
 5. Set the overall confidence by the rubric. While re-votes are pending, write
    "provisional (re-votes pending)"; the orchestrator finalizes it.
-6. Write the Tree line: the hash that
-   `python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>` prints.
-   It says which code this pass reviewed.
+6. Write the Tree line. The panel reviewed tree <hash the orchestrator noted
+   before spawning it>. Run
+   `python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>`: if it
+   prints that hash, write it; if not, the code changed after the review, so
+   write `Tree: changed during the run`.
 
 The rubric:
 <paste the rubric: code review findings + overall report confidence>
@@ -1335,9 +1338,11 @@ intent-to-add, so the diff shows them.
 <Run 2 or later: 5. Read the previous <artifact-dir>/SECURITY_REVIEW.md. For each
    must-fix finding in it, check the current code and mark it `fixed (run <n>)` or
    `open`. Carry the earlier rows forward.>
-6. Write the Tree line: the hash that
-   `python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>` prints.
-   It says which code this run reviewed.
+6. Write the Tree line. You were spawned on tree <hash the orchestrator
+   noted before spawning you>. When you finish, run
+   `python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>`: if it
+   prints that hash, write it; if not, the code changed while you reviewed, so
+   write `Tree: changed during the run`.
 
 The rubric:
 <paste the rubric: security findings + overall report confidence>

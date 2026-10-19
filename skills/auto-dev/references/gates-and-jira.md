@@ -50,7 +50,8 @@ decision, the option chosen, and its reason in `WORK_LOG.md`.
 - **`Hold`** — pause without ending the run. Leave the worktree, the branch, and
   every artifact in place; mark the phase `blocked` in the ledger with the reason.
   The run stays **resumable** from `WORK_LOG.md` (`references/artifacts.md`), and
-  resuming re-fires this gate.
+  resuming re-fires this gate, starting with the checks it runs before asking
+  (the freshness check among them): the code may have changed during the hold.
 - **`Stop`** — end the run. The same state is left on disk, but nothing resumes on
   its own: write the final report, mark the phase `blocked`, and say what remains.
 - **`Skip staging`** (6b only) — mark Phase 6b `n/a` in the ledger and continue to
@@ -192,8 +193,11 @@ place a teammate's feedback enters the pipeline.
 - **Options:** `Merge PR to main` · `Hold` · `Stop`.
 
 Unresolved human blockers go through the correction loop before this gate is worth
-asking. If `gh pr merge` then refuses, the PR is **unmergeable**: report the specific
-requirement blocking it and stop — never merge locally to get around it.
+asking. If `gh pr merge` then refuses because the PR's head is no longer the
+checked commit (`--match-head-commit`), go back to the freshness check and ask
+this gate again (`references/phase-6-ship.md`, 6c step 4). Any other refusal
+means the PR is **unmergeable**: report the specific requirement blocking it and
+stop — never merge locally to get around it.
 
 ## Conditional pauses
 

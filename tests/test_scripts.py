@@ -215,6 +215,46 @@ class CheckFreshTest(GitRepoCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("NO STAMP: SECURITY_REVIEW.md", r.stderr)
 
+    def test_deleted_file_is_stale_and_ignored_file_is_not(self):
+        self.write(".gitignore", "build/\n")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore build/")
+        self.stamp()
+        self.write("build/out.txt", "generated\n")
+        self.assertEqual(self.check().returncode, 0)
+        (self.repo / "tests/test_app.py").unlink()
+        r = self.check()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("tests/test_app.py", r.stderr)
+
+    def test_stamp_that_is_not_a_hash_is_no_stamp(self):
+        self.stamp()
+        (self.artifacts / "SPEC_EVAL.md").write_text("# x\n\nTree: changed during the run\n")
+        r = self.check()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("NO STAMP: SPEC_EVAL.md", r.stderr)
+
+    def test_unknown_old_tree_says_so(self):
+        self.stamp(tree="0" * 40)
+        r = self.check()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("changed since: unknown", r.stderr)
+
+    def test_artifacts_in_the_real_index_are_left_out(self):
+        tree = self.stamp()
+        self.git("add", "-f", ".auto-dev/SPEC_EVAL.md")
+        self.assertEqual(self.tree(), tree)
+
+    def test_non_utf8_file_name_does_not_crash(self):
+        if sys.platform in ("darwin", "win32"):
+            self.skipTest("the file system needs valid UTF-8 names")
+        self.stamp()
+        (self.repo / os.fsdecode(b"bad\xff.txt")).write_text("x\n")
+        r = self.check()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("bad", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
     def test_phase_5_checks_only_its_own_reports(self):
         self.stamp(reports=self.REPORTS[:2])
         self.assertEqual(self.check().returncode, 1)
@@ -268,9 +308,10 @@ class CheckFreshTest(GitRepoCase):
             self.assertIn("ERROR", r.stderr)
 
     def test_needs_an_artifact_dir_or_print_tree(self):
-        r = run("check-fresh.py", self.repo)
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("ERROR", r.stderr)
+        for args in ((self.repo,), ("--print-tree", self.repo, self.artifacts)):
+            r = run("check-fresh.py", *args)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("ERROR", r.stderr)
 
 
 class CheckTestsTest(GitRepoCase):
