@@ -409,6 +409,18 @@ steps by hand, except that it can't find or save a profile, so it researches one
 every run. `validate-config.py` also checks a saved profile (`--profile`). Two are run by the Phase 5 verifier: `check-tests.py` (the
 test-integrity audit) and `mutate.py` (applies mutants one at a time and restores
 every file afterwards).
+`skills/auto-dev/scripts/autodev.py` is the one entry point for the steps
+4.0 moves out of the orchestrator's prose, so a user allows one command. It
+needs **Python 3.9+** and **PyYAML**, and keeps the run's state in
+`.auto-dev/state.json`, which only it writes; `WORK_LOG.md` is generated from
+it. Its subcommands so far: `init` (Phase 1's preflight, config, worktree,
+seeded files and setup, run in the background past the Bash tool's 10-minute
+limit), `resume` (finds the run to continue, or says to start fresh or ask),
+`show`, `phase`, `note`, `size` (the Define agent's size check), `budget`
+(spends a revise round once per correction, and refuses at zero with what to do
+next), `gate` (records a gate decision; `hold` and `stop` are different states)
+and `handoff` (writes `HANDOFF.md` and the message that ends a session). Shared
+code lives in `skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
 The profiler names one only if the repo's ecosystem uses one and it is on your
@@ -450,7 +462,9 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | Path | Written by | Holds |
 | ---- | ---------- | ----- |
 | `profile.md` | Phase 1 | the resolved stack, where the profile came from, commands, branches, CI and Jira settings |
-| `WORK_LOG.md` | Phase 1 onward | the ledger: phase status, size check, high-risk flag, gate decisions, budget; the resume point |
+| `state.json` | `autodev.py`, Phase 1 onward | the run's state: phases, size check, gates, budget and every round spent; written only by `autodev.py` |
+| `WORK_LOG.md` | generated from `state.json` | the ledger for people to read: phase status, size check, high-risk flag, gate decisions, budget |
+| `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `HANDOFF.md` | each session's end | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
@@ -490,9 +504,11 @@ skills/auto-dev/
   SKILL.md              the orchestrator's spine: phases, sessions, gates, rules
   references/           detail read on demand, one file per phase or topic
   scripts/              the Python helpers listed under Dependencies
+    lib/                shared code for autodev.py (not run directly)
   evals/                evals.json (pipeline evals, with fixtures in files/)
                         and trigger-eval.json (should / shouldn't trigger)
 tests/                  unit tests for the helper scripts
+  fake_gh/              a fake `gh` that plays back scripted responses
 tools/check-repo.py     checks that the repo's files agree with each other
 tools/check-pr.py       checks a branch name and PR title against the conventions
 ruff.toml               lint config
@@ -532,8 +548,11 @@ rules for changing a script are in `CLAUDE.md`.
   planner writes every plan and the `coder-trivial` worker is removed.
 - **Jira moves later.** A ticket moves to In Progress after the size check, not
   in Phase 1, so a task handed back never shows as started.
-- **The ledger changed.** `WORK_LOG.md`'s header has `Worktree`, `Size` and
+- **The ledger changed.** The run's state lives in `.auto-dev/state.json`,
+  written only by `skills/auto-dev/scripts/autodev.py`; `WORK_LOG.md` is
+  generated from it for people to read. Its header has `Worktree`, `Size` and
   `High risk` lines in place of `Control worktree` and `Mode`.
+- **Python 3.9+ and PyYAML are required** by `autodev.py`.
 
 A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
 and start again.

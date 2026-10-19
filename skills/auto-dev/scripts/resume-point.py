@@ -60,6 +60,9 @@ import stat
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.taskmatch import NEAR_MISS, task_matches
+
 LEDGER = "WORK_LOG.md"
 
 # Exit codes, as the docstring and the docs that call this script list them.
@@ -107,29 +110,6 @@ PHASE_6_IN_PROGRESS = (
 # Which session holds each phase (SKILL.md, Session boundaries).
 SESSIONS = {1: "S1 — Plan", 2: "S1 — Plan", 3: "S1 — Plan",
             4: "S2 — Build", 5: "S2 — Build", 6: "S3 — Ship"}
-# How many of the Task line's (or restated ask's) words free --task text keeps.
-MIN_COVERAGE = 0.8
-# Words an abbreviation may never drop: without them the line means the opposite.
-NEGATIONS = {"not", "no", "never", "without", "dont", "doesnt", "isnt", "except",
-             "nor"}
-# task_matches()'s third answer: not a match, but the words overlap wholly.
-NEAR_MISS = "near-miss"
-# Free text is compared as words: runs of letters and digits, case folded.
-WORD_RE = re.compile(r"[a-z0-9]+")
-# Apostrophes are dropped first, so `isn't` and `isnt` are the same word.
-APOSTROPHE_RE = re.compile("['\u2019]")
-# A bare Jira key passed to --task (e.g. PROJ-123); matched as a whole token.
-JIRA_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$", re.IGNORECASE)
-# What separates tokens on the Ticket line: anything that can't be in a key,
-# so `PROJ-123` is a token in `PROJ-123`, `…/browse/PROJ-123` and `[PROJ-123]`.
-TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9_-]+")
-# What ends the Ticket line's key/link part and starts the restated ask: the
-# template's ` — `, tolerating extra whitespace. Not an en dash: one can sit
-# inside a link title (`[Login – broken](…/browse/PROJ-12)`).
-TICKET_ASK_SEP_RE = re.compile(r"\s+—\s+")
-# A Jira issue URL passed to --task (`…/browse/PROJ-123`); its key is matched.
-BROWSE_KEY_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]+-\d+)(?:[^A-Za-z0-9_-]|$)")
-
 # Header fields the template requires.
 REQUIRED_FIELDS = ("Task", "Ticket")
 
@@ -142,10 +122,6 @@ SEPARATOR_RE = re.compile(r"^\|?[\s:|-]+\|?$")
 
 class LedgerError(Exception):
     """WORK_LOG.md does not follow the template; the message says where."""
-
-
-def words(text):
-    return WORD_RE.findall(APOSTROPHE_RE.sub("", text.lower()))
 
 
 def split_row(line, width):
@@ -212,59 +188,6 @@ def parse_header(lines):
                 f"header: missing the `- **{name}:**` field (the template "
                 f"requires {', '.join(REQUIRED_FIELDS)})")
     return fields
-
-
-def task_matches(wanted, fields):
-    """True if the --task value names this ledger's task (see the docstring),
-    NEAR_MISS if it may be the same task worded differently, else False."""
-    wanted = wanted.strip()
-    ticket = fields["Ticket"]
-    sep = TICKET_ASK_SEP_RE.search(ticket)
-    head, ask = (ticket[:sep.start()], ticket[sep.end():]) if sep else (ticket, "")
-    url_key = BROWSE_KEY_RE.search(wanted)
-    if url_key:  # a Jira issue URL matches as its key, never as a substring
-        wanted = url_key.group(1)
-    if JIRA_KEY_RE.match(wanted):
-        # Only the key/link part counts: a key the restated ask mentions
-        # (`— follow-up to PROJ-11`) is not this ledger's ticket. Strip `_`
-        # from token ends so a markdown-italic `_PROJ-12_` still counts.
-        # With no ticket (`none — JIRA-1234 (Jira unreadable)…`) the ask is
-        # where a key could be, so its tokens count instead.
-        keyed = ask if head.strip().lower() == "none" else head
-        tokens = {t.strip("_") for t in TOKEN_SPLIT_RE.split(keyed.lower())}
-        return wanted.lower() in tokens
-    wanted = words(wanted)
-    if not wanted:
-        return False
-    # Free text matches the Task line or the ask the Ticket line restates
-    # (after ` — `) — never the key, link or a bare "none" before it.
-    lines = [have for have in (words(fields["Task"]), words(ask)) if have]
-    if any(abbreviates(wanted, have) for have in lines):
-        return True
-    # Not the same task as far as the words go, but one side's words all appear
-    # in the other: a fragment, or a longer request that contains the line.
-    if any(set(wanted) <= set(have) or set(have) <= set(wanted)
-           for have in lines):
-        return NEAR_MISS
-    return False
-
-
-def abbreviates(wanted, have):
-    """Whether `wanted` is `have`, or `have` with a few words left out.
-
-    The kept words must appear in order, cover at least MIN_COVERAGE of
-    `have`, and the dropped ones must include no negation. A longer request
-    that merely contains the line, or a fragment, is not it.
-    """
-    if len(wanted) < MIN_COVERAGE * len(have):
-        return False
-    dropped, i = [], 0
-    for word in have:
-        if i < len(wanted) and wanted[i] == word:
-            i += 1
-        else:
-            dropped.append(word)
-    return i == len(wanted) and not NEGATIONS & set(dropped)
 
 
 def first_open_phase(rows, where):
