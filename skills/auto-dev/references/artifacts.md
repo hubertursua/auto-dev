@@ -46,7 +46,8 @@ and the reports that judge the build.
   - **`CODE_REVIEW.md` (Phase 6a, review judge)**
   - **`SECURITY_REVIEW.md` (Phase 6a, security reviewer + review judge)**
   - **`lint/<CHECK>.md` (Phase 5, cleanup agent) — one per `gate` entry**
-- **The PR body** — who writes it in Phase 6a, and the sections it must keep.
+- **The PR body** — who writes it in Phase 6a, who reads it (a developer who
+  doesn't know auto-dev), and the sections it must keep.
 - **The final report** — a flexible default shape for the run's last message.
 
 ## Why two documents
@@ -463,7 +464,7 @@ S3 Ship progress:
 - [ ] 6a.3 PR gate, once check-fresh.py exits 0 (both reviews' confidence + counts; open must-fix; pre-existing security for the user to triage)
 - [ ] 6a.4 Commit: check-fresh.py again first (stale → re-run them, re-ask the gate); explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged;
            then check-fresh.py --ref HEAD exits 0 (1 → don't push: stop and report)
-- [ ] 6a.5 Push (never --force); open PR with "Checked at commit" + acceptance checklist + quality-gate results + review summary; inline review comments only if asked or configured
+- [ ] 6a.5 Push (never --force); open PR, its body per _The PR body_ (for a reader who doesn't know auto-dev; "Checked at commit"; size checked); inline review comments only if asked or configured
 - [ ] 6a.6 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh, its fix reviewed before re-push)
 - [ ] 6a.7 Jira → In Review
 - [ ] 6b   Staging gate → direct merge → CI on staging (n/a without staging)
@@ -511,7 +512,7 @@ shape.
   ambiguity); and **Security/Compliance criteria** when the task touches a
   sensitive path (controls pulled from the security-directive sources `profile.md`
   names). Written in Phase 2; **withheld from the coder**; the basis of the
-  acceptance checks, the Phase 5 verifier's verdicts and the PR body's checklist.
+  acceptance checks, the Phase 5 verifier's verdicts and the PR body's acceptance conditions.
 - **`IMPLEMENTATION.md`** — the technical *how*, self-contained: files to
   create/modify, design, data flow, the ordered build sequence (which is the
   coder's worklist), test plan (which test proves which behavior, and where),
@@ -546,8 +547,9 @@ shape.
   invocation and why each half of it matters.
 - **`evidence/`** — what the verifier ran and saw: the audit output
   (`integrity.txt`), the acceptance run (`acceptance.txt`), and per condition its
-  stated expectation, the command and the result (`C<n>.txt`), and the mutants it
-  ran with their results (`mutants.json`, `mutants.json.results.json`), plus the
+  stated expectation, the command, the result and the last lines of output
+  (`C<n>.txt`, which the PR body quotes so a reviewer sees what was run), and
+  the mutants it ran with their results (`mutants.json`, `mutants.json.results.json`), plus the
   fixed mutant set and the diff it was chosen from (`mutation-set.json`,
   `mutation-base.diff`), kept across passes so re-checks re-run the same
   mutants and only add new ones for code written since.
@@ -555,7 +557,8 @@ shape.
 - **`lint/<CHECK>.md`** — one report per quality-gate command, named per the
   loaded profile — **one per `gate` entry, all of them** (example in
   TypeScript: `TYPECHECK.md`, `LINT.md`, `FORMAT.md`, `TEST.md`): the command run, final
-  status, and the tail of any output that had to be fixed.
+  status, what had to be fixed, and the tail of the final run's output, which
+  the PR body quotes.
 - **`review/pass-<n>/R<k>.md`** — one code reviewer's own findings for one pass,
   each with a trigger path, plus security leads it noticed. Raw input to the
   judge; nothing else reads it.
@@ -659,7 +662,7 @@ lists each report that checked something else.
 
 Skeletons for the artifacts a worker or the orchestrator writes. They fix the
 *shape* — the contracts above fix the content. Keep the headings; a later phase reads
-them back (Phase 6a builds the PR checklist straight out of `SPEC_EVAL.md`).
+them back (Phase 6a builds the PR body straight out of `SPEC_EVAL.md`).
 
 **Paste the relevant template into the worker's brief, with its strictness line.**
 A worker has no path to this file and cannot follow a reference to it.
@@ -680,8 +683,8 @@ A worker has no path to this file and cannot follow a reference to it.
 | `profile.md` | strict | every phase and worker (`setup`/`gate` commands run verbatim) |
 | `SPEC.md` | strict | Define reviewer, acceptance tester, verifier, code reviewers, security-reviewer type choice (`Security/Compliance criteria`), PR body |
 | `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, acceptance tester (entry points only), code reviewers |
-| `acceptance/MANIFEST.md` | strict | verifier (tiers, install), post-plan gate summary, correction briefs (the paths not to touch) |
-| `SPEC_EVAL.md` | strict | the orchestrator's correction briefs, the next verifier re-check, PR body checklist, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
+| `acceptance/MANIFEST.md` | strict | verifier (tiers, install), post-plan gate summary, correction briefs (the paths not to touch), PR body (each test's name and its result on the old code) |
+| `SPEC_EVAL.md` | strict | the orchestrator's correction briefs, the next verifier re-check, the PR body, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
 | `review/pass-<n>/R<k>.md` | strict | the review judge |
 | `review/pass-<n>/VOTES-R<k>.md` | strict | the orchestrator, applying the votes |
 | `CODE_REVIEW.md` | strict | open must-fix → correction loop; PR gate and main gate summaries; PR body `Review`; `scripts/check-fresh.py` (`Tree:`) |
@@ -1069,51 +1072,222 @@ Verified: <the judge's reason>
 ## The PR body
 
 `.auto-dev/` is never committed, so the PR body is the one place this pipeline's
-reasoning reaches a human reviewer. The orchestrator assembles these sections in
-Phase 6a from artifacts that are about to become invisible to everyone but itself.
+reasoning reaches a human reviewer. The orchestrator assembles it in Phase 6a
+from artifacts that are about to become invisible to everyone but itself.
 
 **Who writes it.** The orchestrator, in Phase 6a, whatever route opens the PR —
 directly with `gh pr create`, or through a fitting skill from its available-skills
 list (`references/phase-6-ship.md`, step 5, has the full requirements). Where the
 repo has a PR template, fill it and carry these sections inside it; otherwise use
 this shape as-is, attribution line included. Brevity rules may trim the Summary,
-but nothing drops the three sections this pipeline reads back: **Acceptance
-conditions**, **Quality gate** and **Review**. So: those three sections and the
-attribution line are **strict**; the Summary and Assumptions prose is
-**flexible**.
+but nothing drops the three sections this pipeline writes and refreshes:
+**Acceptance conditions** (with its three subsections), **Quality gate** and
+**Review**. So: those sections, their headings and the attribution line are
+**strict**; the Summary and Assumptions prose is **flexible**.
 
-```markdown
+**Who reads it: a developer who has never heard of auto-dev** and cannot open
+`.auto-dev/`. Write every line for that reader:
+
+- **Plain words, no pipeline terms.** No condition or finding numbers (`C2`,
+  `M7`, `S1`), no evidence tiers (`Strong`, `Adequate`), and none of "held-out",
+  "fail-to-pass", "verifier" or "mutant". The template below says each of them
+  in plain words: "the tests written before the code", "small deliberate bugs".
+  Explain the method once, in the opening lines the template gives, not per
+  condition.
+- **No `.auto-dev/` paths.** Nobody else can open them. Quote what the reader
+  needs from those files instead.
+- **Clean pasted output before it goes in.** The PR may be public. In every
+  output block, replace the worktree's absolute path with `.` and a home
+  directory with `~`, and drop any line holding a token, password, key,
+  connection string or other secret-looking value. When you can't tell whether
+  a line is safe, leave the block out and say the output was withheld.
+- **Every claim points at something the reader can open:** a test in the diff,
+  linked; a commit, linked; or the command and the end of its output, pasted in
+  a collapsed `<details>` block.
+
+**Links.** Take the repo's web address from `gh repo view --json url -q .url`
+(`<repo-url>`; it is right on GitHub Enterprise too). Link a file at a commit,
+by its full sha, never at the branch, which would show whatever the branch holds
+later: `<repo-url>/blob/<sha>/<path>#L<line>`, with `<line>` where the test
+starts (`grep -n` its name). A line the change removed, or a file it deleted,
+exists only in the old code: link it at `<cut>` instead, with its old line
+number. Name a commit by its full sha in plain text, not in backticks: GitHub
+links it by itself. A refresh re-points every link at `<sha>` to the new
+commit; links into the old code stay as they are.
+
+**Why the PR gate uses IDs and the body doesn't.** The PR gate summary is for
+the user running auto-dev, who can open the run's files and ask the orchestrator
+about `C2` or `M7`; the IDs keep it short and let them point at one item. The PR
+body is for everyone else, and an ID there names a file they can't see.
+
+**Where each part comes from.** Read these in S3 to write it:
+
+| Part of the body | Source |
+|---|---|
+| Each condition, ticked or not | `SPEC.md` (the wording), `SPEC_EVAL.md` (the verdict) |
+| The tests written before the code, and each one's result on the old code | `acceptance/MANIFEST.md` (`Check`, `Base run`) |
+| What was run, what was expected, what came out | `evidence/C<n>.txt` |
+| Checks for a person | `SPEC_EVAL.md`'s `manual` rows, `MANIFEST.md`'s _Not automatable_ proxy, `evidence/C<n>.txt` |
+| Changes to tests | `SPEC_EVAL.md`, _Test integrity_ |
+| Test strength | `SPEC_EVAL.md`, _Mutation_ |
+| Quality gate | `lint/*.md` (status, _Output tail (final run)_) |
+| Review | `CODE_REVIEW.md`, `SECURITY_REVIEW.md` |
+
+`<cut>` is the commit the change is measured from (`SPEC_EVAL.md`'s header names
+it), `<old sha>` the commit the tests written before the code ran on
+(`MANIFEST.md`'s header names it; after a base merge it is older than `<cut>`),
+`<sha>` the commit the body describes. An evidence file written before 3.8
+may hold no `Output` part: leave that condition's output block out rather than
+inventing one; its test link still lets the reader check.
+
+````markdown
 ## Summary
 <what changed and why, 2–4 sentences — drawn from SPEC.md's Context>
 
 ## Acceptance conditions
-Checked at commit <sha>: every result in this description was produced on this code.
-<one checkbox per SPEC.md condition; ticked only where SPEC_EVAL.md says `met`,
-each with its evidence tier>
-- [x] <condition, in the spec's own words> — <Strong | Adequate>: <the check or what was run>
-- [ ] <partial or unmet — say which it is, and why it is being shipped anyway>
-- [ ] Needs a human check: <condition> — <exactly what to check, from SPEC_EVAL.md>
-Mutation: <n> killed of <n> (<n> equivalent survivors) | off
-<then one line per Unjustified test-integrity finding still open, if any>
+**How this was checked.** Before any code was written, a test was written from
+the requirements alone for each requirement below that a test could check, and
+run on the old code (`<base>` at <old sha>), where the tests for new behavior
+failed. The code was first written without those tests in view; then they were
+added back, and any later fix had to make them pass without changing them.
+Checked at commit <sha>: every result below was produced on this code.
+
+**Start review with** the tests written before the code. They state what this
+change must do: [`<path>`](<link>), [`<path>`](<link>)
+
+<When no requirement could be checked by a test, replace both paragraphs above
+with: "No requirement here could be checked by an automated test, so each one
+is under _Checks for a person_. Checked at commit <sha>.">
+
+- [x] **<condition, in the spec's own words>**
+  Test written before the code: [`<path>` › <test name>](<link to its line>) —
+  old code: <failed: <the one-line reason> | passed: it guards behavior that must not change> · now: passes
+  <details><summary>Command and output</summary>
+
+  Ran `<command>`, expecting <the expectation>.
+  ```
+  <the last lines of output>
+  ```
+  </details>
+- [x] **<condition no test written before the code checks in full>**
+  <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
+  <it covers only part of this | it was wrong and was corrected, so it never ran on the old code> · now: passes>
+  Checked by running <what, in a few words>: expected <the expectation>, saw
+  <the result>. <when no test could drive it: why>
+  <details>…the same block…</details>
+- [ ] **<condition>** — <partly met | not met>: <what holds, what doesn't, and
+  why it is being shipped anyway>
+  <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
+  old code: <…> · now: <passes | fails: <the failing assertion, one line>>>
+  <details>…the same block, when something was run…</details>
+
+### Checks for a person
+<"None: every requirement was checked automatically." — or, per requirement no
+automated check could observe:>
+- [ ] **<condition, in the spec's own words>**
+  1. <what to do>
+  2. <what you should see>
+
+  Already checked automatically: <what was run instead and what it showed |
+  nothing could be, because <reason>>
+
+### Changes to tests
+<"No existing test was deleted, skipped or weakened, and every new test checks
+something." — only when SPEC_EVAL.md's Test integrity section is "None.". A
+clean new test is not listed: it is in the diff. Otherwise one line per finding
+in that section, whatever it is about (an existing test changed, a new test
+that asserts nothing, a change to the test setup):>
+- [`<path>`](<link to the line>): <what changed, in plain words> — <because
+  <the requirement that changes this behavior> | not justified: <why it is
+  being shipped anyway>>
+
+### Test strength
+We put <n> small deliberate bugs into the changed code (for example, a
+comparison flipped or a boundary moved by one) and ran the tests against each.
+They caught <n>. <"Every one was caught." — or, per bug they missed:>
+- `<path>:<line>`, `<original>` changed to `<bug>`: <harmless: no input can tell
+  the two apart, because <reason> | not caught: no test checks <the behavior>,
+  so <the requirement above is partly met | it affects no requirement above>>
+<or: "Not run: <reason>." when the check was off or could not run>
 
 ## Quality gate
-<one line per `gate` command: the command and its final status, from lint/*.md>
+The repo's own checks, run on commit <short sha>:
+- `<command>`: <passed | failed: <one line>>
+  <details><summary>Output</summary>
+
+  ```
+  <the last lines of output>
+  ```
+  </details>
 
 ## Review
-<two lines, from CODE_REVIEW.md and SECURITY_REVIEW.md: each review's overall
-confidence, and its must-fix findings fixed and still open>
-- Code review — confidence <High | Medium | Low>: <n> must-fix fixed, <n> open
-- Security review — confidence <High | Medium | Low>: <n> must-fix fixed, <n> open
-<then one line per must-fix finding still open: what it is, where, and why it is
-being shipped anyway. Advisory and noise findings stay in .auto-dev/. A
-pre-existing security finding appears here only if the user chose `Separate PR`
-(listed as a follow-up) or `Fix it in this PR` (listed as fixed) at the PR gate.>
+- Code review (<n> independent reviewers) — confidence <High | Medium | Low>:
+  <its one-line reason>. <n> problems that had to be fixed: <n> fixed, <n> open
+- Security review — confidence <High | Medium | Low>: <its one-line reason>.
+  <n> problems that had to be fixed: <n> fixed, <n> open
+<then one line per problem still open: what it is, where, and why it is being
+shipped anyway. Minor suggestions stay out. A security problem that predates
+this change appears here only if the user chose `Separate PR` (listed as a
+follow-up) or `Fix it in this PR` (listed as fixed) at the PR gate.>
 
 ## Assumptions
 <the unresolved assumptions from SPEC.md a reviewer should sanity-check>
 
 Generated with [Claude Code](https://claude.com/claude-code)
-```
+````
+
+**One box per condition.** Every `SPEC.md` condition, security/compliance
+criteria included, appears exactly once: ticked under _Acceptance conditions_
+when `SPEC_EVAL.md` says `met`, unticked there when `partial` or `unmet`, and
+unticked under _Checks for a person_ when `manual`. A condition checked by more
+than one test written before the code gets one test line each and one output
+block, from the run of all of them. "Start review with" lists each file those
+tests are in once, corrected ones included.
+
+**Counting the deliberate bugs.** "We put <n>" counts every bug that ran
+(`SPEC_EVAL.md`'s killed, timed-out and survived counts, not the invalid ones);
+"they caught" counts the killed and timed-out ones. A bug that made the tests
+hang was noticed.
+
+**Filled in.** An example in TypeScript, for one met condition and one test
+change (an assertion the change removed, so it links to the old code). Its
+output block holds only the lines of the acceptance run that name this test:
+
+````markdown
+- [x] **A user cannot delete another user's todo**
+  Test written before the code: [`src/todos/todo-delete.acceptance.test.ts` › deleting another user's todo returns not found](https://github.com/acme/todos/blob/3f9c2ab41e07d8c5b6a9f0e2d4c1b7a8e6f5d3c2/src/todos/todo-delete.acceptance.test.ts#L24) —
+  old code: failed: expected 404, got 200 · now: passes
+  <details><summary>Command and output</summary>
+
+  Ran `npx vitest run src/todos/*.acceptance.test.ts`, expecting this test to pass.
+  ```
+   ✓ src/todos/todo-delete.acceptance.test.ts > deleting another user's todo returns not found 12ms
+  ```
+  </details>
+
+### Changes to tests
+- [`src/todos/todos.test.ts`](https://github.com/acme/todos/blob/9b1e4d7c2a6f8e3b5d0c7a9f1e2b4d6c8a0f3e5b/src/todos/todos.test.ts#L42): the assertion that deleting any todo returns 200 was replaced by one that expects 404 for someone else's todo — because a user can no longer delete another user's todo
+````
+
+**Size.** GitHub refuses a body or a comment over 65,536 characters; keep each
+under 60,000, measured with `wc -m` before publishing. Over that: cut each
+output block to its last 10 lines. Still over: move every `<details>` block into
+one PR comment whose first line is `Command output for commit <short sha>`,
+posted right after the PR opens or the body is refreshed, and leave `(output in
+the comment "Command output for commit <short sha>")` in each block's place. If
+the comment would still be over, cut its blocks to their last 3 lines. This
+comment is part of the body, not a review finding, so the rule that findings
+stay on disk does not apply to it. Note its id (the number at the end of the
+URL `gh pr comment` prints) in the Phase 6 row's Notes in `WORK_LOG.md`. A
+refresh, or a resume that finds no id noted, first looks for that comment
+(`gh pr view <pr> --json comments`: a body starting `Command output for
+commit`, its id at the end of its `url`) and edits it
+(`gh api -X PATCH repos/{owner}/{repo}/issues/comments/<id> -F body=@<file>`;
+`gh` fills in `{owner}/{repo}`) rather than posting another. When a refreshed
+body fits with its blocks inline, edit that comment to one line instead:
+`Superseded: the description holds the output for commit <short sha>.` A body
+still over 60,000 with every block moved out is not published cut short: report
+it at the gate, or in the final report after the PR gate.
 
 **The body describes one commit, and says which.** Its `Checked at commit` line
 names the commit whose code the results checked, and the body is written or
@@ -1123,11 +1297,16 @@ published; a body that names an older commit than the PR carries is out of date.
 
 **Ship the unticked box rather than a tidy list.** A condition surfaced as unmet
 is a decision the reviewer gets to make; a condition quietly dropped from the
-checklist is the one failure of this pipeline nobody can catch downstream. If a
-Phase 6 correction lands, the checklist, the quality-gate lines and the review
-summary are part of what it invalidates (`references/correction-loop.md`) — refresh them on the open PR with
+list is the one failure of this pipeline nobody can catch downstream. If a
+Phase 6 correction lands, every section this pipeline writes is part of what it
+invalidates (`references/correction-loop.md`). Refresh them on the open PR with
 `gh pr edit <pr> --body-file <file>`, since the PR already exists by then and
-re-running PR creation would open a second one.
+re-running PR creation would open a second one. Replace those sections whole,
+from the template, in the live body, and keep the rest, so edits made on GitHub
+survive. One thing inside them survives too: a _Checks for a person_ box someone
+ticked on GitHub stays ticked while its condition and steps are unchanged. A body written before 3.8 has the older shape inside those sections
+(tier names, `Needs a human check:` items, a `Mutation:` line): the same
+replacement rewrites them, subsections included.
 
 ## The final report
 

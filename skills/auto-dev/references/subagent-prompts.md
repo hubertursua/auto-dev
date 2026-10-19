@@ -821,7 +821,21 @@ directly — it moves when anything fetches.
 4. For each SPEC.md condition (Security/Compliance criteria included), decide its
    evidence tier. Before running anything for it, write down the outcome you
    expect; then run and compare. Save what you ran and saw to
-   <artifact-dir>/evidence/C<n>.txt.
+   <artifact-dir>/evidence/C<n>.txt, in this shape (the PR description quotes
+   it, for a reader who has only the PR):
+     Expected: <the outcome you wrote down>
+     Command: <each command as run from the worktree root, with repo-relative
+       paths, so a reader can run it too>
+     Result: <what you saw, in one line>
+     Output (last lines):
+     <the last 30 lines or fewer, enough to show the result>
+   For a condition with acceptance checks, do not run them again: the command
+   is step 3's acceptance run, and the output is the lines of
+   evidence/acceptance.txt that name this condition's checks, passing or
+   failing. A `manual` condition whose proxy (MANIFEST.md, Not automatable) you
+   ran records that run like any other. Only when you ran nothing for it (Weak
+   evidence, or `manual` with no proxy run), write `Command: none — <why>` and
+   leave Output out.
    - Strong: the condition's acceptance checks all passed in step 3, and each
      fail-to-pass one failed on the base per MANIFEST.md.
    - Adequate: no usable Strong evidence (the condition is not automatable, a
@@ -942,7 +956,8 @@ correction loop's Phase 5 entry; consumer #3):
 
 One brief covers every open item from one verifier pass. A condition at
 `manual` is **not** a correction — nothing the coder writes can make it
-observable here. It goes to the PR gate and the PR body as a check for a human.
+observable here. It goes to the PR gate, and to the PR body's _Checks for a
+person_.
 
 If a verdict looks wrong to you against `SPEC.md`, re-spawn the verifier once,
 naming the condition and what to re-examine — never your reasons for thinking it
@@ -1053,7 +1068,8 @@ ACCEPTANCE CHECK FAILS GATE with the file and the error: the orchestrator has it
 repaired.
 
 For each check, write <artifact-dir>/lint/<REPORT>.md: the exact command, final status
-(pass/fail), and the tail of any output you had to fix. Re-run until every `gate`
+(pass/fail), what you fixed, and the last lines (20 at most) of its FINAL run's
+output, whether or not it ever failed: the PR description quotes them. Re-run until every `gate`
 command is green. A check's final run must come after your last edit to any file:
 if you change anything after a check passed, run that check again. Then run
 python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>
@@ -1072,7 +1088,7 @@ umbrella/monorepo scope, slow tiers>. Ensure prerequisites are up before running
 
 Run the quality gate IN FULL — do not scope or sample it; it is the Definition of Done.
 Where a command is slow, run it in the background rather than blocking on it, and
-redirect its output to a file under $TMPDIR, reading back only the failing tail.
+redirect its output to a file under $TMPDIR, reading back only its tail.
 Never paste a full suite or type-checker log into your return.
 
 Return: what you simplified, **any simplification you reverted and which check
@@ -1127,7 +1143,7 @@ Once the quality gate is green, **re-spawn the verifier in re-check mode** ("aft
 the cleanup pass"). `/simplify` is meant to preserve behavior, and the cleanup
 agent may have fixed things forward; the quality gate shows the tests still pass,
 but only the verifier re-runs the acceptance checks, re-audits the tests and
-rewrites the evidence Phase 6a builds the PR checklist from. It re-checks every
+rewrites the evidence Phase 6a builds the PR body from. It re-checks every
 row, not only the ones citing files simplify touched: a `met` condition can depend
 on a file its evidence never names, and re-running is cheap next to reading.
 
