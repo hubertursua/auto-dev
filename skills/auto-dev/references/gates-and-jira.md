@@ -50,7 +50,8 @@ decision, the option chosen, and its reason in `WORK_LOG.md`.
 - **`Hold`** — pause without ending the run. Leave the worktree, the branch, and
   every artifact in place; mark the phase `blocked` in the ledger with the reason.
   The run stays **resumable** from `WORK_LOG.md` (`references/artifacts.md`), and
-  resuming re-fires this gate.
+  resuming re-fires this gate, starting with the checks it runs before asking
+  (the freshness check among them): the code may have changed during the hold.
 - **`Stop`** — end the run. The same state is left on disk, but nothing resumes on
   its own: write the final report, mark the phase `blocked`, and say what remains.
 - **`Skip staging`** (6b only) — mark Phase 6b `n/a` in the ledger and continue to
@@ -101,6 +102,12 @@ wrote itself.
   command in `profile.md`, each `pass`. A missing or failing report means Phase 5
   never reached green. Do not ask this gate on it; that is Phase 5's
   stop-and-report.
+- **Freshness check (before asking):** every result this summary shows must
+  have been produced on the code the commit will carry:
+  `python3 <skill-dir>/scripts/check-fresh.py <worktree> <artifact-dir>` exits
+  `0` (`references/artifacts.md`, _Stamps: which code each result checked_). On
+  `1`, re-run the stale results first (`references/correction-loop.md`, _Stale
+  results_); never ask this gate on results for other code.
 - **Submodule check (before asking):** run
   `git submodule foreach 'git status --porcelain'`. It visits only checked-out
   submodules (a fresh worktree leaves them uninitialized, and then it prints
@@ -179,13 +186,18 @@ place a teammate's feedback enters the pipeline.
 - **Summary:** PR link, CI status (must be green, or `CI: none`), **`reviewDecision` and any
   unresolved review comments**, the open must-fix counts from `CODE_REVIEW.md` and
   `SECURITY_REVIEW.md` (with their overall confidence), `mergeable` /
-  `mergeStateStatus`, and that the merge is via `gh pr merge` respecting branch
-  protection.
+  `mergeStateStatus`, the PR's head commit and that every result was checked on
+  it (`references/phase-6-ship.md`, 6c step 2; name any commits pushed from
+  outside the pipeline and what their re-check found), and that the merge is via
+  `gh pr merge` respecting branch protection, locked to that commit.
 - **Options:** `Merge PR to main` · `Hold` · `Stop`.
 
 Unresolved human blockers go through the correction loop before this gate is worth
-asking. If `gh pr merge` then refuses, the PR is **unmergeable**: report the specific
-requirement blocking it and stop — never merge locally to get around it.
+asking. If `gh pr merge` then refuses because the PR's head is no longer the
+checked commit (`--match-head-commit`), go back to the freshness check and ask
+this gate again (`references/phase-6-ship.md`, 6c step 4). Any other refusal
+means the PR is **unmergeable**: report the specific requirement blocking it and
+stop — never merge locally to get around it.
 
 ## Conditional pauses
 

@@ -79,6 +79,16 @@ make tests pass by weakening them. Verification is built around that:
   `.auto-dev.yml` (0 turns it off).
 - **Re-checked after every change.** The verifier runs again after `/simplify`
   and after every later fix, so the PR checklist always reflects the final code.
+- **Every result names the code it checked.** `SPEC_EVAL.md`, each quality-gate
+  report and both review reports carry a `Tree:` line: the git tree hash of the
+  code when it was checked. `scripts/check-fresh.py` compares those stamps with
+  the code as it is now at the end of the build session, on entry to the ship
+  session, before the PR gate, after the commit, before the PR description is
+  written, and before the main gate. A result checked on other code, because
+  someone edited the worktree, pushed to the PR or merged the base into it, is
+  run again before anything relies on it. Those re-runs spend no iteration
+  budget; anything they find is fixed like any other problem. The PR description
+  names the commit its results were checked on.
 
 ## What it does
 
@@ -281,7 +291,13 @@ Planning and build run unattended; the pipeline pauses for approval before
 **draft** unless you ask for it ready for review, and is marked ready before the
 main gate. Main is merged only via `gh pr merge` (respecting branch protection,
 never `--admin`), with `--squash` by default — `--merge` if the repo disallows
-squash, `--rebase` only when it is the one method allowed. Staging is a direct
+squash, `--rebase` only when it is the one method allowed. Before the main gate
+the pipeline fetches the PR branch and checks it still holds the code every
+result was checked on. If someone pushed to it, their commits are brought into
+the worktree and checked like any change, and the PR description is refreshed,
+before you are asked. The merge is locked to that commit with
+`--match-head-commit`, so a push made after the check makes GitHub refuse the
+merge instead of shipping unchecked code. Staging is a direct
 merge where the project uses that convention. **Jira** integration is
 status-transitions-only (In Progress → In Review → Done) and is skipped if no
 ticket is given. **CI** is monitored, with a bounded timeout, on the PR before
@@ -363,12 +379,15 @@ Optional tooling: **Python 3.9+** with **PyYAML** (`pip install pyyaml`), used b
 Phase 1 — a mistyped key is silently ignored otherwise. Without it the pipeline
 still runs; it checks the file by hand and reports that it went unvalidated.
 The other helpers in `skills/auto-dev/scripts/` need only Python's standard
-library. Four are run by the orchestrator: `profile-path.py` (names the saved
+library. Five are run by the orchestrator: `profile-path.py` (names the saved
 profile's path for a repo and says whether it exists), `resume-point.py` (finds where an
 interrupted run resumes, from `WORK_LOG.md`), `exclude-artifacts.py` (makes
-`.auto-dev/` self-excluding in Phase 1 and verifies it with git) and
+`.auto-dev/` self-excluding in Phase 1 and verifies it with git),
 `check-staged.py` (the read-only check before each Phase 6a commit that nothing
-under `.auto-dev/` is staged); without `python3` the orchestrator runs the same
+under `.auto-dev/` is staged) and `check-fresh.py` (the read-only check that
+every report was produced on the code as it is now; the verifier, cleanup agent,
+review judge and security reviewer also run its `--print-tree` to stamp their
+reports); without `python3` the orchestrator runs the same
 steps by hand, except that it can't find or save a profile, so it researches one
 every run. `validate-config.py` also checks a saved profile (`--profile`). Two are run by the Phase 5 verifier: `check-tests.py` (the
 test-integrity audit) and `mutate.py` (applies mutants one at a time and restores
@@ -438,8 +457,10 @@ Autonomous but bounded: the correction loop and the Define/plan re-reviews share
 one iteration budget per task (default 4 revise rounds; each sub-task of a
 multi-PR run gets its own), and the pipeline stops and reports
 rather than committing a red build or weakening any security control. It also
-stops if the mutation step may have left a planted bug in the tree, or if the
-build edited source inside a submodule. It refuses a
+stops if the mutation step may have left a planted bug in the tree, if the
+build edited source inside a submodule, or if a commit holds code that no result
+checked. It never asks you at a gate, or writes a PR description, on results
+that were checked on other code. It refuses a
 resolved quality gate with no test command in it, since that would pass Phase 5 by
 having nothing to check. It merges to main only through a PR, only after your
 approval, and if `gh pr merge` is refused it tells you why instead of working around
@@ -484,6 +505,19 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 3.6
+
+3.7 stamps every report that judges the code (`SPEC_EVAL.md`, `lint/*.md`,
+`CODE_REVIEW.md`, `SECURITY_REVIEW.md`) with a `Tree:` line naming the code it
+checked, and adds `scripts/check-fresh.py`, which compares the stamps with the
+code at each step that relies on them. The PR description gains a `Checked at
+commit` line, and the main merge is locked to the checked commit with
+`gh pr merge --match-head-commit`. If someone pushes to the PR before the main
+gate, the pipeline checks their commits before asking you. A run in flight
+resumes on 3.7: its reports have no stamp, which reads as stale, so the next
+check re-runs the verifier, the quality gate and the reviews before going on.
+Those re-runs spend no iteration budget.
 
 ## Upgrading from 3.5
 

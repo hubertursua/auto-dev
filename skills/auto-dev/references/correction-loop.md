@@ -12,6 +12,8 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 ## Contents
 
 - **The loop** — the correction steps, and what each correction invalidates.
+- **Stale results** — what to re-run when `scripts/check-fresh.py` finds a report
+  that checked other code than the tree now holds.
 - **Where the loop does not apply** — post-merge CI, plan deviations, review
   phases, and post-plan-gate revisions.
 - **The iteration budget** — what spends a round, the accounting, and what to do
@@ -56,8 +58,8 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
    The budget is the bound — at zero, step 2 stops the loop.
 
 Every Phase 6a "commit and re-push" in the table below uses the same
-explicit-staging sequence and `.auto-dev/` check as the first commit
-(`references/phase-6-ship.md`, step 4), and runs only after step 3's re-spawned
+explicit-staging sequence, `.auto-dev/` check and `check-fresh.py --ref HEAD`
+check before the push as the first commit (`references/phase-6-ship.md`, step 4), and runs only after step 3's re-spawned
 cleanup agent returns every `gate` check green. The paths it stages are the files
 `git status --porcelain --untracked-files=all --no-renames --ignore-submodules=dirty` shows the correction
 changed (a deleted or renamed-away path included), and
@@ -110,7 +112,9 @@ to the reviews, which are its re-check:
    body (`gh pr view <pr> --json body`) so edits made on GitHub survive, and
    publish it with `gh pr edit <pr> --body-file <file>`, the file in
    `<artifact-dir>` or `$TMPDIR` (`references/phase-6-ship.md`, step 5). Only
-   after the push, so the PR never shows results for a commit it does not carry.
+   after the push, so the PR never shows results for a commit it does not carry,
+   and only once `scripts/check-fresh.py <worktree> <artifact-dir> --ref HEAD`
+   exits `0` (`references/artifacts.md`, _The PR body_).
 
 **Why `/simplify` is scoped to the correction in Phase 6.** Corrective code needs
 simplifying as much as any other code, so the cleanup agent re-runs after every
@@ -124,6 +128,62 @@ whole change, so the scope comes from a snapshot of the working tree taken just
 before the correction was dispatched (`references/review.md`, _What each review
 pass covers_). The
 quality gate after it still runs in full.
+
+## Stale results
+
+`scripts/check-fresh.py` exits `1` when a report checked other code than the
+code now holds (`references/artifacts.md`, _Stamps: which code each result
+checked_). The loop above never leaves one behind on its own, because every
+correction re-runs its checks before the next step. So a stale report means the
+code moved outside the pipeline: a person edited the worktree, a teammate pushed
+to the PR branch, or GitHub merged the base into it. Its results describe code
+that no longer exists. Produce them again before anything relies on them.
+
+A run cut off between one of its own fixes and the fix's re-check also leaves
+stale reports, but that code is the pipeline's: if the Notes record a correction
+dispatched and not yet re-checked, resume that correction instead
+(`references/review.md`, _The review loop_). Its refresh re-runs and restamps
+every report.
+
+1. **Bring in commits the PR has and the worktree lacks** (when the check ran
+   with `--ref origin/<branch>`, after fetching both the branch and `<base>`):
+   `git merge --ff-only origin/<branch>` in the worktree. Never rebase or reset.
+   If it can't fast-forward, the worktree holds commits the PR doesn't: stop and
+   report.
+2. **Re-run the writer of each stale report, and of every report after it**, in
+   this order, over the code as it stands. None of these spends a round; they are
+   checks:
+   - `lint/*.md` → the cleanup agent with the _Outside changes_ scope
+     (`references/subagent-prompts.md`, _Cleanup agent_): it skips `/simplify`,
+     since a person wrote this code and it isn't the pipeline's to rewrite, and
+     runs the quality gate in full.
+   - `SPEC_EVAL.md` → the verifier in re-check mode ("after changes made outside
+     the pipeline").
+   - `CODE_REVIEW.md` → a code review panel pass (`references/review.md`, _What
+     each review pass covers_, the stale-results row). Work out its files only
+     now, after the two re-runs above, so it also covers any fix the cleanup
+     agent made: `git diff --name-only <the report's old stamp> <the tree now>`,
+     leaving out files that are not part of the change (`git diff --name-only
+     $(git merge-base origin/<base> HEAD)`), such as files a merge of the base
+     brought in. Use the whole change when the report had no stamp or git no
+     longer holds its tree.
+   - `SECURITY_REVIEW.md` → the security review on the whole change.
+
+   After a `--phase 5` check, re-run only the first two now; the check before
+   the PR gate covers the reviews.
+3. **What they find is handled as usual.** An unmet condition or a must-fix
+   finding is a correction: it enters the loop above at its usual point and
+   spends a round there. A quality gate the cleanup agent can't get green is a
+   stop-and-report, as always.
+4. **After the commit, publish the result.** If the re-runs changed code (a
+   quality-gate fix, a correction), commit and push it as _The Phase 6a refresh_,
+   step 4, does. Whenever the PR's head moved, by your push or someone else's,
+   watch CI on the new head (`references/gates-and-jira.md`). Either way, refresh
+   the PR body (step 5): it described the old code.
+5. **Run the check again.** On `0`, carry on from where the check fired. A
+   report stale again straight after its own re-run means something rewrites the
+   code on every run (a test writing files outside `.gitignore`, say): stop and
+   report, naming the files the check lists.
 
 ## Where the loop does not apply
 

@@ -744,8 +744,9 @@ that reads the code does not.
 **Its first pass** runs once the build returns with nothing `BLOCKED`. **It is
 re-spawned** — in re-check mode, never spending a round — after every
 acceptance correction, after the cleanup agent (_Re-verify after cleanup_,
-below), and after every Phase 6 correction (`references/correction-loop.md`,
-_The Phase 6a refresh_).
+below), after every Phase 6 correction (`references/correction-loop.md`,
+_The Phase 6a refresh_), and when its results go stale because the code changed
+outside the pipeline (`references/correction-loop.md`, _Stale results_).
 
 The coder is told not to commit, so **the change set is the working tree**, and
 the brief's diff step has two halves that both fail silently. Without
@@ -777,7 +778,8 @@ under evidence/ — including evidence/mutation-set.json and
 evidence/mutation-base.diff from earlier passes (step 7).
 
 Mode: <FIRST PASS | RE-CHECK after <what changed: an acceptance correction / an
-acceptance-check repair / the cleanup pass / a Phase 6 correction>>. On a
+acceptance-check repair / the cleanup pass / a Phase 6 correction / changes made
+outside the pipeline>>. On a
 re-check, do NOT read the existing SPEC_EVAL.md: judge from scratch and overwrite
 it.
 
@@ -805,6 +807,8 @@ directly — it moves when anything fetches.
    Audit: python3 <skill-dir>/scripts/check-tests.py <worktree> --base $CUT --acceptance <artifact-dir>/acceptance
    Exit 0 clean, 1 findings, 3 an acceptance check missing or modified, 2 an
    error (report it; do not guess). Save its output to <artifact-dir>/evidence/integrity.txt.
+   Once the checks are installed, note the code's tree hash:
+   python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>
 2. The change set: run
      git ls-files -z --others --exclude-standard | xargs -0 git add -N --
      git diff $CUT
@@ -905,12 +909,17 @@ directly — it moves when anything fetches.
 
 Write <artifact-dir>/SPEC_EVAL.md to this template (strict):
 <paste the SPEC_EVAL.md template from references/artifacts.md>
+Its Tree line says which code you checked. After your last run (and after
+mutate.py has restored every file), run --print-tree again. If it prints the
+hash you noted in step 1, write that hash. If not, something changed the code
+during your runs: write `Tree: changed during the run` and list the files
+`git diff --name-only <first hash> <second hash>` names under Unresolved.
 
 Never downgrade a failure you saw without writing why in its row. Spill long
 output to $TMPDIR; keep each command under 5 minutes.
 
-Return: one line per condition (number, verdict, tier); the unjustified integrity
-findings; the mutation summary and each Test gap (mutant, line, condition, and the
+Return: the Tree line you wrote; one line per condition (number, verdict, tier);
+the unjustified integrity findings; the mutation summary and each Test gap (mutant, line, condition, and the
 behavior no test pins down); any defective acceptance check; INSTALL CONFLICT or
 MUTATION LEFT CHANGES if either happened.
 ```
@@ -1008,16 +1017,17 @@ _Tools: Read, Edit, Write, Bash, Grep, Glob, plus the **Skill** tool to run `/si
 
 Runs after the Phase 5 correction loop settles, so corrective code gets simplified too,
 is re-spawned after any Phase 5 correction made after that pass (_Re-verify after
-cleanup_, below), and is **re-spawned after every Phase 6 correction**
+cleanup_, below), is **re-spawned after every Phase 6 correction**
 (a must-fix review finding, a human blocker or red CI) on the code that correction
-changed. No spawn of it spends the iteration budget.
+changed, and is re-spawned with no simplify step when its reports go stale
+because the code changed outside the pipeline (the _Outside changes_ scope). No spawn of it spends the iteration budget.
 `/simplify` is *meant* to preserve behavior; Step 2's quality gate is what checks that it
 did.
 
 ```
 You are the SIMPLIFY + QUALITY-GATE phase. Work inside the worktree at <worktree>.
 
-Step 1 — Simplify: run /simplify over <SCOPE — one of the two below>. Never
+Step 1 — Simplify: run /simplify over <SCOPE — one of the scopes below>. Never
 simplify, reformat or otherwise edit an acceptance check (<installed paths from
 MANIFEST.md>), whatever the scope says. Apply
 behavior-preserving simplifications only
@@ -1044,7 +1054,11 @@ repaired.
 
 For each check, write <artifact-dir>/lint/<REPORT>.md: the exact command, final status
 (pass/fail), and the tail of any output you had to fix. Re-run until every `gate`
-command is green, with two exits:
+command is green. A check's final run must come after your last edit to any file:
+if you change anything after a check passed, run that check again. Then run
+python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>
+and write its hash on every report's Tree line: it says which code the results
+are for. Two exits stop the re-runs early:
 - Make at most 3 fix attempts per failing check in this spawn. If the check still
   fails after the third, stop, leave its report at fail with the reason, and return.
 - If a failure cannot be fixed in this phase (it traces to a design problem in the
@@ -1088,10 +1102,16 @@ Fill `<SCOPE>` for the spawn:
   `git ls-files -z --others --exclude-standard | xargs -0 git add -N --` and
   then `git diff HEAD` to see it, new files included". Step 2 still runs the quality
   gate in full. Why the scope is narrower: `references/correction-loop.md`.
+- **Outside changes (a stale-results re-run, `references/correction-loop.md`,
+  _Stale results_):** "nothing. Skip Step 1: the code changed since the last
+  quality gate was written outside this pipeline, by a person, and is not yours
+  to simplify. Fix forward only what Step 2 needs". Step 2 runs the quality gate
+  in full.
 
-Step 1 is **unconditional** — `/simplify` is a built-in skill, so there is nothing
-to detect and no skip path. If the return says the simplify step was skipped, that
-is a bug in the run, not an expected outcome.
+Step 1 is **unconditional** except for the _Outside changes_ scope, which skips
+it by design — `/simplify` is a built-in skill, so there is nothing to detect and
+no other skip path. If the return says the simplify step was skipped on any other
+scope, that is a bug in the run, not an expected outcome.
 
 If the agent returns any check at fail (the 3-attempt cap reached, or a failure that
 traces to a design problem in the plan), the quality gate is red: **stop the pipeline
@@ -1267,6 +1287,11 @@ Read every one. <Pass 2 or later: also read the previous
    forward, so the file holds the whole review history.>
 5. Set the overall confidence by the rubric. While re-votes are pending, write
    "provisional (re-votes pending)"; the orchestrator finalizes it.
+6. Write the Tree line. The panel reviewed tree <hash the orchestrator noted
+   before spawning it>. Run
+   `python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>`: if it
+   prints that hash, write it; if not, the code changed after the review, so
+   write `Tree: changed during the run`.
 
 The rubric:
 <paste the rubric: code review findings + overall report confidence>
@@ -1313,6 +1338,11 @@ intent-to-add, so the diff shows them.
 <Run 2 or later: 5. Read the previous <artifact-dir>/SECURITY_REVIEW.md. For each
    must-fix finding in it, check the current code and mark it `fixed (run <n>)` or
    `open`. Carry the earlier rows forward.>
+6. Write the Tree line. You were spawned on tree <hash the orchestrator
+   noted before spawning you>. When you finish, run
+   `python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>`: if it
+   prints that hash, write it; if not, the code changed while you reviewed, so
+   write `Tree: changed during the run`.
 
 The rubric:
 <paste the rubric: security findings + overall report confidence>
@@ -1346,8 +1376,8 @@ Then recompute the header counts and the overall confidence.
 The rubric:
 <paste the rubric: security findings + overall report confidence>
 
-Edit only <artifact-dir>/SECURITY_REVIEW.md, and keep its template. Do NOT modify
-code. Return: each finding's ID with confirmed or refuted, and the corrected
+Edit only <artifact-dir>/SECURITY_REVIEW.md, and keep its template and its Tree
+line. Do NOT modify code. Return: each finding's ID with confirmed or refuted, and the corrected
 counts.
 ```
 

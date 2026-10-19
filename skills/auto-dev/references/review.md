@@ -52,16 +52,19 @@ git ls-files -z --others --exclude-standard | xargs -0 git add -N --
 | **First pass** | the whole change: the uncommitted working tree against `HEAD` (nothing on the branch is committed yet) | the whole change |
 | **After a review-stage fix** (before the commit) | **only the files the fix changed**, from the snapshot diff below — never from the coder's return alone, and not from `git status`, which before the commit lists the whole change | the whole change |
 | **After a CI-red or human-blocker fix** (after the commit) | the fix: the uncommitted working tree against `HEAD` | the whole change |
+| **Stale results** (the code changed outside the pipeline, `references/correction-loop.md`, _Stale results_) | the files changed since `CODE_REVIEW.md`'s stamp that are part of the change: tell the reviewers to read `git diff <stamp>` for them. The whole change if the report had no usable stamp | the whole change |
 
 **The snapshot diff (review-stage fixes only).** Before the commit, nothing in
 git separates the fix from the rest of the change, so take a snapshot of the
 working tree just before dispatching each review-stage correction, and diff
-against it afterwards. The snapshot is a tree object written through a temporary
-index: it leaves the real index, the working tree and the branch untouched, and
-`.auto-dev/` stays out because it ignores itself.
+against it afterwards. The snapshot is the working tree's tree hash, the same
+one every report is stamped with (`references/artifacts.md`, _Stamps: which code
+each result checked_, which also gives the by-hand command without `python3`).
+Taking it leaves the real index, the working tree and the branch untouched, and
+`.auto-dev/` stays out.
 
 ```bash
-snap() { t=$(mktemp); cp "$(git rev-parse --git-path index)" "$t"; GIT_INDEX_FILE=$t git add -A -- . && GIT_INDEX_FILE=$t git write-tree; rm -f "$t"; }
+snap() { python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>; }
 before=$(snap)     # just before dispatching the correction; record it in the Notes
 # … the coder applies the fix …
 git diff --name-only "$before" "$(snap)"     # the files the fix changed
@@ -87,7 +90,9 @@ hole that only shows up through another file.
 1. **Make the pass directory:** `mkdir -p <artifact-dir>/review/pass-<n>`, with
    `<n>` counting up from 1 for each code-review pass in this task. Record the pass
    number and its scope in the Phase 6 row's Notes in `WORK_LOG.md`.
-2. **Spawn three code reviewers in parallel**, all in one message:
+2. **Note the tree** the panel will review
+   (`scripts/check-fresh.py --print-tree <worktree>`) for the judge's brief
+   (`references/artifacts.md`, _Stamps_). Then **spawn three code reviewers in parallel**, all in one message:
    `auto-dev:code-reviewer`, review mode. The briefs are identical except for the
    slot (`R1`, `R2`, `R3`). Each reviewer runs `/code-review xhigh` on the pass's
    scope and writes `review/pass-<n>/R<k>.md`. The reviewers never see each
@@ -132,7 +137,8 @@ hole that only shows up through another file.
 
 ## Step 2: the security review
 
-1. **Spawn the security reviewer.** Use `auto-dev:security-reviewer-sensitive`
+1. **Spawn the security reviewer,** with the tree you note just before it
+   (`scripts/check-fresh.py --print-tree <worktree>`) in its brief. Use `auto-dev:security-reviewer-sensitive`
    when `SPEC.md`'s `Security/Compliance criteria` section lists controls for a
    sensitive path, and `auto-dev:security-reviewer` otherwise. It runs
    `/security-review` over the whole change, checks the panel's security leads,

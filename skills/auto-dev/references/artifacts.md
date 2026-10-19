@@ -30,6 +30,9 @@ and the reports that judge the build.
     TodoWrite, mirroring the ledger.
 - **Artifact contracts (what each file must contain)** — what each file *is*, plus
   what deliberately is not an artifact.
+- **Stamps: which code each result checked** — the `Tree:` line on every report
+  that judges the code, when `scripts/check-fresh.py` compares it with the code
+  now, and what its exit codes mean.
 - **Artifact templates** — skeletons to paste into briefs, and how strict each
   output is (strict vs. flexible, and what reads it back):
   - **`HANDOFF.md` (end of S1 and S2, or a context checkpoint; orchestrator)**
@@ -384,6 +387,16 @@ wherever the two disagree.
    Notes do not record as done, and never trust a review report the Notes do not
    vouch for. A correction the Notes record as dispatched but not re-reviewed
    is re-dispatched without spending another round.
+
+   **Before resuming, check the results still match the code** (_Stamps_,
+   below). With no commit yet, run `scripts/check-fresh.py <worktree>
+   <artifact-dir> --phase 5`; on `1`, re-run them first
+   (`references/correction-loop.md`, _Stale results_). Skip it when a correction
+   is being re-dispatched: that correction's refresh re-runs and restamps every
+   report anyway. With a commit the Notes don't record as `verified commit
+   <sha>`, run `check-fresh.py <worktree> <artifact-dir> --ref HEAD` before any
+   push; on `1`, push nothing, and stop and report. A verified commit needs
+   nothing more here: the PR body and main gate checks cover it.
 5. **Multi-PR runs** restart at the first sub-task that is not `done`, and within it
    at the first phase that is not `done` in **that sub-task's own phase table**. A
    sub-task with no phase table goes by its summary `status`: `done` is complete
@@ -438,24 +451,30 @@ S2 Build progress:
 - [ ] 5.2 Simplify (cleanup agent, after the acceptance loop settles — not per correction; no budget)
 - [ ] 5.3 Quality gate to green → lint/*.md (never by weakening a test)
 - [ ] 5.4 Verifier re-check over the final code (unmet → correction + cleanup re-spawn + re-check)
+- [ ] 5.5 check-fresh.py --phase 5 exits 0 (stale → re-run them; 127: by hand)
 - [ ] Boundary: update WORK_LOG.md → overwrite HANDOFF.md → tell the user → STOP
 ```
 
 ```
 S3 Ship progress:
+- [ ] 6a.0 Before the commit: check-fresh.py --phase 5 exits 0 (stale → re-run them)
 - [ ] 6a.1 Code review panel: 3 × code-reviewer (/code-review xhigh) → judge → re-votes → CODE_REVIEW.md (must-fix → correction loop + cleanup re-spawn + re-review on the fix's files)
 - [ ] 6a.2 Security review: security reviewer (/security-review) → judge verifies High/Medium → SECURITY_REVIEW.md (must-fix → correction loop, then 6a.1 on the fix's files, then 6a.2 again)
-- [ ] 6a.3 PR gate (both reviews' confidence + counts; open must-fix; pre-existing security for the user to triage)
-- [ ] 6a.4 Commit: explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged
-- [ ] 6a.5 Push (never --force); open PR with acceptance checklist + quality-gate results + review summary; inline review comments only if asked or configured
+- [ ] 6a.3 PR gate, once check-fresh.py exits 0 (both reviews' confidence + counts; open must-fix; pre-existing security for the user to triage)
+- [ ] 6a.4 Commit: check-fresh.py again first (stale → re-run them, re-ask the gate); explicit paths; check-staged.py --expect <paths> exits 0 (127: by hand) — nothing under .auto-dev/ staged;
+           then check-fresh.py --ref HEAD exits 0 (1 → don't push: stop and report)
+- [ ] 6a.5 Push (never --force); open PR with "Checked at commit" + acceptance checklist + quality-gate results + review summary; inline review comments only if asked or configured
 - [ ] 6a.6 CI monitoring (red pre-merge → correction loop + cleanup re-spawn + Phase 6a refresh, its fix reviewed before re-push)
 - [ ] 6a.7 Jira → In Review
 - [ ] 6b   Staging gate → direct merge → CI on staging (n/a without staging)
 - [ ] 6c.1 Read human reviews; mark the PR ready
-- [ ] 6c.2 Main gate
-- [ ] 6c.3 gh pr merge, explicit method, never --admin (refused → report, stop);
+- [ ] 6c.2 PR merged/closed → report, stop; fetch the PR branch and base; check-fresh.py --ref origin/<branch> exits 0
+           (outside commits → merge them in, re-run the stale results, refresh the PR body)
+- [ ] 6c.3 Main gate
+- [ ] 6c.4 gh pr merge, explicit method, --match-head-commit <checked sha>, never --admin
+           (head moved → back to 6c.2; other refusal → report, stop);
            confirm state MERGED (queued/auto-merge → report, stop)
-- [ ] 6c.4 CI on main; Jira → Done; multi-PR: offer the sub-task's build-worktree cleanup
+- [ ] 6c.5 CI on main; Jira → Done; multi-PR: offer the sub-task's build-worktree cleanup
 - [ ] Final report
 - [ ] Single-PR: offer worktree cleanup, only now (removing it deletes .auto-dev/)
 ```
@@ -519,7 +538,8 @@ shape.
   which caps the verdict at partial), and the evidence; plus the test-integrity
   audit, each finding judged justified or not, and the mutation check, each
   surviving mutant judged equivalent or a test gap (a test gap on a condition's
-  lines caps it at partial). Drives the Phase 5 correction loop
+  lines caps it at partial). Stamped with the tree it checked (_Stamps_,
+  below). Drives the Phase 5 correction loop
   back into the coder. Rewritten in full by every verifier re-spawn. Nothing is
   committed at this point, so the evidence comes from the working tree rather than
   a commit range — `references/subagent-prompts.md`, _Verifier_, gives the exact
@@ -564,6 +584,77 @@ findings (Define review, plan review), which are returned to the orchestrator an
 applied as edits to `SPEC.md` / `IMPLEMENTATION.md` rather than written to disk;
 and the **PR body**, contracted below.
 
+## Stamps: which code each result checked
+
+Every report that judges the code says which code it judged: a `Tree:` line
+holding the git tree hash of the worktree at the moment its writer checked it.
+Four reports carry one: `SPEC_EVAL.md` (the verifier), each `lint/<CHECK>.md`
+(the cleanup agent), `CODE_REVIEW.md` (the review judge) and `SECURITY_REVIEW.md`
+(the security reviewer). The writer gets the hash from
+`python3 <skill-dir>/scripts/check-fresh.py --print-tree <worktree>`, and the
+templates below show where the line goes. Without `python3`, its brief gets the
+by-hand command at the end of this section instead.
+
+**The stamp is the code that was checked, not the code at writing time.** A
+writer that checks over a while compares the tree before and after, and writes
+`Tree: changed during the run` (read as no stamp, so stale) if they differ. The
+verifier does this itself. The two reviews are checked by other agents before
+their writer runs, so you take the hash: run `--print-tree` just before
+spawning the code review panel, and again before spawning the security
+reviewer, and paste it into the judge's or the security reviewer's brief. The
+writer writes it only if its own `--print-tree` still matches.
+
+**Why a tree hash.** The checks run before anything is committed, so there is no
+commit to name yet. A tree hash names the exact contents of every file, committed
+or not, and every commit carries one, so the same stamp can be compared with the
+working tree now, with `HEAD` after the commit, and with the PR's branch on
+GitHub. Ignored files and `.auto-dev/` are not part of it.
+
+**Why it matters.** Without a stamp, a result says nothing about which code it
+checked. A person editing the worktree, a teammate pushing to the PR, GitHub
+merging the base into the branch, or a run cut off between a fix and its re-check
+all leave reports that describe code which no longer exists, and nothing would
+notice. The stamp makes that visible, and the pipeline re-runs the checks before
+any gate or PR body presents them.
+
+**Check before you rely on a result.** Run
+`python3 <skill-dir>/scripts/check-fresh.py <worktree> <artifact-dir>` with the
+flags below at each of these points. It compares every stamp with the code and
+lists each report that checked something else.
+
+| When | Flags | Rule stated in |
+|---|---|---|
+| End of S2, before the handoff | `--phase 5` | `SKILL.md`, _Phase 5_ step 4 |
+| Entry to S3, while nothing is committed | `--phase 5` | `SKILL.md`, _Session boundaries_; _Resuming an interrupted run_, step 4 |
+| Before asking the PR gate | none: all four reports, against the working tree | `references/gates-and-jira.md`, _PR gate_ |
+| After every Phase 6 commit, before its push | `--ref HEAD` | `references/phase-6-ship.md`, step 4 |
+| Before writing or refreshing the PR body | `--ref <the commit the body describes>` | _The PR body_, below |
+| Before asking the main gate, after fetching the PR branch | `--ref origin/<branch>` | `references/phase-6-ship.md`, 6c step 2 |
+
+`--phase 5` checks only the reports Phase 5 writes (`SPEC_EVAL.md` and
+`lint/*.md`); without it, the two review reports must match too. Its exit code:
+
+- `0` — **fresh**: every report checked exactly this code. Note the tree it
+  prints (`Tree now: …`) in the phase row's Notes in `WORK_LOG.md`, and after a
+  commit the commit too (`verified commit <sha>`), so the final report and a
+  resumed run can say which code was checked.
+- `1` — **stale**: a report checked other code, is missing, or has no stamp. It
+  lists each one and, while git still holds the old tree, the files changed
+  since. Follow `references/correction-loop.md`, _Stale results_, then run the
+  check again. Never present a stale result as current, at a gate or in the PR
+  body.
+- `2` — it couldn't run (git missing, not a work tree, an unknown `--ref`). Not a
+  pass: fix the cause it names and re-run it.
+- `127` — `python3` isn't installed. Get the hash by hand and compare it with the
+  first `Tree:` line of each report (`grep -m1 'Tree:' <report>`). The working
+  tree's hash, written through a temporary index so the real one is untouched
+  (`cp -p` keeps the index's mtime, without which git can miss an edit made in
+  the same second):
+  ```bash
+  t=$(mktemp); cp -p "$(git rev-parse --git-path index)" "$t"; GIT_INDEX_FILE=$t git add -A -- . ':(exclude).auto-dev/' && GIT_INDEX_FILE=$t git write-tree; rm -f "$t"
+  ```
+  A commit's: `git rev-parse <rev>^{tree}`.
+
 ## Artifact templates
 
 Skeletons for the artifacts a worker or the orchestrator writes. They fix the
@@ -590,12 +681,12 @@ A worker has no path to this file and cannot follow a reference to it.
 | `SPEC.md` | strict | Define reviewer, acceptance tester, verifier, code reviewers, security-reviewer type choice (`Security/Compliance criteria`), PR body |
 | `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, acceptance tester (entry points only), code reviewers |
 | `acceptance/MANIFEST.md` | strict | verifier (tiers, install), post-plan gate summary, correction briefs (the paths not to touch) |
-| `SPEC_EVAL.md` | strict | the orchestrator's correction briefs, the next verifier re-check, PR body checklist, PR gate summary |
+| `SPEC_EVAL.md` | strict | the orchestrator's correction briefs, the next verifier re-check, PR body checklist, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
 | `review/pass-<n>/R<k>.md` | strict | the review judge |
 | `review/pass-<n>/VOTES-R<k>.md` | strict | the orchestrator, applying the votes |
-| `CODE_REVIEW.md` | strict | open must-fix → correction loop; PR gate and main gate summaries; PR body `Review` |
-| `SECURITY_REVIEW.md` | strict | the security-verify judge; open must-fix → correction loop; PR gate triage; PR body `Review` |
-| `lint/<CHECK>.md` | strict | PR body `Quality gate`, PR gate summary |
+| `CODE_REVIEW.md` | strict | open must-fix → correction loop; PR gate and main gate summaries; PR body `Review`; `scripts/check-fresh.py` (`Tree:`) |
+| `SECURITY_REVIEW.md` | strict | the security-verify judge; open must-fix → correction loop; PR gate triage; PR body `Review`; `scripts/check-fresh.py` (`Tree:`) |
+| `lint/<CHECK>.md` | strict | PR body `Quality gate`, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
 | PR body | required sections strict, prose flexible | the human reviewer; refreshed after a Phase 6 correction |
 | Final report | flexible | the user |
 
@@ -782,7 +873,8 @@ Filled-in rows are an example in TypeScript.
 ```markdown
 # Acceptance evaluation — <task>
 
-Read from the working tree against `origin/<base>`; nothing is committed yet.
+Read from the working tree, against the commit the worktree was cut from (`<CUT sha>`).
+Tree: <hash from check-fresh.py --print-tree after your last run>
 Pass: <first | re-check after <what changed>> · acceptance run: <n passed / n total> (`evidence/acceptance.txt`)
 
 | # | Condition | Verdict | Tier | Evidence |
@@ -883,6 +975,7 @@ overall line). It holds every pass, so earlier must-fix findings stay visible as
 
 **Overall confidence: <High | Medium | Low | provisional (re-votes pending)>** — <reviewers finished: n/3; coverage: full | partial; must-fix decided 2–1: <IDs | none>>
 Latest pass: <n> — scope: <scope>
+Tree: <hash from check-fresh.py --print-tree for this pass>
 Must-fix: <open> open · <fixed> fixed   ·   Advisory: <n>   ·   Noise: <n>   ·   Dropped (pre-existing): <n>
 
 ## Must-fix
@@ -930,6 +1023,7 @@ header.
 
 **Overall confidence: <High | Medium | Low>** — <finished: yes | no; coverage: full | partial; High/Medium verified: <n>/<n>>
 Run <n> — reviewer: <security-reviewer | security-reviewer-sensitive> — scope: the whole change since `<merge-base>`
+Tree: <hash from check-fresh.py --print-tree for this run>
 Must-fix: <open> open · <fixed> fixed   ·   For the user (pre-existing): <n>   ·   Advisory: <n>
 
 ## Findings
@@ -961,6 +1055,7 @@ Verified: <the judge's reason>
 - **Command:** `<the exact command from profile.md, run verbatim>`
 - **Final status:** pass
 - **Runs:** <n>
+- **Tree:** <hash from check-fresh.py --print-tree, once every check's final run is done>
 
 ## Fixed to get here
 - `path:line` — <what the check flagged, and the change that cleared it>
@@ -992,6 +1087,7 @@ attribution line are **strict**; the Summary and Assumptions prose is
 <what changed and why, 2–4 sentences — drawn from SPEC.md's Context>
 
 ## Acceptance conditions
+Checked at commit <sha>: every result in this description was produced on this code.
 <one checkbox per SPEC.md condition; ticked only where SPEC_EVAL.md says `met`,
 each with its evidence tier>
 - [x] <condition, in the spec's own words> — <Strong | Adequate>: <the check or what was run>
@@ -1019,6 +1115,12 @@ pre-existing security finding appears here only if the user chose `Separate PR`
 Generated with [Claude Code](https://claude.com/claude-code)
 ```
 
+**The body describes one commit, and says which.** Its `Checked at commit` line
+names the commit whose code the results checked, and the body is written or
+refreshed only once `scripts/check-fresh.py <worktree> <artifact-dir> --ref <that
+commit>` exits `0` (_Stamps_, above). A stale result is re-run first, never
+published; a body that names an older commit than the PR carries is out of date.
+
 **Ship the unticked box rather than a tidy list.** A condition surfaced as unmet
 is a decision the reviewer gets to make; a condition quietly dropped from the
 checklist is the one failure of this pipeline nobody can catch downstream. If a
@@ -1042,6 +1144,7 @@ a stop-and-report condition) uses the same shape and says where it stopped.
 - **Built:** <what changed, 1–3 sentences>
 - **Scope call:** <TRIVIAL | STANDARD | OVERSIZED → n sub-tasks>
 - **Quality gate:** <each check and its final status>
+- **Checked at:** <the verified commit, from WORK_LOG.md: every result here was produced on it>
 - **Review:** code <confidence>, <n> must-fix fixed, <n> open · security <confidence>, <n> must-fix fixed, <n> open, <n> pre-existing for the user
 - **Jira:** <transitions performed | none — no ticket>
 - **Iteration budget:** <remaining>/<total>

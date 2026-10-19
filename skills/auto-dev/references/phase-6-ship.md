@@ -14,8 +14,9 @@ _The PR body_.
   check (`scripts/check-staged.py`), push, PR requirements, CI and Jira.
 - 6b — Staging **[gate]** (skip if no staging branch) — the direct-merge sequence
   and its failure handling.
-- 6c — Main **[gate]** — reading human reviews, the draft flag, `gh pr merge`,
-  confirming it merged, and a refused merge.
+- 6c — Main **[gate]** — reading human reviews, the draft flag, checking the PR
+  still holds the code that was checked (`scripts/check-fresh.py`), `gh pr merge`
+  locked to that commit, confirming it merged, and a refused merge.
 
 ## 6a — Review, then PR **[gate]**
 
@@ -43,8 +44,12 @@ and fixed, and the PR never collects review-fix commits.
    checks, justified test changes) and both reviews: each one's overall
    confidence, the must-fix findings fixed and still open, and any pre-existing
    security finding for the user to triage.
-4. **Commit** — stage source paths **explicitly**, confirm nothing under
-   `.auto-dev/` is staged, then commit with a conventional message. Run exactly
+4. **Commit** — first, on the commit right after the PR gate (the gate may have
+   waited a while, and a person may have edited the code meanwhile), run
+   `scripts/check-fresh.py <worktree> <artifact-dir>` once more; on `1`, re-run
+   the stale results (`references/correction-loop.md`, _Stale results_) and ask
+   the PR gate again. Then stage source paths **explicitly**, confirm nothing under
+   `.auto-dev/` is staged, and commit with a conventional message. Run exactly
    this sequence; only the paths and the message vary:
    ```bash
    git add -- <path> …                             # named paths that exist on disk — never -A or .
@@ -98,11 +103,23 @@ and fixed, and the PR never collects review-fix commits.
      `git status --porcelain --untracked-files=all --no-renames --ignore-submodules=dirty`
      must show no line with a second-column change or `??` outside `.auto-dev/`. Commit only
      once all three hold.
+
+   **Then, before the push, check the commit carries the code that was checked:**
+   ```bash
+   python3 <skill-dir>/scripts/check-fresh.py <worktree> <artifact-dir> --ref HEAD
+   ```
+   `0` — every report checked exactly this commit's code: note
+   `verified commit <sha>` in the Phase 6 row's Notes, and push. `1` — the commit
+   holds code no result checked (something changed after the gate's own check):
+   do not push. Stop and report what it lists. `2` — not a pass: fix the cause and
+   re-run. `127` — compare by hand (`references/artifacts.md`, _Stamps: which code
+   each result checked_).
 5. **Push** the branch (`git push -u origin HEAD` — never `--force`), then
    **open exactly one PR** for it. These are the pipeline's requirements, whatever
    route opens it:
    - **Body** to the PR-body contract (`references/artifacts.md`, _The PR body_):
-     summary, unresolved assumptions, and — as required content — the **acceptance
+     the commit its results were checked on (`Checked at commit <sha>`, the
+     commit step 4 verified), summary, unresolved assumptions, and — as required content — the **acceptance
      checklist** (the spec's conditions, ticked from `SPEC_EVAL.md` with each
      one's evidence tier, unticked ones left unticked, `manual` ones listed as
      checks for a human), the **quality-gate results**, and the **review summary**
@@ -191,17 +208,40 @@ the push unasked.
    human blocker is handled exactly like a must-fix review finding — through the
    correction loop (`references/correction-loop.md`), its fix reviewed before it
    is pushed, never merged over.
-2. **Gate:** pause for approval.
-3. **Merge to main** via `gh pr merge` (respects branch protection and required
-   reviews — never a local push to main):
+2. **Check the PR still holds the code that was checked.** Someone may have
+   pushed to the branch since, or GitHub's _Update branch_ may have merged the
+   base into it. Either way the PR would merge code no result checked:
+   If step 1 found the PR already merged or closed, report that and stop.
+   Otherwise fetch the base too, so the change is still measured from where the
+   branch now leaves it:
    ```bash
-   gh pr merge <pr> --squash
+   git fetch origin <branch> <base>
+   python3 <skill-dir>/scripts/check-fresh.py <worktree> <artifact-dir> --ref origin/<branch>
    ```
+   `0` — the PR's head carries exactly the checked code: its commit
+   (`git rev-parse origin/<branch>`) is the one the merge is locked to in step 4.
+   `1` — the PR has commits the results never saw: follow
+   `references/correction-loop.md`, _Stale results_ (fast-forward the worktree to
+   them, re-run the checks, refresh the PR body), then run this step again. Say
+   in the gate summary which commits came from outside and what the re-run found.
+   `2` — not a pass: fix the cause and re-run. Never ask the gate on stale or
+   unchecked results.
+3. **Gate:** pause for approval.
+4. **Merge to main** via `gh pr merge` (respects branch protection and required
+   reviews — never a local push to main), locked to the commit step 2 checked:
+   ```bash
+   gh pr merge <pr> --squash --match-head-commit <sha>
+   ```
+   `--match-head-commit` makes GitHub refuse the merge if the PR's head is no
+   longer that commit, so a push made after the check can't slip in. If it
+   refuses for that reason, go back to step 2, then ask the gate again: the user
+   approved the older code.
+
    Pass the method explicitly — `gh` cannot prompt here. Use `--squash`; if the
    repo disallows squash merges (`gh repo view --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed`),
    use `--merge`, and `--rebase` only when it is the one method allowed.
    **Never add `--admin`**: it bypasses branch protection. If the merge is
-   **refused** — missing approvals, a failing required check, an out-of-date
+   **refused** for any other reason — missing approvals, a failing required check, an out-of-date
    branch, an unresolved conversation — do not work around it. **Report that the PR is unmergeable**, name
    the specific requirement blocking it, and stop with the PR left open. Merging
    locally to get past branch protection is never the answer.
@@ -214,7 +254,7 @@ the push unasked.
    only enabled auto-merge or queued the PR. If `state` is not `MERGED`, report
    that (queued, or auto-merge pending) and stop: don't poll for it, and don't
    move Jira.
-4. Monitor CI on main, transition **Jira → Done**, and offer to remove the worktree
+5. Monitor CI on main, transition **Jira → Done**, and offer to remove the worktree
    (confirmed, not automatic). On a single-PR run the worktree is the control
    worktree, so make the offer only **after the final report** is delivered:
    removing it deletes the gitignored `.auto-dev/` ledger. On a multi-PR run this runs **per sub-task**, and the offer covers
