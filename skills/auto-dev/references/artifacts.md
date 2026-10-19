@@ -118,7 +118,8 @@ Single-PR run (the task fits one PR):
   SPEC.md                 # the testable contract: context, conditions, assumptions, security (Phase 2)
   IMPLEMENTATION.md       # the technical plan — how (Phase 3)
   acceptance/             # held-out checks from SPEC.md alone (Phase 3, acceptance tester)
-    MANIFEST.md           # condition → check, kind, base-run result; what is not automatable
+    MANIFEST.md           # condition → check, what it covers, level, kind, base-run result; what is not automatable
+    base-run/C<n>.txt     # each condition's checks run on the untouched tree: command, result, output
     files/<repo-path>.sealed  # the sealed copy of each check; the verifier installs it at <repo-path>
   SPEC_EVAL.md            # code vs. spec, with an evidence tier per condition (Phase 5, verifier)
   evidence/               # what the verifier ran and saw: integrity.txt, acceptance.txt, C<n>.txt, mutants.json(+.results.json)
@@ -520,9 +521,14 @@ shape.
   build step and a test. Written by the planner in Phase 3 — or, on the TRIVIAL
   fast path, by the orchestrator as a short files-plus-test note.
 - **`acceptance/`** — the held-out checks (Phase 3, acceptance tester).
-  `MANIFEST.md` maps each `SPEC.md` condition to its checks, each check's kind
+  `MANIFEST.md` maps each `SPEC.md` condition to its checks, each check's part
+  of the condition (its Example, its Edge or another part), level, kind
   (`fail-to-pass` or `pass-to-pass`) and its run on the untouched tree, and lists
-  the conditions no check can drive, with an observable proxy where one exists.
+  the conditions, or edges, no check can drive, with an observable proxy where
+  one exists. `base-run/C<n>.txt` keeps each condition's run on the untouched
+  tree: the command and its output, the proof that a check for new behavior
+  failed before the change. The verifier reads it rather than re-running the
+  checks on the old code, and the PR body quotes it.
   `files/` holds the **sealed** copy of each check at its repo-relative path plus
   `.sealed`, a suffix no test runner collects; the worktree holds no copy until
   the verifier installs them in Phase 5. The coder is never given the path, but
@@ -534,7 +540,9 @@ shape.
 - **`SPEC_EVAL.md`** — the verifier's judgment of the build against `SPEC.md`
   (which the coder never saw): per condition, security/compliance criteria
   included, a verdict (**met / partial / unmet / manual**), an **evidence tier**
-  (**Strong** — the held-out checks passed; **Adequate** — something the verifier
+  (**Strong** — the held-out checks passed, covered the condition's Example and
+  Edge, and each one for new behavior failed on the untouched tree;
+  **Adequate** — something the verifier
   ran itself matched its stated expectation; **Weak** — a citation nobody ran,
   which caps the verdict at partial), and the evidence; plus the test-integrity
   audit, each finding judged justified or not, and the mutation check, each
@@ -683,7 +691,8 @@ A worker has no path to this file and cannot follow a reference to it.
 | `profile.md` | strict | every phase and worker (`setup`/`gate` commands run verbatim) |
 | `SPEC.md` | strict | Define reviewer, acceptance tester, verifier, code reviewers, security-reviewer type choice (`Security/Compliance criteria`), PR body |
 | `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, acceptance tester (entry points only), code reviewers |
-| `acceptance/MANIFEST.md` | strict | verifier (tiers, install), post-plan gate summary, correction briefs (the paths not to touch), PR body (each test's name and its result on the old code) |
+| `acceptance/MANIFEST.md` | strict | the orchestrator's check of the tester's return (coverage, levels), verifier (tiers, install), post-plan gate summary, correction briefs (the paths not to touch), PR body (each test's name and its result on the old code) |
+| `acceptance/base-run/C<n>.txt` | strict | the orchestrator's check of the tester's return, verifier (Strong tier), PR body (the old code's output) |
 | `SPEC_EVAL.md` | strict | the orchestrator's correction briefs, the next verifier re-check, the PR body, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
 | `review/pass-<n>/R<k>.md` | strict | the review judge |
 | `review/pass-<n>/VOTES-R<k>.md` | strict | the orchestrator, applying the votes |
@@ -848,22 +857,27 @@ Filled-in rows are an example in TypeScript.
 
 Written from SPEC.md alone, run on the untouched tree at `origin/<base>` (<short sha>).
 Sealed copies are under `files/`; the verifier installs them after the build.
+Each condition's run on that tree is in `base-run/C<n>.txt`.
 
-| # | Condition | Check (path :: test name) | Kind | Base run |
-|---|-----------|---------------------------|------|----------|
-| 1 | <condition, in the spec's own words> | `src/todos/todo-delete.acceptance.test.ts` :: "owner deleting a todo removes it from the list" | fail-to-pass | failed: `TypeError: todos.delete is not a function` |
-| 2 | <condition> | <path :: name> | pass-to-pass | passed |
-| S1 | <security/compliance criterion> | <path :: name> | fail-to-pass | failed: expected 404, got 200 |
+| # | Condition | Check (path :: test name) | Covers | Level | Kind | Base run |
+|---|-----------|---------------------------|--------|-------|------|----------|
+| 1 | <condition, in the spec's own words> | `src/todos/todo-delete.acceptance.test.ts` :: "owner deleting a todo removes it from the list" | Example | integration | fail-to-pass | failed: `TypeError: todos.delete is not a function` |
+| 1 | <same condition> | `src/todos/todo-delete.acceptance.test.ts` :: "deleting a todo that does not exist returns not found" | Edge | integration | fail-to-pass | failed: `TypeError: todos.delete is not a function` |
+| 2 | <condition> | <path :: name> | <Example, Edge, or Other: <which part>> | <unit, integration or end-to-end> | pass-to-pass | passed |
+| S1 | <security/compliance criterion> | <path :: name> | Example | integration | fail-to-pass | failed: expected 404, got 200 |
 
 A fail-to-pass check whose Base run is not a right-reason failure does not belong
-here. A repaired check reads `not re-run (repair)`.
+here. A repaired check reads `not re-run (repair)`. A condition with an Edge
+line that is not `none` has a check covering Edge, or its Edge is listed below
+as `<n> (Edge)`. No check's Level is lower than its condition's Verify by.
 
 ## Not automatable
 | # | Condition | Why no check can drive it | Proxy a verifier can run |
 |---|-----------|---------------------------|--------------------------|
 | <n> | <condition> | <reason> | <command, request or log line — or "none"> |
+| <n> (Edge) | <the condition's Edge line> | <reason> | <proxy — or "none"> |
 
-<"None." when every condition has a check>
+<"None." when every condition, and every Edge, has a check>
 
 ## Assumptions
 - <each choice made about entry points or expected values, and why>
@@ -916,7 +930,9 @@ are rows in this table — never a separate pass.
 <list survivors only; "None survived." when none did>
 
 ## Defective acceptance checks
-<each check that asserts something SPEC.md does not say, and why — or "None.">
+<each check that asserts something SPEC.md does not say, is too weak for what
+MANIFEST.md says it covers, runs below its condition's Verify by level, or did
+not fail on the untouched tree for the right reason, and why — or "None.">
 
 ## Unresolved
 <every condition still partial or unmet, and every Unjustified finding, as this
@@ -1125,7 +1141,7 @@ body is for everyone else, and an ID there names a file they can't see.
 | Part of the body | Source |
 |---|---|
 | Each condition, ticked or not | `SPEC.md` (the wording), `SPEC_EVAL.md` (the verdict) |
-| The tests written before the code, and each one's result on the old code | `acceptance/MANIFEST.md` (`Check`, `Base run`) |
+| The tests written before the code, and each one's result on the old code | `acceptance/MANIFEST.md` (`Check`, `Base run`), `acceptance/base-run/C<n>.txt` (the command and output) |
 | What was run, what was expected, what came out | `evidence/C<n>.txt` |
 | Checks for a person | `SPEC_EVAL.md`'s `manual` rows, `MANIFEST.md`'s _Not automatable_ proxy, `evidence/C<n>.txt` |
 | Changes to tests | `SPEC_EVAL.md`, _Test integrity_ |
@@ -1138,7 +1154,9 @@ it), `<old sha>` the commit the tests written before the code ran on
 (`MANIFEST.md`'s header names it; after a base merge it is older than `<cut>`),
 `<sha>` the commit the body describes. An evidence file written before 3.8
 may hold no `Output` part: leave that condition's output block out rather than
-inventing one; its test link still lets the reader check.
+inventing one; its test link still lets the reader check. Tests written before
+3.9 have no `base-run/` files, and a corrected test's file shows the test
+before it was corrected: in both cases leave the old-code block out.
 
 ````markdown
 ## Summary
@@ -1164,7 +1182,11 @@ is under _Checks for a person_. Checked at commit <sha>.">
   old code: <failed: <the one-line reason> | passed: it guards behavior that must not change> · now: passes
   <details><summary>Command and output</summary>
 
-  Ran `<command>`, expecting <the expectation>.
+  On the old code, ran `<the base run's command>`:
+  ```
+  <the lines of its output that show this condition's tests failing or passing>
+  ```
+  Now, ran `<command>`, expecting <the expectation>.
   ```
   <the last lines of output>
   ```
@@ -1251,7 +1273,7 @@ hang was noticed.
 
 **Filled in.** An example in TypeScript, for one met condition and one test
 change (an assertion the change removed, so it links to the old code). Its
-output block holds only the lines of the acceptance run that name this test:
+output blocks hold only the lines of each run that name this test:
 
 ````markdown
 - [x] **A user cannot delete another user's todo**
@@ -1259,7 +1281,12 @@ output block holds only the lines of the acceptance run that name this test:
   old code: failed: expected 404, got 200 · now: passes
   <details><summary>Command and output</summary>
 
-  Ran `npx vitest run src/todos/*.acceptance.test.ts`, expecting this test to pass.
+  On the old code, ran `npx vitest run src/todos/todo-delete.acceptance.test.ts`:
+  ```
+   × src/todos/todo-delete.acceptance.test.ts > deleting another user's todo returns not found 9ms
+     → expected 404 "Not Found", got 200 "OK"
+  ```
+  Now, ran `npx vitest run src/todos/*.acceptance.test.ts`, expecting this test to pass.
   ```
    ✓ src/todos/todo-delete.acceptance.test.ts > deleting another user's todo returns not found 12ms
   ```

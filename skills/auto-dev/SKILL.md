@@ -121,7 +121,8 @@ resolved `gate` commands, CI provider and Jira mapping — never re-derive them)
 Beyond those, read an artifact only when a phase **of yours** needs it: in S2,
 `SPEC.md` and `SPEC_EVAL.md` for the correction briefs; in S3, `SPEC.md`, `SPEC_EVAL.md`,
 `lint/*.md`, `CODE_REVIEW.md` and `SECURITY_REVIEW.md` for the PR body and the PR
-gate summary, `acceptance/MANIFEST.md` and `evidence/C<n>.txt` for the PR body,
+gate summary, `acceptance/MANIFEST.md`, `acceptance/base-run/C<n>.txt` and
+`evidence/C<n>.txt` for the PR body,
 and `review/pass-<n>/VOTES-R<k>.md` to apply the re-votes. On entry
 to S3, while nothing is committed, first run `scripts/check-fresh.py <worktree>
 <artifact-dir> --phase 5`: if the code changed since Phase 5 checked it, re-run
@@ -373,9 +374,14 @@ On **TRIVIAL**, skip steps 1–2 and write a short `IMPLEMENTATION.md` yourself
 3. **Acceptance tester** → `.auto-dev/acceptance/`, at **every** scope: from
    `SPEC.md` alone (the plan only for entry points), one or more black-box checks
    per condition; each new-behavior check must **fail on the untouched tree for
-   the right reason**. It then **seals** them — removes them from the worktree and
-   keeps the only copy under `acceptance/files/` as `<path>.sealed` — and writes
-   `MANIFEST.md`.
+   the right reason**, and the tester saves that run under
+   `acceptance/base-run/`. It then **seals** them — removes them from the
+   worktree and keeps the only copy under `acceptance/files/` as
+   `<path>.sealed` — and writes `MANIFEST.md`, which says what part of its
+   condition each check covers. Before Phase 4, check that
+   every Edge is covered and no check is below its Verify by level
+   (`references/subagent-prompts.md`, _Acceptance tester_); a gap re-spawns the
+   tester for those conditions.
 4. **Optional post-plan gate**, if enabled for this run — **independent of the
    scope call**, so it fires on TRIVIAL too.
 
@@ -399,7 +405,9 @@ correction brief, and the cleanup agent's brief.
    sealed checks, audits every test change (`scripts/check-tests.py`), **runs**
    the evidence for each `SPEC.md` condition and writes `.auto-dev/SPEC_EVAL.md`:
    a verdict (`met` / `partial` / `unmet` / `manual`) and an **evidence tier**
-   per condition — **Strong** (held-out checks passed), **Adequate** (it ran
+   per condition — **Strong** (held-out checks covering its Example and Edge
+   passed, and each one for new behavior failed on the untouched tree, per the
+   tester's saved run), **Adequate** (it ran
    something itself and saw what it predicted), **Weak** (a citation; caps the
    verdict at `partial`). It also plants **targeted mutants** in the changed
    lines (`scripts/mutate.py`, capped by `mutation.max`): one the tests don't

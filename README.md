@@ -53,18 +53,26 @@ make tests pass by weakening them. Verification is built around that:
   an ambiguity probe: if two different implementations both fit a condition's
   words, the condition is rewritten before anything is built.
 - **Held-out acceptance checks.** After planning, an acceptance tester turns each
-  spec condition into a black-box test from the spec alone. Every check for new
-  behavior must **fail on the untouched code for the right reason**, since a test
-  that passes before the change exists proves nothing. The checks are then sealed
-  out of the worktree (stored where no test runner collects them), and the
-  coder's brief never names them.
+  spec condition into a black-box test from the spec alone, one for its example
+  and one for its edge case, at the level the spec asks for or above. Every
+  check for new behavior must **fail on the untouched code for the right
+  reason**, since a test that passes before the change exists proves nothing.
+  The tester saves that run (the command and its output) next to the checks,
+  and the orchestrator sends it back for any edge case it left out. The checks
+  are then sealed out of the worktree (stored where no test runner collects
+  them), and the coder's brief never names them.
 - **An independent verifier that runs things.** After the build, a fresh verifier
   installs the checks and **runs** them. It never sees the plan or the coder's
   report. Each condition gets a verdict and an evidence tier: **Strong** (the
-  held-out checks passed), **Adequate** (it ran something itself and saw what it
+  held-out checks passed, they cover both the example and the edge case, and the
+  saved run shows each check for new behavior failing on the old code for the
+  right reason), **Adequate** (it ran something itself and saw what it
   predicted beforehand) or **Weak** (a code citation, which can never count as
-  met). A condition no agent can observe is marked `manual` and handed to you at
-  the PR gate as a check to make.
+  met). The verifier reads the saved run rather than running the checks on the
+  old code again, which would need a second setup of the repo. It reports a
+  held-out check that is too weak to prove what it claims, which sends it back
+  to the tester. A condition no agent can observe is marked `manual` and handed
+  to you at the PR gate as a check to make.
 - **A test-integrity audit.** `scripts/check-tests.py` flags deleted or skipped
   tests, removed assertions, new tests that assert nothing, and any edit to a
   sealed check. Each finding must be justified by the spec or it goes back to the
@@ -94,7 +102,7 @@ make tests pass by weakening them. Verification is built around that:
   has never heard of auto-dev and can't see `.auto-dev/`: plain words, no
   condition or mutant IDs. For each requirement it links the test written
   before the code, at the checked commit, with that test's result on the old
-  code and now, and the command and its output in a collapsed block. It lists
+  code and now, and both runs' commands and output in a collapsed block. It lists
   every test change the audit flagged with its reason, says how many small
   deliberate bugs the tests caught and, for each one they missed, why it is
   harmless or what no test checks,
@@ -451,7 +459,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `HANDOFF.md` | each session's end | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
-| `acceptance/` | Phase 3 | the sealed held-out checks and their `MANIFEST.md` |
+| `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code |
 | `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and evidence tiers, and what it ran |
 | `lint/` | Phase 5 | one report per quality-gate check |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review |
@@ -518,6 +526,22 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 3.8
+
+3.9 keeps the proof that the held-out checks failed on the old code (see *How
+the build is verified*). The acceptance tester saves each condition's run on
+the untouched tree as `acceptance/base-run/C<n>.txt`, and `MANIFEST.md` gains
+*Covers* and *Level* columns. The orchestrator checks that every edge case has
+a check, and the verifier rates a condition Strong only when its checks cover
+both its example and its edge case and the saved run shows them failing for
+the right reason. The PR description quotes that run.
+
+A run in flight resumes on 3.9. A run whose Phase 3 finished on 3.8 has no
+`base-run/` and no *Covers* column: the tester is not run again. The verifier
+trusts `MANIFEST.md`'s one-line *Base run* note, as before, and says so in
+`SPEC_EVAL.md`; it reads each check to see what it covers. The PR description
+then leaves out the old-code output.
 
 ## Upgrading from 3.7
 
