@@ -419,8 +419,16 @@ limit), `resume` (finds the run to continue, or says to start fresh or ask),
 `show`, `phase`, `note`, `size` (the Define agent's size check), `budget`
 (spends a revise round once per correction, and refuses at zero with what to do
 next), `gate` (records a gate decision; `hold` and `stop` are different states)
-and `handoff` (writes `HANDOFF.md` and the message that ends a session). Shared
-code lives in `skills/auto-dev/scripts/lib/`.
+and `handoff` (writes `HANDOFF.md` and the message that ends a session). For
+Phase 6: `commit` (re-checks freshness, stages every changed path by name, runs
+`check-staged.py`, commits, and verifies the commit carries the checked code,
+unstaging if anything fails), `ci-watch` (polls `gh pr checks` with a bound and
+says green, red with links, pending, timed out or unwatchable; never assumes
+green), `merge-staging` (direct merge, never forced, always back on the
+branch), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
+`--admin`, then confirms it merged), `pr-body --check` (lints a PR description:
+strict sections, the checked commit, size, no internal IDs, paths or secrets)
+and `cleanup-worktree`. Shared code lives in `skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
 The profiler names one only if the repo's ecosystem uses one and it is on your
