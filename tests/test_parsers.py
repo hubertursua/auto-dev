@@ -116,6 +116,40 @@ class CheckManifestTest(ArtifactCase):
         self.assertEqual(self.cmd("check-manifest").returncode, 2)
 
 
+    def test_a_fail_to_pass_check_that_passed_is_a_gap(self):
+        self.write("acceptance/base-run/C2.txt", "Commit: abc\nCommand: npx vitest run\n"
+                   "Result: sorts earliest first: passed\nOutput:\n x\n")
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("2: `sorts earliest first` is fail-to-pass but did not fail", r.stdout)
+
+    def test_an_exact_result_name_wins_over_a_longer_one(self):
+        self.write("acceptance/base-run/C1.txt", "Commit: abc\nCommand: npx vitest run\n"
+                   "Result: rejects an invalid date twice: passed\n"
+                   "shows the due date: failed: no field\n"
+                   "rejects an invalid date: failed: got 200\nOutput:\n x\n")
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_two_longer_result_names_are_no_result(self):
+        self.write("acceptance/base-run/C1.txt", "Commit: abc\nCommand: npx vitest run\n"
+                   "Result: shows the due date: failed: no field\n"
+                   "rejects an invalid date twice: failed: got 200\n"
+                   "rejects an invalid date again: failed: got 200\nOutput:\n x\n")
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no Result for `rejects an invalid date`", r.stdout)
+
+    def test_the_first_level_named_in_verify_by_counts(self):
+        # Example in TypeScript: the unit check satisfies "unit", although the
+        # Verify by line also names the integration layer it mocks.
+        self.write("SPEC.md", SPEC.replace(
+            "   - Verify by: unit",
+            "   - Verify by: unit — the integration layer is mocked"))
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 class EvalStatusTest(ArtifactCase):
     def test_all_met(self):
         self.spec_eval()
@@ -138,6 +172,90 @@ class EvalStatusTest(ArtifactCase):
         self.assertTrue(r.stdout.startswith("REPAIR"), r.stdout)
         self.assertIn("repair: 2", r.stdout)
 
+    def test_evidence_saying_not_defective_is_a_correction(self):
+        self.spec_eval(v2="unmet", e2="the check is not defective; the list is unsorted")
+        r = self.cmd("eval-status")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
+        self.assertIn("condition 2 unmet", r.stdout)
+        self.assertNotIn("repair:", r.stdout)
+
+    def test_a_partial_condition_whose_check_is_listed_defective_is_a_repair(self):
+        self.spec_eval(v2="partial", e2="Weak: only a run of the list",
+                       defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
+                                 'first" asserts nothing about the order')
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("REPAIR"), r.stdout)
+        self.assertIn("repair: 2", r.stdout)
+
+    def test_a_check_named_in_a_shared_file_is_matched_by_its_name(self):
+        self.spec_eval(v1="partial", defective='- `src/due.acceptance.test.ts` :: '
+                                               '"rejects an invalid date" sends no date')
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("REPAIR"), r.stdout)
+        self.assertIn("repair: 1", r.stdout)
+
+    def set_s1(self, verdict):
+        path = self.dir / "SPEC_EVAL.md"
+        path.write_text(path.read_text().replace(
+            "| S1 | owner only | met | Strong | acceptance passed |",
+            f"| S1 | owner only | {verdict} | Strong | acceptance check failed: got 200 |"))
+
+    def test_a_name_in_another_entrys_prose_is_not_a_listing(self):
+        # "owner only" (S1's check) appears only in condition 1's entry's reason.
+        self.spec_eval(v1="partial", defective='- `src/due.acceptance.test.ts` :: "shows '
+                                               'the due date" passes for any user, not '
+                                               'the owner only')
+        self.set_s1("unmet")
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
+        self.assertIn("repair: 1\n", r.stdout)
+        self.assertIn("condition S1 unmet", r.stdout)
+        self.assertNotIn("condition 1 partial", r.stdout)
+
+    def test_a_check_name_that_prefixes_another_does_not_collide(self):
+        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
+            '`src/due.acceptance.test.ts` :: "owner only"',
+            '`src/due.acceptance.test.ts` :: "rejects an invalid date after trim"'))
+        self.spec_eval(v1="partial", defective='- `src/due.acceptance.test.ts` :: '
+                                               '"rejects an invalid date after trim" '
+                                               'checks no owner')
+        self.set_s1("partial")
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
+        self.assertIn("repair: S1\n", r.stdout)
+        self.assertIn("condition 1 partial", r.stdout)
+
+    def test_an_unmet_condition_with_a_defective_check_is_also_corrected(self):
+        self.spec_eval(v2="unmet", e2="acceptance check failed: unsorted",
+                       defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
+                                 'first" asserts an order SPEC.md does not give')
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
+        self.assertIn("repair: 2", r.stdout)
+        self.assertIn("condition 2 unmet", r.stdout)
+
+    def test_a_defective_check_of_a_met_condition_is_all_met(self):
+        self.spec_eval(defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
+                                 'first" is too weak')
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("ALL_MET"), r.stdout)
+
+    def test_an_install_conflict_is_corrected_without_spec_eval(self):
+        r = self.cmd("eval-status", "--install-conflict")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("CORRECT: 1 open item"), r.stdout)
+        self.assertIn("correct: install conflict", r.stdout)
+
+    def test_an_escaped_pipe_in_a_code_span_keeps_the_columns(self):
+        self.spec_eval()
+        path = self.dir / "SPEC_EVAL.md"
+        path.write_text(path.read_text().replace("`a < b` → `a <= b`",
+                                                 "`a \\|\\| b` → `a && b`"))
+        r = self.cmd("eval-status")
+        self.assertIn("survivor: M2 | `src/sort.ts:4` | `a || b` → `a && b` | — | "
+                      "Equivalent", r.stdout)
+
     def test_mutation_left_changes_stops(self):
         r = self.cmd("eval-status", "--mutation-left-changes")
         self.assertTrue(r.stdout.startswith("STOP"), r.stdout)
@@ -153,6 +271,18 @@ class EvalStatusTest(ArtifactCase):
 
 
 class SecurityReviewerTest(ArtifactCase):
+    def test_no_spec_cannot_run(self):
+        (self.dir / "SPEC.md").unlink()
+        r = self.cmd("security-reviewer")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("SPEC.md does not exist", r.stderr)
+
+    def test_a_spec_without_conditions_is_malformed(self):
+        (self.dir / "SPEC.md").write_text("# Spec\n\nNo conditions here.\n")
+        r = self.cmd("security-reviewer")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("MALFORMED", r.stderr)
+
     def test_security_criteria_pick_the_sensitive_reviewer(self):
         r = self.cmd("security-reviewer")
         self.assertIn("AGENT: auto-dev:security-reviewer-sensitive", r.stdout)
@@ -180,6 +310,29 @@ class ApplyFixTest(ArtifactCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("found 2 times", r.stdout)
         self.assertEqual((self.dir / "SPEC.md").read_text(), SPEC)
+
+
+    def test_a_malformed_block_writes_nothing(self):
+        # The first block lacks its `>>>>>>> NEW` line, so it runs into the second.
+        self.write("fix.md", "FIX 1\n<<<<<<< OLD\n   - Verify by: unit\n=======\n"
+                             "   - Verify by: integration\n"
+                             "FIX 2\n<<<<<<< OLD\nTodos have no due dates.\n=======\n"
+                             "Todos have no dates.\n>>>>>>> NEW\n")
+        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("NO-MATCH", r.stdout)
+        self.assertEqual((self.dir / "SPEC.md").read_text(), SPEC)
+
+    def test_no_fix_block_is_refused(self):
+        self.write("fix.md", "The spec looks fine.\n")
+        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no FIX block", r.stderr)
+
+    def test_a_missing_target_cannot_run(self):
+        self.fix("a", "b")
+        r = self.cmd("apply-fix", self.dir / "NOPE.md", self.dir / "fix.md")
+        self.assertEqual(r.returncode, 2)
 
 
 class SpecOverlapTest(ArtifactCase):
@@ -241,19 +394,163 @@ class VotesTest(ArtifactCase):
         path = self.dir / "CODE_REVIEW.md"
         path.write_text(path.read_text().replace(
             "Required change: in `src/list.ts`", "Note: in `src/list.ts`"))
-        table = "| Finding | Vote | Reason |\n|---|---|---|\n"
-        self.write("review/pass-1/VOTES-R1.md", table + "| C6 | disagree | fine |\n")
-        self.write("review/pass-1/VOTES-R2.md", table + "| C4 | agree | unguarded |\n")
-        self.write("review/pass-1/VOTES-R3.md", table + "| C4 | agree | yes |\n"
-                                                        "| C6 | disagree | fine |\n")
+        corrections = self.write("review/pass-1/corrections.md",
+                                 "# Required changes\n1. C1: guard the null due date\n")
+        before = path.read_bytes(), corrections.read_bytes()
+        self.promote_c4()
         r = self.cmd("votes", "--apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("no `Required change:` line", r.stderr)
+        # Nothing is written: neither file changes.
+        self.assertEqual((path.read_bytes(), corrections.read_bytes()), before)
+
+    def test_an_empty_required_change_does_not_take_the_next_line(self):
+        path = self.dir / "CODE_REVIEW.md"
+        path.write_text(path.read_text().replace(
+            "Required change: in `src/list.ts`, return an empty page when there are no "
+            "todos instead of reading the first item", "Required change:"))
+        before = path.read_bytes()
+        self.promote_c4()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no `Required change:` line", r.stderr)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse((self.dir / "review" / "pass-1" / "corrections.md").exists())
+
+    def promote_c4(self):
+        """Votes that make C4 must-fix and leave C6 advisory."""
+        self.votes(R1=[("C6", "disagree")], R2=[("C4", "agree")],
+                   R3=[("C4", "agree"), ("C6", "disagree")])
+
+    def corrections(self):
+        return (self.dir / "review" / "pass-1" / "corrections.md").read_text()
+
+    def test_apply_continues_an_existing_corrections_file(self):
+        for name, existing, number in (
+                ("numbered", ("# Required changes\n1. C1: guard the null due date\n"
+                              "   Where: `src/sort.ts:4`\n"), 2),
+                ("indented numbered", "# Required changes\n  1. C1: guard it\n", 2),
+                ("None.", "# Required changes\nNone.\n", 1),
+                ("indented None.", "# Required changes\n  None.\n", 1)):
+            with self.subTest(name):
+                self.write("CODE_REVIEW.md", CODE_REVIEW.format(tree="0" * 40))
+                self.write("review/pass-1/corrections.md", existing)
+                self.promote_c4()
+                r = self.cmd("votes", "--apply")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                text = self.corrections()
+                self.assertIn(f"\n{number}. C4: in `src/list.ts`", text)
+                self.assertNotIn("None.", text)
+                self.assertTrue(text.startswith(existing.replace("None.", "").rstrip()))
+
+    def test_entry_copies_where_now_and_test(self):
+        path = self.dir / "CODE_REVIEW.md"
+        path.write_text(path.read_text().replace(
+            "Judge: confirmed; nothing guards the empty list.",
+            "Judge: confirmed; nothing guards the empty list.\n"
+            "Where: `src/list.ts:40-44`\n"
+            "Test: listing with no todos returns an empty page"))
+        self.promote_c4()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1. C4: in `src/list.ts`, return an empty page when there are no "
+                      "todos instead of reading the first item\n"
+                      "   Where: `src/list.ts:40-44`\n"
+                      "   Now: `GET /todos` with no todos → `src/list.ts:42` reads "
+                      "`items[0].id`\n"
+                      "   Test: listing with no todos returns an empty page\n",
+                      self.corrections())
+
+    def test_entry_falls_back_to_the_rows_location(self):
+        self.promote_c4()
+        self.assertEqual(self.cmd("votes", "--apply").returncode, 0)
+        self.assertIn("   Where: `src/list.ts:42`\n", self.corrections())
+
+    def test_a_promoted_acceptance_check_goes_to_the_tester(self):
+        path = self.dir / "CODE_REVIEW.md"
+        path.write_text(path.read_text().replace(
+            "| C4 | empty list indexed | `src/list.ts:42` | correctness | R1 |",
+            "| C4 | check asserts the wrong status | `src/list.acceptance.test.ts:9` | "
+            "acceptance-check | R1 |"))
+        self.votes(R1=[("C6", "agree")], R2=[("C4", "agree")],
+                   R3=[("C4", "agree"), ("C6", "disagree")])
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("2 must-fix (1 acceptance-check), 0 advisory", r.stdout)
+        self.assertIn("must_fix: C6\n", r.stdout)
+        self.assertIn("acceptance_check: C4\n", r.stdout)
+        text = self.corrections()
+        self.assertIn("1. C6: in `src/save.ts`", text)
+        self.assertNotIn("C4", text)
+        self.assertIn("| C4 | check asserts the wrong status | "
+                      "`src/list.acceptance.test.ts:9` | acceptance-check | 3/3 (re-vote) "
+                      "| Medium | open |", path.read_text())
 
     def test_apply_refuses_a_missing_vote(self):
         r = self.cmd("votes", "--apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("no re-vote recorded", r.stderr)
+
+
+    def votes(self, **files):
+        table = "| Finding | Vote | Reason |\n|---|---|---|\n"
+        for slot, rows in files.items():
+            self.write(f"review/pass-1/VOTES-{slot}.md", table + "".join(
+                f"| {fid} | {vote} | why |\n" for fid, vote in rows))
+
+    def test_apply_refuses_a_missing_planned_votes_file(self):
+        # R3 voted on C6, but R1 (also planned for C6) wrote nothing.
+        self.votes(R2=[("C4", "agree")], R3=[("C4", "disagree"), ("C6", "agree")])
+        before = (self.dir / "CODE_REVIEW.md").read_text()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("C6 (R1: no VOTES-R1.md)", r.stderr)
+        self.assertEqual((self.dir / "CODE_REVIEW.md").read_text(), before)
+
+    def test_a_duplicate_agree_counts_once(self):
+        self.votes(R1=[("C6", "disagree")], R2=[("C4", "agree"), ("C4", "agree")],
+                   R3=[("C4", "disagree"), ("C6", "disagree")])
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("| C4 | empty list indexed | `src/list.ts:42` | correctness | 2/3 "
+                      "(re-vote) | Medium | open |", (self.dir / "CODE_REVIEW.md").read_text())
+
+    def test_the_raisers_own_vote_is_ignored(self):
+        # R1 raised C4; its agree must not count as a second vote.
+        self.votes(R1=[("C4", "agree"), ("C6", "disagree")], R2=[("C4", "disagree")],
+                   R3=[("C4", "disagree"), ("C6", "disagree")])
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("0 must-fix, 2 advisory", r.stdout)
+
+    def test_a_bad_vote_value_is_malformed(self):
+        self.votes(R1=[("C6", "disagree")], R2=[("C4", "maybe")],
+                   R3=[("C4", "disagree"), ("C6", "disagree")])
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("MALFORMED", r.stderr)
+
+    def all_disagree(self):
+        self.votes(R1=[("C6", "disagree")], R2=[("C4", "disagree")],
+                   R3=[("C4", "disagree"), ("C6", "disagree")])
+
+    def test_an_unparseable_confidence_line_is_malformed(self):
+        self.write("CODE_REVIEW.md", CODE_REVIEW.format(tree="0" * 40).replace(
+            "reviewers finished: 3/3; coverage: full", "three reviewers, all files"))
+        self.all_disagree()
+        before = (self.dir / "CODE_REVIEW.md").read_text()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("reviewers finished", r.stderr)
+        self.assertEqual((self.dir / "CODE_REVIEW.md").read_text(), before)
+
+    def test_a_hyphen_in_decided_2_1_keeps_the_earlier_ids(self):
+        self.write("CODE_REVIEW.md", CODE_REVIEW.format(tree="0" * 40).replace(
+            "must-fix decided 2–1: none", "must-fix decided 2-1: C1"))
+        self.all_disagree()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("must-fix decided 2–1: C1", (self.dir / "CODE_REVIEW.md").read_text())
 
 
 class ReviewAndGateTest(RunCase):
@@ -326,6 +623,67 @@ class ReviewAndGateTest(RunCase):
         r = self.cmd("gate-summary", "pr")
         self.assertEqual(r.returncode, 1)
         self.assertIn("Unjustified", r.stderr)
+
+    def stub_git(self, **env):
+        """A `git` ahead of the real one on PATH, for this test's autodev runs:
+        STUB_GIT_FAIL fails any call whose arguments include it, and
+        STUB_GIT_SUBMODULE prints its text for `git submodule`."""
+        real = subprocess.run(["sh", "-c", "command -v git"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+        bin_dir = self.tmp / "stub-bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "git"
+        stub.write_text('#!/bin/sh\n'
+                        'if [ -n "$STUB_GIT_FAIL" ]; then\n'
+                        '  for a in "$@"; do [ "$a" = "$STUB_GIT_FAIL" ] && '
+                        '{ echo "stub: git $* failed" >&2; exit 128; }; done\n'
+                        'fi\n'
+                        'if [ "$1" = submodule ] && [ -n "$STUB_GIT_SUBMODULE" ]; then\n'
+                        '  printf "%s\\n" "$STUB_GIT_SUBMODULE"; exit 0\n'
+                        'fi\n'
+                        f'exec "{real}" "$@"\n')
+        stub.chmod(0o755)
+        self.env = {**self.env, **env,
+                    "PATH": f"{bin_dir}:{self.env['PATH']}"}
+
+    def test_pr_gate_cannot_run_when_check_fresh_cannot(self):
+        self.reports()
+        self.stub_git(STUB_GIT_FAIL="-C")  # check-fresh.py runs `git -C <worktree>`
+        r = self.cmd("gate-summary", "pr")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("stale", r.stderr)
+
+    def test_pr_gate_cannot_run_when_submodule_foreach_fails(self):
+        self.reports()
+        self.stub_git(STUB_GIT_FAIL="foreach")
+        r = self.cmd("gate-summary", "pr")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("submodule", r.stderr)
+
+    def test_pr_gate_refuses_edits_inside_a_submodule(self):
+        self.reports()
+        self.stub_git(STUB_GIT_SUBMODULE="Entering 'vendor/lib'\n?? src/generated.ts")
+        r = self.cmd("gate-summary", "pr")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("vendor/lib: ?? src/generated.ts", r.stderr)
+
+    def test_pr_gate_asks_about_the_most_severe_findings_for_the_user(self):
+        self.reports()
+        rows = [("S2", "Medium", "for the user"), ("S3", "Low", "advisory"),
+                ("S4", "High", "for the user"), ("S5", "High", "advisory"),
+                ("S6", "Medium", "for the user"), ("S7", "Low", "for the user")]
+        path = self.dir / "SECURITY_REVIEW.md"
+        text = path.read_text().split("| S2 |")[0] + "".join(
+            f"| {i} | finding {i} | `src/auth.ts:{n}` | pre-existing | {conf} | confirmed "
+            f"| {verdict} | — |\n" for n, (i, conf, verdict) in enumerate(rows))
+        path.write_text(text)
+        r = self.cmd("gate-summary", "pr", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual([q["header"] for q in out["questions"]],
+                         ["Gate", "S4", "S2", "Others"])
+        self.assertIn("(S6, S7)", out["questions"][3]["question"])
+        self.assertIn("Pre-existing, for you: 4", "\n".join(out["summary"]))
 
     def test_main_gate_refuses_a_draft(self):
         self.script_gh([{"args": ["pr", "view"], "stdout": json.dumps(

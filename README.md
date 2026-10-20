@@ -448,14 +448,18 @@ conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
 `CORRECT`, `REPAIR` or `STOP`, with the survivors to carry forward), `apply-fix`
 (applies a reviewer's exact old → new FIX blocks, all or nothing),
 `spec-overlap` (refuses a brief or plan that copies `SPEC.md`'s wording),
-`votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`),
-`review-scope` (the snapshot a correction is diffed against) and `gate-summary`
-(checks a gate's preconditions and prints its summary and question). For
-workers: `brief` (writes a worker's brief file from state, refusing when a value
-only the orchestrator can give is missing, and prints the one-line prompt to
-spawn it with), `record` (checks the result a worker wrote against the
-artifact it wrote, and stops on a mismatch) and `check-artifact` (workers check
-what they wrote against its template before returning). Shared code lives in
+`votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`,
+adding each new must-fix finding to the pass's `corrections.md` for the coder,
+except one about an acceptance check, which it names for the acceptance tester),
+`security-reviewer` (which security reviewer to spawn: the sensitive one when
+`SPEC.md` lists Security/Compliance criteria), `review-scope` (the snapshot a
+correction is diffed against) and `gate-summary` (checks a gate's preconditions
+and prints its summary and question). For workers: `brief` (writes a worker's
+brief file from state, refusing when a value only the orchestrator can give is
+missing, and prints the one-line prompt to spawn it with), `record` (checks the
+result a worker wrote against the artifact it wrote, and stops on a mismatch)
+and `check-artifact` (workers check what they wrote against its template before
+returning). Shared code lives in
 `skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
@@ -530,7 +534,9 @@ and reports
 rather than committing a red build or weakening any security control. It also
 stops if the mutation step may have left a planted bug in the tree, if the
 build edited source inside a submodule, or if a commit holds code that no result
-checked. It never asks you at a gate, or writes a PR description, on results
+checked. If Define's size check returns OVERSIZED, it builds nothing and hands
+the task back to you; Jira is left alone, and the worktree and branch stay in
+place (see *Size check* above). It never asks you at a gate, or writes a PR description, on results
 that were checked on other code. It refuses a
 resolved quality gate with no test command in it, since that would pass Phase 5 by
 having nothing to check. It merges to main only through a PR, only after your
