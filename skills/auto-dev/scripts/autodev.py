@@ -18,11 +18,18 @@ Subcommands:
     budget    show the iteration budget, or spend one round before a correction
     gate      record a gate decision
     handoff   write HANDOFF.md and print the message that ends the session
+    commit    stage by name, check, commit, and verify the commit (Phase 6)
+    ci-watch  poll the PR's checks, bounded; green, red, pending or unavailable
+    merge-staging   merge the branch into staging directly, never forced
+    merge-pr  merge the PR locked to the checked commit, never --admin
+    pr-body   --check: lint a PR description before it is published
+    cleanup-worktree   remove the worktree after the final report
 
 Every subcommand takes --json. Exit codes, the same for all:
     0  success
     1  failed, or stop and report: the reason is printed
-    2  could not run (bad arguments, missing state) — never a pass
+    2  could not run (bad arguments, missing state, an unexpected error) — never
+       a pass
     3+ as the subcommand's --help says
 """
 
@@ -32,7 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib import cmd_handoff, cmd_init, cmd_resume, cmd_state
+from lib import cmd_handoff, cmd_init, cmd_resume, cmd_ship, cmd_state
 from lib.output import CANNOT_RUN, Fail, report_failure
 from lib.proc import CommandError
 from lib.state import StateError
@@ -47,7 +54,15 @@ COMMANDS = {
     "budget": (cmd_state, cmd_state.budget),
     "gate": (cmd_state, cmd_state.gate),
     "handoff": (cmd_handoff, cmd_handoff.main),
+    "commit": (cmd_ship, cmd_ship.commit),
+    "ci-watch": (cmd_ship, cmd_ship.ci_watch),
+    "merge-staging": (cmd_ship, cmd_ship.merge_staging),
+    "merge-pr": (cmd_ship, cmd_ship.merge_pr),
+    "pr-body": (cmd_ship, cmd_ship.pr_body),
+    "cleanup-worktree": (cmd_ship, cmd_ship.cleanup_worktree),
 }
+# Modules whose add_arguments() also takes the subcommand's name.
+NAMED = (cmd_state, cmd_ship)
 
 
 class Parser(argparse.ArgumentParser):
@@ -67,7 +82,7 @@ def build_parser():
         doc = module.__doc__
         child = sub.add_parser(name, description=doc, help=doc.splitlines()[0],
                                formatter_class=argparse.RawDescriptionHelpFormatter)
-        if module is cmd_state:
+        if module in NAMED:
             module.add_arguments(child, name)
         else:
             module.add_arguments(child)
@@ -95,6 +110,9 @@ def main(argv=None):
         return report_failure(Fail(str(exc), CANNOT_RUN, "ERROR"), args.json)
     except CommandError as exc:
         return report_failure(Fail(str(exc), CANNOT_RUN, "ERROR"), args.json)
+    except Exception as exc:  # a crash must not exit 1, which means red or refused
+        message = f"{type(exc).__name__}: {exc}".encode("utf-8", "replace").decode()
+        return report_failure(Fail(message, CANNOT_RUN, "ERROR"), args.json)
 
 
 if __name__ == "__main__":

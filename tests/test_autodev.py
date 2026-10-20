@@ -436,6 +436,481 @@ class StateCommandsTest(RunCase):
         self.assertEqual(json.loads(r.stdout)["result"], "STATE")
 
 
+GOOD_BODY = """## Summary
+Adds due dates.
+
+## Acceptance conditions
+Checked at commit {sha}: every result below was produced on this code.
+- [x] **A todo can have a due date**
+
+### Checks for a person
+None: every requirement was checked automatically.
+
+### Changes to tests
+No existing test was deleted, skipped or weakened, and every new test checks something.
+
+### Test strength
+We put 3 small deliberate bugs into the changed code. They caught 3.
+
+## Quality gate
+- `npm test`: passed
+
+## Review
+- Code review (3 independent reviewers) — confidence High: all covered.
+
+## Assumptions
+none
+
+Generated with [Claude Code](https://claude.com/claude-code)
+"""
+
+
+class ShipTest(RunCase):
+    REPORTS = ("SPEC_EVAL.md", "lint/TEST.md", "CODE_REVIEW.md", "SECURITY_REVIEW.md")
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.init().returncode, 0)
+
+    def cmd(self, *args):
+        return self.autodev(*args, "--dir", self.dir)
+
+    def git(self, *args):
+        return self.sh("git", *args, cwd=self.worktree)
+
+    def stamp(self):
+        r = subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"),
+                            "--print-tree", self.worktree], capture_output=True,
+                           text=True, check=True)
+        for name in self.REPORTS:
+            (self.dir / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.dir / name).write_text(f"# {name}\n\nTree: {r.stdout.strip()}\n")
+
+    def change(self):
+        (self.worktree / "app.ts").write_text("export const one = 2;\n")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+
+    def set_settings(self, **settings):
+        state = self.state()
+        state["settings"].update(settings)
+        self.write_state(state)
+
+    def hook(self, body):
+        hooks = self.repo / ".git" / "hooks"
+        hooks.mkdir(exist_ok=True)
+        (hooks / "pre-commit").write_text(f"#!/bin/sh\n{body}\n")
+        (hooks / "pre-commit").chmod(0o755)
+
+    # commit
+    def test_commit_stages_by_name_and_records_the_verified_commit(self):
+        self.change()
+        self.stamp()
+        r = self.cmd("commit", "--message", "feat(todos): add due dates")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        head = self.git("rev-parse", "HEAD").strip()
+        self.assertIn(f"COMMITTED: {head}", r.stdout)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        files = self.git("show", "--name-only", "--format=", "HEAD").split()
+        self.assertEqual(sorted(files), ["app.ts", "due.ts"])
+        self.assertIn("Co-Authored-By: Claude Code", self.git("log", "-1", "--format=%B"))
+
+    def test_commit_refuses_stale_results_and_stages_nothing(self):
+        self.change()
+        self.stamp()
+        (self.worktree / "app.ts").write_text("export const one = 3;\n")
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("STALE", r.stderr)
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
+
+    def test_failed_commit_unstages(self):
+        self.change()
+        self.stamp()
+        self.hook("exit 1")
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("COMMIT-FAILED", r.stderr)
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
+
+    def test_commit_that_adds_unchecked_code_is_not_verified(self):
+        self.change()
+        self.stamp()
+        self.hook("echo extra > extra.ts && git add extra.ts")
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("NOT-VERIFIED", r.stdout)
+        self.assertNotIn("verified_sha", self.state()["phase6"])
+
+    def fake_git(self, fail):
+        """Put a git on PATH that runs the real one, then fails `git <fail>`
+        (outside check-fresh's own temporary index)."""
+        bindir = self.tmp / "fakegit"
+        bindir.mkdir(exist_ok=True)
+        real = shutil.which("git", path=self.env["PATH"])
+        (bindir / "git").write_text(
+            "#!/bin/sh\n"
+            f'"{real}" "$@"; code=$?\n'
+            f'if [ "$1" = "{fail}" ] && [ -z "$GIT_INDEX_FILE" ]; then\n'
+            '  echo "fatal: injected failure" >&2; exit 128\nfi\nexit $code\n')
+        (bindir / "git").chmod(0o755)
+        self.env["PATH"] = f"{bindir}{os.pathsep}{self.env['PATH']}"
+
+    def track(self, *names):
+        for name in names:
+            (self.worktree / name).write_text(f"export const {name[:-3]} = 0;\n")
+        self.git("add", *names)
+        self.git("commit", "-q", "-m", "track")
+
+    def test_commit_unstages_when_staging_fails(self):
+        for step in ("add", "rm"):
+            with self.subTest(step=step):
+                self.track(f"gone_{step}.ts")
+                (self.worktree / f"gone_{step}.ts").unlink()
+                self.change()
+                self.stamp()
+                path = self.env["PATH"]
+                self.fake_git(step)
+                r = self.cmd("commit", "--message", "feat: x")
+                self.env["PATH"] = path
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
+                self.git("checkout", "-q", "--", ".")
+                self.git("clean", "-qfd", "-e", ".auto-dev")
+
+    def test_commit_records_deleted_files(self):
+        self.track("old1.ts", "old2.ts")
+        (self.worktree / "old1.ts").unlink()       # deleted, not staged
+        self.git("rm", "-q", "old2.ts")            # deletion already staged
+        self.change()
+        self.stamp()
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        status = self.git("show", "--name-status", "--format=", "HEAD").split("\n")
+        self.assertIn("D\told1.ts", status)
+        self.assertIn("D\told2.ts", status)
+        self.assertEqual(self.git("status", "--porcelain", "--", ":!.auto-dev"), "")
+
+    def test_commit_whose_check_could_not_run_is_checked_on_rerun(self):
+        # state's artifact_dir is a link the post-commit hook removes, so the
+        # check after the commit cannot run (the state itself is in --dir).
+        link = self.tmp / "artifacts-link"
+        link.symlink_to(self.dir)
+        state = self.state()
+        state["artifact_dir"] = str(link)
+        self.write_state(state)
+        hooks = self.repo / ".git" / "hooks"
+        hooks.mkdir(exist_ok=True)
+        (hooks / "post-commit").write_text(f"#!/bin/sh\nrm -f '{link}'\n")
+        (hooks / "post-commit").chmod(0o755)
+        self.change()
+        self.stamp()
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        head = self.git("rev-parse", "HEAD").strip()
+        self.assertIn(head, r.stderr)
+        p6 = self.state()["phase6"]
+        self.assertEqual(p6.get("unverified_commit"), head)
+        self.assertNotIn("verified_sha", p6)
+        (hooks / "post-commit").unlink()
+        link.symlink_to(self.dir)
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"COMMITTED: {head}", r.stdout)
+        p6 = self.state()["phase6"]
+        self.assertEqual(p6["verified_sha"], head)
+        self.assertNotIn("unverified_commit", p6)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)  # no new commit
+
+    def test_unexpected_error_cannot_run(self):
+        state = self.state()
+        del state["settings"]
+        self.write_state(state)
+        r = self.watch()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR: KeyError", r.stderr)
+
+    # ci-watch
+    def watch(self, *extra):
+        return self.cmd("ci-watch", "--pr", "7", "--interval", "1", *extra)
+
+    def checks(self, checks=None, head=None, **response):
+        head = head or self.git("rev-parse", "HEAD").strip()
+        self.script_gh([{"args": ["pr", "view"],
+                         "stdout": json.dumps({"headRefOid": head})},
+                        {"args": ["pr", "checks"],
+                         "stdout": json.dumps(checks) if checks is not None else "",
+                         **response}])
+
+    PENDING = ({"name": "test", "bucket": "pending", "state": "PENDING", "link": ""},)
+
+    def test_ci_none_skips_the_watch(self):
+        r = self.watch()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("SKIPPED", r.stdout)
+
+    def test_ci_green_red_and_pending(self):
+        self.set_settings(ci="github-actions")
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}])
+        self.assertEqual(self.watch().returncode, 0)
+        self.checks([{"name": "test", "bucket": "fail", "state": "FAILURE",
+                      "link": "https://ci/1"}])
+        r = self.watch()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("test — https://ci/1", r.stdout)
+        self.checks(self.PENDING)
+        r = self.watch("--max-wait", "0")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("PENDING", r.stdout)
+
+    def test_ci_rewatch_after_a_final_status_restarts_the_clock(self):
+        self.set_settings(ci="github-actions", ci_timeout=30)
+        state = self.state()
+        head = self.git("rev-parse", "HEAD").strip()
+        for status in ("green", "timeout", "unavailable"):
+            with self.subTest(status=status):
+                state["phase6"]["ci"] = {"sha": head, "started": 1.0, "status": status}
+                self.write_state(state)
+                self.checks(self.PENDING)
+                r = self.watch("--max-wait", "0")
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertIn("PENDING", r.stdout)
+                self.assertGreater(self.state()["phase6"]["ci"]["started"], 1.0)
+        # A watch still pending keeps its clock: it times out.
+        state["phase6"]["ci"] = {"sha": head, "started": 1.0, "status": "pending"}
+        self.write_state(state)
+        r = self.watch("--max-wait", "0")
+        self.assertIn("TIMEOUT", r.stdout)
+
+    def test_ci_ignores_checks_for_another_head(self):
+        self.set_settings(ci="github-actions")
+        self.checks([{"name": "test", "bucket": "fail", "state": "FAILURE", "link": "l"}],
+                    head="f" * 40)
+        r = self.watch("--max-wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("PENDING", r.stdout)
+        self.assertIn("ffffffffffff", r.stdout)
+        self.assertEqual(self.state()["phase6"]["ci"]["status"], "pending")
+        r = self.watch("--max-wait", "0", "--grace", "0")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("UNAVAILABLE: the PR's head", r.stdout)
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}],
+                    head="f" * 40)
+        self.assertNotIn("GREEN", self.watch("--max-wait", "0").stdout)
+
+    def test_ci_timeout_holds(self):
+        self.set_settings(ci="github-actions", ci_timeout=0)
+        self.checks(self.PENDING)
+        r = self.watch("--max-wait", "5")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("TIMEOUT", r.stdout)
+
+    def test_no_checks_after_grace_is_unavailable(self):
+        self.set_settings(ci="github-actions")
+        self.checks(stderr="no checks reported on the 'feat/due-dates' branch", exit=1)
+        r = self.watch("--max-wait", "0", "--grace", "300")
+        self.assertEqual(r.returncode, 3)  # still inside the grace period
+        r = self.watch("--max-wait", "0", "--grace", "0")
+        self.assertEqual(r.returncode, 4)
+        self.assertIn("UNAVAILABLE", r.stdout)
+
+    # merge-staging
+    def staging(self, content=None):
+        self.git("push", "-q", "origin", "origin/main:refs/heads/staging")
+        if content is not None:
+            self.git("switch", "-q", "-c", "tmp", "origin/staging")
+            (self.worktree / "app.ts").write_text(content)
+            self.git("commit", "-q", "-am", "staging change")
+            self.git("push", "-q", "origin", "HEAD:staging")
+            self.git("switch", "-q", "feat/due-dates")
+        state = self.state()
+        state["repo"]["staging"] = "staging"
+        self.write_state(state)
+        (self.worktree / "app.ts").write_text("export const one = 2;\n")
+        self.git("commit", "-q", "-am", "feat: change")
+
+    def test_merge_staging_pushes_and_returns_to_the_branch(self):
+        self.staging()
+        r = self.cmd("merge-staging")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
+        self.git("fetch", "-q", "origin", "staging")
+        self.assertIn("feat: change", self.git("log", "--format=%s", "origin/staging"))
+
+    def test_merge_staging_conflict_aborts_and_returns(self):
+        self.staging(content="export const one = 9;\n")
+        r = self.cmd("merge-staging")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("CONFLICT", r.stderr)
+        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_merge_staging_push_rejected_returns_to_the_branch(self):
+        self.staging()
+        hook = self.tmp / "origin.git" / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho 'protected branch' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        r = self.cmd("merge-staging")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("REJECTED", r.stderr)
+        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    # merge-pr
+    def merge(self, merge_response, state="MERGED", view=None, repo=None):
+        self.script_gh([
+            {"args": ["repo", "view"], **(repo or {"stdout": json.dumps(
+                {"squashMergeAllowed": True, "mergeCommitAllowed": True,
+                 "rebaseMergeAllowed": False})})},
+            {"args": ["pr", "merge"], **merge_response},
+            {"args": ["pr", "view"], **(view or {"stdout": json.dumps({"state": state})})},
+        ])
+        return self.cmd("merge-pr", "--pr", "7", "--sha", "abc123")
+
+    def gh_calls(self):
+        return [json.loads(line)["args"] for line in
+                (self.tmp / "gh.log").read_text().splitlines()]
+
+    def test_merge_pr_locks_to_the_checked_commit(self):
+        r = self.merge({"stdout": "merged"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        call = next(c for c in self.gh_calls() if c[:2] == ["pr", "merge"])
+        self.assertEqual(call, ["pr", "merge", "7", "--squash", "--match-head-commit",
+                                "abc123"])
+        self.assertFalse(any("--admin" in call for call in self.gh_calls()))
+
+    def test_merge_pr_outcomes(self):
+        r = self.merge({"stderr": "Head branch was modified. Review and try again.",
+                        "exit": 1})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("HEAD-MOVED", r.stderr)
+        refusals = (
+            "Pull request is not mergeable: review required",
+            ("X Pull request acme/app#7 is not mergeable: the base branch policy "
+             "prohibits the merge."),
+            'GraphQL: Required status check "test" is expected. (mergePullRequest)',
+            ("GraphQL: At least 1 approving review is required by reviewers with write "
+             "access. (mergePullRequest)"),
+            ("X Pull request acme/app#7 is not mergeable: the merge commit cannot be "
+             "cleanly created."))
+        for refusal in refusals:
+            with self.subTest(refusal=refusal[:30]):
+                r = self.merge({"stderr": refusal, "exit": 1})
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                self.assertIn("REFUSED", r.stderr)
+        r = self.merge({"stdout": "auto-merge enabled"}, state="OPEN")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("QUEUED", r.stdout)
+
+    def test_merge_pr_that_could_not_run(self):
+        usage = ("unknown flag: --match-head-commit\n\nUsage:  gh pr merge [<number>] "
+                 "[flags]\n  --match-head-commit SHA  Commit SHA that the pull request "
+                 "head must match to allow merge")
+        for response in ({"stderr": usage, "exit": 1},
+                         {"stderr": "To get started with GitHub CLI, please run:  gh auth "
+                          "login", "exit": 4},
+                         {"stderr": "error connecting to api.github.com\ncheck your "
+                          "internet connection or https://githubstatus.com\n", "exit": 1},
+                         {"stderr": "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+                          "exit": 1},
+                         {"stderr": "Post \"https://api.github.com/graphql\": context "
+                          "deadline exceeded", "exit": 1}):
+            with self.subTest(response=response["stderr"][:30]):
+                r = self.merge(response)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn("HEAD-MOVED", r.stderr)
+        (self.tmp / "gh.log").unlink()
+        r = self.merge({"stdout": "merged"}, repo={"stderr": "HTTP 502", "exit": 1})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertFalse(any(c[:2] == ["pr", "merge"] for c in self.gh_calls()))
+        r = self.merge({"stdout": "merged"}, view={"stderr": "HTTP 502", "exit": 1})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("QUEUED", r.stdout + r.stderr)
+        self.assertIn("succeeded", r.stderr)
+        (self.tmp / "no-gh").mkdir()
+        self.env["PATH"] = str(self.tmp / "no-gh")  # merge-pr runs only gh
+        r = self.cmd("merge-pr", "--pr", "7", "--sha", "abc123")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("gh is not installed", r.stderr)
+
+    # pr-body --check
+    def test_pr_body_lint(self):
+        state = self.state()
+        state["phase6"]["verified_sha"] = "a" * 40
+        self.write_state(state)
+        body = self.tmp / "body.md"
+        body.write_text(GOOD_BODY.format(sha="a" * 40))
+        r = self.cmd("pr-body", "--check", body)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (self.dir / "CODE_REVIEW.md").write_text(
+            "# Code review\n\n| # | Finding |\n|---|---|\n| C2 | an empty list |\n")
+        body.write_text(GOOD_BODY.format(sha="b" * 40).replace("### Test strength", "")
+                        + f"See C2 in .auto-dev/SPEC.md, from {self.worktree}.\n"
+                        + "token = ghp_" + "x" * 30 + "\n")
+        r = self.cmd("pr-body", "--check", body)
+        self.assertEqual(r.returncode, 1)
+        for text in ("### Test strength", "not the verified commit", ".auto-dev/",
+                     "C2", "worktree", "secret"):
+            self.assertIn(text, r.stdout)
+
+    def test_pr_body_lint_passes_ordinary_words(self):
+        state = self.state()
+        state["phase6"]["verified_sha"] = "a" * 40
+        self.write_state(state)
+        (self.dir / "SECURITY_REVIEW.md").write_text(
+            "# Security review\n\n| # | Finding |\n|---|---|\n| S1 | weak hash |\n")
+        body = self.tmp / "body.md"
+        body.write_text(GOOD_BODY.format(sha="a" * 40) + (
+            "Uploads go to S3 and M1 Macs build it. Strong passwords are required.\n"
+            "The JWT verifier rejects a bad signature; a mutant record is skipped.\n"
+            "`interface Login { token: string; password: string }`\n"
+            "Served from /application/data.\n"))
+        env = dict(self.env)
+        self.env["HOME"] = "/app"
+        r = self.cmd("pr-body", "--check", body)
+        self.env = env
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body.write_text(GOOD_BODY.format(sha="a" * 40)
+                        + "Fixes S1; see /app/src/x.ts | met | Strong |\n"
+                        + "GH=ghp_" + "y" * 36 + "\n")
+        self.env["HOME"] = "/app"
+        r = self.cmd("pr-body", "--check", body)
+        self.env = env
+        self.assertEqual(r.returncode, 1)
+        for text in ("S1", "home directory", "evidence tier", "secret"):
+            self.assertIn(text, r.stdout)
+
+    def test_pr_body_lint_secrets(self):
+        state = self.state()
+        state["phase6"]["verified_sha"] = "a" * 40
+        self.write_state(state)
+        body = self.tmp / "body.md"
+        for line in ("password=hunter2", "DB_PASSWORD=Tr0ub4dor&3",
+                     "secret=Sup3rS3cret!", "password: correcthorsebatterystaple",
+                     'API_KEY="abcd1234"', "GH=ghp_" + "z" * 36):
+            with self.subTest(line=line):
+                body.write_text(GOOD_BODY.format(sha="a" * 40) + line + "\n")
+                r = self.cmd("pr-body", "--check", body)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("secret", r.stdout)
+        # Type annotations (example in TypeScript) are not secrets.
+        body.write_text(GOOD_BODY.format(sha="a" * 40) + (
+            "`token: string`\n`{ token: string }`\n`password: string;`\n"
+            "`function login(password: Password) {}`\n`token: number | null`\n"))
+        r = self.cmd("pr-body", "--check", body)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    # cleanup-worktree
+    def test_cleanup_worktree(self):
+        (self.worktree / "stray.txt").write_text("x")
+        r = self.cmd("cleanup-worktree")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(self.worktree.exists())
+        (self.worktree / "stray.txt").unlink()
+        r = self.cmd("cleanup-worktree")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.worktree.exists())
+
+
 class CliTest(unittest.TestCase):
     def test_missing_state_cannot_run(self):
         with tempfile.TemporaryDirectory() as tmp:
