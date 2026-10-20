@@ -28,16 +28,15 @@ consumer, and exits 3.
 jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
 MCP tools, or skipped: --value skipped), pushed (--value <the sha pushed>),
 pr-ready (the draft PR marked ready for review), final-report, main-ci (CI on
-main checked after the merge), staging-ci; and triage-<ID> (the user's answer at
+main checked after the merge); and triage-<ID> (the user's answer at
 the PR gate for a pre-existing security finding, `triage-Others` for the
 grouped rest: --value separate or ignore; it is also noted in WORK_LOG.md).
 
-`gate` records a gate decision. Gates: post-plan, pr, staging, main, profile,
-jira, cleanup. Choices: proceed, hold, stop, skip (staging only), revise
-(post-plan only), leave (jira only: start work but leave Jira alone), keep
-(cleanup only: keep the worktree).
+`gate` records a gate decision. Gates: post-plan, pr, main, profile, jira,
+cleanup. Choices: proceed, hold, stop, revise (post-plan only), leave (jira
+only: start work but leave Jira alone), keep (cleanup only: keep the worktree).
 `hold` marks the gate's phase held (resuming re-fires the gate); `stop` marks it
-stopped (the run ends); `skip` records the staging gate as n/a.
+stopped (the run ends).
 
 Exit codes:
     0  done (and for `budget spend`, a round was spent or was already spent)
@@ -54,17 +53,16 @@ from .output import FAILED, Fail, emit
 
 EXIT_EXHAUSTED = 3
 
-GATE_PHASE = {"post-plan": 3, "pr": 6, "staging": 6, "main": 6, "profile": 1,
-              "jira": 2, "cleanup": 6}
+GATE_PHASE = {"post-plan": 3, "pr": 6, "main": 6, "profile": 1, "jira": 2,
+              "cleanup": 6}
 GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "pr": {"proceed", "hold", "stop"},
-                "staging": {"proceed", "skip", "hold", "stop"},
                 "main": {"proceed", "hold", "stop"},
                 "profile": {"proceed", "stop"},
                 "jira": {"proceed", "leave", "stop"},
                 "cleanup": {"proceed", "keep"}}
 MARKS = ("jira-in-progress", "jira-in-review", "jira-done", "pushed", "pr-ready",
-         "final-report", "main-ci", "staging-ci")
+         "final-report", "main-ci")
 TRIAGE_RE = re.compile(r"triage-[A-Za-z0-9]+")
 TRIAGE_ANSWERS = ("separate", "ignore")
 CONSUMERS = {
@@ -240,11 +238,6 @@ def gate(args):
         st.set_phase(state, number, "stopped", f"stopped at the {args.gate} gate: "
                      f"{args.reason}".rstrip(": "))
         after = "write the final report and end the run"
-    elif choice == "skip":
-        notes = st.phase(state, 6)["notes"]
-        st.phase(state, 6)["notes"] = ((notes + "; " if notes else "")
-                                       + "staging gate: n/a (skipped by the user)")
-        after = "go on to the main gate"
     elif choice == "revise":
         after = ("spawn the planner in revise mode with the user's direction, "
                  "then ask this gate again (no round is spent)")

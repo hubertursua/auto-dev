@@ -22,8 +22,7 @@ Does, in order, stopping at the first failure:
     then apply the override over the profile. Without `--profile`, the override
     must set both `setup` and `gate`. The resolved gate must have a `test`
     check.
- 3. Branches: base from the override, else the repo's default branch; staging
-    from the override, else `staging` when that branch exists on origin; prefix
+ 3. Branches: base from the override, else the repo's default branch; prefix
     from the override, else `--prefix` (default `feat`).
  4. `git fetch origin`, then `git worktree add ../<repo>-<slug> -b
     <prefix>/<slug> origin/<base>`.
@@ -47,16 +46,15 @@ gate stand in for the profile), then runs setup again. Re-running the first form
 for a slug whose worktree already holds the same task's state.json keeps
 waiting the same way.
 
-Output: `INIT: <worktree>` with the branch, base, staging and setup result;
+Output: `INIT: <worktree>` with the branch, base and setup result;
 `SETUP-RUNNING: …` (exit 3); or `STOP: <reason>` (exit 1).
 
 Exit codes:
     0  ready: worktree created, state written, setup finished green
     1  stop and report: the reason is printed (gh missing or signed out, origin
-       not on GitHub, invalid config, no test command in the gate, a staging
-       branch .auto-dev.yml names that origin lacks, worktree path taken, the
-       slug used by another task's run, a seeded file not gitignored, a setup
-       command missing or failing, the setup runner dying)
+       not on GitHub, invalid config, no test command in the gate, worktree
+       path taken, the slug used by another task's run, a seeded file not
+       gitignored, a setup command missing or failing, the setup runner dying)
     2  could not run (bad arguments, a helper script missing, the ticket text
        file unreadable) — not a pass
     3  setup is still running; call `init --continue <worktree>`
@@ -156,20 +154,14 @@ def main(args):
     base = branches.get("base") or default_branch
     prefix = branches.get("prefix") or args.prefix
     git(repo, "fetch", "origin")
-    staging = branches.get("staging") or "staging"
-    if not remote_branch_exists(repo, staging):
-        if branches.get("staging"):
-            raise Fail(f".auto-dev.yml names staging branch {staging!r}, which is "
-                       "not on origin")
-        staging = None
     branch = f"{prefix}/{args.slug}"
     code, _, err = git(repo, "worktree", "add", str(worktree), "-b", branch,
                        f"origin/{base}", check=False)
     if code != 0:
         raise Fail(f"could not create the worktree: {err.strip()}")
     try:
-        state = create_run(repo, worktree, branch, config, args, staging=staging,
-                           base=base, prefix=prefix)
+        state = create_run(repo, worktree, branch, config, args, base=base,
+                           prefix=prefix)
         runner = start_setup(worktree / ".auto-dev", state)
     except BaseException:
         remove_worktree(repo, worktree, branch)
@@ -206,7 +198,7 @@ def remove_worktree(repo, worktree, branch):
     git(repo, "branch", "-D", branch, check=False)
 
 
-def create_run(repo, worktree, branch, config, args, staging, base, prefix):
+def create_run(repo, worktree, branch, config, args, base, prefix):
     """Steps 5-7: exclude .auto-dev/, seed files, write profile.md and state."""
     name = Path(repo).name
     artifact_dir = worktree / ".auto-dev"
@@ -239,12 +231,10 @@ def create_run(repo, worktree, branch, config, args, staging, base, prefix):
     if getattr(args, "ticket_text", ""):
         task["ticket_text"] = args.ticket_text
     repo_info = {"name": name, "main_checkout": repo, "base": base,
-                 "staging": staging, "prefix": prefix}
+                 "prefix": prefix}
     state = st.new_state(task, repo_info, worktree, branch, settings,
                          config.get("iteration_budget", DEFAULTS["iteration_budget"]))
     st.set_phase(state, 1, "in-progress")
-    if not staging:
-        state["phases"]["6"]["notes"] = "staging gate: n/a (no staging branch)"
     if missing:
         st.add_note(state, "worktree_files not found in the main checkout: "
                     + ", ".join(missing))
@@ -291,15 +281,6 @@ def gh_default_branch(repo):
     except (ValueError, KeyError, TypeError):
         raise Fail(f"gh did not return a default branch: {out[:200]}",
                    CANNOT_RUN, "ERROR") from None
-
-
-def remote_branch_exists(repo, branch):
-    """Whether origin has exactly `branch` (ls-remote's pattern also matches
-    `release/<branch>`, so compare the full ref)."""
-    code, out, _ = git(repo, "ls-remote", "--heads", "origin", branch, check=False)
-    want = f"refs/heads/{branch}"
-    return code == 0 and any(line.split("\t")[-1].strip() == want
-                             for line in out.splitlines())
 
 
 def validate(path, profile):
@@ -430,8 +411,7 @@ def render_profile(state, config, args, seeded, missing, missing_docs=()):
         f"- **Profile:** {args.profile_source or (args.profile or '.auto-dev.yml')}",
         (f"- **Repo:** {repo['name']}   **CI:** {s['ci']}   **CI timeout:** "
          f"{s['ci_timeout']} min"),
-        (f"- **Base:** {repo['base']}   **Staging:** "
-         f"{repo['staging'] or 'n/a — no staging branch'}   **Prefix:** {repo['prefix']}"),
+        f"- **Base:** {repo['base']}   **Prefix:** {repo['prefix']}",
         f"- **Iteration budget:** {state['budget']['total']} per task",
         f"- **Mutation cap:** {mutation}",
         f"- **Worktree files seeded:** {seeded_text}",
@@ -613,7 +593,7 @@ def wait_for_setup(artifact_dir, state, args, proc=None):
 
 def report_ready(state, args):
     emit(args.json, "INIT", state["worktree"], branch=state["branch"],
-         base=state["repo"]["base"], staging=state["repo"]["staging"] or "n/a",
+         base=state["repo"]["base"],
          artifact_dir=state["artifact_dir"], setup="done",
          ci=state["settings"]["ci"])
     return 0

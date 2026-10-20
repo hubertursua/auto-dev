@@ -2,7 +2,7 @@
 
 `autodev.py next` drives S3 too, but here it hands you a few steps to do with
 your own tools: writing a commit subject and two PR paragraphs, pushing,
-moving Jira, watching CI after a merge, and the final report. Each is below.
+moving Jira, watching CI after the merge, and the final report. Each is below.
 `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 ## 1. Enter the worktree
@@ -31,10 +31,9 @@ see in S3, in order:
    never call it green. A red check sends the `triager`. A code failure runs a
    correction, a review and a new commit. Any other class (`INFRA`, `FLAKY`,
    `UNKNOWN`, `SECRET`) is not the code's to fix: `next` stops and reports it
-   (exit 4) before Jira moves to In Review or staging is asked. Once the cause
-   is fixed and CI re-run, `auto-dev continue` watches it again.
-5. Jira In Review, the staging gate, the `triager` on human PR comments, `gh pr
-   ready`, CI watched once more (some workflows skip drafts, so green from the
+   (exit 4) before Jira moves to In Review. Once the cause is fixed and CI
+   re-run, `auto-dev continue` watches it again.
+5. Jira In Review, the `triager` on human PR comments, `gh pr ready`, CI watched once more (some workflows skip drafts, so green from the
    draft's checks doesn't count), the main gate, `merge-pr`. A human blocker
    goes to the coder; a comment saying a held-out check is wrong goes to the
    acceptance tester's repair mode (the triager writes it to
@@ -97,18 +96,16 @@ line, `autodev.py pr publish`:
 When `next` says to move the ticket, do it as `references/gates-and-jira.md`,
 _Moving a ticket_ says, then run its `AFTER` line.
 
-## 7. CI after a merge (staging, then the base branch)
+## 7. CI after the merge
 
-`next` asks you to watch CI on a branch that was just merged into, then run
-`autodev.py mark <staging-ci | main-ci> --value <result>`.
+`next` asks you to watch CI on the base branch once the PR is merged, then run
+`autodev.py mark main-ci --value <result>`.
 
 1. IF `profile.md`'s CI line is anything but `github-actions` (`none`,
    `circleci`, `gitlab`, …), the value is `not watched`: `gh run list` sees
    only GitHub Actions.
 2. ELSE find the commit the merge made with the command `next`'s `ACTION`
-   names: for the base branch, `gh pr view <PR number> --json mergeCommit -q
-   .mergeCommit.oid`; for staging, the commit `merge-staging` pushed, which
-   `next` names (saved as `phase6.staging_merge`).
+   names: `gh pr view <PR number> --json mergeCommit -q .mergeCommit.oid`.
 3. Run `gh run list --commit <sha> --json status,conclusion,url,workflowName`
    every 30 seconds, for up to the CI timeout in `profile.md`:
    - any run `completed` with a conclusion other than `success`, `skipped` or
@@ -159,12 +156,12 @@ it.
 Every stop is exit 4 with its reason in `REPORT`
 (`references/tables.md`, _Stop conditions_). The ones that need care:
 
-- **CI red at the main gate (#19):** never merge over it; name each red check.
-- **Someone pushed to the PR branch (#18):** tell the user what the `REPORT`
+- **CI red at the main gate (#18):** never merge over it; name each red check.
+- **Someone pushed to the PR branch (#17):** tell the user what the `REPORT`
   says: to ship those commits, they bring them into the worktree with the
   `git merge --ff-only` command it names and say `auto-dev continue`. `next`
   then re-checks them (quality gate, verifier, a review pass on what they
   changed), `commit` verifies the new head, or commits the re-check's edits on
   top, and the main gate is asked again.
-- **GitHub refused or queued the merge (#20):** say what blocks it; Jira stays
+- **GitHub refused or queued the merge (#19):** say what blocks it; Jira stays
   where it is.

@@ -21,7 +21,6 @@ Subcommands:
     handoff   write HANDOFF.md and print the message that ends the session
     commit    stage by name, check, commit, and verify the commit (Phase 6)
     ci-watch  poll the PR's checks, bounded; green, red, pending or unavailable
-    merge-staging   merge the branch into staging directly, never forced
     merge-pr  merge the PR locked to the checked commit, never --admin
     pr-body   generate the PR description, or --check: lint one
     pr        publish: open the one PR, or refresh its description in place
@@ -82,7 +81,6 @@ COMMANDS = {
     "handoff": (cmd_handoff, cmd_handoff.main),
     "commit": (cmd_ship, cmd_ship.commit),
     "ci-watch": (cmd_ship, cmd_ship.ci_watch),
-    "merge-staging": (cmd_ship, cmd_ship.merge_staging),
     "merge-pr": (cmd_ship, cmd_ship.merge_pr),
     "pr-body": (cmd_ship, cmd_ship.pr_body),
     "cleanup-worktree": (cmd_ship, cmd_ship.cleanup_worktree),

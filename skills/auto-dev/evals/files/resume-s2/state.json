@@ -205,7 +205,7 @@
       "status": "pending"
     },
     "6": {
-      "notes": "staging gate: n/a (no staging branch)",
+      "notes": "",
       "status": "pending"
     }
   },
@@ -213,8 +213,7 @@
     "base": "main",
     "main_checkout": "<abs-path-to-main-checkout>",
     "name": "<repo-name>",
-    "prefix": "feat",
-    "staging": null
+    "prefix": "feat"
   },
   "schema": 4,
   "session": "S1",

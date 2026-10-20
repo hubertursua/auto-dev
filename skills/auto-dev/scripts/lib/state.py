@@ -45,7 +45,7 @@ def new_state(task, repo, worktree, branch, settings, budget_total):
         "schema": SCHEMA,
         "created": now(),
         "task": task,          # text, ticket, ticket_url, ask
-        "repo": repo,          # name, main_checkout, base, staging, prefix
+        "repo": repo,          # name, main_checkout, base, prefix
         "worktree": str(worktree),
         "branch": branch,
         "artifact_dir": str(Path(worktree) / ".auto-dev"),

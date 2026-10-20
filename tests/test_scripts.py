@@ -427,6 +427,13 @@ class ValidateConfigTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("iteration_budget", r.stderr)
 
+    def test_the_removed_staging_key_is_refused(self):
+        r = self.validate("branches:\n  base: main\n  staging: staging\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("branches.staging: removed in 4.0", r.stderr)
+        self.assertNotIn("unknown key", r.stderr)
+        self.assertEqual(self.validate("branches:\n  base: main\n").returncode, 0)
+
     def test_checkpoint_events(self):
         self.assertEqual(self.validate("checkpoint_events: 40\n").returncode, 0)
         for bad in ("0", "x"):

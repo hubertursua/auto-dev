@@ -106,7 +106,7 @@ class InitTest(RunCase):
         self.assertEqual(state["schema"], 4)
         self.assertEqual(state["branch"], "feat/due-dates")
         self.assertEqual(state["phases"]["1"]["status"], "done")
-        self.assertEqual(state["repo"]["staging"], None)
+        self.assertNotIn("staging", state["repo"])
         self.assertEqual((self.worktree / ".env").read_text(), "SECRET=1\n")
         self.assertTrue((self.worktree / "setup-ran.txt").exists())
         self.assertIn("**Base:** main", (self.dir / "profile.md").read_text())
@@ -294,18 +294,15 @@ class InitTest(RunCase):
         self.assertEqual((self.worktree / "app.ts").read_text(),
                          "export const one = 1;\n")
 
-    def test_staging_must_match_the_whole_branch_name(self):
-        self.sh("git", "push", "-q", "origin", "main:release/staging", cwd=self.repo)
-        r = self.init()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIsNone(self.state()["repo"]["staging"])
-        self.assertIn("staging gate: n/a", self.state()["phases"]["6"]["notes"])
-
-    def test_staging_branch_on_origin_is_used(self):
+    def test_a_staging_branch_on_origin_is_ignored(self):
         self.sh("git", "push", "-q", "origin", "main:staging", cwd=self.repo)
         r = self.init()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.state()["repo"]["staging"], "staging")
+        self.assertNotIn("staging", r.stdout.lower())
+        state = self.state()
+        self.assertNotIn("staging", state["repo"])
+        self.assertNotIn("staging", json.dumps(state).lower())
+        self.assertNotIn("staging", (self.dir / "profile.md").read_text().lower())
 
     def test_worktree_path_taken_stops(self):
         self.worktree.mkdir()
@@ -447,6 +444,15 @@ class StateCommandsTest(RunCase):
         r = self.cmd("gate", "pr", "skip")
         self.assertEqual(r.returncode, 1)
         self.assertEqual(self.state()["gates"], [])
+
+    def test_the_staging_gate_and_mark_are_gone(self):
+        r = self.cmd("gate", "staging", "proceed")
+        self.assertNotEqual(r.returncode, 0)
+        r = self.cmd("mark", "staging-ci", "--value", "green")
+        self.assertNotEqual(r.returncode, 0)
+        state = self.state()
+        self.assertEqual(state["gates"], [])
+        self.assertNotIn("staging-ci", state.get("marks") or {})
 
     def test_oversized_stops_the_run(self):
         r = self.cmd("size", "OVERSIZED", "--high-risk", "no")
@@ -790,64 +796,10 @@ class ShipTest(RunCase):
         self.assertIn("run `next`; the main gate shows CI as not monitored", r.stdout)
         self.assertNotIn("hold at the gate", r.stdout)
 
-    # merge-staging
-    def staging(self, content=None):
-        self.git("push", "-q", "origin", "origin/main:refs/heads/staging")
-        if content is not None:
-            self.git("switch", "-q", "-c", "tmp", "origin/staging")
-            (self.worktree / "app.ts").write_text(content)
-            self.git("commit", "-q", "-am", "staging change")
-            self.git("push", "-q", "origin", "HEAD:staging")
-            self.git("switch", "-q", "feat/due-dates")
-        state = self.state()
-        state["repo"]["staging"] = "staging"
-        self.write_state(state)
-        (self.worktree / "app.ts").write_text("export const one = 2;\n")
-        self.git("commit", "-q", "-am", "feat: change")
-
-    def test_merge_staging_pushes_and_returns_to_the_branch(self):
-        self.staging()
-        r = self.cmd("merge-staging")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
-        self.git("fetch", "-q", "origin", "staging")
-        self.assertIn("feat: change", self.git("log", "--format=%s", "origin/staging"))
-
-    def test_merge_staging_that_could_not_run_is_not_an_attempt(self):
-        state = self.state()
-        state["repo"]["staging"] = "staging"  # no such branch on origin: fetch fails
-        self.write_state(state)
+    def test_merge_staging_is_gone(self):
         r = self.cmd("merge-staging")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertNotIn("staging_attempt", self.state()["phase6"])
-
-    def test_merge_staging_git_failing_midway_is_not_an_attempt(self):
-        self.staging(content="export const one = 9;\n")
-        # A local edit the switch to staging would overwrite: git switch fails.
-        (self.worktree / "app.ts").write_text("export const one = 5;\n")
-        r = self.cmd("merge-staging")
-        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertNotIn("staging_attempt", self.state()["phase6"])
-        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
-
-    def test_merge_staging_conflict_aborts_and_returns(self):
-        self.staging(content="export const one = 9;\n")
-        r = self.cmd("merge-staging")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("CONFLICT", r.stderr)
-        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
-        self.assertEqual(self.git("status", "--porcelain"), "")
-
-    def test_merge_staging_push_rejected_returns_to_the_branch(self):
-        self.staging()
-        hook = self.tmp / "origin.git" / "hooks" / "pre-receive"
-        hook.write_text("#!/bin/sh\necho 'protected branch' >&2\nexit 1\n")
-        hook.chmod(0o755)
-        r = self.cmd("merge-staging")
-        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
-        self.assertIn("REJECTED", r.stderr)
-        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
-        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertIn("invalid choice", r.stderr)
 
     # merge-pr
     def merge(self, merge_response, state="MERGED", view=None, repo=None):

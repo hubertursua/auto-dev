@@ -71,7 +71,7 @@ TOP_LEVEL = {
     "test_notes": (str, "how tests are scoped"),
     "symbol_lookup": (dict, "definition / references commands"),
     "worktree_files": (list, "gitignored files to seed each worktree with"),
-    "branches": (dict, "base / staging / prefix"),
+    "branches": (dict, "base / prefix"),
     "ci": (str, "CI provider"),
     "ci_timeout_minutes": (int, "bound on CI watching"),
     "iteration_budget": (int, "revise rounds per task"),
@@ -88,7 +88,7 @@ PROFILE_KEYS = ("stack", "setup", "gate", "test_notes", "worktree_files",
                 "symbol_lookup", "ci")
 PROFILE_REQUIRED = ("setup", "gate")
 assert set(PROFILE_KEYS) <= set(TOP_LEVEL), "PROFILE_KEYS must be TOP_LEVEL keys"
-BRANCHES = {"base": str, "staging": str, "prefix": str}
+BRANCHES = {"base": str, "prefix": str}
 PR_REVIEW = {"inline_comments": bool}
 GATES = {"post_plan": bool}
 MUTATION = {"max": int}
@@ -261,6 +261,11 @@ def main() -> int:
         elif key in ("setup", "security_docs", "worktree_files"):
             check_str_list(value, key)
         elif key == "branches":
+            if isinstance(value, dict) and "staging" in value:
+                errors.append("branches.staging: removed in 4.0. auto-dev no longer "
+                              "merges into a staging branch; the PR targets the base "
+                              "branch. Delete the key")
+                value = {k: v for k, v in value.items() if k != "staging"}
             check_mapping(value, BRANCHES, "branches")
         elif key == "pr_review":
             check_mapping(value, PR_REVIEW, "pr_review")

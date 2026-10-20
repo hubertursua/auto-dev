@@ -41,7 +41,7 @@ review-scope --snapshot | --files | --clear | --next-pass
     --next-pass creates review/pass-<n>/ for the next pass and prints <n>.
     Exit: 0; 1 --files with no snapshot recorded.
 
-gate-summary <post-plan|pr|staging|main> [--pr N]
+gate-summary <post-plan|pr|main> [--pr N]
     Checks the gate's preconditions, then prints the summary and the
     AskUserQuestion JSON to ask with (on the line after `QUESTION:`).
     pr: every report is fresh, one passing lint report per gate command, no
@@ -81,7 +81,6 @@ COVERAGE_RE = re.compile(r"coverage:\s*(full|partial)")
 GATE_OPTIONS = {
     "post-plan": ["Approve & build", "Revise plan (tell me what to change)", "Stop"],
     "pr": ["Open PR", "Hold (don't push yet)", "Stop"],
-    "staging": ["Merge to staging", "Skip staging", "Stop"],
     "main": ["Merge PR to main", "Hold", "Stop"],
 }
 # A pre-existing security finding's triage answers, and the value `mark
@@ -456,7 +455,7 @@ def gate_summary(args):
     state = st.load(args.dir)
     ad = Path(args.dir)
     builder = {"post-plan": post_plan_summary, "pr": pr_summary,
-               "staging": staging_summary, "main": main_summary}[args.gate]
+               "main": main_summary}[args.gate]
     lines, extra_questions = builder(state, ad, args)
     questions = [question("Gate", f"{args.gate} gate: how do you want to proceed?",
                           GATE_OPTIONS[args.gate])] + extra_questions
@@ -646,30 +645,6 @@ def ci_text(state):
     return ci
 
 
-def staging_text(state):
-    """What the staging step came to, for the main gate; None without staging."""
-    staging = state["repo"].get("staging")
-    if not staging:
-        return None
-    gate = next((g for g in reversed(state.get("gates") or []) if g["gate"] == "staging"),
-                None)
-    if gate and gate.get("choice") == "skip":
-        return f"Staging ({staging}): skipped at the staging gate"
-    mark = (state.get("marks") or {}).get("staging-ci")
-    value = mark["value"] if mark else "not watched"
-    text = f"Staging ({staging}) CI after the merge: {value}"
-    if value == "red":
-        text += " — say so before asking; it does not block the merge"
-    return text
-
-
-def staging_summary(state, ad, args):
-    pr = pr_number(state, args)
-    return [f"PR #{pr}, CI: {ci_text(state)}",
-            (f"Direct merge (no PR) of {state['branch']} into "
-             f"{state['repo'].get('staging') or 'n/a'}")], []
-
-
 def main_summary(state, ad, args):
     pr = pr_number(state, args)
     wt = state["worktree"]
@@ -698,7 +673,4 @@ def main_summary(state, ad, args):
              f"Mergeable: {info.get('mergeable')} / {info.get('mergeStateStatus')}",
              f"Head {head}: every result was checked on it; the merge is locked to it",
              *review_lines]
-    staged = staging_text(state)
-    if staged:
-        lines.insert(1, staged)
     return lines, []
