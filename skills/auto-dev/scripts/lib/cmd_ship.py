@@ -21,9 +21,12 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     Polls the PR's checks with `gh pr checks` (GitHub Actions, and CircleCI or
     other CI that reports to GitHub). Gives up after --max-wait (default 540,
     under the Bash tool's limit) and says to call again; the overall bound is
-    the profile's CI timeout, counted from the first watch of this commit. "No
-    checks reported" is pending for --grace seconds (default 300), then the
-    watcher is unavailable. CI provider `none` skips the watch.
+    the profile's CI timeout, counted from the first watch of this commit (a
+    watch after a final result — green, red, timeout, unavailable — starts the
+    clock again). Checks count only once the PR's head on GitHub is the local
+    HEAD; until then the watch is pending. "No checks reported", or a PR head
+    that is still another commit, is pending for --grace seconds (default 300),
+    then the watcher is unavailable. CI provider `none` skips the watch.
     Exit: 0 green, or skipped (CI: none); 1 red: the failing checks are printed
     with their links; 3 pending (call again) or timed out (TIMEOUT: hold at the
     gate); 4 the watcher is unavailable (no checks after the grace period, or a
@@ -89,6 +92,9 @@ SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN
                        r"(?:password|passwd|secret|token)\s*[=:]\s*\S{6,})",
                        re.IGNORECASE)
 CHECKED_RE = re.compile(r"Checked at commit\s+([0-9a-f]{7,64})")
+# A stored CI status that ends a watch: watching the same commit again starts anew.
+FINAL_CI = ("green", "red", "unavailable", "timeout")
+GH_MIN_WAIT, GH_MAX_WAIT = 10, 60  # seconds one gh call may take during a watch
 
 
 def add_arguments(parser, name):
@@ -219,8 +225,8 @@ def verify_commit(args, state, sha, paths):
     return 0
 
 
-def gh_json(cwd, *args):
-    code, out, err = run(["gh", *args], cwd=cwd, check=False)
+def gh_json(cwd, *args, timeout=None):
+    code, out, err = run(["gh", *args], cwd=cwd, check=False, timeout=timeout)
     return code, out, err
 
 
@@ -241,22 +247,28 @@ def ci_watch(args):
     sha = git(wt, "rev-parse", "HEAD").strip()
     phase6 = state.setdefault("phase6", {})
     ci = phase6.get("ci") or {}
-    if ci.get("sha") != sha:
-        ci = {"sha": sha, "started": time.time()}
+    if ci.get("sha") != sha or ci.get("status") in FINAL_CI:
+        ci = {"sha": sha, "started": time.time()}  # a new watch: a fresh clock
+    # Saved before polling, so a watch killed mid-way still counts its time.
+    ci["status"] = "pending"
+    phase6["ci"] = ci
+    st.save(args.dir, state)
     timeout = state["settings"].get("ci_timeout", 30) * 60
     deadline = time.monotonic() + max(args.max_wait, 0)
     while True:
-        status, failing, detail = poll_checks(wt, pr)
+        status, failing, detail = poll_checks(wt, pr, sha, deadline)
         elapsed = time.time() - ci["started"]
-        if status == "none" and elapsed > args.grace:
+        if status in ("none", "elsewhere") and elapsed > args.grace:
             status = "unavailable"
-        if status in ("green", "red", "unavailable") or elapsed > timeout \
-                or time.monotonic() >= deadline:
+        if status in ("green", "red", "unavailable") or elapsed > timeout:
             break
-        time.sleep(max(args.interval, 1))
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        time.sleep(min(max(args.interval, 1), left))
     if status not in ("green", "red", "unavailable") and elapsed > timeout:
         status = "timeout"
-    ci["status"] = status
+    ci["status"] = "pending" if status in ("none", "elsewhere") else status
     phase6["ci"] = ci
     st.save(args.dir, state)
     if status == "green":
@@ -266,29 +278,56 @@ def ci_watch(args):
         emit(args.json, "RED", f"checks failed on {sha[:12]}", failing=failing)
         return FAILED
     if status == "unavailable":
-        emit(args.json, "UNAVAILABLE", "no checks reported after the grace period: CI "
-             "can't be watched; hold at the gate and say CI was not monitored",
-             detail=detail)
+        what = (detail if detail.startswith("the PR's head") else
+                "no checks reported after the grace period")
+        emit(args.json, "UNAVAILABLE", f"{what}: CI can't be watched for {sha[:12]}; "
+             "hold at the gate and say CI was not monitored", detail=detail)
         return EXIT_UNAVAILABLE
     if status == "timeout":
         emit(args.json, "TIMEOUT", f"CI still running after {timeout // 60} min: hold "
-             "at the gate with what is still running", pending=failing)
+             "at the gate with what is still running", pending=failing, detail=detail)
         return EXIT_PENDING
-    emit(args.json, "PENDING", "CI still running: run ci-watch again", pending=failing)
+    emit(args.json, "PENDING", "CI still running: run ci-watch again", pending=failing,
+         detail=detail)
     return EXIT_PENDING
 
 
-def poll_checks(cwd, pr):
-    """('green'|'red'|'pending'|'none', [lines], detail)."""
-    code, out, err = gh_json(cwd, "pr", "checks", str(pr), "--json",
+def gh_poll(cwd, deadline, *args):
+    """One bounded gh call for a poll: (code, out, err); a timeout is code 124."""
+    left = deadline - time.monotonic()
+    code, out, err = gh_json(cwd, *args, timeout=min(max(left, GH_MIN_WAIT), GH_MAX_WAIT))
+    if code == 127:
+        raise Fail("gh is not installed", CANNOT_RUN, "ERROR")
+    return code, out, err
+
+
+def poll_checks(cwd, pr, sha, deadline):
+    """('green'|'red'|'pending'|'none'|'elsewhere', [lines], detail) for `sha`.
+
+    `gh pr checks` reports the PR's head on GitHub, so it counts only once that
+    head is `sha`; until then the poll is 'elsewhere' (pending), never another
+    commit's result.
+    """
+    code, out, err = gh_poll(cwd, deadline, "pr", "view", str(pr), "--json", "headRefOid")
+    if code == 124:
+        return "pending", [], "gh timed out; still waiting"
+    try:
+        head = json.loads(out).get("headRefOid", "")
+    except (ValueError, AttributeError):
+        raise Fail(f"gh pr view {pr} failed (exit {code}): {(err or out).strip()}",
+                   CANNOT_RUN, "ERROR") from None
+    if head != sha:
+        return "elsewhere", [], (f"the PR's head is {head[:12] or 'unknown'}, not the "
+                                 f"local HEAD {sha[:12]} (not pushed yet?)")
+    code, out, err = gh_poll(cwd, deadline, "pr", "checks", str(pr), "--json",
                              "name,state,bucket,link")
+    if code == 124:
+        return "pending", [], "gh timed out; still waiting"
     if "no checks reported" in (out + err).lower():
         return "none", [], (out + err).strip()
     try:
         checks = json.loads(out)
     except ValueError:
-        if code == 127:
-            raise Fail("gh is not installed", CANNOT_RUN, "ERROR") from None
         raise Fail(f"gh pr checks failed (exit {code}): {(err or out).strip()}",
                    CANNOT_RUN, "ERROR") from None
     if not checks:

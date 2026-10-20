@@ -633,10 +633,15 @@ class ShipTest(RunCase):
     def watch(self, *extra):
         return self.cmd("ci-watch", "--pr", "7", "--interval", "1", *extra)
 
-    def checks(self, checks=None, **response):
-        self.script_gh([{"args": ["pr", "checks"],
+    def checks(self, checks=None, head=None, **response):
+        head = head or self.git("rev-parse", "HEAD").strip()
+        self.script_gh([{"args": ["pr", "view"],
+                         "stdout": json.dumps({"headRefOid": head})},
+                        {"args": ["pr", "checks"],
                          "stdout": json.dumps(checks) if checks is not None else "",
                          **response}])
+
+    PENDING = ({"name": "test", "bucket": "pending", "state": "PENDING", "link": ""},)
 
     def test_ci_none_skips_the_watch(self):
         r = self.watch()
@@ -652,14 +657,49 @@ class ShipTest(RunCase):
         r = self.watch()
         self.assertEqual(r.returncode, 1)
         self.assertIn("test — https://ci/1", r.stdout)
-        self.checks([{"name": "test", "bucket": "pending", "state": "PENDING", "link": ""}])
+        self.checks(self.PENDING)
         r = self.watch("--max-wait", "0")
         self.assertEqual(r.returncode, 3)
         self.assertIn("PENDING", r.stdout)
 
+    def test_ci_rewatch_after_a_final_status_restarts_the_clock(self):
+        self.set_settings(ci="github-actions", ci_timeout=30)
+        state = self.state()
+        head = self.git("rev-parse", "HEAD").strip()
+        for status in ("green", "timeout", "unavailable"):
+            with self.subTest(status=status):
+                state["phase6"]["ci"] = {"sha": head, "started": 1.0, "status": status}
+                self.write_state(state)
+                self.checks(self.PENDING)
+                r = self.watch("--max-wait", "0")
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+                self.assertIn("PENDING", r.stdout)
+                self.assertGreater(self.state()["phase6"]["ci"]["started"], 1.0)
+        # A watch still pending keeps its clock: it times out.
+        state["phase6"]["ci"] = {"sha": head, "started": 1.0, "status": "pending"}
+        self.write_state(state)
+        r = self.watch("--max-wait", "0")
+        self.assertIn("TIMEOUT", r.stdout)
+
+    def test_ci_ignores_checks_for_another_head(self):
+        self.set_settings(ci="github-actions")
+        self.checks([{"name": "test", "bucket": "fail", "state": "FAILURE", "link": "l"}],
+                    head="f" * 40)
+        r = self.watch("--max-wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("PENDING", r.stdout)
+        self.assertIn("ffffffffffff", r.stdout)
+        self.assertEqual(self.state()["phase6"]["ci"]["status"], "pending")
+        r = self.watch("--max-wait", "0", "--grace", "0")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("UNAVAILABLE: the PR's head", r.stdout)
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}],
+                    head="f" * 40)
+        self.assertNotIn("GREEN", self.watch("--max-wait", "0").stdout)
+
     def test_ci_timeout_holds(self):
         self.set_settings(ci="github-actions", ci_timeout=0)
-        self.checks([{"name": "test", "bucket": "pending", "state": "PENDING", "link": ""}])
+        self.checks(self.PENDING)
         r = self.watch("--max-wait", "5")
         self.assertEqual(r.returncode, 3)
         self.assertIn("TIMEOUT", r.stdout)
