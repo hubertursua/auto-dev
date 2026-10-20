@@ -28,7 +28,9 @@ see in S2, in order:
    stops and reports both sides.
 4. `cleanup` simplifies the change and runs the quality gate to green.
 5. A last `verifier` re-check on the cleaned code.
-6. Exit 6: run `autodev.py handoff`, give the user its message, stop.
+6. Exit 6: run its `AFTER` command exactly as printed (`handoff` at the end of the
+   session, `handoff --checkpoint` at a checkpoint), give the user its message,
+   stop.
 
 A worker whose result `record` refuses (exit 1) is briefed again by the next
 `next`, with the refused issues. You pass every file on as `next` names it. You never read `SPEC_EVAL.md`,

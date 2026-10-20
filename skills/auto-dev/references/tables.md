@@ -24,7 +24,7 @@ default 4. `next` spends a round before the action that needs it and prints a
 | 1 | a Define re-review after its FIX blocks applied | stop; report the Define review's open blockers one by one |
 | 2 | a plan re-review, or re-spawning the acceptance tester for gaps | stop; report the plan review's open blockers or the gaps one by one |
 | 3 | a correction after verification, a re-dispatched `BLOCKED` step, an acceptance-check repair | stop; report each unmet condition by name and what was tried; no cleanup, no Phase 6 |
-| 4 | a correction for a review finding or a human reviewer's blocker | before the commit: go to the PR gate with every open must-fix finding named. After it: stop |
+| 4 | a correction for a review finding or a human reviewer's blocker | before the commit: `next` goes on to the PR gate, whose summary names every open must-fix finding. After it: stop; report every open must-fix finding by name |
 | 5 | a correction for red CI caused by the code | stop; report each red check. Never merge over it |
 
 Free (no round): the first review of anything, every verifier re-check, every
@@ -53,7 +53,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 13 | a report is stale again right after its own re-run | `check-fresh`, inside `next` |
 | 14 | no code reviewer wrote a usable report, twice | `next` |
 | 15 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
-| 16 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), or infrastructure, a flaky test or no clear cause (`INFRA`, `FLAKY`, `UNKNOWN`; once CI is fixed or re-run, `auto-dev continue` watches it again). Reported before Jira moves to In Review or staging is asked | triager's CI mode |
+| 16 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), infrastructure (`INFRA`), a flaky test (`FLAKY`) or no clear cause (`UNKNOWN`). Reported before Jira moves to In Review or staging is asked. Lifted by `auto-dev continue` once the cause is fixed and CI re-run: CI is watched again | triager's CI mode |
 | 17 | the staging merge conflicted or its push was rejected | `merge-staging` exit 1 or 3, then `next` |
 | 18 | someone pushed commits to the PR branch the pipeline didn't check | `check-fresh --ref`, inside `next` |
 | 19 | CI is red at the main gate | `next` |
@@ -74,9 +74,11 @@ Every other stop (exit 4) leaves the phase open, and `next` decides again in
 the next session:
 
 - A stop on a **worker** (#6, #7), a refused `pr publish`, and a red CI run the
-  code can't fix (#16, except `SECRET`) are lifted when the user fixes the cause
-  and says `auto-dev continue`: the worker is spawned again, the PR published
-  again, or CI watched again.
+  code can't fix (#16) are lifted when the user fixes the cause and says
+  `auto-dev continue`: the worker is spawned again, the PR published again, or
+  CI watched again. A session that ended at a checkpoint (`handoff
+  --checkpoint`) lifts nothing: it ended at a clean point, with no stop to
+  lift, so a worker that failed once before it and once after still stops.
 - A stop on a **result** stays: a red quality gate (#10), an impossible spec
   (#9), a mutation that may have left changes (#11), the budget used up (#12).
   A resumed run stops at the same place.
@@ -92,7 +94,7 @@ what they said, then run `next`.
 | Jira (Phase 2, with a ticket, once the size check says FITS) | Move it | `gate jira proceed` | you move the ticket; Jira moves at each later milestone too |
 | | Leave Jira alone | `gate jira leave` | no Jira move for the rest of the run |
 | | Stop | `gate jira stop` | the run stops |
-| Post-plan (Phase 3; on when `HIGH_RISK` or `post_plan_gate: true`) | Approve & build | `gate post-plan proceed` | Phase 3 ends; the session hands off |
+| Post-plan (Phase 3; on when `HIGH_RISK` or `gates.post_plan: true` in `.auto-dev.yml`) | Approve & build | `gate post-plan proceed` | Phase 3 ends; the session hands off |
 | | Revise plan (tell me what to change) | `gate post-plan revise --reason "<the user's words>"` | the planner revises (no round); if its entry points changed the tester repairs the checks; the gate is asked again |
 | | Stop | `gate post-plan stop` | the run stops |
 | PR (Phase 6, once the reviews settle) | Open PR | `gate pr proceed` | commit, push, open the PR |

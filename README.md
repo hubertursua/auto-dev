@@ -156,8 +156,11 @@ Orchestrator context is the real cost driver: every added turn makes every later
 turn more expensive. So the orchestrator holds the pipeline, not the code — it
 delegates reads and keeps large artifacts in workers — and `next` ends a long
 session at a **checkpoint**: after 80 recorded events in one session (about 35
-workers), at the next point where no worker is in flight, it writes
-`HANDOFF.md` and asks you to continue in a fresh session. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,
+workers), at the next point where the step would be an action and no worker is
+in flight (a stop or a question is always shown first), it writes `HANDOFF.md`
+and asks you to continue in a fresh session. Continuing after a checkpoint
+lifts no stop: a worker that failed once before it and once after still stops
+the run. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,
 which is also what makes an interrupted run resumable.
 
 ## Size check: one PR, or back to you
@@ -181,7 +184,8 @@ access control or a data migration), which turns on the post-plan gate. A
 security criterion that a later revision or review fix adds to `SPEC.md` turns
 it on too; nothing turns it off.
 
-`WORK_LOG.md` is also the resume point if a run is interrupted.
+An interrupted run resumes from `.auto-dev/state.json`: `autodev.py resume`
+finds it, and `next` picks up at the step it stopped on.
 
 ## Review before the PR
 
@@ -224,9 +228,11 @@ already addressed, or about a held-out check, which goes to the acceptance
 tester rather than the coder; when both kinds come back, the tester goes first
 and the coder second, in one revise round). Everything the pipeline posts on
 the PR ends with `<!-- auto-dev -->`, and the triager skips those comments.
-A red CI run the code can't fix (infrastructure, a flaky test, unknown) stops
-the run and is reported before Jira moves or staging is asked; once CI is fixed
-or re-run, resuming watches it again.
+A red CI run the code can't fix (a secret, infrastructure, a flaky test,
+unknown) stops the run and is reported before Jira moves or staging is asked;
+once the cause is fixed and CI re-run, resuming watches it again. CI that times
+out or can't be watched is shown at the main gate as not monitored, never as
+green.
 Comment text never reaches the orchestrator, so a comment can't steer the run.
 The coder gets every required change unedited, so `autodev.py record` refuses
 one that copies `SPEC.md`'s wording. Those fixes are reviewed the
@@ -426,11 +432,13 @@ Built-in tools only — no plugins required: `Task`/`Agent`, `Bash`,
 (the Phase 5 cleanup agent runs `/simplify` with it, the code reviewers
 `/code-review`, and the security reviewer `/security-review`). `gh` must be on your `PATH`
 and authenticated: Phase 1 checks, and stops before doing any work if it isn't.
-Optional integrations: the Atlassian MCP (Jira transitions) and a CI provider CLI.
+Optional integration: the Atlassian MCP (Jira transitions). CI is watched with
+`gh` alone (`gh pr checks` on the PR, `gh run list` after a merge, GitHub
+Actions only); no CI provider's own CLI is needed.
 The Jira tools are found by base name (`getJiraIssue`, …) with `ToolSearch`, so
 the MCP server can be registered under any name; no match means Jira is skipped.
-Phase 6a opens the PR with `gh pr create`, or through any PR skill Claude already
-has that meets the pipeline's PR requirements — none is required.
+`autodev.py pr publish` opens the PR (with `gh pr create`) and refreshes its
+description; no PR skill is used.
 **Python 3.9+** with **PyYAML** (`pip install pyyaml`) is required:
 `autodev.py init` checks both and stops before doing any work without them.
 The helpers in `skills/auto-dev/scripts/` need only Python's standard library,
@@ -483,7 +491,8 @@ except one about an acceptance check, which it names for the acceptance tester),
 `SPEC.md` lists Security/Compliance criteria), `review-scope` (the snapshot a
 correction is diffed against) and `gate-summary` (checks a gate's preconditions
 and prints its summary and question). For workers: `brief` (writes a worker's
-brief file from state, refusing when a value only the orchestrator can give is
+brief file from state (with `--out`, a profiler or pre-run lookup brief, before
+any state exists), refusing when a value only the orchestrator can give is
 missing, and prints the one-line prompt to spawn it with), `record` (checks the
 result a worker wrote against the artifact it wrote, and stops on a mismatch,
 saving the issues so the next `next` re-spawns that job with them; `brief
@@ -501,9 +510,9 @@ rule that chose it without taking it (it writes and saves nothing). A step
 `next` can't take is a stop that says why, never a bare failure.
 Shared code lives in `skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
-orchestrator uses instead of `grep` to find a symbol's definition and callers.
-The profiler names one only if the repo's ecosystem uses one and it is on your
-`PATH`; without it, the orchestrator uses `grep`.
+`lookup` worker uses instead of `grep` to find a symbol's definition and
+callers. The profiler names one only if the repo's ecosystem uses one and it is
+on your `PATH`; without it, the worker uses `grep`.
 
 ## Models and effort
 
@@ -548,7 +557,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `briefs/`, `returns/` | `autodev.py brief` and `next`, each worker | each worker's brief file, and the result it returned |
 | `blocked/` | Phases 4–6, coder | the build steps the coder stopped, for the planner |
 | `pr-body.md`, `pr-output-comment.md` | Phase 6, `autodev.py next` | the generated PR description, and the command output moved out of it when it would be too long |
-| `HANDOFF.md` | each session's end | the brief for the next session |
+| `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session: the task, what is done, what comes next |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
 | `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code; `AMBIGUOUS.md` lists a condition that reads two ways, for the Define agent |

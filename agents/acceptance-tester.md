@@ -156,12 +156,13 @@ The tree holds the built change, or (before Phase 5) a plan revision changed
 the checks' entry points. The report that sent you here:
 {{report}}
 
-When the report is a quality-gate failure on a check file, the check's
-assertions are right by definition: make it pass the gate (lint, format, types)
-without changing what it asserts.
+A quality-gate failure on a check file is never STANDS: fix its lint, format or
+types without changing what it asserts, or return `failed` naming the rule you
+can't satisfy.
 
-First decide, against SPEC.md alone, whether the report is right. If the check is
-right as it is, change nothing and return `next: STANDS` with your reason.
+Any other report: first decide, against SPEC.md alone, whether it is right. If
+the check is right as it is, change nothing and return `next: STANDS` with your
+reason.
 
 Otherwise repair only the checks of the conditions in {{scope}}:
 - When the checks are installed (they are in the worktree, byte-identical to
