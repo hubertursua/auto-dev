@@ -380,6 +380,14 @@ class StateCommandsTest(RunCase):
         self.assertEqual(self.state()["budget"]["remaining"], 0)
         self.assertIn("(0 remaining)", (self.dir / "WORK_LOG.md").read_text())
 
+    def test_mark_records_a_triage_answer(self):
+        r = self.cmd("mark", "triage-S2", "--value", "separate")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["marks"]["triage-S2"]["value"], "separate")
+        self.assertIn("triage, S2: separate", (self.dir / "WORK_LOG.md").read_text())
+        self.assertEqual(self.cmd("mark", "triage-S2", "--value", "fix").returncode, 1)
+        self.assertEqual(self.cmd("mark", "no-such-step").returncode, 1)
+
     def test_hold_and_stop_are_different_states(self):
         r = self.cmd("gate", "pr", "hold", "--reason", "waiting on design")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -523,6 +531,13 @@ class ShipTest(RunCase):
         self.assertIn("STALE", r.stderr)
         self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
 
+    def test_nothing_to_commit_is_not_an_attempt(self):
+        self.stamp()
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("NOTHING", r.stderr)
+        self.assertNotIn("commit_attempt", self.state()["phase6"])
+
     def test_failed_commit_unstages(self):
         self.change()
         self.stamp()
@@ -611,6 +626,7 @@ class ShipTest(RunCase):
         p6 = self.state()["phase6"]
         self.assertEqual(p6.get("unverified_commit"), head)
         self.assertNotIn("verified_sha", p6)
+        self.assertNotIn("commit_attempt", p6)  # could not run: not an attempt
         (hooks / "post-commit").unlink()
         link.symlink_to(self.dir)
         r = self.cmd("commit", "--message", "feat: x")
@@ -742,6 +758,23 @@ class ShipTest(RunCase):
         self.git("fetch", "-q", "origin", "staging")
         self.assertIn("feat: change", self.git("log", "--format=%s", "origin/staging"))
 
+    def test_merge_staging_that_could_not_run_is_not_an_attempt(self):
+        state = self.state()
+        state["repo"]["staging"] = "staging"  # no such branch on origin: fetch fails
+        self.write_state(state)
+        r = self.cmd("merge-staging")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("staging_attempt", self.state()["phase6"])
+
+    def test_merge_staging_git_failing_midway_is_not_an_attempt(self):
+        self.staging(content="export const one = 9;\n")
+        # A local edit the switch to staging would overwrite: git switch fails.
+        (self.worktree / "app.ts").write_text("export const one = 5;\n")
+        r = self.cmd("merge-staging")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("staging_attempt", self.state()["phase6"])
+        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
+
     def test_merge_staging_conflict_aborts_and_returns(self):
         self.staging(content="export const one = 9;\n")
         r = self.cmd("merge-staging")
@@ -824,6 +857,7 @@ class ShipTest(RunCase):
                 r = self.merge(response)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertNotIn("HEAD-MOVED", r.stderr)
+                self.assertNotIn("merge_attempt", self.state()["phase6"])
         (self.tmp / "gh.log").unlink()
         r = self.merge({"stdout": "merged"}, repo={"stderr": "HTTP 502", "exit": 1})
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
@@ -832,6 +866,8 @@ class ShipTest(RunCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertNotIn("QUEUED", r.stdout + r.stderr)
         self.assertIn("succeeded", r.stderr)
+        # merged, maybe: recorded, so `next` never offers the merge again
+        self.assertEqual(self.state()["phase6"]["merge_attempt"]["result"], "unknown")
         (self.tmp / "no-gh").mkdir()
         self.env["PATH"] = str(self.tmp / "no-gh")  # merge-pr runs only gh
         r = self.cmd("merge-pr", "--pr", "7", "--sha", "abc123")

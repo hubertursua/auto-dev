@@ -449,6 +449,7 @@ pushed until they settle and the user approves.
 6. **CI monitoring**, bounded. Red pre-merge → the triager (CI mode) reads the
    logs; a code failure → the correction loop, whose fix is
    reviewed (both steps) before the Phase 6a refresh commits and re-pushes it.
+   Any other class → stop and report it, before Jira or staging move.
 7. **Jira → In Review.**
 
 ### 6b — Staging **[gate]** (skip if no staging branch)
@@ -459,7 +460,8 @@ resolve conflicts on staging or force the push unasked.
 ### 6c — Main **[gate]**
 
 1. **Triage what humans said** (the triager's human mode: you never read the
-   comments yourself); mark the PR ready. A human blocker goes through the
+   comments yourself); mark the PR ready, then watch CI once more (workflows
+   that skip drafts run only now). A human blocker goes through the
    correction loop (its fix reviewed like any other), never merged over.
 2. **Check the PR still holds the checked code:** fetch the branch and base, and run
    `scripts/check-fresh.py --ref origin/<branch>`. Commits pushed from outside the

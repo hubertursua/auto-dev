@@ -158,17 +158,13 @@ Enable for the run when **any** of these holds, and record which one in
   holds at most four questions and the gate's own options take one, so three are
   left: with three findings or fewer, ask about each; with more, ask about the two
   most severe and group the rest into the third question:
-  `Separate PR (note it as a follow-up)` · `Fix it in this PR` · `Ignore it`.
-  `Fix it in this PR` is a correction (`references/correction-loop.md`, entry
-  _Phase 6a — review_): it spends a round, the fix is reviewed like any other
-  (`references/review.md`), and the gate fires again on the result. It **wins
-  over `Open PR`**: when both are picked, commit nothing, run the correction, and
-  ask the gate again. At zero budget, leave `Fix it in this PR` out of the options
-  and say why. `Separate PR` adds the finding to the PR body's `Review` section
-  and the final report as a follow-up for its own PR; the pipeline does not open
-  that PR. `Ignore it` records the
-  decision in `WORK_LOG.md` and nothing else. Record every triage decision, and
-  its reason, in `WORK_LOG.md`.
+  `Separate PR (note it as a follow-up)` · `Ignore it`. This PR never fixes a
+  pre-existing finding. `Separate PR` adds the finding to the PR body's `Review`
+  section and the final report as a follow-up for its own PR; the pipeline does
+  not open that PR. `Ignore it` records the decision and nothing else. Record
+  every answer with `autodev.py mark triage-<ID> --value separate|ignore`
+  (`triage-Others` for the grouped question); `next` prints that command per
+  answer, and the mark is noted in `WORK_LOG.md`.
 
 ### Staging gate — Phase 6b (skip entirely if no staging branch)
 - **Summary:** PR link, PR CI status, target `staging` branch, that this is a
@@ -349,10 +345,12 @@ regardless of provider on a GitHub repo.
   enter the correction loop with its `triage/ci-<n>.md` — the steps, the
   reports to refresh, the review of the fix, and the commit-and-re-push are
   specified once in `references/correction-loop.md`. Any other class (`INFRA`,
-  `FLAKY`, `SECRET`, `UNKNOWN`) is not the coder's to fix: hold at the gate.
+  `FLAKY`, `SECRET`, `UNKNOWN`) is not the coder's to fix: stop and report it,
+  with the triager's file, before Jira moves to In Review or staging is asked.
+  Resuming the run watches CI again.
   Two things stop the loop before the budget does: a failure the coder cannot fix
   (infrastructure, a flaky external service, a missing secret), and a budget that
-  has run out. In both cases **hold at the gate** and say which it was. Never
+  has run out. In both cases **stop and report** which it was. Never
   retry blindly; never auto-merge over a failure.
 - **On red, post-merge (Phases 6b–6c):** there is no gate left to hold and
   re-pushing the branch cannot fix already-merged code, so the pre-merge loop does

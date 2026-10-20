@@ -58,8 +58,18 @@ def new_state(task, repo, worktree, branch, settings, budget_total):
         "settings": settings,  # ci, ci_timeout, mutation_max, post_plan_gate, ...
         "init": {"setup": "pending"},
         "phase6": {},
-        "events": 0,
+        "events": 0,           # bumped on every write; `seq` stamps order events
+        "session": "S1",       # the session running now; `resume` moves it on
     }
+
+
+def seq(state):
+    """The event number the next save() gives this write.
+
+    Every record `next` orders by (a worker's result, a gate, a mark, a fix, a
+    commit) is stamped with it, so one counter orders them all.
+    """
+    return state.get("events", 0) + 1
 
 
 def path_of(artifact_dir):

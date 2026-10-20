@@ -8,6 +8,7 @@ Usage (each takes `--dir <artifact-dir>`, default `./.auto-dev`, and `--json`):
     autodev.py budget show
     autodev.py budget spend --consumer <1-5> --id <correction-id> [--what TEXT]
     autodev.py gate <gate> <choice> [--reason TEXT]
+    autodev.py mark <step> [--value TEXT]
 
 Only these commands (and init) write state.json; WORK_LOG.md is regenerated on
 every write.
@@ -23,18 +24,30 @@ already spent is a no-op (exit 0, `ALREADY-SPENT`), so a resumed run never pays
 twice. At zero it spends nothing, prints `EXHAUSTED` and what to do for that
 consumer, and exits 3.
 
+`mark` records a step done outside autodev.py, so `next` moves past it. Steps:
+jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
+MCP tools, or skipped: --value skipped), pushed (--value <the sha pushed>),
+pr-ready (the draft PR marked ready for review), final-report, main-ci (CI on
+main checked after the merge), staging-ci; and triage-<ID> (the user's answer at
+the PR gate for a pre-existing security finding, `triage-Others` for the
+grouped rest: --value separate or ignore; it is also noted in WORK_LOG.md).
+
 `gate` records a gate decision. Gates: post-plan, pr, staging, main, profile,
 jira, cleanup. Choices: proceed, hold, stop, skip (staging only), revise
-(post-plan only), leave (jira only: start work but leave Jira alone).
+(post-plan only), leave (jira only: start work but leave Jira alone), keep
+(cleanup only: keep the worktree).
 `hold` marks the gate's phase held (resuming re-fires the gate); `stop` marks it
 stopped (the run ends); `skip` records the staging gate as n/a.
 
 Exit codes:
     0  done (and for `budget spend`, a round was spent or was already spent)
-    1  refused: a bad value, or a choice the gate doesn't offer
+    1  refused: a bad value, a choice the gate doesn't offer, or a `mark` step
+       that is not one of those above (or a triage answer not separate/ignore)
     2  could not run (no state.json, unreadable) — not a pass
     3  `budget spend` only: the budget is exhausted; nothing was spent
 """
+
+import re
 
 from . import state as st
 from .output import FAILED, Fail, emit
@@ -49,7 +62,11 @@ GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "main": {"proceed", "hold", "stop"},
                 "profile": {"proceed", "stop"},
                 "jira": {"proceed", "leave", "stop"},
-                "cleanup": {"proceed", "stop"}}
+                "cleanup": {"proceed", "keep"}}
+MARKS = ("jira-in-progress", "jira-in-review", "jira-done", "pushed", "pr-ready",
+         "final-report", "main-ci", "staging-ci")
+TRIAGE_RE = re.compile(r"triage-[A-Za-z0-9]+")
+TRIAGE_ANSWERS = ("separate", "ignore")
 CONSUMERS = {
     1: "Define re-review",
     2: "plan re-review or acceptance-tester re-spawn",
@@ -87,6 +104,9 @@ def add_arguments(parser, name):
         parser.add_argument("--consumer", type=int, choices=sorted(CONSUMERS))
         parser.add_argument("--id", dest="spend_id")
         parser.add_argument("--what", default="")
+    elif name == "mark":
+        parser.add_argument("step", help=f"one of {', '.join(MARKS)}, or triage-<ID>")
+        parser.add_argument("--value", default="done")
     elif name == "gate":
         parser.add_argument("gate", choices=sorted(GATE_PHASE))
         parser.add_argument("choice")
@@ -158,20 +178,49 @@ def budget(args):
         return 0
     if args.consumer is None or not args.spend_id:
         raise Fail("budget spend needs --consumer and --id", FAILED, "ERROR")
-    if any(s["id"] == args.spend_id for s in b["spends"]):
+    outcome = spend_round(state, args.consumer, args.spend_id, args.what)
+    if outcome == "already":
         emit(args.json, "ALREADY-SPENT", f"`{args.spend_id}` was already paid for; "
              "dispatch without spending again", remaining=b["remaining"])
         return 0
-    if b["remaining"] <= 0:
+    if outcome == "exhausted":
         emit(args.json, "EXHAUSTED", f"no revise rounds left ({CONSUMERS[args.consumer]})",
              action=ON_EXHAUSTED[args.consumer])
         return EXIT_EXHAUSTED
-    b["remaining"] -= 1
-    b["spends"].append({"id": args.spend_id, "consumer": args.consumer,
-                        "what": args.what, "at": st.now()})
     st.save(args.dir, state)
     emit(args.json, "SPENT", f"`{args.spend_id}` — {b['remaining']} of {b['total']} left",
          remaining=b["remaining"])
+    return 0
+
+
+def spend_round(state, consumer, spend_id, what=""):
+    """Spend one round in `state` (not saved): `spent`, `already` or `exhausted`."""
+    b = state["budget"]
+    if any(s["id"] == spend_id for s in b["spends"]):
+        return "already"
+    if b["remaining"] <= 0:
+        return "exhausted"
+    b["remaining"] -= 1
+    b["spends"].append({"id": spend_id, "consumer": consumer, "what": what,
+                        "at": st.now(), "seq": st.seq(state)})
+    return "spent"
+
+
+def mark(args):
+    triage = TRIAGE_RE.fullmatch(args.step)
+    if args.step not in MARKS and not triage:
+        raise Fail(f"no step {args.step!r}: one of {', '.join(MARKS)}, or triage-<ID>",
+                   FAILED, "ERROR")
+    if triage and args.value not in TRIAGE_ANSWERS:
+        raise Fail(f"{args.step} takes --value {' or '.join(TRIAGE_ANSWERS)}", FAILED,
+                   "ERROR")
+    state = load(args)
+    state.setdefault("marks", {})[args.step] = {"value": args.value, "at": st.now(),
+                                                "seq": st.seq(state)}
+    if triage:
+        st.add_note(state, f"PR gate triage, {args.step[len('triage-'):]}: {args.value}")
+    st.save(args.dir, state)
+    emit(args.json, "MARKED", f"{args.step}: {args.value}")
     return 0
 
 
@@ -182,7 +231,7 @@ def gate(args):
         raise Fail(f"gate {args.gate} offers {', '.join(sorted(GATE_CHOICES[args.gate]))}, "
                    f"not {args.choice!r}", FAILED, "ERROR")
     state["gates"].append({"gate": args.gate, "choice": choice,
-                           "reason": args.reason, "at": st.now()})
+                           "reason": args.reason, "at": st.now(), "seq": st.seq(state)})
     number = GATE_PHASE[args.gate]
     after = "continue"
     if choice == "hold":

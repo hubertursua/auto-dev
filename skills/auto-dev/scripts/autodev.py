@@ -17,12 +17,14 @@ Subcommands:
     size      record the Define agent's size check (FITS or OVERSIZED)
     budget    show the iteration budget, or spend one round before a correction
     gate      record a gate decision
+    mark      record a step done outside autodev.py (a Jira move, the push)
     handoff   write HANDOFF.md and print the message that ends the session
     commit    stage by name, check, commit, and verify the commit (Phase 6)
     ci-watch  poll the PR's checks, bounded; green, red, pending or unavailable
     merge-staging   merge the branch into staging directly, never forced
     merge-pr  merge the PR locked to the checked commit, never --admin
-    pr-body   --check: lint a PR description before it is published
+    pr-body   generate the PR description, or --check: lint one
+    pr        publish: open the one PR, or refresh its description in place
     cleanup-worktree   remove the worktree after the final report
     check-manifest     check the acceptance tester's MANIFEST.md against SPEC.md
     eval-status        turn SPEC_EVAL.md into ALL_MET, CORRECT, REPAIR or STOP
@@ -35,6 +37,7 @@ Subcommands:
     brief              write a worker's brief file and print the prompt to spawn it with
     record             check a worker's result against its artifacts; update state
     check-artifact     check an artifact against its template before returning it
+    next      print the pipeline's one next action (the orchestrator's loop)
 
 Every subcommand takes --json. Exit codes, the same for all:
     0  success
@@ -54,6 +57,8 @@ from lib import (
     cmd_checks,
     cmd_handoff,
     cmd_init,
+    cmd_next,
+    cmd_pr,
     cmd_resume,
     cmd_review,
     cmd_ship,
@@ -73,6 +78,7 @@ COMMANDS = {
     "size": (cmd_state, cmd_state.size),
     "budget": (cmd_state, cmd_state.budget),
     "gate": (cmd_state, cmd_state.gate),
+    "mark": (cmd_state, cmd_state.mark),
     "handoff": (cmd_handoff, cmd_handoff.main),
     "commit": (cmd_ship, cmd_ship.commit),
     "ci-watch": (cmd_ship, cmd_ship.ci_watch),
@@ -91,9 +97,11 @@ COMMANDS = {
     "brief": (cmd_work, cmd_work.brief),
     "record": (cmd_work, cmd_work.record),
     "check-artifact": (cmd_work, cmd_work.check_artifact),
+    "next": (cmd_next, cmd_next.main),
+    "pr": (cmd_pr, cmd_pr.main),
 }
 # Modules whose add_arguments() also takes the subcommand's name.
-NAMED = (cmd_state, cmd_ship, cmd_checks, cmd_review, cmd_work)
+NAMED = (cmd_state, cmd_ship, cmd_checks, cmd_review, cmd_work, cmd_pr)
 
 
 # One line per subcommand, from the "Subcommands:" list in this docstring.

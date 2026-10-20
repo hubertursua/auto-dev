@@ -62,7 +62,9 @@ Return:
 - TEST CHANGES: every existing test you edited, skipped or removed, and why
   (write "none" if none)
 - BLOCKED: each step you stopped, what conflicts, and what you would need to
-  finish it (write "none" if none; the result's `blocked` count is then 0)
+  finish it (write "none" if none; the result's `blocked` count is then 0).
+  When there is any, also write the same list to {{blocked_file}}: the planner
+  reads it there.
 - DEVIATIONS: any step you did differently than the plan describes, and why. Be
   specific and honest — a better route is a fine reason, and this report is read
   as information, not as a failure.

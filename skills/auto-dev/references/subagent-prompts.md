@@ -21,9 +21,11 @@ with a `## Mode: <name>` section for each mode.
    wrote to `returns/<worker>-<n>.json` against the artifact it wrote. `RECORDED`
    prints the `next` token to act on, as each section below says. `MISSING`
    (no result file), `MALFORMED` (a key or token wrong) and `MISMATCH` (the
-   return and the artifact disagree) mean re-spawn that job: brief it again
-   with `--retry <n>`, which carries the printed issues in its
-   `previous_issues` slot. Never guess which side is right.
+   return and the artifact disagree) mean re-spawn that job: run `autodev.py
+   next`, which briefs it again with the printed issues in its
+   `previous_issues` slot (as `brief <worker> --retry <n>` does by hand; either
+   way the refused job is replaced, never spawned twice). Never guess which
+   side is right.
 
 Workers read the templates (`templates/`) and the rubric (`templates/rubric.md`)
 by path, and run `autodev.py check-artifact` on what they write before they
@@ -285,7 +287,8 @@ user picks `Revise plan` at the post-plan gate (`--set direction="<the user's
 words, verbatim>"`). Its result says `entry_points_changed`.
 
 **Blocked mode** (`autodev.py brief planner --mode blocked --set
-blocked="<the coder's BLOCKED section, verbatim>"`), when the coder returns
+blocked="the steps listed in <artifact-dir>/blocked/coder-<n>.md"`, the file
+the coder wrote; `autodev.py next` fills it in), when the coder returns
 `next: BLOCKED` (_Coder (TDD)_, below). Its `next` is the decision.
 
 ### Plan reviewer
@@ -346,7 +349,7 @@ Anything short of this is a gap. A MANIFEST.md written before 3.9 has no Covers
 or Level column and no base-run/ beside it. On a resumed run, keep it as it is
 and don't re-spawn the tester for that; the verifier works from what it has.
 For each **AMBIGUOUS** condition, spawn the Define agent in revise mode with
-both readings; it records the meant one in `SPEC.md`'s Assumptions and returns
+both readings (the tester writes them to `acceptance/AMBIGUOUS.md`); it records the meant one in `SPEC.md`'s Assumptions and returns
 `READING: tester` (done, no round) or `READING: other` (re-spawn the tester with
 Scope "ONLY condition <n>", a round, consumer #2).
 Fix a gap by re-spawning this agent with Scope "ONLY conditions <the gap>" (a
@@ -724,8 +727,9 @@ Spawn `auto-dev:triager` with the one-line prompt it prints. When the worker ret
 
 Act on `CLASS`: `CODE` → a CI-red correction (consumer #5,
 `references/correction-loop.md`) with the coder briefed on
-`triage/ci-<n>.md`. Anything else → hold at the gate, saying which class it was
-and the triager's reason; never retry blindly and never spend a round on it.
+`triage/ci-<n>.md`. Anything else → stop and report, saying which class it was
+and the triager's reason, before Jira or staging move; never retry blindly and
+never spend a round on it. Resuming the run watches CI again.
 
 ### Triager: human mode
 _Agent type: `auto-dev:triager`._

@@ -79,7 +79,9 @@ For every SPEC.md condition, Security/Compliance criteria included:
    <Verify by>: <why>)`.
    If a condition reads two ways — two implementations could both satisfy its
    words yet differ on some input — pick the reading its Example supports, test
-   that one, and report AMBIGUOUS with both readings.
+   that one, and report AMBIGUOUS with both readings: in your reply, and in
+   {{artifact_dir}}/acceptance/AMBIGUOUS.md, one `<n>. <reading you tested> |
+   <the other reading>` line per condition (the Define agent reads it there).
    Put the checks in NEW files in the repo's test tree, following its naming
    conventions, with `acceptance` in each file name (e.g.
    `src/<module>/<slug>.acceptance.test.ts`; example in TypeScript). Never edit an existing

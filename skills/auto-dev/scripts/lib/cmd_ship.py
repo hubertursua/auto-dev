@@ -16,6 +16,8 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     Exit: 0 committed and verified (push it); 1 refused: stale results (re-run
     them and ask the PR gate again), nothing to commit, staged-set check or the
     commit failed; 3 committed but NOT verified: do not push, stop and report.
+    A refusal is recorded for `next` as `commit_attempt`, except "nothing to
+    commit" (`next` never asks for a commit with nothing changed) and exit 2.
 
 ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     Polls the PR's checks with `gh pr checks` (GitHub Actions, and CircleCI or
@@ -26,7 +28,11 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     clock again). Checks count only once the PR's head on GitHub is the local
     HEAD; until then the watch is pending. "No checks reported", or a PR head
     that is still another commit, is pending for --grace seconds (default 300),
-    then the watcher is unavailable. CI provider `none` skips the watch.
+    then the watcher is unavailable. Once the PR is marked ready (`mark
+    pr-ready`), green counts only when a check started after the mark, or
+    --grace seconds after it: workflows that skip drafts take a moment to
+    register, and until then the draft's old checks still read green.
+    CI provider `none` skips the watch.
     Exit: 0 green, or skipped (CI: none); 1 red: the failing checks are printed
     with their links; 3 pending (call again) or timed out (TIMEOUT: hold at the
     gate); 4 the watcher is unavailable (no checks after the grace period, or a
@@ -36,7 +42,8 @@ merge-staging
     Merges the branch into the staging branch directly (fetch, detach at
     origin/<staging>, merge, push without --force) and always switches back to
     the branch. Exit: 0 merged and pushed; 1 conflict (merge aborted) or no
-    staging branch; 3 push rejected.
+    staging branch; 3 push rejected; 2 git could not run (not recorded as an
+    attempt).
 
 merge-pr --pr N --sha <checked commit>
     `gh pr merge` with the repo's allowed method (squash first), locked with
@@ -44,9 +51,19 @@ merge-pr --pr N --sha <checked commit>
     Exit: 0 merged; 1 the head moved (re-check the code and ask the main gate
     again); 2 could not run: gh missing, signed out, offline or too old, the
     repo's merge methods unreadable, or the merge succeeded but the PR's state
-    could not be read (it says so: don't merge again); 3 queued or auto-merge
+    could not be read (it says so, and records the merge as `unknown`, so
+    `next` never offers it again); 3 queued or auto-merge
     enabled, not merged (report and stop; don't move Jira); 4 refused (report
     the requirement blocking it and stop).
+
+pr-body
+    Generates the PR description for the verified commit from the run's
+    artifacts and templates/pr-body.md, into <artifact-dir>/pr-body.md, leaving
+    a `<!-- WRITE: ... -->` line for the Summary and one for the Assumptions.
+    Links point at the commit; worktree and home paths are hidden and lines that
+    look like secrets dropped; output blocks are cut, then moved to
+    pr-output-comment.md, to keep it under 60,000 characters. `next` runs it.
+    Exit: 0 written; 1 no verified commit yet.
 
 pr-body --check <file>
     Lints a PR description before it is published: the strict sections and the
@@ -72,11 +89,12 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from . import state as st
 from .output import CANNOT_RUN, FAILED, Fail, emit
-from .proc import git, run
+from .proc import CommandError, git, run
 
 SCRIPTS = Path(__file__).resolve().parent.parent
 ARTIFACTS = ".auto-dev/"
@@ -148,7 +166,7 @@ def add_arguments(parser, name):
         parser.add_argument("--pr", required=True)
         parser.add_argument("--sha", required=True, help="the checked commit")
     elif name == "pr-body":
-        parser.add_argument("--check", required=True, metavar="FILE",
+        parser.add_argument("--check", metavar="FILE",
                             help="the PR description to lint")
 
 
@@ -194,6 +212,17 @@ def unstage(worktree, paths):
 
 def commit(args):
     state = load(args)
+    try:
+        return make_commit(args, state)
+    except Fail as exc:
+        if exc.code != CANNOT_RUN and exc.token != "NOTHING":
+            state.setdefault("phase6", {})["commit_attempt"] = {
+                "result": exc.token.lower(), "seq": st.seq(state)}
+            st.save(args.dir, state)
+        raise
+
+
+def make_commit(args, state):
     wt, ad = state["worktree"], state["artifact_dir"]
     add, remove = changed_paths(wt)
     phase6 = state.setdefault("phase6", {})
@@ -248,6 +277,7 @@ def verify_commit(args, state, sha, paths):
                    "`autodev.py commit` again: it checks this commit without "
                    "committing again.", CANNOT_RUN, "ERROR")
     if code != 0:
+        phase6["commit_attempt"] = {"result": "not-verified", "seq": st.seq(state)}
         st.add_note(state, f"commit {sha} holds code no result checked; not pushed")
         st.save(args.dir, state)
         emit(args.json, "NOT-VERIFIED", f"commit {sha} holds code no result checked: "
@@ -255,6 +285,7 @@ def verify_commit(args, state, sha, paths):
         return EXIT_NOT_VERIFIED
     phase6.pop("unverified_commit", None)
     phase6["verified_sha"] = sha
+    phase6["commit_seq"] = st.seq(state)
     st.add_note(state, f"verified commit {sha}")
     st.save(args.dir, state)
     emit(args.json, "COMMITTED", sha, paths=paths,
@@ -275,6 +306,10 @@ def ci_watch(args):
         emit(args.json, "SKIPPED", "CI: none — no CI to watch; say so at the gate")
         return 0
     if provider == "gitlab":
+        state.setdefault("phase6", {})["ci"] = {
+            "sha": git(wt, "rev-parse", "HEAD").strip(), "status": "unavailable",
+            "failing": [], "seq": st.seq(state)}
+        st.save(args.dir, state)
         emit(args.json, "UNAVAILABLE", "ci-watch reads GitHub checks only; GitLab CI "
              "can't be watched here: hold at the gate and say CI was not monitored")
         return EXIT_UNAVAILABLE
@@ -292,8 +327,13 @@ def ci_watch(args):
     st.save(args.dir, state)
     timeout = state["settings"].get("ci_timeout", 30) * 60
     deadline = time.monotonic() + max(args.max_wait, 0)
+    ready = epoch((state.get("marks") or {}).get("pr-ready", {}).get("at"))
     while True:
-        status, failing, detail = poll_checks(wt, pr, sha, deadline)
+        status, failing, detail = poll_checks(wt, pr, sha, deadline, ready)
+        if status == "stale-green":  # only the draft's checks so far
+            status = "green" if time.time() - ready > args.grace else "pending"
+            detail = ("no check has started since the PR was marked ready; the draft's "
+                      "checks are green" if status == "pending" else "")
         elapsed = time.time() - ci["started"]
         if status in ("none", "elsewhere") and elapsed > args.grace:
             status = "unavailable"
@@ -306,6 +346,7 @@ def ci_watch(args):
     if status not in ("green", "red", "unavailable") and elapsed > timeout:
         status = "timeout"
     ci["status"] = "pending" if status in ("none", "elsewhere") else status
+    ci["failing"], ci["seq"] = failing, st.seq(state)
     phase6["ci"] = ci
     st.save(args.dir, state)
     if status == "green":
@@ -338,12 +379,23 @@ def gh_poll(cwd, deadline, *args):
     return code, out, err
 
 
-def poll_checks(cwd, pr, sha, deadline):
-    """('green'|'red'|'pending'|'none'|'elsewhere', [lines], detail) for `sha`.
+def epoch(stamp):
+    """An ISO 8601 time (`...Z` or `+00:00`) as seconds since the epoch, or None."""
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def poll_checks(cwd, pr, sha, deadline, ready=None):
+    """('green'|'red'|'pending'|'none'|'elsewhere'|'stale-green', [lines], detail).
 
     `gh pr checks` reports the PR's head on GitHub, so it counts only once that
     head is `sha`; until then the poll is 'elsewhere' (pending), never another
-    commit's result.
+    commit's result. With `ready` (when the PR was marked ready, in epoch
+    seconds), all-green checks none of which started after it are 'stale-green'.
     """
     code, out, err = gh_poll(cwd, deadline, "pr", "view", str(pr), "--json", "headRefOid")
     if code == 124:
@@ -357,7 +409,7 @@ def poll_checks(cwd, pr, sha, deadline):
         return "elsewhere", [], (f"the PR's head is {head[:12] or 'unknown'}, not the "
                                  f"local HEAD {sha[:12]} (not pushed yet?)")
     code, out, err = gh_poll(cwd, deadline, "pr", "checks", str(pr), "--json",
-                             "name,state,bucket,link")
+                             "name,state,bucket,link,startedAt")
     if code == 124:
         return "pending", [], "gh timed out; still waiting"
     if "no checks reported" in (out + err).lower():
@@ -379,6 +431,8 @@ def poll_checks(cwd, pr, sha, deadline):
     if pending:
         return "pending", pending, ""
     if buckets <= {"pass", "skipping"}:
+        if ready and not any((epoch(c.get("startedAt")) or 0) > ready for c in checks):
+            return "stale-green", [], ""
         return "green", [], ""
     return "pending", [c["name"] for c in checks], ""
 
@@ -388,7 +442,27 @@ def merge_staging(args):
     wt, branch, staging = state["worktree"], state["branch"], state["repo"].get("staging")
     if not staging:
         raise Fail("no staging branch: the staging gate is n/a", FAILED, "NO-STAGING")
-    git(wt, "fetch", "origin", staging)
+    try:
+        try:
+            git(wt, "fetch", "origin", staging)
+            merged = staging_merge(wt, branch, staging)
+        except CommandError as exc:
+            raise Fail(f"git could not run: {exc}", CANNOT_RUN, "ERROR") from None
+    except Fail as exc:
+        if exc.code != CANNOT_RUN:  # could not run is not an attempt
+            state.setdefault("phase6", {})["staging_attempt"] = {
+                "result": exc.token.lower(), "seq": st.seq(state)}
+            st.save(args.dir, state)
+        raise
+    state.setdefault("phase6", {})["staging_merge"] = merged
+    st.add_note(state, f"merged into {staging} at {merged}")
+    st.save(args.dir, state)
+    emit(args.json, "MERGED", f"{branch} into {staging} at {merged}",
+         next="watch CI on staging; report a failure, don't gate on it")
+    return 0
+
+
+def staging_merge(wt, branch, staging):
     try:
         git(wt, "switch", "-q", "--detach", f"origin/{staging}")
         code, out, err = git(wt, "merge", "--no-edit", branch, check=False)
@@ -404,12 +478,7 @@ def merge_staging(args):
                        f"{(out + err).strip()[-800:]}", EXIT_PUSH_REJECTED, "REJECTED")
     finally:
         git(wt, "switch", "-q", branch, check=False)
-    state.setdefault("phase6", {})["staging_merge"] = merged
-    st.add_note(state, f"merged into {staging} at {merged}")
-    st.save(args.dir, state)
-    emit(args.json, "MERGED", f"{branch} into {staging} at {merged}",
-         next="watch CI on staging; report a failure, don't gate on it")
-    return 0
+    return merged
 
 
 def gh_cannot_run(code, text, what):
@@ -451,8 +520,10 @@ def merge_pr(args):
                              "--match-head-commit", args.sha)
     text = (out + err).strip()
     if code != 0:
-        gh_cannot_run(code, text, "gh pr merge")
-        if HEAD_MOVED_RE.search(text):
+        gh_cannot_run(code, text, "gh pr merge")  # could not run: not an attempt
+        moved = HEAD_MOVED_RE.search(text)
+        note_merge(args, state, "head-moved" if moved else "refused")
+        if moved:
             raise Fail(f"the PR's head is no longer {args.sha}: re-check the code "
                        f"(check-fresh --ref origin/<branch>) and ask the main gate "
                        f"again.\n{text[-500:]}", FAILED, "HEAD-MOVED")
@@ -468,14 +539,14 @@ def merge_pr(args):
     if not pr_state:
         st.add_note(state, f"gh pr merge succeeded for PR #{args.pr} at {args.sha}, "
                     "but its state could not be read")
-        st.save(args.dir, state)
+        note_merge(args, state, "unknown")  # `next` never offers this merge again
         raise Fail(f"`gh pr merge` succeeded, but `gh pr view {args.pr}` could not read "
                    f"the PR's state (exit {code}): {(err or out).strip()[-500:]}\n"
                    f"Do not merge again: check `gh pr view {args.pr} --json state` and "
                    "report what it says.", CANNOT_RUN, "ERROR")
     if pr_state != "MERGED":
         st.add_note(state, f"PR #{args.pr} queued or set to auto-merge, not merged")
-        st.save(args.dir, state)
+        note_merge(args, state, "queued")
         emit(args.json, "QUEUED", f"PR #{args.pr} is {pr_state}: "
              "report it and stop; don't move Jira")
         return EXIT_QUEUED
@@ -486,8 +557,26 @@ def merge_pr(args):
     return 0
 
 
+def note_merge(args, state, result):
+    """Record a merge attempt that did not merge, for `next`."""
+    state.setdefault("phase6", {})["merge_attempt"] = {
+        "result": result, "sha": args.sha, "seq": st.seq(state)}
+    st.save(args.dir, state)
+
+
 def pr_body(args):
     state = load(args)
+    if not args.check:
+        from .cmd_pr import generate
+        sha = state.get("phase6", {}).get("verified_sha")
+        if not sha:
+            raise Fail("no verified commit yet: commit first", FAILED, "NO-COMMIT")
+        path = generate(state, Path(state["artifact_dir"]), sha)
+        state["phase6"]["body"] = {"sha": sha, "path": str(path), "seq": st.seq(state)}
+        st.save(args.dir, state)
+        emit(args.json, "WRITTEN", str(path), commit=sha,
+             then="write its Summary and Assumptions, then `autodev.py pr publish`")
+        return 0
     try:
         text = Path(args.check).read_text(encoding="utf-8")
     except OSError as exc:
