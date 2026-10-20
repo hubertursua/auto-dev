@@ -27,13 +27,16 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the SIMPLIFY + QUALITY-GATE phase. Work inside the worktree at {{worktree}}.
 
 Step 1 — Simplify: run /simplify over the scope `{{scope}}` names (Scopes, below). Never
-simplify, reformat or otherwise edit an acceptance check (<installed paths from
-MANIFEST.md>), whatever the scope says. Apply
+simplify, reformat or otherwise edit an acceptance check ({{acceptance_paths}}),
+whatever the scope says. Apply
 behavior-preserving simplifications only
 (clarity, DRY, remove dead/over-built code). Do NOT change what the code does.
 

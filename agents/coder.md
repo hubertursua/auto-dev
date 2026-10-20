@@ -22,6 +22,9 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the IMPLEMENTATION phase. Work inside the worktree at {{worktree}}. Do NOT
@@ -59,7 +62,7 @@ Return:
 - TEST CHANGES: every existing test you edited, skipped or removed, and why
   (write "none" if none)
 - BLOCKED: each step you stopped, what conflicts, and what you would need to
-  finish it (write "none" if none)
+  finish it (write "none" if none; the result's `blocked` count is then 0)
 - DEVIATIONS: any step you did differently than the plan describes, and why. Be
   specific and honest — a better route is a fine reason, and this report is read
   as information, not as a failure.
@@ -94,6 +97,6 @@ why above the block), `failed` when you couldn't run. `next` is one of: `BUILT`,
 worker: coder
 status: ok
 next: BUILT | BLOCKED
-blocked: <steps stopped>
+blocked: <number of steps under BLOCKED; 0 if none>
 test_changes: <existing tests edited, skipped or removed>
 ```

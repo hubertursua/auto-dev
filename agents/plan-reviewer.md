@@ -22,6 +22,9 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the PLAN-REVIEW phase. Read {{artifact_dir}}/IMPLEMENTATION.md and {{artifact_dir}}/SPEC.md

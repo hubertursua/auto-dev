@@ -3,11 +3,16 @@
 Usage:
     autodev.py init --repo <main checkout> --slug <slug> --task "<text>"
                     [--ticket KEY] [--ticket-url URL] [--ask "<restated ask>"]
+                    [--ticket-text-file PATH]
                     [--profile <profile.yml>] [--profile-source "<text>"]
                     [--prefix feat] [--security-doc PATH ...] [--jira "<text>"]
                     [--assumption "<text>" ...] [--max-wait SECONDS] [--json]
     autodev.py init --continue <worktree> [--profile <profile.yml>]
                     [--max-wait SECONDS] [--json]
+
+`--ticket-text-file` names a file holding the ticket's summary and description
+as read from the tracker; it is stored in state.json and given to the Define
+agent verbatim as its task (without it, Define gets the --task text).
 
 Does, in order, stopping at the first failure:
  1. Preflight: python3 >= 3.9, PyYAML, git, gh installed and signed in, and an
@@ -52,7 +57,8 @@ Exit codes:
        branch .auto-dev.yml names that origin lacks, worktree path taken, the
        slug used by another task's run, a seeded file not gitignored, a setup
        command missing or failing, the setup runner dying)
-    2  could not run (bad arguments, a helper script missing) — not a pass
+    2  could not run (bad arguments, a helper script missing, the ticket text
+       file unreadable) — not a pass
     3  setup is still running; call `init --continue <worktree>`
 """
 
@@ -87,6 +93,9 @@ def add_arguments(parser):
     parser.add_argument("--ticket", help="Jira key, when there is a ticket")
     parser.add_argument("--ticket-url", help="the ticket's link")
     parser.add_argument("--ask", help="the task restated in 1-2 sentences")
+    parser.add_argument("--ticket-text-file", metavar="PATH",
+                        help="a file holding the ticket's summary and description, "
+                             "given to the Define agent verbatim")
     parser.add_argument("--profile", help="the saved or confirmed profile (YAML)")
     parser.add_argument("--profile-source", default="",
                         help="where the profile came from, for profile.md")
@@ -120,6 +129,7 @@ def main(args):
         if not getattr(args, name):
             raise Fail(f"--{name} is required (or pass --continue <worktree>)",
                        CANNOT_RUN, "ERROR")
+    args.ticket_text = read_ticket_text(args.ticket_text_file)
     if not SLUG_RE.match(args.slug):
         raise Fail(f"--slug {args.slug!r} must be lowercase words joined by "
                    "single hyphens", CANNOT_RUN, "ERROR")
@@ -165,6 +175,19 @@ def main(args):
     return wait_for_setup(worktree / ".auto-dev", state, args, runner)
 
 
+def read_ticket_text(path):
+    if not path:
+        return ""
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise Fail(f"cannot read --ticket-text-file {path}: {exc}", CANNOT_RUN,
+                   "ERROR") from None
+    if not text:
+        raise Fail(f"--ticket-text-file {path} is empty", CANNOT_RUN, "ERROR")
+    return text
+
+
 def same_task(task, args):
     """Whether --task (and --ticket, when given) name the run `task` holds."""
     if task.get("text", "").strip() != args.task.strip():
@@ -207,6 +230,8 @@ def create_run(repo, worktree, branch, config, args, staging, base, prefix):
     }
     task = {"text": args.task, "ticket": args.ticket or "none",
             "ticket_url": args.ticket_url or "", "ask": args.ask or args.task}
+    if getattr(args, "ticket_text", ""):
+        task["ticket_text"] = args.ticket_text
     repo_info = {"name": name, "main_checkout": repo, "base": base,
                  "staging": staging, "prefix": prefix}
     state = st.new_state(task, repo_info, worktree, branch, settings,

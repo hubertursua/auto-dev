@@ -9,6 +9,10 @@ Every slot is one of:
   AUTO      filled from state.json and the run's artifacts;
   CALLER    passed with `--set name=value`; the brief refuses without it;
   OPTIONAL  passed with `--set` when it applies; `none` otherwise.
+A slot can be one kind for most workers and another for a few (AUTO_FOR,
+CALLER_FOR). `previous_issues` is OPTIONAL for every worker: when `record`
+refused the worker's last return, the brief fills it from state.json unless
+--set gives it.
 
 Each worker ends its reply with an `auto-dev-result` block and writes the same
 keys to returns/<worker>-<n>.json. RESULTS lists the `next` tokens each may
@@ -25,12 +29,17 @@ MODE_RE = re.compile(r"^## Mode: ([a-z-]+)\s*$", re.MULTILINE)
 AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "ticket",
         "binding_rules", "test_command", "test_notes", "mutation_cap",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
-        "symbol_lookup", "pass", "tree", "run", "pr", "triage_file", "answer_file"}
+        "symbol_lookup", "pass", "tree", "run", "pr", "triage_file", "checks_file",
+        "answer_file"}
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
           "report", "blocked", "failing", "question", "corrections_file", "leads"}
-OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed"}
+OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
+            "previous_issues"}
 # fix_file is AUTO for the reviewers, who write it; OPTIONAL for the authors.
 AUTO_FOR = {"fix_file": {"define-reviewer", "plan-reviewer"}}
+# tree is AUTO (the tree at spawn time) for the security reviewers; the judge
+# needs the tree the panel reviewed, which only the caller noted.
+CALLER_FOR = {"tree": {"review-judge"}}
 
 RESULTS = {
     "profiler": {"CONFIRM"},
@@ -89,9 +98,19 @@ def slots(worker, mode=None):
     return found
 
 
+def result_keys(worker):
+    """The keys the worker's `auto-dev-result` block lists, in order."""
+    block = re.search(r"```auto-dev-result\n(.*?)```", agent_text(worker), re.DOTALL)
+    if not block:
+        raise BriefError(f"agents/{worker}.md has no auto-dev-result block")
+    return re.findall(r"^([a-z_]+):", block.group(1), re.MULTILINE)
+
+
 def kind(worker, slot):
     if slot in AUTO_FOR and worker in AUTO_FOR[slot]:
         return "auto"
+    if slot in CALLER_FOR and worker in CALLER_FOR[slot]:
+        return "caller"
     if slot in AUTO:
         return "auto"
     if slot in CALLER:
@@ -102,7 +121,11 @@ def kind(worker, slot):
 
 
 def render(worker, n, mode, values):
-    lines = [f"# Brief — {worker} #{n}", f"mode: {mode or 'none'}"]
+    lines = [f"# Brief — {worker} #{n}"]
+    if "mode" not in values:
+        # A worker whose own slot is named `mode` (the verifier's pass kind)
+        # gets that one line, never a second.
+        lines.append(f"mode: {mode or 'none'}")
     for name in sorted(values):
         value = str(values[name]).rstrip()
         first, *rest = value.split("\n") if value else ["none"]
