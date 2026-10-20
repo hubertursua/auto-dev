@@ -459,14 +459,15 @@ in one comment edited in place, and reads the PR back) and `cleanup-worktree`. P
 conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
 `CORRECT`, `REPAIR` or `STOP`, with the survivors to carry forward), `apply-fix`
 (applies a reviewer's exact old → new FIX blocks, all or nothing),
-`spec-overlap` (refuses a brief or plan that copies `SPEC.md`'s wording),
+`spec-overlap` (refuses a plan or correction that copies `SPEC.md`'s wording),
 `votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`),
 `review-scope` (the snapshot a correction is diffed against) and `gate-summary`
 (checks a gate's preconditions and prints its summary and question). For
 workers: `brief` (writes a worker's brief file from state, refusing when a value
 only the orchestrator can give is missing, and prints the one-line prompt to
 spawn it with), `record` (checks the result a worker wrote against the
-artifact it wrote, and stops on a mismatch) and `check-artifact` (workers check
+artifact it wrote, checks every file it wrote against its template and the
+coder's plan and corrections with `spec-overlap`, and stops on a mismatch) and `check-artifact` (workers check
 what they wrote against its template before returning). And `next`, the
 orchestrator's loop: it reads the state, the recorded results and the artifacts,
 and prints the one next action (spawn these agents with these briefs, run this

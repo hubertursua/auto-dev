@@ -48,8 +48,10 @@ spec-overlap <file> [--spec SPEC.md] [--words N]
     Refuses a correction brief or plan that copies a condition's wording from
     SPEC.md: any run of N consecutive words (default 6, or the whole condition
     when shorter) of a condition's text found in <file>.
-    Exit: 0 no overlap; 1 overlap (the copied words are printed): rewrite it as
-    concrete behavior.
+    `record` runs the same check on the planner's IMPLEMENTATION.md and the
+    verifier's evidence/corrections.md, the coder's two briefs from SPEC.md's
+    readers. Exit: 0 no overlap; 1 overlap (the copied words are printed):
+    rewrite it as concrete behavior.
 
 security-reviewer
     Prints the security reviewer to spawn: `auto-dev:security-reviewer-sensitive`
@@ -314,15 +316,13 @@ def words(text):
     return WORD_RE.findall(text.lower().replace("'", "").replace("’", ""))
 
 
-@wrap
-def spec_overlap(args):
-    spec = Path(args.spec) if args.spec else Path(args.dir) / "SPEC.md"
-    target = words(art.read(args.file))
-    joined = " " + " ".join(target) + " "
+def overlaps(path, spec, size_words=6):
+    """Each SPEC.md condition whose wording `path` copies: ['condition 2: "..."']."""
+    joined = " " + " ".join(words(art.read(path))) + " "
     hits = []
     for cond in art.spec_conditions(spec):
         cw = words(cond["text"])
-        size = min(args.words, len(cw))
+        size = min(size_words, len(cw))
         if size < 4:
             continue
         for i in range(len(cw) - size + 1):
@@ -330,6 +330,13 @@ def spec_overlap(args):
             if f" {phrase} " in joined:
                 hits.append(f"condition {cond['id']}: \"{phrase}\"")
                 break
+    return hits
+
+
+@wrap
+def spec_overlap(args):
+    spec = Path(args.spec) if args.spec else Path(args.dir) / "SPEC.md"
+    hits = overlaps(args.file, spec, args.words)
     if hits:
         emit(args.json, "OVERLAP", f"{args.file} copies SPEC.md's wording: say what the "
              "code must do and where, in your own words", copied=hits)

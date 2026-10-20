@@ -16,7 +16,13 @@ record <worker> <n>
     section lists and an allowed `next`, then re-derives the same decision from
     the artifact the worker wrote (for example: the verifier's `next` against
     `eval-status`, the judge's open must-fix count against CODE_REVIEW.md, the
-    cleanup agent's GREEN against the lint reports). On a match it updates
+    cleanup agent's GREEN against the lint reports). Every file the result says
+    the worker wrote must exist and pass check-artifact (a fix file, SPEC_EVAL.md
+    and corrections.md, the lint reports, a reviewer's report or votes,
+    CODE_REVIEW.md and its corrections, SECURITY_REVIEW.md, the triager's file),
+    and the two files the coder is briefed with that a SPEC.md reader writes,
+    IMPLEMENTATION.md and evidence/corrections.md, must not copy a condition's
+    wording (spec-overlap). On a match it updates
     state.json (the Define agent's size check, and the result in the log
     `autodev.py next` reads) and
     prints `RECORDED` with the `next` token.
@@ -43,7 +49,7 @@ from pathlib import Path
 from . import artifacts as art
 from . import briefs
 from . import state as st
-from .cmd_checks import FIX_RE
+from .cmd_checks import FIX_RE, overlaps
 from .output import CANNOT_RUN, FAILED, Fail, emit
 
 SCRIPTS = Path(__file__).resolve().parent.parent
@@ -293,10 +299,72 @@ def entries(path):
 
 def derive(worker, n, data, ad, state):
     """Return a list of disagreements between the return and the artifacts."""
+    if data.get("status") != "ok":
+        return []
+    return result_issues(worker, n, data, ad, state) + artifact_issues(
+        worker, n, data, ad, state)
+
+
+def written_files(worker, n, data, ad, state):
+    """[(path, required)]: the files this result says the worker wrote."""
+    nxt = data.get("next")
+    issued = next((b for b in state.get("briefs", [])
+                   if b["worker"] == worker and b["n"] == n), {})
+    mode, sets = issued.get("mode"), issued.get("sets", {})
+    review = ad / "review" / f"pass-{state.get('phase6', {}).get('review_pass', 0)}"
+    files = []
+    if worker in ("define-reviewer", "plan-reviewer"):
+        fix = data.get("fix_file", "none")
+        if fix not in ("none", ""):
+            files.append((Path(fix), True))
+    elif worker == "verifier" and nxt not in ("INSTALL_CONFLICT", "MUTATION_LEFT_CHANGES"):
+        files.append((ad / "SPEC_EVAL.md", True))
+        if nxt == "CORRECT":
+            files.append((ad / "evidence" / "corrections.md", True))
+    elif worker == "cleanup":
+        files += [(ad / "lint" / c["report"], False)
+                  for c in state["settings"].get("gate", []) if c.get("report")]
+    elif worker == "code-reviewer" and sets.get("reviewer"):
+        name = "VOTES-" if mode == "re-vote" else ""
+        files.append((review / f"{name}{sets['reviewer']}.md", True))
+    elif worker == "review-judge":
+        if mode == "security-verify":
+            files.append((ad / "SECURITY_REVIEW.md", True))
+            files.append((ad / "review" / "security-corrections.md", False))
+        else:
+            files.append((ad / "CODE_REVIEW.md", True))
+            files.append((review / "corrections.md", nxt == "MUST_FIX"))
+    elif worker in ("security-reviewer", "security-reviewer-sensitive"):
+        files.append((ad / "SECURITY_REVIEW.md", True))
+    elif worker == "triager":
+        files.append((ad / "triage" / f"{mode or 'triage'}-{n}.md", nxt == "CODE"))
+    return files
+
+
+def artifact_issues(worker, n, data, ad, state):
+    """Each file the worker wrote must follow its template; the files the coder
+    is briefed with must not copy SPEC.md's wording."""
+    issues = []
+    for path, required in written_files(worker, n, data, ad, state):
+        if not path.exists():
+            if required:
+                issues.append(f"{path} does not exist")
+            continue
+        issues += [f"{path.name}: {p}" for p in check_file(path)]
+    spec = ad / "SPEC.md"
+    coder_bound = {"planner": ad / "IMPLEMENTATION.md",
+                   "verifier": ad / "evidence" / "corrections.md"}.get(worker)
+    if coder_bound and coder_bound.exists() and spec.exists() and data.get("next") in (
+            "WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST", "CORRECT"):
+        issues += [f"{coder_bound.name} copies SPEC.md's wording ({hit}): the coder never "
+                   "sees SPEC.md, so say what the code must do in your own words"
+                   for hit in overlaps(coder_bound, spec)]
+    return issues
+
+
+def result_issues(worker, n, data, ad, state):
     nxt = data.get("next")
     issues = []
-    if data.get("status") != "ok":
-        return issues
     if worker == "define":
         if nxt in ("FITS", "OVERSIZED"):
             conds = art.spec_conditions(ad / "SPEC.md")
@@ -344,10 +412,15 @@ def derive(worker, n, data, ad, state):
             issues.append(f"must_fix_open is {data.get('must_fix_open')} but CODE_REVIEW.md "
                           f"has {open_rows} open must-fix rows")
     elif worker == "triager":
-        triage = Path(state["artifact_dir"]) / "triage"
-        wrote = any(entries(p) for p in triage.glob("*.md")) if triage.exists() else False
-        if nxt == "CODE" and not wrote:
-            issues.append("next is CODE but no triage file holds a required change")
+        issued = next((b for b in state.get("briefs", [])
+                       if b["worker"] == worker and b["n"] == n), {})
+        mine = ad / "triage" / f"{issued.get('mode') or 'triage'}-{n}.md"
+        if nxt == "CODE" and not entries(mine):
+            issues.append(f"next is CODE but {mine.name} holds no required change")
+        blockers = as_int(data, "blockers") + as_int(data, "acceptance_checks")
+        if blockers and not entries(mine):
+            issues.append(f"{blockers} blocker(s) or check comment(s) but {mine.name} "
+                          "holds no required change")
     elif worker == "lookup" and nxt == "ANSWERED":
         if not Path(data.get("answer_file", "")).exists():
             issues.append("answer_file does not exist")

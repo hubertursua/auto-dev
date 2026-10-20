@@ -53,6 +53,12 @@ OPEN_REVIEW = CLEAN_REVIEW.replace("0 open", "1 open").replace(
     1)
 
 
+def r_report(findings):
+    """A code reviewer's report, with the sections its template requires."""
+    return (f"## Findings\n{findings}\n\n## Security leads\nnone\n\n"
+            "## Pre-existing\nnone\n")
+
+
 class NextCase(RunCase):
     def setUp(self):
         super().setUp()
@@ -179,7 +185,7 @@ class NextCase(RunCase):
         for w, n in jobs:
             slot = self.sets(w, n)["reviewer"]
             pass_dir = self.dir / "review" / f"pass-{self.state()['phase6']['review_pass']}"
-            (pass_dir / f"{slot}.md").write_text("## Findings\nnone\n")
+            (pass_dir / f"{slot}.md").write_text(r_report("none"))
             self.answer(w, n, "REVIEWED", findings="0", leads="0")
         (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
         self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
@@ -361,9 +367,11 @@ class ShipTest(NextCase):
         out, jobs = self.expect("code-reviewer")
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
-                "## Findings\n- null due date crashes sort\n")
+                r_report("- null due date crashes sort"))
             self.answer(w, n, "REVIEWED", findings="1", leads="0")
         (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. Sort todos with no due date last in src/sort.ts\n")
         self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
         out, jobs = self.expect("coder")
         self.assertEqual(self.sets(*jobs[0])["corrections_file"],
@@ -436,9 +444,11 @@ class ShipTest(NextCase):
         _, jobs = self.expect("code-reviewer")
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
-                "## Findings\n- null due date crashes sort\n")
+                r_report("- null due date crashes sort"))
             self.answer(w, n, "REVIEWED", findings="1", leads="0")
         (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. Sort todos with no due date last in src/sort.ts\n")
         self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
             tree=self.tree()))
@@ -601,7 +611,7 @@ class ReVoteTest(NextCase):
         _out, jobs = self.expect("code-reviewer")
         for w, n in jobs:
             slot = self.sets(w, n)["reviewer"]
-            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text("## Findings\nx\n")
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
             self.answer(w, n, "REVIEWED", findings="1", leads="0")
         (self.dir / "CODE_REVIEW.md").write_text(CODE_REVIEW.format(tree=self.tree()))
         self.expect("review-judge", "REVOTE", must_fix_open="1", revote="2")

@@ -135,12 +135,77 @@ class RecordTest(WorkCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("next: CORRECT", r.stdout)
 
+    def test_a_plan_that_copies_the_spec_is_refused(self):
+        from test_next import IMPLEMENTATION
+        copied = IMPLEMENTATION.replace(
+            "1. add the field",
+            "1. a todo can carry a due date that the list shows next to its title")
+        (self.dir / "IMPLEMENTATION.md").write_text(copied)
+        self.returned("planner", 1, next="WRITTEN", entry_points_changed="no")
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("copies SPEC.md's wording", r.stdout)
+        self.assertIn("condition 1", r.stdout)
+        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+
+    def test_corrections_that_copy_the_spec_are_refused(self):
+        (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
+            tree="0" * 40, v1="unmet", v2="met", e2="x", judgment="Justified",
+            defective="None."))
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        corrections = self.dir / "evidence" / "corrections.md"
+        corrections.write_text("# Required changes\n1. Make sure the list sorts todos "
+                               "by due date with the earliest first\n")
+        self.returned("verifier", 1, next="CORRECT", tree="x", corrections="1")
+        r = self.cmd("record", "verifier", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("corrections.md copies SPEC.md's wording", r.stdout)
+
+    def test_a_review_report_must_follow_its_template(self):
+        state = self.state()
+        state["phase6"] = {"review_pass": 1}
+        self.write_state(state)
+        self.assertEqual(self.cmd("brief", "code-reviewer", "--mode", "review", "--set",
+                                  "reviewer=R2", "--set", "scope=first").returncode, 0)
+        report = self.dir / "review" / "pass-1" / "R2.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("## Findings\nnone\n")
+        self.returned("code-reviewer", 1, next="REVIEWED", findings="0", leads="0")
+        r = self.cmd("record", "code-reviewer", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("R2.md: no `## Security leads` section", r.stdout)
+        report.write_text("## Findings\nnone\n\n## Security leads\nnone\n\n"
+                          "## Pre-existing\nnone\n")
+        self.assertEqual(self.cmd("record", "code-reviewer", "1").returncode, 0)
+
+    def test_a_must_fix_verdict_needs_its_corrections_file(self):
+        from test_next import OPEN_REVIEW
+        state = self.state()
+        state["phase6"] = {"review_pass": 1}
+        self.write_state(state)
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree="0" * 40))
+        self.returned("review-judge", 1, next="MUST_FIX", must_fix_open="1", revote="0")
+        r = self.cmd("record", "review-judge", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("pass-1/corrections.md does not exist", r.stdout)
+
+    def test_a_triaged_blocker_needs_a_required_change(self):
+        self.assertEqual(self.cmd("brief", "triager", "--mode", "human").returncode, 0)
+        self.returned("triager", 1, next="TRIAGED", blockers="1", acceptance_checks="0")
+        r = self.cmd("record", "triager", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("human-1.md holds no required change", r.stdout)
+        (self.dir / "triage" / "human-1.md").write_text(
+            "# Required changes\n1. c-77: keep the field name when it is empty\n")
+        self.assertEqual(self.cmd("record", "triager", "1").returncode, 0)
+
     def test_cleanup_green_needs_passing_reports(self):
         (self.dir / "lint").mkdir(exist_ok=True)
         (self.dir / "lint" / "TEST.md").write_text("# TEST — fail\n")
         self.returned("cleanup", 1, next="GREEN")
         self.assertEqual(self.cmd("record", "cleanup", "1").returncode, 1)
-        (self.dir / "lint" / "TEST.md").write_text("# TEST — pass\n")
+        (self.dir / "lint" / "TEST.md").write_text("# TEST — pass\n\n- **Tree:** abc\n")
         self.assertEqual(self.cmd("record", "cleanup", "1").returncode, 0)
 
     def test_a_malformed_return_is_refused(self):
