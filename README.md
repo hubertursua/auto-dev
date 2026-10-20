@@ -474,7 +474,9 @@ and reports
 rather than committing a red build or weakening any security control. It also
 stops if the mutation step may have left a planted bug in the tree, if the
 build edited source inside a submodule, or if a commit holds code that no result
-checked. It never asks you at a gate, or writes a PR description, on results
+checked. If Define's size check returns OVERSIZED, it builds nothing and hands
+the task back to you; Jira is left alone, and the worktree and branch stay in
+place (see *Size check* above). It never asks you at a gate, or writes a PR description, on results
 that were checked on other code. It refuses a
 resolved quality gate with no test command in it, since that would pass Phase 5 by
 having nothing to check. It merges to main only through a PR, only after your
