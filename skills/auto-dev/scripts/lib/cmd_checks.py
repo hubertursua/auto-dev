@@ -71,7 +71,9 @@ security-reviewer
     Prints the security reviewer to spawn: `auto-dev:security-reviewer-sensitive`
     when SPEC.md's Security/Compliance criteria section lists any criterion (the
     Define agent writes it only for a sensitive path), else
-    `auto-dev:security-reviewer`. Exit: 0.
+    `auto-dev:security-reviewer`.
+    Exit: 0 printed; 1 SPEC.md is malformed (no `## Conditions` section or no
+    numbered condition); 2 SPEC.md is missing or unreadable.
 
 All exit 2 when they could not run (a file missing, unreadable) — never a pass.
 """

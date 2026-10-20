@@ -271,6 +271,18 @@ class EvalStatusTest(ArtifactCase):
 
 
 class SecurityReviewerTest(ArtifactCase):
+    def test_no_spec_cannot_run(self):
+        (self.dir / "SPEC.md").unlink()
+        r = self.cmd("security-reviewer")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("SPEC.md does not exist", r.stderr)
+
+    def test_a_spec_without_conditions_is_malformed(self):
+        (self.dir / "SPEC.md").write_text("# Spec\n\nNo conditions here.\n")
+        r = self.cmd("security-reviewer")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("MALFORMED", r.stderr)
+
     def test_security_criteria_pick_the_sensitive_reviewer(self):
         r = self.cmd("security-reviewer")
         self.assertIn("AGENT: auto-dev:security-reviewer-sensitive", r.stdout)

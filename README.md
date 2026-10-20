@@ -447,10 +447,14 @@ conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
 `CORRECT`, `REPAIR` or `STOP`, with the survivors to carry forward), `apply-fix`
 (applies a reviewer's exact old → new FIX blocks, all or nothing),
 `spec-overlap` (refuses a brief or plan that copies `SPEC.md`'s wording),
-`votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`),
-`review-scope` (the snapshot a correction is diffed against) and `gate-summary`
-(checks a gate's preconditions and prints its summary and question). Shared
-code lives in `skills/auto-dev/scripts/lib/`.
+`votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`,
+adding each new must-fix finding to the pass's `corrections.md` for the coder,
+except one about an acceptance check, which it names for the acceptance tester),
+`security-reviewer` (which security reviewer to spawn: the sensitive one when
+`SPEC.md` lists Security/Compliance criteria), `review-scope` (the snapshot a
+correction is diffed against) and `gate-summary` (checks a gate's preconditions
+and prints its summary and question). Shared code lives in
+`skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
 The profiler names one only if the repo's ecosystem uses one and it is on your
