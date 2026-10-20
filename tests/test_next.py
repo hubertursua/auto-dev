@@ -1127,24 +1127,32 @@ class HumanAndMainGateTest(NextCase):
                          f"{self.dir}/triage/human-1.md")
         self.assertIn("human-1", out["BUDGET"])
 
-    def test_an_outside_push_to_the_pr_branch_stops_before_the_main_gate(self):
+    def test_an_outside_push_after_a_held_main_gate_stops_before_it_is_asked_again(self):
+        # Eval 16: the main gate is held, someone pushes to the PR branch, and a
+        # fresh session resumes the run.
         self.open_pr()
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
         out = self.next(0)
         self.assertIn("gh pr ready", out["ACTION"])
         self.after(out)
+        out = self.next(5)
+        self.assertIn("main", out["QUESTION"])
+        self.after(out, "Hold")
+        self.next(4)
         branch = self.state()["branch"]
         other = self.tmp / "other"
         self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"), str(other))
         (other / "app.ts").write_text("export const one = 1; // reworded\n")
         self.sh("git", "commit", "-q", "-am", "reword", cwd=other)
         self.sh("git", "push", "-q", "origin", branch, cwd=other)
-        report = " ".join(self.next(4)["REPORT"])
+        self.resume()  # un-holds the main gate
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
         self.assertIn("someone pushed", report)
         self.assertIn("app.ts", report)
-        log = (self.tmp / "gh.log").read_text()
-        self.assertNotIn('"merge"', log)
+        self.assertNotIn("QUESTION", out)  # the main gate is not asked
+        self.assertNotIn("merge-pr", json.dumps(out))
 
 
 class ReVoteTest(NextCase):
