@@ -541,6 +541,94 @@ class ShipTest(RunCase):
         self.assertIn("NOT-VERIFIED", r.stdout)
         self.assertNotIn("verified_sha", self.state()["phase6"])
 
+    def fake_git(self, fail):
+        """Put a git on PATH that runs the real one, then fails `git <fail>`
+        (outside check-fresh's own temporary index)."""
+        bindir = self.tmp / "fakegit"
+        bindir.mkdir(exist_ok=True)
+        real = shutil.which("git", path=self.env["PATH"])
+        (bindir / "git").write_text(
+            "#!/bin/sh\n"
+            f'"{real}" "$@"; code=$?\n'
+            f'if [ "$1" = "{fail}" ] && [ -z "$GIT_INDEX_FILE" ]; then\n'
+            '  echo "fatal: injected failure" >&2; exit 128\nfi\nexit $code\n')
+        (bindir / "git").chmod(0o755)
+        self.env["PATH"] = f"{bindir}{os.pathsep}{self.env['PATH']}"
+
+    def track(self, *names):
+        for name in names:
+            (self.worktree / name).write_text(f"export const {name[:-3]} = 0;\n")
+        self.git("add", *names)
+        self.git("commit", "-q", "-m", "track")
+
+    def test_commit_unstages_when_staging_fails(self):
+        for step in ("add", "rm"):
+            with self.subTest(step=step):
+                self.track(f"gone_{step}.ts")
+                (self.worktree / f"gone_{step}.ts").unlink()
+                self.change()
+                self.stamp()
+                path = self.env["PATH"]
+                self.fake_git(step)
+                r = self.cmd("commit", "--message", "feat: x")
+                self.env["PATH"] = path
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(self.git("diff", "--cached", "--name-only"), "")
+                self.git("checkout", "-q", "--", ".")
+                self.git("clean", "-qfd", "-e", ".auto-dev")
+
+    def test_commit_records_deleted_files(self):
+        self.track("old1.ts", "old2.ts")
+        (self.worktree / "old1.ts").unlink()       # deleted, not staged
+        self.git("rm", "-q", "old2.ts")            # deletion already staged
+        self.change()
+        self.stamp()
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        status = self.git("show", "--name-status", "--format=", "HEAD").split("\n")
+        self.assertIn("D\told1.ts", status)
+        self.assertIn("D\told2.ts", status)
+        self.assertEqual(self.git("status", "--porcelain", "--", ":!.auto-dev"), "")
+
+    def test_commit_whose_check_could_not_run_is_checked_on_rerun(self):
+        # state's artifact_dir is a link the post-commit hook removes, so the
+        # check after the commit cannot run (the state itself is in --dir).
+        link = self.tmp / "artifacts-link"
+        link.symlink_to(self.dir)
+        state = self.state()
+        state["artifact_dir"] = str(link)
+        self.write_state(state)
+        hooks = self.repo / ".git" / "hooks"
+        hooks.mkdir(exist_ok=True)
+        (hooks / "post-commit").write_text(f"#!/bin/sh\nrm -f '{link}'\n")
+        (hooks / "post-commit").chmod(0o755)
+        self.change()
+        self.stamp()
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        head = self.git("rev-parse", "HEAD").strip()
+        self.assertIn(head, r.stderr)
+        p6 = self.state()["phase6"]
+        self.assertEqual(p6.get("unverified_commit"), head)
+        self.assertNotIn("verified_sha", p6)
+        (hooks / "post-commit").unlink()
+        link.symlink_to(self.dir)
+        r = self.cmd("commit", "--message", "feat: x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"COMMITTED: {head}", r.stdout)
+        p6 = self.state()["phase6"]
+        self.assertEqual(p6["verified_sha"], head)
+        self.assertNotIn("unverified_commit", p6)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)  # no new commit
+
+    def test_unexpected_error_cannot_run(self):
+        state = self.state()
+        del state["settings"]
+        self.write_state(state)
+        r = self.watch()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR: KeyError", r.stderr)
+
     # ci-watch
     def watch(self, *extra):
         return self.cmd("ci-watch", "--pr", "7", "--interval", "1", *extra)

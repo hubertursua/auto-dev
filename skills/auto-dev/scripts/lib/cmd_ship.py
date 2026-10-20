@@ -10,7 +10,9 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     `git rm --cached`), runs check-staged.py on exactly that list, commits, then
     checks the commit carries the checked code (check-fresh.py --ref HEAD) and
     records it as the verified commit. Unstages everything it staged if any
-    step before the commit fails.
+    step before the commit fails. The commit is recorded before it is checked:
+    if that check cannot run (exit 2, which names the commit), run `commit`
+    again on the clean tree and it checks that commit instead of committing.
     Exit: 0 committed and verified (push it); 1 refused: stale results (re-run
     them and ask the PR gate again), nothing to commit, staged-set check or the
     commit failed; 3 committed but NOT verified: do not push, stop and report.
@@ -53,8 +55,8 @@ cleanup-worktree
     remove` (never --force). Only after the final report: it deletes
     .auto-dev/. Exit: 0 removed; 1 git refused (files are listed; leave it).
 
-All of them exit 2 when they could not run (no state, git or gh missing) —
-never a pass.
+All of them exit 2 when they could not run (no state, git or gh missing, an
+unexpected error) — never a pass.
 """
 
 import json
@@ -124,8 +126,10 @@ def check_fresh(worktree, artifact_dir, *extra):
 
 def changed_paths(worktree):
     """(paths to add, paths to remove from the index) outside .auto-dev/."""
+    # surrogateescape: a file name that isn't UTF-8 is read without crashing and
+    # passed back to git as the same bytes.
     out = git(worktree, "status", "--porcelain=v1", "-z", "--untracked-files=all",
-              "--no-renames", "--ignore-submodules=dirty")
+              "--no-renames", "--ignore-submodules=dirty", errors="surrogateescape")
     add, remove = [], []
     for entry in out.split("\0"):
         if len(entry) < 4:
@@ -148,11 +152,17 @@ def unstage(worktree, paths):
 def commit(args):
     state = load(args)
     wt, ad = state["worktree"], state["artifact_dir"]
+    add, remove = changed_paths(wt)
+    phase6 = state.setdefault("phase6", {})
+    unverified = phase6.get("unverified_commit")
+    if not add and not remove and unverified \
+            and git(wt, "rev-parse", "HEAD").strip() == unverified:
+        # An earlier run committed but could not finish checking the commit.
+        return verify_commit(args, state, unverified, 0)
     code, detail = check_fresh(wt, ad)
     if code != 0:
         raise Fail(f"results are stale; re-run them and ask the PR gate again:\n{detail}",
                    FAILED, "STALE")
-    add, remove = changed_paths(wt)
     if not add and not remove:
         raise Fail("nothing to commit", FAILED, "NOTHING")
     staged = add + remove
@@ -170,23 +180,41 @@ def commit(args):
         code, out, err = git(wt, "commit", "-q", *message, "-m", TRAILER, check=False)
         if code != 0:
             raise Fail(f"git commit failed: {(err or out).strip()}", FAILED, "COMMIT-FAILED")
-    except Fail:
+    except BaseException:  # any failure before the commit leaves nothing staged
         unstage(wt, staged)
         raise
     sha = git(wt, "rev-parse", "HEAD").strip()
-    code, detail = check_fresh(wt, ad, "--ref", "HEAD")
+    # Record the commit before checking it, so a check that cannot run (or a
+    # killed process) leaves state describing the commit; a re-run verifies it.
+    phase6["unverified_commit"] = sha
+    st.add_note(state, f"committed {sha}; checking it carries the checked code")
+    st.save(args.dir, state)
+    return verify_commit(args, state, sha, len(staged))
+
+
+def verify_commit(args, state, sha, paths):
+    """Check the commit carries the checked code; record it as verified or not."""
+    wt, ad = state["worktree"], state["artifact_dir"]
     phase6 = state.setdefault("phase6", {})
+    code, out, err = run([sys.executable, str(SCRIPTS / "check-fresh.py"), wt, ad,
+                          "--ref", sha], check=False)
+    detail = (err or out).strip()
+    if code not in (0, 1):
+        raise Fail(f"commit {sha} was made, but check-fresh.py could not check it "
+                   f"(exit {code}): {detail}\nDo not push. Fix that, then run "
+                   "`autodev.py commit` again: it checks this commit without "
+                   "committing again.", CANNOT_RUN, "ERROR")
     if code != 0:
-        phase6["unverified_commit"] = sha
         st.add_note(state, f"commit {sha} holds code no result checked; not pushed")
         st.save(args.dir, state)
         emit(args.json, "NOT-VERIFIED", f"commit {sha} holds code no result checked: "
              "do not push; stop and report", detail=detail)
         return EXIT_NOT_VERIFIED
+    phase6.pop("unverified_commit", None)
     phase6["verified_sha"] = sha
     st.add_note(state, f"verified commit {sha}")
     st.save(args.dir, state)
-    emit(args.json, "COMMITTED", sha, paths=len(staged),
+    emit(args.json, "COMMITTED", sha, paths=paths,
          next="push with `git push -u origin HEAD` (never --force)")
     return 0
 
