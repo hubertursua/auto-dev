@@ -3,11 +3,10 @@
 Run by the orchestrator at the start of S1; only the profile research in step 2
 goes to a worker. `SKILL.md` keeps the
 step list; this file holds each step's full procedure and exact commands. Phase 1
-runs **once per run** — never again for a sub-task of a multi-PR run, and never on
-a resume.
+runs **once per run**, never on a resume.
 
 **First: is this a resumed run?** You are standing in the main repo, which has no
-`.auto-dev/` — the control worktree is a sibling directory. Scan `git worktree list`
+`.auto-dev/` — the run's worktree is a sibling directory. Scan `git worktree list`
 for one holding a `.auto-dev/WORK_LOG.md` whose header matches this task
 (`python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"`
 checks each one; on a bare `auto-dev continue` or a loose name for the run ("the
@@ -106,7 +105,8 @@ it. Full detection procedure and the script's exit handling:
    the non-stack settings into it too: the iteration budget
    (`iteration_budget`, default 4) and the **mutation cap** (`mutation.max`,
    default 20; `0` records `off`) — the verifier reads the cap from here.
-8. **Jira → In Progress** (if a ticket exists), confirmed with the user as part of
-   starting work (`references/gates-and-jira.md`).
+
+Jira does not move here. It moves to In Progress in Phase 2, once the size check
+returns FITS (`references/subagent-prompts.md`, _Size check_).
 
 All later phases run **inside the worktree directory**.

@@ -11,7 +11,7 @@ Usage:
     python3 <skill-dir>/scripts/resume-point.py --help
 
 <skill-dir> is the auto-dev skill's own directory, not the target repo.
-<artifact-dir> is the control worktree's `.auto-dev/` directory.
+<artifact-dir> is the run's worktree's `.auto-dev/` directory.
 
 --task checks that the ledger belongs to the current task. A Jira key (it
 matches `^[A-Z][A-Z0-9_]+-\\d+$`, ignoring case) must appear as a whole token in
@@ -33,13 +33,8 @@ Without --task nothing is checked: every ledger reports its resume point.
 Omit --task on a bare `auto-dev continue` or a loose name for the run (`the
 multi-currency run`); an empty or all-whitespace value counts as omitted.
 
-On a multi-PR ledger a sub-task's phase table, where it has one, decides; one
-with no phase table goes by its summary `status`: `done`, `skipped` or `n/a` is
-complete, `blocked` is reported for the user to decide, `pending` begins at
-Phase 2, and `in-progress` is MALFORMED (a started sub-task has a table).
-
 Output:
-    stdout  `RESUME: …` plus task, ticket, mode, phase and status, session, what
+    stdout  `RESUME: …` plus task, ticket, phase and status, session, what
             the status means (`Action:`), and budget; or `COMPLETE: …` when
             nothing is left. A Phase 6 result adds a `Note:` on reconciling with
             git and gh, except Phase 6 in-progress, whose Action carries it and
@@ -49,7 +44,7 @@ Output:
             `MISMATCH: …`, or `ERROR: …`
 
 Exit codes:
-    0  resume point found (printed), including a blocked phase or sub-task
+    0  resume point found (printed), including a blocked phase
        — its Action line says to ask the user
     1  WORK_LOG.md missing or malformed, or --task does not match its header
        (MISMATCH, or NEAR-MISS when it may be the same task worded differently)
@@ -112,8 +107,6 @@ PHASE_6_IN_PROGRESS = (
 # Which session holds each phase (SKILL.md, Session boundaries).
 SESSIONS = {1: "S1 — Plan", 2: "S1 — Plan", 3: "S1 — Plan",
             4: "S2 — Build", 5: "S2 — Build", 6: "S3 — Ship"}
-# A sub-task with no phase table never started; it begins here (resume step 5).
-SUBTASK_FIRST_PHASE = 2
 # How many of the Task line's (or restated ask's) words free --task text keeps.
 MIN_COVERAGE = 0.8
 # Words an abbreviation may never drop: without them the line means the opposite.
@@ -137,16 +130,13 @@ TICKET_ASK_SEP_RE = re.compile(r"\s+—\s+")
 # A Jira issue URL passed to --task (`…/browse/PROJ-123`); its key is matched.
 BROWSE_KEY_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9_]+-\d+)(?:[^A-Za-z0-9_-]|$)")
 
-# Header fields the template requires; Mode decides which table to read.
-REQUIRED_FIELDS = ("Task", "Ticket", "Mode")
-MODES = ("single-PR", "multi-PR")
+# Header fields the template requires.
+REQUIRED_FIELDS = ("Task", "Ticket")
 
 # `- **Repo:** x   **Base:** y` holds several fields on one line.
 FIELD_RE = re.compile(r"\*\*([^*]+?):\*\*\s*(.*?)(?=\s+\*\*[^*]+?:\*\*|$)")
-# `<n> total revise rounds (<n> remaining)` on a single-PR header.
+# `<n> total revise rounds (<n> remaining)` on the header.
 BUDGET_RE = re.compile(r"(\d+)\s+total\b.*?\((\d+)\s+remaining\)")
-# `<remaining>/<total>` in a multi-PR sub-task's `budget` cell.
-CELL_BUDGET_RE = re.compile(r"^(\d+)\s*/\s*(\d+)$")
 SEPARATOR_RE = re.compile(r"^\|?[\s:|-]+\|?$")
 
 
@@ -201,9 +191,9 @@ def require_columns(header, needed, where, line_no):
             f"{', '.join(header)}) — the template's column names are fixed")
 
 
-def heading_index(lines, text, level="##"):
+def heading_index(lines, text):
     for i, line in enumerate(lines):
-        if line.strip() == f"{level} {text}":
+        if line.strip() == f"## {text}":
             return i
     return None
 
@@ -221,12 +211,6 @@ def parse_header(lines):
             raise LedgerError(
                 f"header: missing the `- **{name}:**` field (the template "
                 f"requires {', '.join(REQUIRED_FIELDS)})")
-    mode = fields["Mode"].split()[0]
-    if mode not in MODES:
-        raise LedgerError(
-            f"header: Mode is `{fields['Mode']}`, expected one of "
-            f"{', '.join(MODES)}")
-    fields["Mode"] = mode
     return fields
 
 
@@ -314,65 +298,18 @@ def phase_rows(lines, index, where):
     return rows
 
 
-def single_pr(lines, fields):
+def resume_point(lines, fields):
+    """Return (first open phase or None, budget text)."""
     index = heading_index(lines, "Phase status")
     if index is None:
-        raise LedgerError("no `## Phase status` heading — a single-PR ledger "
-                          "needs its phase table under it")
+        raise LedgerError("no `## Phase status` heading — the ledger needs its "
+                          "phase table under it")
     found = first_open_phase(phase_rows(lines, index, "Phase status"),
                              "Phase status")
     match = BUDGET_RE.search(fields.get("Iteration budget", ""))
     budget = (f"{match.group(2)} remaining of {match.group(1)}" if match
               else "not recorded")
-    return None, found, budget
-
-
-def multi_pr(lines):
-    index = heading_index(lines, "Sub-tasks")
-    if index is None:
-        raise LedgerError("Mode is multi-PR but there is no `## Sub-tasks` "
-                          "heading with the sub-task table")
-    header, rows = read_table(lines, index + 1, "Sub-tasks")
-    require_columns(header, ("id", "slug", "budget", "status"), "Sub-tasks",
-                    index + 1)
-    if not rows:
-        raise LedgerError(f"line {index + 1}: the Sub-tasks table has no rows")
-    for line_no, row in rows:
-        name = f"{row['id']}-{row['slug']}"
-        table_at = heading_index(lines, name, level="###")
-        if table_at is None:  # tolerate a slug edited in one place only
-            table_at = next((i for i, line in enumerate(lines)
-                             if line.startswith(f"### {row['id']}-")), None)
-        match = CELL_BUDGET_RE.match(row["budget"])
-        budget = (f"{match.group(1)} remaining of {match.group(2)}" if match
-                  else "not recorded")
-        if table_at is None:
-            # No phase table, so the summary `status` is all there is to read.
-            status = row["status"].lower()
-            if status not in STATUSES:
-                raise LedgerError(
-                    f"line {line_no}: status `{row['status']}` of sub-task "
-                    f"{name} is not one of {', '.join(sorted(STATUSES))}")
-            if status in COMPLETE:
-                continue  # finished (e.g. merged): never re-run it
-            if status == "blocked":
-                return name, (None, None, "blocked",
-                              ("sub-task status is blocked and it has no "
-                               "phase table")), budget
-            if status == "in-progress":
-                raise LedgerError(
-                    f"line {line_no}: sub-task {name} is in-progress but has "
-                    f"no `### {name}` phase table — a started sub-task "
-                    f"writes its table when it starts")
-            # Never started: begin it at Phase 2 (resume step 5).
-            phase = (SUBTASK_FIRST_PHASE, "Define", "pending",
-                     "no phase table yet — this sub-task never started")
-            return name, phase, budget
-        # The phase table is authoritative over the summary `status` cell.
-        found = first_open_phase(phase_rows(lines, table_at, name), name)
-        if found:
-            return name, found, budget
-    return None, None, None
+    return found, budget
 
 
 def stat_or_none(path: Path) -> "os.stat_result | None":
@@ -443,10 +380,7 @@ def main() -> int:
                       f"  ledger Ticket: {fields['Ticket']}\n"
                       f"  --task:        {args.task}", file=sys.stderr)
                 return EXIT_BAD_LEDGER
-        if fields["Mode"] == "single-PR":
-            subtask, found, budget = single_pr(lines, fields)
-        else:
-            subtask, found, budget = multi_pr(lines)
+        found, budget = resume_point(lines, fields)
     except LedgerError as exc:
         print(f"MALFORMED: {ledger}: {exc}. Template: references/artifacts.md, "
               f"WORK_LOG.md.", file=sys.stderr)
@@ -462,15 +396,8 @@ def main() -> int:
     out = [f"RESUME: {ledger}",
            f"  Task:      {fields['Task']}",
            f"  Ticket:    {fields['Ticket']}",
-           f"  Mode:      {fields['Mode']}"]
-    if subtask:
-        out.append(f"  Sub-task:  {subtask}")
-    if number is None:  # a blocked sub-task with no phase table
-        out.append("  Phase:     none — the sub-task is blocked and has no "
-                   "phase table (status: blocked)")
-    else:
-        out += [f"  Phase:     {number} — {name} (status: {status})",
-                f"  Session:   {SESSIONS[number]}"]
+           f"  Phase:     {number} — {name} (status: {status})",
+           f"  Session:   {SESSIONS[number]}"]
     if status == "blocked":
         out.append("  Blocked:   blocked — ask the user; do not start or retry it")
     if number == 6 and status == "in-progress":  # folds the Note in

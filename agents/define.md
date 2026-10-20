@@ -1,6 +1,6 @@
 ---
 name: auto-dev-define
-description: auto-dev pipeline only — Phase 2 Define agent. Researches the ticket against the codebase and writes SPEC.md, the testable contract, plus a scope call. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 2 Define agent. Researches the ticket against the codebase and writes SPEC.md, the testable contract, plus a size check (FITS or OVERSIZED) and a high-risk flag. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Write

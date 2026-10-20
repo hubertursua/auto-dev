@@ -164,7 +164,7 @@ def main() -> int:
               "[--ref REV] [--phase 5|6]")
     parser.add_argument("worktree", help="the worktree whose code is checked")
     parser.add_argument("artifact_dir", nargs="?",
-                        help="the run's .auto-dev/ directory (or tasks/<id>)")
+                        help="the run's .auto-dev/ directory")
     parser.add_argument("--print-tree", action="store_true",
                         help="print the tree hash and exit")
     parser.add_argument("--ref", metavar="REV",

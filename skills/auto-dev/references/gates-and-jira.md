@@ -4,7 +4,7 @@ How the orchestrator pauses for approval, moves the Jira ticket, and watches CI.
 
 ## Contents
 
-- **Human gates** — the four gates and four conditional pauses at a glance.
+- **Human gates** — the four gates and three conditional pauses at a glance.
 - **What each option does** — Proceed, `Hold`, and the other labels every gate shares.
 - **Gates (in pipeline order)** — summary and options for each:
   - **Post-plan gate — Phase 3 (off by default)**
@@ -13,8 +13,7 @@ How the orchestrator pauses for approval, moves the Jira ticket, and watches CI.
   - **Main gate — Phase 6c**
 - **Conditional pauses** — situational stops that are not gates:
   - **Profile confirmation — Phase 1 (only when the profile was researched)**
-  - **Decomposition approval — Phase 2 (OVERSIZED only)**
-  - **Jira In Progress confirmation — Phase 1 (only with a ticket)**
+  - **Jira In Progress confirmation — Phase 2 (only with a ticket)**
   - **Worktree cleanup offer — Phase 6c (after the main merge)**
 - **Jira — status transitions only** — how to move the ticket, never edit it:
   - **MCP tools (deferred — fetch schemas via ToolSearch before calling)**
@@ -29,12 +28,11 @@ How the orchestrator pauses for approval, moves the Jira ticket, and watches CI.
 
 Four gates exist. Three of them — PR, staging, main — sit **inside
 Phase 6**; the fourth (post-plan) sits at the end of Phase 3 and is off by default.
-**Four further pauses are conditional** — they are not gates, and they fire only
+**Three further pauses are conditional** — they are not gates, and they fire only
 when their situation arises: the **profile confirmation** (Phase 1, only when no
-saved profile exists and the profile was researched), the **decomposition
-approval** (Phase 2, OVERSIZED only), the **Jira In Progress confirmation**
-(Phase 1, only with a ticket), and the **worktree cleanup offer** (Phase 6c).
-All four are specified below.
+saved profile exists and the profile was researched), the **Jira In Progress
+confirmation** (Phase 2, only with a ticket, once the size check returns FITS),
+and the **worktree cleanup offer** (Phase 6c). All three are specified below.
 
 Gates use `AskUserQuestion`. Each presents a **concise summary**, enough to decide
 without digging (what will happen, what's been verified, any risks), then a
@@ -56,16 +54,10 @@ decision, the option chosen, and its reason in `WORK_LOG.md`.
   its own: write the final report, mark the phase `blocked`, and say what remains.
 - **`Skip staging`** (6b only) — mark Phase 6b `n/a` in the ledger and continue to
   the main gate. This is not a decline; 6c still fires.
-- **`Revise plan (tell me what to change)`** (post-plan gate only) — you edit
-  `IMPLEMENTATION.md` yourself from the user's direction, then re-fire this gate on
-  the revised plan. User-directed, not a correction: it spends **no** iteration-budget
+- **`Revise plan (tell me what to change)`** (post-plan gate only) — re-spawn the
+  planner with the user's direction and have it revise only the affected steps,
+  then re-fire this gate on the revised plan. User-directed, not a correction: it spends **no** iteration-budget
   round (`references/correction-loop.md`).
-- **`Adjust the breakdown`** (decomposition only) — rewrite the sub-task table in
-  `WORK_LOG.md` from the user's direction, then re-ask.
-- **`Do it as one PR anyway`** (decomposition only) — downgrade the scope call to
-  STANDARD, record the downgrade and who asked for it, and **run the Define reviewer
-  that OVERSIZED skipped** before Phase 3. Without that, the whole PR gets built from
-  a spec nothing ever reviewed.
 
 ## Gates (in pipeline order)
 
@@ -74,8 +66,9 @@ Enable for the run when **any** of these holds, and record which one in
 `WORK_LOG.md`:
 - the user asked to see the plan before building;
 - `.auto-dev.yml` sets `gates.post_plan: true` (`references/profiles.md`);
-- the task is **high-risk** — `SPEC.md` carries Security/Compliance criteria, or
-  the change touches auth, payments, access control, or a data migration.
+- the Define agent returned `HIGH_RISK: yes` (`WORK_LOG.md`'s `High risk` field):
+  `SPEC.md` carries Security/Compliance criteria, or the change touches auth,
+  payments, access control, or a data migration.
 
 - **Summary:** task, `SPEC.md` + `IMPLEMENTATION.md` paths, key assumptions, main
   risks, files the plan will touch, and the acceptance coverage from
@@ -85,9 +78,6 @@ Enable for the run when **any** of these holds, and record which one in
   installed yet, so with their base run); like the revision, it spends no
   round.
 - **Options:** `Approve & build` · `Revise plan (tell me what to change)` · `Stop`.
-
-Once enabled it fires on the TRIVIAL path too, on the short plan the orchestrator
-wrote itself.
 
 ### PR gate — Phase 6a
 - **Summary:** branch + base, files changed (count + notable paths, from
@@ -227,34 +217,18 @@ profile, or a `.auto-dev.yml` that sets both `setup` and `gate`, skips it.
 - `WORK_LOG.md` doesn't exist yet: record the decision when Phase 1 step 7
   initializes it, and in `profile.md`'s _Profile_ line.
 
-### Decomposition approval — Phase 2 (OVERSIZED only)
-Never start a multi-PR run unapproved.
-- **Summary:** why the ticket exceeds one PR, the proposed ordered sub-tasks with
-  their dependencies, that each becomes its own branch and PR, and **what it will
-  cost**: roughly 11–12 or 14–15 worker spawns per sub-task depending on how each
-  is likely to size up (the Phase 6a reviews alone are at least 5: three code
-  reviewers, the judge and the security reviewer, plus re-votes, a verification,
-  and a re-review after every fix; verification adds at least 3 more: the
-  acceptance tester and two verifier passes, plus a re-check after every fix),
-  plus the approvals it will ask for — a PR gate and a main gate per sub-task, and
-  a staging gate too where the repo has one. Six sub-tasks is on the order of
-  eighty to ninety workers and fifteen gates. Say the numbers before asking; they
-  are what the decision actually turns on.
-- **Options:** `Run them in order` · `Adjust the breakdown` · `Do it as one PR
-  anyway` · `Stop`.
-
-### Jira In Progress confirmation — Phase 1 (only with a ticket)
-Part of "start work".
+### Jira In Progress confirmation — Phase 2 (only with a ticket)
+Asked once the Define agent's size check returns FITS, so a task too big for one
+PR never shows as started.
 - **Summary:** the resolved issue (key, title, current status) and the target
   transition.
 - **Options:** `Start work (move to In Progress)` · `Start work, leave Jira alone`
   · `Stop`.
 
 ### Worktree cleanup offer — Phase 6c (after the main merge)
-The work is already merged; declining costs nothing but disk. On a single-PR run
-the worktree is the control worktree and holds the gitignored `.auto-dev/` ledger,
-which `git worktree remove` deletes, so make this offer only **after the final
-report** is delivered.
+The work is already merged; declining costs nothing but disk. The worktree holds
+the gitignored `.auto-dev/` ledger, which `git worktree remove` deletes, so make
+this offer only **after the final report** is delivered.
 - **Summary:** the worktree path and branch, and that the PR is merged and CI green.
 - **Options:** `Remove the worktree` · `Leave it in place`.
 
@@ -268,10 +242,6 @@ git worktree remove <worktree-path>     # never --force
 If git refuses because the tree has modified or untracked files, leave it in place
 and report what is there. Those files are not in the merged PR, so deleting them
 would lose work.
-
-On a multi-PR run this fires **per sub-task**, and offers that sub-task's build
-worktree only. The control worktree holds the ledger and every sub-task's evidence —
-leave it until the final report.
 
 ## Jira — status transitions only
 
@@ -318,8 +288,8 @@ unreachable: Jira is unavailable for the run.
 
 ### Milestones
 
-- **In Progress — Phase 1.** After the worktree is created and the issue read,
-  confirm with the user (part of "start work") and transition to the
+- **In Progress — Phase 2.** Once the Define agent's size check returns FITS,
+  confirm with the user and transition to the
   `in_progress` state. Skip the transition if the issue already sits at or past
   `in_progress` in the `jira.states` map (In Progress, In Review, or Done).
 - **In Review — Phase 6a.** Rides along with the PR gate, after the PR opens.

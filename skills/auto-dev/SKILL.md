@@ -60,7 +60,7 @@ or worktree you are in — open or run each by its absolute path.
 | `scripts/check-fresh.py` | end of S2, entry to S3, before the PR gate, after every Phase 6 commit, before writing the PR body, before the main gate | run (not read): `python3 <skill-dir>/scripts/check-fresh.py <worktree> <artifact-dir> [--phase 5] [--ref <rev>]` says whether every report still checked the code as it is now; workers stamp reports with its `--print-tree`; when to run it and exit codes in `references/artifacts.md`, _Stamps: which code each result checked_ |
 | `scripts/check-staged.py` | S3, before every Phase 6a commit | run (not read): `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`; exit codes in `references/phase-6-ship.md`, step 4 |
 | `references/artifacts.md` | each session's start (its checklist); writing or resuming from any `.auto-dev/` file | layout, `WORK_LOG.md` ledger, resume procedure, session checklists, `HANDOFF.md`, every artifact's contract, template and strictness, the PR body, the final report |
-| `references/subagent-prompts.md` | before spawning any worker (the profiler in Phase 1, then Phases 2–6) | each worker's brief and tools, the scope decision, acting on the verifier's verdicts |
+| `references/subagent-prompts.md` | before spawning any worker (the profiler in Phase 1, then Phases 2–6) | each worker's brief and tools, the size check, acting on the verifier's verdicts |
 | `references/gates-and-jira.md` | before any gate or pause, Jira transition, or CI watch | gate scripts, Jira transition mapping, CI monitoring policy (timeouts, on-red) |
 | `references/correction-loop.md` | on an unmet condition, a must-fix review finding, a human blocker, or red CI | the one correction loop, what each correction invalidates, the iteration budget |
 | `references/phase-6-ship.md` | S3, before Phase 6 | the exact commit, push, staging-merge and main-merge sequences and their failure handling |
@@ -70,7 +70,7 @@ or worktree you are in — open or run each by its absolute path.
 
 ```
 Phase 1  Setup   → detect repo, resolve the profile (saved, or researched + confirmed), ticket, worktree + branch, .auto-dev/
-Phase 2  Define  → research + the testable contract (SPEC.md); SCOPE CALL (trivial / standard / oversized)
+Phase 2  Define  → research + the testable contract (SPEC.md); SIZE CHECK (fits / oversized → back to the user)
 Phase 3  Plan    → planner writes IMPLEMENTATION.md; plan reviewer critiques;
                    acceptance tester writes + seals held-out checks from the spec  [optional gate]
 Phase 4  Build   → coder implements + tests, given only the plan
@@ -80,8 +80,8 @@ Phase 6  Ship    → code review panel → security review → [GATE] commit + P
 ```
 
 Run phases in order; each depends on the previous. Track them in
-`.auto-dev/WORK_LOG.md` — the single source of truth, across a multi-PR run too,
-and the resume point — and mirror it in TodoWrite so progress stays visible: at
+`.auto-dev/WORK_LOG.md` — the single source of truth and the resume point — and
+mirror it in TodoWrite so progress stays visible: at
 each session's start, copy that session's checklist (`references/artifacts.md`,
 _Session checklists_) and tick items off as you go.
 
@@ -93,20 +93,20 @@ except `.auto-dev/` on disk and the git tree.
 
 | Session        | Phases                   | Orchestrator model | Ends by                                                   |
 | -------------- | ------------------------ | ------------------ | --------------------------------------------------------- |
-| **S1 — Plan**  | 1–3 (2–3 for a sub-task) | `opus` · high      | Writing `.auto-dev/HANDOFF.md` (Build brief) and STOPPING |
+| **S1 — Plan**  | 1–3                      | `opus` · high      | Writing `.auto-dev/HANDOFF.md` (Build brief) and STOPPING |
 | **S2 — Build** | 4–5                      | `opus` · high      | Writing `.auto-dev/HANDOFF.md` (Ship brief) and STOPPING  |
 | **S3 — Ship**  | 6                        | `sonnet` · medium  | Final report                                              |
 
-The user picks the orchestrator's model per session: S1 (the scope call) and S2
-(settling `BLOCKED` steps and translating verdicts into correction briefs) need
+The user picks the orchestrator's model per session: S1 (applying the reviewers'
+fixes) and S2 (settling `BLOCKED` steps and translating verdicts into correction briefs) need
 `opus`; S3 is scripted git/gh/CI work, so `sonnet`
 is enough. **Which session is this?** A fresh run is S1; a resumed run is the
 session holding the first phase not `done` (_Phase 1 — Setup_ says how to tell).
 
 At the end of S1 and S2, do exactly this and then stop:
 
-1. Update `WORK_LOG.md` (phase statuses, remaining iteration budget, the scope
-   call, every gate decision).
+1. Update `WORK_LOG.md` (phase statuses, remaining iteration budget, the size
+   check and high-risk flag, every gate decision).
 2. Overwrite `.auto-dev/HANDOFF.md` with the next session's brief — **under 60
    lines**: what is done, the exact next phase, the 3–8 file paths that matter,
    open assumptions, and the one command to re-enter (`cd <worktree>`). Contract
@@ -132,10 +132,6 @@ coder's, never yours. For anything else — including a question _about_ one of
 those files outside the phase that needs it — spawn a worker that reads it and
 returns an answer.
 
-On a multi-PR run, each sub-task gets its **own** set of three sessions — S1
-covering phases 2–3, since Phase 1 ran once for the whole run and never repeats.
-Never carry two sub-tasks in one context.
-
 ## Why two documents
 
 **`SPEC.md`** answers _did we build the right thing?_ (the testable contract, no
@@ -147,32 +143,19 @@ the worktree, never named in the coder's brief; the Phase 5 verifier runs them, 
 report. The full rationale is in `references/artifacts.md`, _Why two
 documents_.
 
-## Task-orchestration layer (scope call, decompose & track)
+## Size check: one PR, or back to the user
 
-Phase 2 returns a three-way **scope call**, and the pipeline adapts to it:
+The Define agent returns a **size check** with `SPEC.md`:
 
-- **TRIVIAL** — one subsystem, one behavior, no new abstraction or interface, no
-  migration or config change, and an existing test file covers it. Skip the Define
-  review, the planner and the plan reviewer; you write a short `IMPLEMENTATION.md`
-  yourself (files to touch + the test that proves it). The acceptance tester still
-  runs, and Phases 4–6 run normally.
-- **STANDARD** — fits one PR but is neither TRIVIAL nor OVERSIZED: the full path,
-  Phase 3 onward runs in full. Record `Mode: single-PR`.
+- **FITS** — the task ships as one PR. Every step below runs, the same way for
+  every task.
 - **OVERSIZED** — multiple independent deliverables, several subsystems, or a large
-  file count. Do **not** cram it onto one branch: propose ordered sub-tasks, write
-  them to `WORK_LOG.md`, and **alert the user**. On approval, run Phases 2–6 **per
-  sub-task**, each with its own branch, worktree, PR, scope call and **iteration
-  budget**. A sub-task may **not** be OVERSIZED.
+  file count. auto-dev builds nothing: it records the result, leaves Jira alone,
+  keeps the worktree, and reports Define's reasons and suggested split lines to
+  the user, who splits the task and runs each part separately.
 
-What to record for each call, and the full multi-PR procedure (sub-task
-worktrees, `<artifact-dir>` per sub-task, an OVERSIZED sub-task), are in
-`references/subagent-prompts.md`, _Scope decision_ — read it before acting on an
-OVERSIZED call.
-
-> **The scope call thins the planning head, never the verification tail.**
-> The acceptance tester (Phase 3), Phase 5 (verifier + simplify + quality gate +
-> re-check) and Phase 6 (code review panel + security review + CI + human gates)
-> run identically at every scope.
+It also returns **`HIGH_RISK`** (yes or no), which turns on the post-plan gate.
+What to record and what to report: `references/subagent-prompts.md`, _Size check_.
 
 ## Human gates
 
@@ -182,11 +165,10 @@ Planning and build run unattended. Four gates pause for explicit approval (via
 "gate" always means one of these four; the Phase 5 checks are the **quality
 gate**, run from the profile's `gate` commands.
 
-Four **conditional** pauses fire only when their situation arises: the
+Three **conditional** pauses fire only when their situation arises: the
 **profile confirmation** (Phase 1, only when the profile was researched), the
-**decomposition approval** (OVERSIZED only — never start a multi-PR run
-unapproved), the **Jira In Progress confirmation** (only with a ticket), and the
-**worktree cleanup offer** (6c). Everything else runs without check-ins.
+**Jira In Progress confirmation** (Phase 2, only with a ticket, once the size
+check returns FITS), and the **worktree cleanup offer** (6c). Everything else runs without check-ins.
 
 Each gate's summary, options, **what each option does**, its Jira transition, and
 when to enable the post-plan gate are in `references/gates-and-jira.md`. Record
@@ -198,8 +180,7 @@ An unmet spec condition (or an unjustified test-integrity finding, or a
 `BLOCKED` build step), a must-fix review finding (from the code review panel,
 the security review, or a human reviewer on the PR), and a red CI check are **one
 correction loop entered at three points**, drawing on **a single budget of
-revise rounds per task** (default **4**, overridable via `.auto-dev.yml`; per
-sub-task on a multi-PR run), shared with the Phase 2/3 re-reviews. Each re-review
+revise rounds per task** (default **4**, overridable via `.auto-dev.yml`), shared with the Phase 2/3 re-reviews. Each re-review
 or correction spends a round, **decremented before dispatch** and tracked in
 `WORK_LOG.md`; cleanup-agent and verifier spawns never do. At zero, **stop and report** instead
 of looping. **When any of the three fires, read `references/correction-loop.md`**
@@ -242,9 +223,8 @@ Write/Edit/Bash**, so an artifact writer spawned with one silently fails.
 | Define reviewer (Phase 2)                      | `auto-dev:define-reviewer`       | `opus` · high     |
 | Planner (Phase 3)                              | `auto-dev:planner`               | `opus` · xhigh    |
 | Plan reviewer (Phase 3)                        | `auto-dev:plan-reviewer`         | `opus` · high     |
-| Acceptance tester (Phase 3, every scope)       | `auto-dev:acceptance-tester`     | `opus` · high     |
-| Coder: STANDARD build, every correction        | `auto-dev:coder`                 | `opus` · high     |
-| Coder: TRIVIAL first build                     | `auto-dev:coder-trivial`         | `sonnet` · medium |
+| Acceptance tester (Phase 3)                    | `auto-dev:acceptance-tester`     | `opus` · high     |
+| Coder: the build and every correction          | `auto-dev:coder`                 | `opus` · high     |
 | Verifier (Phase 5, re-spawned on every change) | `auto-dev:verifier`              | `opus` · high     |
 | Cleanup agent (Phase 5, re-spawned on fixes)   | `auto-dev:cleanup`               | `sonnet` · medium |
 | Code reviewer, ×3 panel + re-votes (Phase 6a)  | `auto-dev:code-reviewer`         | `opus` · xhigh    |
@@ -261,14 +241,11 @@ If none exists, stop and tell the user to install the plugin or symlink `agents/
 into `~/.claude/agents/`. Never fall back to `general-purpose`.
 
 **Models.** Judgment stays on `opus`; only work a later check verifies moves down
-to `sonnet` (why: `references/subagent-prompts.md`, _Models_). Two routing rules:
-
-- **Corrections always go to `auto-dev:coder`**, TRIVIAL runs included. A TRIVIAL
-  build that failed acceptance was not as trivial as the scope call said.
-- **Use `auto-dev:security-reviewer-sensitive`** when `SPEC.md`'s
-  `Security/Compliance criteria` section lists controls for a sensitive path, and
-  `auto-dev:security-reviewer` otherwise. The code review panel is always three
-  `auto-dev:code-reviewer`s.
+to `sonnet` (why: `references/subagent-prompts.md`, _Models_). One routing rule:
+**use `auto-dev:security-reviewer-sensitive`** when `SPEC.md`'s
+`Security/Compliance criteria` section lists controls for a sensitive path, and
+`auto-dev:security-reviewer` otherwise. The code review panel is always three
+`auto-dev:code-reviewer`s.
 
 **Never pass the Agent tool's `model` parameter** when spawning a worker: it
 overrides the type's model. To change a worker's model or effort, edit its
@@ -277,7 +254,7 @@ fixed by the frontmatter's `tools:` and listed in `references/subagent-prompts.m
 _Tools per worker_. Reviewers are read-only w.r.t. source.
 
 Hand each worker **two** absolute paths — its worktree and its `<artifact-dir>`
-(different trees on a multi-PR run; `references/artifacts.md`) — plus
+(`<worktree>/.auto-dev`; `references/artifacts.md`) — plus
 `profile.md` and only the inputs its phase needs. The coder gets the **plan only,
 never the spec or the sealed acceptance checks**; the verifier gets the **spec and
 the checks, never the plan or the coder's report**. **Avoid giving a worker a >5-minute blocking command** (the
@@ -310,11 +287,11 @@ session. Before every one, ask whether a worker should read it instead.
 
 Run by the orchestrator; only the profile research goes to a worker.
 
-**First: is this a resumed run?** The control worktree is a sibling of the repo
-you start in. Run
+**First: is this a resumed run?** A run's worktree is a sibling of the repo you
+start in. Run
 `python3 <skill-dir>/scripts/resume-point.py <tree>/.auto-dev --task "<ticket or task>"`
 on each tree in `git worktree list` — omit `--task` on a bare `auto-dev
-continue` or a loose name for the run ("the multi-currency run"), where the user
+continue` or a loose name for the run ("the dark-mode run"), where the user
 named no ticket or task; then only an exit `0` counts, several is a
 stop-and-ask, and none means there is nothing to continue (ask, don't start fresh).
 If one matches, do not re-run Phase 1 — continue from its ledger
@@ -338,40 +315,34 @@ procedure and exact commands. The steps, in order:
 6. **Prep `.auto-dev/` self-excluding** (`scripts/exclude-artifacts.py`) — never
    `.git/info/exclude`.
 7. **Write `.auto-dev/profile.md`** and initialize `.auto-dev/WORK_LOG.md`.
-8. **Jira → In Progress** (if a ticket exists), confirmed with the user.
 
 All later phases run **inside the worktree directory**.
 
-## Phase 2 — Define (the testable contract + scope call)
+## Phase 2 — Define (the testable contract + size check)
 
 Each worker's brief, and the full procedure for Phases 2–5, is in
 `references/subagent-prompts.md`, under the same phase heading.
 
 Spawn **one** Define agent → `.auto-dev/SPEC.md`: research, the acceptance
 conditions **as a testable contract** — each with a concrete **Example**, an
-**Edge** case and a **Verify by** level — and a **scope call**.
+**Edge** case and a **Verify by** level — and the **size check**.
 
-1. **Read the scope call first** — it decides whether step 2 runs and which path
-   Phase 3 takes.
-2. **Define reviewer** (read-only) → critique, including an **ambiguity probe**
+1. **Read the size check first.** OVERSIZED → record it, report to the user and
+   stop (_Size check_ above). FITS → record it and `HIGH_RISK`, and go on.
+2. **Jira → In Progress** (if a ticket exists), confirmed with the user.
+3. **Define reviewer** (read-only) → critique, including an **ambiguity probe**
    (two implementations that fit a condition's words but differ); apply fixes
    yourself; re-review while it finds blockers (each re-review spends a round).
-   STANDARD only — on TRIVIAL the acceptance tester's AMBIGUOUS report is the
-   only probe —
-   **skipped on TRIVIAL and OVERSIZED**.
 
 Hold `SPEC.md` — you withhold it from the coder and use it for Phase 5.
 
 ## Phase 3 — Plan
 
-On **TRIVIAL**, skip steps 1–2 and write a short `IMPLEMENTATION.md` yourself
-(files to touch + the test that proves it).
-
 1. **Planner** → `.auto-dev/IMPLEMENTATION.md`, the self-contained technical plan;
    every spec condition maps to a step and a test.
 2. **Plan reviewer** (read-only) → critique; apply fixes; re-review while it finds
    blockers (each re-review spends a round).
-3. **Acceptance tester** → `.auto-dev/acceptance/`, at **every** scope: from
+3. **Acceptance tester** → `.auto-dev/acceptance/`: from
    `SPEC.md` alone (the plan only for entry points), one or more black-box checks
    per condition; each new-behavior check must **fail on the untouched tree for
    the right reason**, and the tester saves that run under
@@ -381,8 +352,8 @@ On **TRIVIAL**, skip steps 1–2 and write a short `IMPLEMENTATION.md` yourself
    condition each check covers. Check its return against `SPEC.md` before
    Phase 4 (`references/subagent-prompts.md`, _Acceptance tester_); a gap
    re-spawns the tester for those conditions.
-4. **Optional post-plan gate**, if enabled for this run — **independent of the
-   scope call**, so it fires on TRIVIAL too.
+4. **Optional post-plan gate**, if enabled for this run (always enabled when
+   `HIGH_RISK` is yes). On "revise", the planner revises the plan.
 
 ## Phase 4 — Build
 
@@ -492,19 +463,17 @@ resolve conflicts on staging or force the push unasked.
    stop. Then confirm it is `MERGED`; queued or auto-merge → report and stop,
    without moving Jira.
 5. Monitor CI on main, **Jira → Done**, and offer to remove the worktree —
-   confirmed, and never the control worktree before the final report (multi-PR:
-   each sub-task's build worktree; single-PR: this worktree *is* the control
-   worktree, so offer it after the report).
+   confirmed, and only after the final report (removing it deletes
+   `.auto-dev/`).
 
 ---
 
 ## Final report
 
-Summarize: branch/worktree path, PR link(s), what was built, the scope call,
+Summarize: branch/worktree path, PR link, what was built,
 acceptance verdicts with evidence tiers (and every `manual` check left for a
 human), assumptions made, final quality-gate status, Jira transitions performed, remaining
-iteration budget, and anything left unresolved. In a multi-PR run, report per
-sub-task from `WORK_LOG.md`. Be honest about skipped steps and unmet conditions —
+iteration budget, and anything left unresolved. Be honest about skipped steps and unmet conditions —
 never report success you didn't verify. Default shape: `references/artifacts.md`.
 
 ## Bounds and guardrails
@@ -519,8 +488,8 @@ never report success you didn't verify. Default shape: `references/artifacts.md`
   source inside a submodule; a commit that does not carry the code that was
   checked (`check-fresh.py --ref HEAD` exits `1`), or a report stale again right
   after its own re-run; spec conditions remain unmet after the iteration
-  budget; `gh pr merge` refuses (or only queues) the merge; a sub-task's scope
-  call comes back OVERSIZED; the user declines a gate or merge.
+  budget; `gh pr merge` refuses (or only queues) the merge; the size check
+  comes back OVERSIZED; the user declines a gate or merge.
 - **Never weaken security to finish** — no disabled TLS/cert/signature checks, no
   exposed or hardcoded secrets, no real/sensitive data or PII in tests/fixtures.
   The repo's rules and the security directives in `profile.md` override "finish

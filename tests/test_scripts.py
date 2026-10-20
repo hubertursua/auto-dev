@@ -65,7 +65,6 @@ class ResumePointTest(unittest.TestCase):
     CASES = {  # noqa: RUF012
         "resume-s2": ("4 — Build (status: pending)", "S2 — Build"),
         "resume-s3": ("6 — Ship (status: in-progress)", "S3 — Ship"),
-        "resume-multi": ("4 — Build (status: in-progress)", "S2 — Build"),
         "ci-none": ("6 — Ship (status: pending)", "S3 — Ship"),
         "budget-exhausted": ("5 — Verify (status: in-progress)", "S2 — Build"),
     }
@@ -91,6 +90,33 @@ class ResumePointTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             r = run("resume-point.py", tmp)
         self.assertEqual(r.returncode, 1)
+
+    LEDGER_HEAD = ("# Work Log\n\n- **Task:** Add a due date\n- **Ticket:** none — add a due date\n"
+                   "- **Iteration budget:** 4 total revise rounds (3 remaining)\n\n")
+
+    def write_ledger(self, tmp, body):
+        Path(tmp, "WORK_LOG.md").write_text(self.LEDGER_HEAD + body)
+
+    def test_ledger_needs_no_mode_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write_ledger(tmp, "## Phase status\n"
+                                   "| # | Phase | Status | Notes |\n|---|---|---|---|\n"
+                                   "| 1 | Setup | done | |\n| 2 | Define | pending | |\n")
+            r = run("resume-point.py", tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Phase:     2 — Define (status: pending)", r.stdout)
+        self.assertIn("Budget:    3 remaining of 4", r.stdout)
+
+    def test_sub_task_ledger_is_malformed(self):
+        # Multi-PR runs were removed in 4.0: a sub-task table is not a phase table.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write_ledger(tmp, "## Sub-tasks\n"
+                                   "| id | slug | depends on | scope | budget | status |\n"
+                                   "|---|---|---|---|---|---|\n"
+                                   "| 01 | a | — | STANDARD | 4/4 | pending |\n")
+            r = run("resume-point.py", tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no `## Phase status` heading", r.stderr)
 
 
 class ExcludeArtifactsTest(GitRepoCase):

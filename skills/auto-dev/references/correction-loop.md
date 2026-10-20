@@ -201,8 +201,8 @@ every report.
   PR gate as a check for a human, and to the PR body's _Checks for a person_.
 - **The two review phases (Define, plan).** You apply their findings by editing
   the artifact; no agent is re-dispatched. They still spend a round.
-- **A plan revision the user asks for at the post-plan gate.** You edit
-  `IMPLEMENTATION.md` from their direction and re-fire the gate. Nothing is being
+- **A plan revision the user asks for at the post-plan gate.** The planner
+  revises `IMPLEMENTATION.md` from their direction and the gate re-fires. Nothing is being
   corrected and no round is spent (`references/gates-and-jira.md`).
 
 ## The iteration budget
@@ -210,12 +210,6 @@ every report.
 **One budget of revise rounds shared by the two review loops and the correction
 loop** — not a cap per loop. Default **4**; override with `iteration_budget:` in
 `.auto-dev.yml` (`references/profiles.md`), resolved in Phase 1 and recorded in `profile.md`.
-
-**The budget is per task, and on a multi-PR run that means per sub-task.** Each
-sub-task starts with a fresh `iteration_budget` and tracks what it has left in the
-ledger's `budget` column (`references/artifacts.md`). A single run-wide budget would
-let the first sub-task spend every round and leave the rest with no corrections at
-all — four rounds shared across six sub-tasks bounds nothing useful.
 
 Five things spend it, one round each:
 

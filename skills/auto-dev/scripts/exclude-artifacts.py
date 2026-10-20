@@ -13,7 +13,7 @@ Usage:
     python3 <skill-dir>/scripts/exclude-artifacts.py --help
 
 <skill-dir> is the auto-dev skill's own directory, not the target repo.
-<worktree> is the root of the control worktree (the one Phase 1 created).
+<worktree> is the root of the run's worktree (the one Phase 1 created).
 
 Verification (all must hold):
     git -C <worktree> status --porcelain --untracked-files=all -- .auto-dev/
@@ -143,7 +143,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
         usage="python3 %(prog)s <worktree>")
-    parser.add_argument("worktree", help="root of the control worktree")
+    parser.add_argument("worktree", help="root of the run's worktree")
     args = parser.parse_args()  # bad arguments exit 2 via argparse
     worktree = Path(args.worktree)
 

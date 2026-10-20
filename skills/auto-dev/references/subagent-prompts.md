@@ -8,10 +8,7 @@ written) — plus `<artifact-dir>/profile.md`, the repo's binding rules (from
 Phase 1), and only the inputs that phase needs.
 
 **Substitute both paths; never leave `<artifact-dir>` as a literal `.auto-dev/`.**
-On a single-PR run the two coincide (`<artifact-dir>` = `<worktree>/.auto-dev`).
-On a multi-PR run each sub-task builds in its own worktree while its artifacts
-stay in the control worktree at `<control-worktree>/.auto-dev/tasks/<id>`, so the
-two point at different trees — see `references/artifacts.md`.
+`<artifact-dir>` is always `<worktree>/.auto-dev`.
 
 > Every delegated job is briefed here (Phases 1–6). Phase 1 is orchestrator work
 > (see `references/phase-1-setup.md`) except the profile research, briefed
@@ -33,7 +30,7 @@ the Agent tool's `model` parameter. The type fixes the worker's model and effort
 - **Phase 2 — Define**
   - **Define agent** — writes `SPEC.md`.
   - **Define reviewer**
-  - **Scope decision (orchestrator)** — TRIVIAL, STANDARD or OVERSIZED.
+  - **Size check (orchestrator)** — FITS goes on; OVERSIZED stops the run.
 - **Phase 3 — Plan**
   - **Planner** — writes `IMPLEMENTATION.md`.
   - **Plan reviewer**
@@ -61,14 +58,14 @@ the Agent tool's `model` parameter. The type fixes the worker's model and effort
 Judgment stays on `opus`: a weak reviewer returns "no findings," which
 is indistinguishable from a clean pass, and a weak plan spends revise rounds
 downstream. Only work that a later check verifies moves down to `sonnet`: the
-TRIVIAL build (acceptance and the quality gate catch it), the cleanup agent (the
+cleanup agent (the
 quality gate and the re-verify catch it), the profiler (the user confirms its
 profile, and `setup` and the quality gate run it), and lookups (they only
 report). The
 acceptance tester, the verifier, the review panel, the judge and the security
 reviewer are all judgment, so all stay on `opus` (or
-`fable` for the sensitive-path security reviewer). The routing rules (corrections always
-to `auto-dev:coder`; `auto-dev:security-reviewer-sensitive` for sensitive paths) are in
+`fable` for the sensitive-path security reviewer). The routing rule
+(`auto-dev:security-reviewer-sensitive` for sensitive paths) is in
 `SKILL.md` and on each brief's `_Agent type:_` line below.
 
 The types name model **families** (`opus`, `sonnet`, `fable`), never a version, so
@@ -81,8 +78,7 @@ below state the same thing; change them together:
 
 - **Orchestrator (you):** TodoWrite, Bash (git/gh/CI, worktree, setup), Read,
   Edit (revise artifacts after critique, and apply re-votes to `CODE_REVIEW.md`),
-  Write (`WORK_LOG.md`, `profile.md`, and `IMPLEMENTATION.md` on the TRIVIAL
-  fast path or after a `BLOCKED` report there), the
+  Write (`WORK_LOG.md`, `profile.md`), the
   Agent/Task tool (spawn every worker), AskUserQuestion
   (gates), Skill (only if a fitting skill opens the PR in 6a), and — when a
   ticket is present — ToolSearch to locate the Atlassian MCP Jira tools, then those
@@ -121,8 +117,6 @@ below state the same thing; change them together:
 - **Non-interactive:** the worker never asks the user; it resolves ambiguity with
   a recorded assumption.
 - State the worktree path and "work entirely inside it; do not touch other trees."
-  Where `<artifact-dir>` lies outside that tree (multi-PR runs), say so
-  explicitly: it is the one path the worker may read and write outside `<worktree>`.
 - Name the exact artifact file(s) to write, and **paste that artifact's template
   from `references/artifacts.md` into the brief**, with its strictness (strict, or
   headings-strict for `IMPLEMENTATION.md`). A worker has no path to the
@@ -253,7 +247,7 @@ _Agent type: `auto-dev:define`._
 _Tools: Write + Read, Grep, Glob (research is read-only; it must not modify source)._
 
 One pass that researches the ticket against the codebase, states the acceptance
-conditions **as a testable contract**, and returns the **scope call** the
+conditions **as a testable contract**, and returns the **size check** the
 orchestrator branches on. Research and spec are the same worker's job on
 purpose: the worker holding the codebase research is the one best positioned to
 know what is actually observable.
@@ -319,17 +313,18 @@ Use the SPEC.md template below exactly (strict):
 Return a structured summary:
 - assumptions: the key ones you made
 - risks: the main correctness/security/scope risks
-- SCOPE CALL: exactly one of TRIVIAL / STANDARD / OVERSIZED, with one line of why.
-  * TRIVIAL   = one subsystem, one behavior, no new abstraction or interface, no
-                migration or config change, and an existing test file covers it.
-  * STANDARD  = fits one PR but is none of the above.
+- SIZE: exactly one of FITS / OVERSIZED, with one line of why.
+  * FITS      = the task can ship as one reviewable PR.
   * OVERSIZED = multiple independent deliverables, several subsystems, or a large
-                file count. Also list the subsystems touched and a rough file count.
+                file count. Also list the subsystems touched with a rough file
+                count each, and suggested lines along which to split the task.
   For example, in a todo app:
-    "Trim whitespace from titles before saving"        → TRIVIAL (one behavior; an
-                                                          existing test file covers it)
-    "Add a due date to todos and sort the list by it"  → STANDARD (needs a migration)
+    "Add a due date to todos and sort the list by it"  → FITS
     "Add teams: shared lists, email invites, roles"    → OVERSIZED (three deliverables)
+  Borderline? Answer OVERSIZED. The user splits the task and runs each part; one
+  giant PR is harder to review than two.
+- HIGH_RISK: yes or no. Yes when SPEC.md has Security/Compliance criteria, or the
+  change touches auth, payments, access control, or a data migration.
 ```
 
 After it returns, read `SPEC.md`. **You hold it and withhold it from the coder**
@@ -342,7 +337,7 @@ disk.
 ### Define reviewer
 _Agent type: `auto-dev:define-reviewer`._
 _Tools: Read, Grep, Glob only (must not rewrite the file)._
-**Skip this agent entirely when the scope call is TRIVIAL.**
+Runs only after the size check returns FITS.
 
 ```
 You are the DEFINE-REVIEW phase. Read <artifact-dir>/SPEC.md and the binding rules
@@ -370,90 +365,33 @@ blockers, and repeat until a review returns none. Each re-review consumes a roun
 of the shared iteration budget; at zero, stop and report the open blockers
 (`references/correction-loop.md`).
 
-### Scope decision (orchestrator)
+### Size check (orchestrator)
 
-Branch on the **SCOPE CALL**:
+Read the **SIZE** line of the Define agent's return, before the Define reviewer
+runs.
 
-- **TRIVIAL** — skip the Define review, the planner and the plan reviewer. Write
-  a short `IMPLEMENTATION.md` yourself: the files to touch and the test that
-  proves it. Then spawn the acceptance tester and end S1 at its boundary as
-  usual, Phase 4 next (but see the post-plan gate below — it still fires if
-  enabled).
-  Record `Mode: single-PR` and `Scope call: TRIVIAL` in `WORK_LOG.md`. Phase 3
-  still runs the acceptance tester, so its ledger row goes `in-progress` and then
-  `done` like any phase — never `skipped`, or a run cut off before the tester
-  would resume past it — with the Notes "TRIVIAL: plan by orchestrator; planner
-  and plan review skipped".
-- **STANDARD** — proceed to Phase 3 as a single-PR run. Record `Mode: single-PR`
-  and `Scope call: STANDARD`.
-- **OVERSIZED** — **skip the Define reviewer here too.** The parent `SPEC.md` exists
-  to inform the decomposition, not to be built from: every sub-task re-runs Define
-  and gets its own reviewed `SPEC.md`. Reviewing a spec that is about to be
-  superseded spends budget on a discarded artifact.
-  Do **not** cram the work onto one branch. Draft an ordered
-  decomposition into sub-tasks — each independently shippable, with dependencies
-  noted — and:
-  1. Write the sub-task table to the control worktree's `.auto-dev/WORK_LOG.md`
-     (`Mode: multi-PR`; see `references/artifacts.md`).
-  2. **Alert the user** with the proposed breakdown and ask to proceed
-     (`AskUserQuestion`). If they adjust it, update the ledger. If they choose
-     `Do it as one PR anyway`, the run becomes STANDARD — and the Define reviewer
-     skipped just above must now run, or the whole PR is built from an unreviewed
-     spec (`references/gates-and-jira.md`).
-  3. On approval, run Phases 2–6 **per sub-task** in dependency order, updating the
-     ledger after each. Each sub-task re-runs the Define brief scoped to itself, so
-     it gets its own `SPEC.md` **and its own scope call** (a sub-task may well be
-     TRIVIAL). Set `<artifact-dir>` to `<control-worktree>/.auto-dev/tasks/<id>`,
-     and create it — `lint/` included — before that sub-task's first agent.
-
-     **Create each sub-task's worktree when that sub-task starts, never all at once
-     up front**, and cut it from a freshly fetched base:
-     ```bash
-     git fetch origin
-     git worktree add ../<repo-name>-<slug>-<id> -b <prefix>/<slug>-<id> origin/<base>
-     ```
-     Cutting them all at the beginning is the bug this avoids: a sub-task that
-     depends on an earlier one would branch from a base predating it, and its PR
-     would conflict with work already merged. Fetching first is what gives the
-     `depends on` column its meaning — by the time a dependent sub-task starts, its
-     dependency is already on `origin/<base>`.
-
-     Then **prepare that worktree the way Phase 1 step 5 prepares the control
-     worktree** (`references/phase-1-setup.md`): seed the `worktree_files` from the
-     main checkout and confirm git ignores each one, then run the profile's `setup`
-     commands — stopping and reporting wherever that step says to. A bare
-     `worktree add` has neither, and the sub-task's tests would then fail in ways
-     that read exactly like broken code. Only the seeding, ignore check and `setup`
-     carry over: the slug is the run's, and `profile.md` is the run's shared record
-     — leave it alone and note what was seeded in the Notes of the sub-task's
-     Phase 2 row instead.
-
-     Write the sub-task's phase table only once that prep has succeeded, so a run
-     cut off mid-prep still reads as never started. On resume, if
-     `git worktree list` already shows this sub-task's worktree, skip the
-     `worktree add` (its branch exists too) and redo the prep in place. If prep
-     stops, write the phase table with Phase 2 `blocked` and the reason in its
-     Notes; once the user resolves it, redo the prep before Define runs.
-
-     **A sub-task's own scope call may not be OVERSIZED.** If one comes back that
-     way, the parent decomposition was wrong — and that decomposition is the thing
-     the user approved. Stop, report which sub-task exceeds one PR and why, and
-     offer to re-cut the parent breakdown. Never decompose inside a decomposition:
-     the ledger has no shape for nested sub-tasks, and the recursion has no base
-     case.
-
-Borderline between STANDARD and OVERSIZED? Prefer surfacing the decomposition and
-letting the user choose over silently committing to one giant PR. Borderline
-between TRIVIAL and STANDARD? Prefer STANDARD — the planning head is cheap
-relative to shipping the wrong thing.
+- **FITS** — record `Size: FITS` and `High risk: <yes|no>` in `WORK_LOG.md`'s
+  header. If there is a ticket, move it to In Progress now
+  (`references/gates-and-jira.md`, _Jira In Progress confirmation_). Then run the
+  Define reviewer.
+- **OVERSIZED** — the task goes back to the user; auto-dev builds nothing.
+  1. Record `Size: OVERSIZED` in `WORK_LOG.md`'s header, mark Phase 2 `blocked`
+     with the Notes `OVERSIZED`, and Phases 3–6 `n/a`. Skip the Define reviewer.
+  2. Leave Jira alone: it was never moved to In Progress.
+  3. Keep the worktree and branch. Delete nothing.
+  4. Report to the user, then stop: the task is too big for one PR; Define's
+     reasons, the subsystems it found and its suggested split lines (a hint for
+     whoever splits the task; auto-dev does not act on them); `SPEC.md`'s path, for
+     reference; and the commands that remove the worktree and branch if the user
+     doesn't want them: `git worktree remove <worktree>` and
+     `git branch -D <branch>`.
 
 ---
 
 ## Phase 3 — Plan
 
-**On TRIVIAL the planner and plan reviewer are skipped** — the orchestrator
-writes a short `IMPLEMENTATION.md` directly instead. **The acceptance tester runs
-at every scope**: it is the head of the verification tail, not of the planning.
+The planner writes every plan, then the plan reviewer and the acceptance tester
+run. Every task takes all three steps.
 
 ### Planner
 _Agent type: `auto-dev:planner`._
@@ -507,7 +445,7 @@ A spec condition with no plan step is cheapest to catch here, before code exists
 ### Acceptance tester
 _Agent type: `auto-dev:acceptance-tester`._
 _Tools: Read, Write, Edit, Bash, Grep, Glob._ Runs once the plan is final (after
-the plan review settles, or after you write the TRIVIAL plan), before the
+the plan review settles), before the
 post-plan gate and before any code exists.
 
 The coder's own tests are written by the agent whose work they judge, so they
@@ -644,7 +582,7 @@ Anything short of this is a gap. A MANIFEST.md written before 3.9 has no Covers
 or Level column and no base-run/ beside it. On a resumed run, keep it as it is
 and don't re-spawn the tester for that; the verifier works from what it has.
 For each **AMBIGUOUS** condition, decide against the ticket which reading is
-meant — on TRIVIAL runs this is the only ambiguity probe the spec gets. If the
+meant. If the
 tester's reading is right, record it in `SPEC.md`'s Assumptions (no round). If
 not, record the other reading there and re-spawn the tester with Scope "ONLY
 condition <n>" (a round, consumer #2).
@@ -697,17 +635,12 @@ If enabled for this run, pause here (`AskUserQuestion`) for the user to approve
 or Edge that is not automatable) in the summary. Off by default; see
 `references/gates-and-jira.md`.
 
-**This gate is independent of the scope call.** On the TRIVIAL path the agents
-above are skipped but this gate is not — the user asked to see a plan before code
-exists, and the short plan you wrote yourself is still that plan.
-
 ---
 
 ## Phase 4 — Build
 
 ### Coder (TDD)
-_Agent type: `auto-dev:coder` (STANDARD), `auto-dev:coder-trivial` (TRIVIAL first
-build only)._
+_Agent type: `auto-dev:coder`._
 _Tools: Read, Write, Edit, Bash, Grep, Glob._ Spawn with the **plan only — never
 SPEC.md** (see *Why two documents* in `references/artifacts.md`).
 
@@ -762,9 +695,8 @@ this report: it judges the code, not the coder's account of it.
 Settle it before Phase 5, against `SPEC.md`, which you hold:
 
 - **The plan is wrong or incomplete** (it names a function that cannot work that
-  way, misses a caller, contradicts the code): on STANDARD, re-spawn the planner
-  with the blocker and have it revise only the affected steps; on TRIVIAL, edit
-  `IMPLEMENTATION.md` yourself. If the revision changes an entry point an
+  way, misses a caller, contradicts the code): re-spawn the planner with the
+  blocker and have it revise only the affected steps. If the revision changes an entry point an
   acceptance check calls, repair those checks too (_Acceptance tester_, repair
   mode). Then re-dispatch `auto-dev:coder` for the stopped steps. This spends one
   round (consumer #3, `references/correction-loop.md`).
@@ -952,7 +884,7 @@ directly — it moves when anything fetches.
    that keeps its condition from `met`, say so in the condition's row. A check
    whose base run doesn't match its kind (Strong (b)), or whose Level is below
    Verify by, is not defective: it only keeps its condition from Strong.
-7. Mutation check (cap: <mutation cap from profile.md; TRIVIAL: at most 8>).
+7. Mutation check (cap: <mutation cap from profile.md>).
    Passing tests show the code works; mutants show the tests would notice if it
    stopped working. Start by deleting <artifact-dir>/evidence/mutants.json and
    its .results.json from any earlier pass. At cap 0, write "off" and stop here.
@@ -1033,7 +965,7 @@ correction that sent it back (`references/correction-loop.md`).
 ### Acting on SPEC_EVAL.md (orchestrator)
 
 Read `SPEC_EVAL.md` — not the diff. Each of these is a Phase 5 correction to
-`auto-dev:coder`, on a TRIVIAL run too, and spends a round (this is the
+`auto-dev:coder` and spends a round (this is the
 correction loop's Phase 5 entry; consumer #3):
 
 - a condition `unmet` or `partial` — including one made `partial` by a surviving

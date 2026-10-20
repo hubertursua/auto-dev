@@ -23,7 +23,7 @@ context a judge must not have.
 Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the human gates
 │
 ├─ Phase 1  Setup ......... detect repo, profile (saved, or profiler + your OK), ticket, worktree
-├─ Phase 2  Define agent .. SPEC.md — the testable contract + SCOPE CALL  (→ reviewer)
+├─ Phase 2  Define agent .. SPEC.md — the testable contract + SIZE CHECK  (→ reviewer)
 ├─ Phase 3  Planner ....... IMPLEMENTATION.md — the technical how  (→ reviewer)
 │           Acceptance tester  held-out checks from the spec, proven to fail, sealed [optional gate]
 ├─ Phase 4  Coder ......... code + tests (given only the plan)
@@ -124,7 +124,7 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 | Phase | Worker | Output |
 |-------|--------|--------|
 | 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch, `.auto-dev/` |
-| 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **scope call** |
+| 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
 | 5 Verify | verifier, then cleanup agent | the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4), then `/simplify` + the profile's quality gate to green, then a verifier re-check |
@@ -144,32 +144,24 @@ workers, and checkpoints at ~120k tokens rather than running until a 1M window
 fills. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,
 which is also what makes an interrupted run resumable.
 
-## Scope call: the pipeline sizes itself to the task
+## Size check: one PR, or back to you
 
-Phase 2 returns one of three calls, and the pipeline adapts:
+The Define agent says whether the task fits one PR:
 
-- **TRIVIAL** — one subsystem, one behavior, no new abstraction or interface, no
-  migration or config change, and an existing test file covers it. The Define
-  review, planner and plan reviewer are skipped; the orchestrator writes a short
-  plan itself. **8 worker roles.**
-- **STANDARD** — the full path. **11 worker roles.** (Roles, not spawns —
-  the code review panel alone spawns three reviewers and a judge, and a
-  correction round re-spawns workers.)
-- **OVERSIZED** — too big for one PR: you get a proposed breakdown into ordered
-  sub-tasks, tracked in `.auto-dev/WORK_LOG.md`, and on approval the pipeline runs
-  per sub-task as separate PRs. Each sub-task gets its *own* scope call, so the
-  cost is **1 role for the parent Define, then 8 or 11 per sub-task** depending on
-  how each one sizes up — a number the approval prompt shows you before you agree to
-  it, alongside how many times it will stop for your approval. A sub-task can be
-  TRIVIAL but never OVERSIZED: decomposing inside a decomposition means the
-  breakdown was wrong, so the pipeline stops and offers to re-cut it.
+- **FITS** — the pipeline runs every step, the same way for every task: **11
+  worker roles**. (Roles, not spawns — the code review panel alone spawns three
+  reviewers and a judge, and a correction round re-spawns workers.) This count
+  leaves out Phase 1's profiler, which runs only when the repo has no saved
+  profile.
+- **OVERSIZED** — multiple independent deliverables, several subsystems, or a
+  large file count. auto-dev builds nothing and hands the task back to you with
+  Define's reasons, the subsystems it found and suggested lines to split along.
+  Jira is left alone, and the worktree and branch stay in place, with the
+  commands to remove them. Split the task (by hand or with another tool) and run
+  auto-dev on each part.
 
-These counts leave out Phase 1's profiler, which runs once per run and only when
-the repo has no saved profile.
-
-**The scope call thins the planning head, never the verification tail.** Phase 5
-and Phase 6 run identically at every scope — skipping planning on a small change
-is cheap, skipping verification is how a small change ships broken.
+Define also flags a task as **high-risk** (security criteria, auth, payments,
+access control or a data migration), which turns on the post-plan gate.
 
 `WORK_LOG.md` is also the resume point if a run is interrupted.
 
@@ -329,11 +321,11 @@ ticket is given. **CI** is monitored, with a bounded timeout, on the PR before
 merge, and again after the staging and main merges to confirm the merge itself
 didn't break the branch.
 
-Four more pauses are **conditional** and fire only when their situation
+Three more pauses are **conditional** and fire only when their situation
 arises: the **profile confirmation** (Phase 1, only on a repo with no saved
-profile), the **decomposition approval** (OVERSIZED only — a multi-PR run never
-starts unapproved), the **Jira In Progress confirmation** (Phase 1, only with a
-ticket) and the **worktree cleanup offer** (after the main merge). Everything
+profile), the **Jira In Progress confirmation** (Phase 2, only with a ticket,
+once the size check says the task fits one PR) and the **worktree cleanup
+offer** (after the main merge). Everything
 else runs without check-ins.
 
 Declining is safe at every gate: `Stop` ends the run, `Hold` (where a gate offers
@@ -436,8 +428,7 @@ versions, so a new release is picked up without editing the plugin.
 | Planner                                  | `auto-dev:planner`               | `opus` · xhigh    |
 | Plan reviewer                            | `auto-dev:plan-reviewer`         | `opus` · high     |
 | Acceptance tester                        | `auto-dev:acceptance-tester`     | `opus` · high     |
-| Coder (STANDARD build, all corrections)  | `auto-dev:coder`                 | `opus` · high     |
-| Coder (TRIVIAL first build)              | `auto-dev:coder-trivial`         | `sonnet` · medium |
+| Coder (the build, all corrections)       | `auto-dev:coder`                 | `opus` · high     |
 | Verifier                                 | `auto-dev:verifier`              | `opus` · high     |
 | Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · medium |
 | Code reviewer (×3 panel, and re-votes)   | `auto-dev:code-reviewer`         | `opus` · xhigh    |
@@ -459,7 +450,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | Path | Written by | Holds |
 | ---- | ---------- | ----- |
 | `profile.md` | Phase 1 | the resolved stack, where the profile came from, commands, branches, CI and Jira settings |
-| `WORK_LOG.md` | Phase 1 onward | the ledger: phase status, scope call, gate decisions, budget; the resume point |
+| `WORK_LOG.md` | Phase 1 onward | the ledger: phase status, size check, high-risk flag, gate decisions, budget; the resume point |
 | `HANDOFF.md` | each session's end | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
@@ -468,8 +459,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `lint/` | Phase 5 | one report per quality-gate check |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review |
 
-On a multi-PR run these live in the control worktree, with a
-`tasks/<nn>-<slug>/` folder per sub-task. The full layout and every artifact's contract are in
+The full layout and every artifact's contract are in
 `skills/auto-dev/references/artifacts.md`. This is scratch, not part of your
 project — the pipeline never commits it and makes the directory self-ignoring (a
 `.gitignore` containing `*`, written into `.auto-dev/` itself) automatically, so
@@ -479,12 +469,14 @@ it cannot be staged even by a stray `git add -A`. (Note: a committed
 ## Safety
 
 Autonomous but bounded: the correction loop and the Define/plan re-reviews share
-one iteration budget per task (default 4 revise rounds; each sub-task of a
-multi-PR run gets its own), and the pipeline stops and reports
+one iteration budget per task (default 4 revise rounds), and the pipeline stops
+and reports
 rather than committing a red build or weakening any security control. It also
 stops if the mutation step may have left a planted bug in the tree, if the
 build edited source inside a submodule, or if a commit holds code that no result
-checked. It never asks you at a gate, or writes a PR description, on results
+checked. If Define's size check returns OVERSIZED, it builds nothing and hands
+the task back to you; Jira is left alone, and the worktree and branch stay in
+place (see *Size check* above). It never asks you at a gate, or writes a PR description, on results
 that were checked on other code. It refuses a
 resolved quality gate with no test command in it, since that would pass Phase 5 by
 having nothing to check. It merges to main only through a PR, only after your
@@ -530,6 +522,23 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 3.9
+
+4.0 is a breaking release, built in stages; this section grows with each.
+
+- **One PR per run.** The scope call is gone. The Define agent now returns a size
+  check: a task that fits one PR runs every step, and one that doesn't is handed
+  back to you with suggested split lines. auto-dev no longer splits a task into
+  sub-tasks or opens several PRs, and the TRIVIAL fast path is gone, so the
+  planner writes every plan and the `coder-trivial` worker is removed.
+- **Jira moves later.** A ticket moves to In Progress after the size check, not
+  in Phase 1, so a task handed back never shows as started.
+- **The ledger changed.** `WORK_LOG.md`'s header has `Worktree`, `Size` and
+  `High risk` lines in place of `Control worktree` and `Mode`.
+
+A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
+and start again.
 
 ## Upgrading from 3.8
 

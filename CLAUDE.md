@@ -99,7 +99,7 @@ against this list and edit each README section it touches:
 | ---------------------------------------------------------- | ------------------- |
 | a phase, its order, or which worker runs it                | *Agent hierarchy* diagram, *What it does* table |
 | how the build is verified (spec format, acceptance checks, verifier, audit, mutation) | *How the build is verified* |
-| the scope call or the number of worker roles per scope     | *Scope call* |
+| the size check or the number of worker roles               | *Size check* |
 | session boundaries or the context budget                   | *Three sessions, not one* |
 | the code review panel, security review or rubric           | *Review before the PR* |
 | a gate, a conditional pause, Jira, CI, or the merge method | *Human gates & integrations* |
