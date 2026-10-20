@@ -42,7 +42,9 @@
         "The PR body's Acceptance conditions section names the commit the PR carries in a `Checked at commit <sha>` line",
         "The orchestrator edits pr-body.md only at its `<!-- WRITE: ... -->` lines, and the PR is opened by `autodev.py pr publish`, never by a `gh pr create` the orchestrator writes",
         "The orchestrator never reads a source file, a diff, SPEC_EVAL.md or a review report itself; when it needs a fact it spawns auto-dev:lookup",
-        "When the fixture repo has a PR template, the PR body carries each of its sections: a testing section pointing at the checks, its checklist unticked, and any other section answered in plain words or N/A"
+        "When the fixture repo has a PR template, the PR body carries each of its sections: a testing section pointing at the checks, its checklist unticked, and any other section answered in plain words or N/A",
+        "IMPLEMENTATION.md and every evidence/corrections.md copy no run of six words from a SPEC.md condition (`autodev.py spec-overlap <file>` exits 0 on each)",
+        "When the fixture repo's .auto-dev.yml sets `pr_review.inline_comments: true`, the review findings left open or advisory are posted on the PR once, after it opens: inline at their line when it is in the diff, the rest in one general comment"
       ]
     },
     {
