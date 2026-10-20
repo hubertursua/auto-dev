@@ -53,11 +53,12 @@ Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
 (80, or `checkpoint_events` in .auto-dev.yml), `next` ends the session at the
 next clean point with exit 6 and `handoff --checkpoint`, so no session's context
 grows without bound. A clean point is one where the step would be an action
-(exit 0) and no brief is in flight: a stop, a question or a session boundary the step would print comes
-first. A stop that only a write would reveal (one found after applying FIX
-blocks or starting a review pass) comes in the next session instead. A new
-session says `auto-dev continue` and picks up where this one stopped; resuming
-after a checkpoint lifts no stop, since nothing was fixed in between.
+(exit 0) and no brief is in flight: a stop, a question or a session boundary the
+step would print comes first. A stop that only a write would reveal (one found
+after applying FIX blocks or starting a review pass) comes in the next session
+instead. A new session says `auto-dev continue` and picks up where this one
+stopped; resuming after a checkpoint lifts no stop, since nothing was fixed in
+between.
 
 A brief issued but not yet recorded is re-issued as the same spawn (after a
 cut-off session, say); one `record` refused is re-issued as a new brief that
