@@ -96,6 +96,8 @@ Return a structured summary:
     "Add teams: shared lists, email invites, roles"    → OVERSIZED (three deliverables)
   Borderline? Answer OVERSIZED. The user splits the task and runs each part; one
   giant PR is harder to review than two.
+  Write the same in SPEC.md's Size check section: the orchestrator reports an
+  OVERSIZED task to the user from there.
 - HIGH_RISK: yes or no. Yes when SPEC.md has Security/Compliance criteria, or the
   change touches auth, payments, access control, or a data migration.
 

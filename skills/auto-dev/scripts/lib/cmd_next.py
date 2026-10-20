@@ -45,8 +45,19 @@ Exit codes:
     3  the run is complete
     4  stop and report: tell the user the REPORT lines; do nothing more
     5  ask the user: show SUMMARY, ask QUESTION, run the AFTER line for the answer
-    6  session boundary: run the AFTER command, give the user its message, stop
+    6  session boundary, or a checkpoint: run the AFTER command, give the user its
+       message, stop
 `next` never exits 1: a step it could not take is a stop (4) that says why.
+
+Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
+(80), `next` ends the session at the next clean point with exit 6 and
+`handoff --checkpoint`, so no session's context grows without bound. A clean
+point is one where the step would be an action (exit 0) and no brief is in
+flight: a stop, a question or a session boundary the step would print comes
+first. A stop that only a write would reveal (one found after applying FIX
+blocks or starting a review pass) comes in the next session instead. A new
+session says `auto-dev continue` and picks up where this one stopped; resuming
+after a checkpoint lifts no stop, since nothing was fixed in between.
 
 A brief issued but not yet recorded is re-issued as the same spawn (after a
 cut-off session, say); one `record` refused is re-issued as a new brief that
@@ -57,6 +68,7 @@ the next session spawns that worker again. A stop on a result (a red quality
 gate, an impossible spec, the budget used up) stays.
 """
 
+import copy
 import json
 import re
 import shlex
@@ -85,6 +97,7 @@ from .proc import git, run
 SCRIPTS = Path(__file__).resolve().parent.parent
 AUTODEV = SCRIPTS / "autodev.py"
 MAX_EMITS = 3
+CHECKPOINT_EVENTS = 80  # about 35 workers; tune on the fixture repo
 SLOTS = ("R1", "R2", "R3")
 JIRA_DEFAULTS = {"in_progress": "In Progress", "in_review": "In Review", "done": "Done"}
 # Workers whose results drive the build-verify loop (Phases 4-6).
@@ -129,6 +142,7 @@ class Ctx:
         self.p6 = self.state.setdefault("phase6", {})
         self.dirty = False
         self.readonly = bool(getattr(args, "explain", False))
+        self.probing = False
         self.peeked = {}
 
     # ------------------------------------------------------------ reading
@@ -164,6 +178,15 @@ class Ctx:
 
     def resumed(self):
         return self.state.get("resumed_seq", 0)
+
+    def probe(self):
+        """A read-only copy, to see what `next` would do without doing it."""
+        other = copy.copy(self)
+        other.state = copy.deepcopy(self.state)
+        other.p6 = other.state.setdefault("phase6", {})
+        other.readonly, other.dirty, other.peeked = True, False, {}
+        other.probing = True  # it still fetches, so a new push is seen before a checkpoint
+        return other
 
     # ------------------------------------------------------------ writing
 
@@ -275,8 +298,8 @@ def main(args):
         result = action(f"next would {exc.what}", exc.rule)
     except art.ArtifactError as exc:
         c.save()
-        raise Fail(f"{exc} — re-spawn the worker that wrote it", CANNOT_RUN,
-                   "ERROR") from None
+        raise Fail(f"{exc} — a broken artifact: tell the user and stop (the worker "
+                   "that wrote it may need re-running)", CANNOT_RUN, "ERROR") from None
     except AssertionError as exc:
         raise Fail(f"next has no rule for this state ({exc}); report it as an "
                    "auto-dev bug", CANNOT_RUN, "ERROR") from None
@@ -337,6 +360,21 @@ def decide(c):
         return bad
     if st.phase(c.state, 1)["status"] != "done":
         return setup(c)
+    if checkpoint_due(c):
+        # Only at a clean point: a stop, a question or a boundary comes first.
+        probe = c if c.readonly else c.probe()
+        try:
+            would = phases(probe)
+        except Preview:
+            would = {"code": NEXT_ACTION}
+        if would["code"] == NEXT_ACTION:
+            return checkpoint(c)
+        if c.readonly:
+            return would
+    return phases(c)
+
+
+def phases(c):
     for number in (2, 3, 4, 5, 6):
         if st.phase(c.state, number)["status"] in st.COMPLETE:
             continue
@@ -361,11 +399,25 @@ def ended(c, how):
                     "re-asks the gate that held it.")
     elif c.state.get("size") == "OVERSIZED":
         rows.append("The task is too big for one PR. Tell the user Define's reasons, the "
-                    f"subsystems it found and its suggested split lines ({c.ad}/SPEC.md). "
-                    f"Jira was not moved. The worktree is kept: {c.wt} (remove it with "
+                    "subsystems it found and its suggested split lines, below. Jira was "
+                    f"not moved. The worktree is kept: {c.wt} (remove it with "
                     f"`git worktree remove {q(c.wt)}`).")
+        rows += size_check(c)
     rows.append(f"State and artifacts: {c.ad}")
     return stop(rows, f"the run is {how}")
+
+
+def size_check(c):
+    """SPEC.md's Size check section, line by line, for the OVERSIZED report."""
+    try:
+        section = art.find_section(art.read(c.ad / "SPEC.md"), "Size check")
+    except art.ArtifactError:
+        section = None
+    lines = [ln.strip() for ln in (section or "").splitlines() if ln.strip()]
+    if not lines:
+        return [("SPEC.md has no Size check section; Define's reply gave the reasons "
+                 f"({c.ad}/SPEC.md).")]
+    return ["Define's size check (SPEC.md):", *lines]
 
 
 def pending_briefs(c):
@@ -455,6 +507,24 @@ def boundary(c, session):
             "RULE": f"the next phase belongs to {session}"}
 
 
+def checkpoint_due(c):
+    """Whether this session has written its share of events (counted from the
+    session's start, which `resume` records as session_seq)."""
+    limit = _int(c.state["settings"].get("checkpoint_events")) or CHECKPOINT_EVENTS
+    return c.state.get("events", 0) - c.state.get(
+        "session_seq", c.state.get("resumed_seq", 0)) >= limit
+
+
+def checkpoint(c):
+    name = st.SESSION_NAMES[c.state.get("session", "S1")]
+    return {"code": NEXT_BOUNDARY,
+            "ACTION": "checkpoint: run AFTER, give the user its message, stop",
+            "REPORT": [(f"{name} has run long enough that a fresh session is cheaper; "
+                        "it continues from here.")],
+            "AFTER": [c.cmd("handoff", "--checkpoint")],
+            "RULE": "this session reached its checkpoint event count"}
+
+
 # ---------------------------------------------------------------- Phase 2
 
 def phase2(c):
@@ -492,9 +562,9 @@ def jira_step(c, key, step):
         return None
     name = c.state["settings"].get("jira_states", {}).get(key, JIRA_DEFAULTS[key])
     return action(f"move Jira ticket {ticket} to `{name}` with the Atlassian MCP tools "
-                  "(references/gates-and-jira.md, Jira); never edit the ticket. If it "
-                  "can't be moved, tell the user and run the AFTER command with "
-                  "`--value skipped`",
+                  "(references/gates-and-jira.md, _Moving a ticket_); never edit the ticket. If it "
+                  "can't be moved, tell the user and run "
+                  f"`{c.cmd('mark', step, '--value', 'skipped')}` instead of the AFTER line",
                   f"Jira milestone {step}",
                   AFTER=[c.cmd("mark", step)])
 
@@ -1015,21 +1085,24 @@ def mark_committed(c, why):
     c.dirty = True
 
 
-def start_correction(c, entry, consumer, file, spend_id, rule, checks=None):
+def start_correction(c, entry, consumer, file, spend_id, rule, checks=None, why=""):
     """A Phase 6 correction: the coder gets `file` (when given); `checks` (scope,
-    report) sends acceptance checks to the tester's repair mode first."""
-    c.would(f"start a {entry} correction ({file or (checks or {}).get('report')})", rule)
+    report) sends acceptance checks to the tester's repair mode first. `why`
+    goes into the report when no round is left (the red checks, for CI)."""
     after_commit = bool(c.p6.get("verified_sha"))
     budget = None
     if spend_id:
         budget = c.spend(consumer, spend_id, f"{entry} correction")
         if budget is None and after_commit:
             return exhausted(c, consumer, "no round left for a correction after the "
-                             "commit", f"What is open: {file}")
+                             "commit", (f"{why} " if why else "") + f"What is open: {file}")
         if budget is None:
             c.p6["exhausted"] = {"consumer": consumer, "seq": c.seq(), "open": [file]}
             c.dirty = True
             return review_step(c, c.p6["passes"][-1]) or ship_step(c)
+    # After the budget check (in memory only under --explain or a probe), so a
+    # budget-exhausted stop is never hidden behind the step that would follow.
+    c.would(f"start a {entry} correction ({file or (checks or {}).get('report')})", rule)
     snapshot = None
     if not after_commit and entry != "outside":
         cmd_checks.git_add_intent(c.wt)
@@ -1434,16 +1507,19 @@ def ci_step(c, sha):
                          f"triager found ({triage_file(c, triage)}); never merge over it.")],
                         "a CI correction changed nothing")
         return start_correction(c, "ci", 5, triage_file(c, triage), f"ci-{triage['n']}",
-                                "CI is red because of the code (consumer 5)")
+                                "CI is red because of the code (consumer 5)",
+                                why=f"Red checks: {red}.")
     if kind == "SECRET":
-        return stop([("CI failed on a secret or credential problem. Tell the user what "
-                     f"the triager said ({triage_file(c, triage)}); do not re-run it.")],
+        return stop([("CI failed on a secret or credential problem. Tell the user the "
+                     f"red checks ({red}) and what the triager said "
+                     f"({triage_file(c, triage)}). Once the secret is fixed and CI re-run, "
+                     "`auto-dev continue` watches it again.")],
                     "the triager returned SECRET")
-    # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Hold here, before Jira and
+    # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Stop here, before Jira and
     # staging move on a red build; a resume watches CI again.
     return stop([(f"CI is red, and the triager classed it {kind}: not something the code "
                  f"can fix. Tell the user the red checks ({red}) and what the triager "
-                 f"found ({triage_file(c, triage)}). The run holds here: once CI is fixed "
+                 f"found ({triage_file(c, triage)}). The run stops here; once CI is fixed "
                  "or re-run, `auto-dev continue` watches it again.")],
                 f"the triager returned {kind}")
 
@@ -1478,8 +1554,11 @@ def staging_step(c):
         return action(f"merge into staging: run `{c.cmd('merge-staging')}`",
                       "the staging gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("staging-ci"):
-        return action("watch CI on the staging branch (references/gates-and-jira.md, CI "
-                      "monitoring); report a failure to the user, don't gate on it",
+        return action(f"watch CI on the staging branch, {c.state['repo']['staging']} "
+                      "(references/S3-ship.md, CI after a merge; the commit merge-staging "
+                      f"pushed: `git -C {q(c.wt)} rev-parse "
+                      f"{q('origin/' + str(c.state['repo']['staging']))}`); report a "
+                      "failure to the user, don't gate on it",
                       "staging was merged", AFTER=[c.cmd("mark", "staging-ci", "--value",
                                                          "<green | red | not watched>")])
     return None
@@ -1550,16 +1629,18 @@ def main_step(c, sha):
         return action(f"merge: run `{c.cmd('merge-pr', '--pr', p6.get('pr'), '--sha', sha)}`",
                       "the main gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("main-ci"):
-        return action(f"check CI on {c.state['repo']['base']} for the merge "
-                      "(references/gates-and-jira.md); a failure there is reported, "
-                      "never fixed by re-pushing", "the PR is merged",
+        return action(f"check CI on {c.state['repo']['base']} for the merge of PR "
+                      f"#{p6.get('pr')} (references/S3-ship.md, CI after a merge; its "
+                      f"merge commit: `gh pr view {q(p6.get('pr'))} --json mergeCommit -q "
+                      ".mergeCommit.oid`); a failure there is reported, never fixed by "
+                      "re-pushing", "the PR is merged",
                       AFTER=[c.cmd("mark", "main-ci", "--value",
                                    "<green | red | not watched>")])
     jira = jira_step(c, "done", "jira-done")
     if jira:
         return jira
     if not c.mark("final-report"):
-        return action("write the final report for the user (references/artifacts.md, "
+        return action("write the final report for the user (references/S3-ship.md, "
                       "_The final report_): what shipped, the PR, the checks for a "
                       "person, the budget used, anything left open",
                       "the PR is merged", AFTER=[c.cmd("mark", "final-report")])
@@ -1584,7 +1665,7 @@ def main_step(c, sha):
 
 def fetch_and_check(c):
     branch, base = c.state["branch"], c.state["repo"]["base"]
-    if not c.readonly:
+    if not c.readonly or c.probing:
         git(c.wt, "fetch", "-q", "origin", branch, base, check=False)
     return check_fresh(c, "--ref", f"origin/{branch}")
 

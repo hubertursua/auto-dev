@@ -42,7 +42,9 @@ the test plan (which test proves which behavior, and where it lives — at the
 level each condition's Verify by line names); any
 migration/config. It must be self-contained — a competent engineer who has NOT
 seen the spec should build the right thing from this plan alone. Ensure every
-SPEC.md condition maps to a build step AND a test.
+SPEC.md condition maps to a build step AND a test. Cite a condition by its
+number (`C3`) and describe it in the plan's own words; never copy its wording,
+since the coder must not be able to echo the spec back in a test name.
 
 Return: assumptions, key risks.
 

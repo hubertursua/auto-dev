@@ -4,7 +4,7 @@ apply-fix, spec-overlap, votes, review-scope, gate-summary).
 Run: python3 -m unittest discover -s tests -v   (from the repo root)
 
 Fixture artifacts are in tests/fixtures/parsers/ and follow the templates in
-references/artifacts.md. Examples are in TypeScript, as CLAUDE.md asks.
+skills/auto-dev/templates/. Examples are in TypeScript, as CLAUDE.md asks.
 """
 
 import json

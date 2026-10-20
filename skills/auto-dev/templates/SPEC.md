@@ -25,3 +25,8 @@ S1. <the specific control, pulled from the sources profile.md names>
    - Example: Given <state>, when <the abusive or unauthorized action>, then <it is refused, and how>.
    - Verify by: <unit | integration | end-to-end | manual — <why>>
 <Omit this section entirely when the task touches no sensitive path.>
+
+## Size check
+<FITS or OVERSIZED, with one line of why. For OVERSIZED, add a `- Subsystem:` line
+for each subsystem touched, with a rough file count, and a `- Split:` line for each
+suggested part of the task.>

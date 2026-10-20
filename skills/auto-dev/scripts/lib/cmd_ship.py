@@ -34,9 +34,12 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     register, and until then the draft's old checks still read green.
     CI provider `none` skips the watch.
     Exit: 0 green, or skipped (CI: none); 1 red: the failing checks are printed
-    with their links; 3 pending (call again) or timed out (TIMEOUT: hold at the
-    gate); 4 the watcher is unavailable (no checks after the grace period, or a
-    provider gh cannot see): hold at the gate, never assume green.
+    with their links; 3 pending (PENDING: call again) or timed out (TIMEOUT:
+    CI still running at the profile's CI timeout); 4 the watcher is unavailable
+    (no checks after the grace period, or a provider gh cannot see). Whatever
+    it exits, run `next`: it asks for `ci-watch` again only while CI is
+    PENDING, and after TIMEOUT or UNAVAILABLE the main gate shows CI as not
+    monitored. Never assume green.
 
 merge-staging
     Merges the branch into the staging branch directly (fetch, detach at
@@ -311,7 +314,8 @@ def ci_watch(args):
             "failing": [], "seq": st.seq(state)}
         st.save(args.dir, state)
         emit(args.json, "UNAVAILABLE", "ci-watch reads GitHub checks only; GitLab CI "
-             "can't be watched here: hold at the gate and say CI was not monitored")
+             "can't be watched here: run `next`; the main gate shows CI as not "
+             "monitored — never assume green")
         return EXIT_UNAVAILABLE
     pr = args.pr or state.get("phase6", {}).get("pr")
     if not pr:
@@ -358,12 +362,14 @@ def ci_watch(args):
     if status == "unavailable":
         what = (detail if detail.startswith("the PR's head") else
                 "no checks reported after the grace period")
-        emit(args.json, "UNAVAILABLE", f"{what}: CI can't be watched for {sha[:12]}; "
-             "hold at the gate and say CI was not monitored", detail=detail)
+        emit(args.json, "UNAVAILABLE", f"{what}: CI can't be watched for {sha[:12]}: "
+             "run `next`; the main gate shows CI as not monitored — never assume green",
+             detail=detail)
         return EXIT_UNAVAILABLE
     if status == "timeout":
-        emit(args.json, "TIMEOUT", f"CI still running after {timeout // 60} min: hold "
-             "at the gate with what is still running", pending=failing, detail=detail)
+        emit(args.json, "TIMEOUT", f"CI still running for {sha[:12]} after "
+             f"{timeout // 60} min: run `next`; the main gate shows CI as not monitored "
+             "— never assume green", pending=failing, detail=detail)
         return EXIT_PENDING
     emit(args.json, "PENDING", "CI still running: run ci-watch again", pending=failing,
          detail=detail)

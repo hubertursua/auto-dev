@@ -101,7 +101,9 @@ def add_arguments(parser):
                         help="where the profile came from, for profile.md")
     parser.add_argument("--prefix", default="feat", help="branch prefix default")
     parser.add_argument("--security-doc", action="append", default=[],
-                        help="a resolved security-directive path (repeatable)")
+                        help="a security-directive path (repeatable); default: "
+                             "security_docs in .auto-dev.yml, else SECURITY.md, "
+                             ".github/SECURITY.md and docs/security/*.md")
     parser.add_argument("--jira", default="", help="Jira availability, for profile.md")
     parser.add_argument("--assumption", action="append", default=[],
                         help="an assumption for profile.md (repeatable)")
@@ -224,6 +226,7 @@ def create_run(repo, worktree, branch, config, args, staging, base, prefix):
         "inline_comments": bool(config.get("pr_review", {}).get("inline_comments",
                                                                 False)),
         "jira_states": config.get("jira", {}).get("states", {}),
+        "security_docs": security_docs(worktree, config, args.security_doc),
         "test_notes": config.get("test_notes", ""),
         "setup": config.get("setup", []),
         "gate": config.get("gate", []),
@@ -363,6 +366,21 @@ def seed_files(repo, worktree, files):
     return seeded, missing
 
 
+def security_docs(worktree, config, given):
+    """The security directives, from the first source that has any: --security-doc,
+    `security_docs` in .auto-dev.yml, then SECURITY.md, .github/SECURITY.md and
+    docs/security/*.md in the worktree."""
+    if given:
+        return list(given)
+    if config.get("security_docs"):
+        return list(config["security_docs"])
+    found = [rel for rel in ("SECURITY.md", ".github/SECURITY.md")
+             if (worktree / rel).is_file()]
+    found += sorted(str(p.relative_to(worktree))
+                    for p in (worktree / "docs" / "security").glob("*.md"))
+    return found
+
+
 def symbol_lookup(config):
     lookup = config.get("symbol_lookup") or {}
     definition = lookup.get("definition", "")
@@ -400,7 +418,7 @@ def render_profile(state, config, args, seeded, missing):
         f"- **Symbol lookup:** {symbol_lookup(config)}",
         f"- **`.auto-dev.yml`:** {override}",
         f"- **Post-plan gate:** {'on — gates.post_plan' if s['post_plan_gate'] else 'off'}",
-        "- **Security directives:** " + (", ".join(args.security_doc)
+        "- **Security directives:** " + (", ".join(s["security_docs"])
                                          or "none found — repo coding rules only"),
         f"- **Jira:** {args.jira or 'unavailable — no ticket'}",
         f"  {jira_map}", "",

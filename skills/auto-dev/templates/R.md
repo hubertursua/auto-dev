@@ -1,4 +1,4 @@
-<!-- auto-dev template: R.md (strict). Copy everything below this comment, filling in every <...>. -->
+<!-- auto-dev template: R.md (strict). Copy everything below this comment, filling in every <...>. A section with nothing in it says so: Findings `none — <what you tried>`, Security leads `none`. -->
 # Code review R<k> — pass <n>
 
 Scope: <the scope as briefed>

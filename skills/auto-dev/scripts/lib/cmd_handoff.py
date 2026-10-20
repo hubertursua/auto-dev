@@ -6,10 +6,12 @@ Usage:
                        [--pick-up-at "<text>"] [--json]
 
 Writes `<artifact-dir>/HANDOFF.md` for the session that holds the first phase
-not done: what is done, the next phase, the files that matter for that session,
-and the slots only you can fill (`--assumption`, `--do-not`; `--pick-up-at` for
-a Phase 6 checkpoint, naming the last gate passed). `--checkpoint` marks a
-context checkpoint inside a session rather than a session boundary.
+not done: the task (a `Task:` line, and an `Ask:` line with the restated ask),
+what is done, the next phase, the files that matter for that session, and the
+slots only you can fill (`--assumption`, `--do-not`, `--pick-up-at`). Without
+`--pick-up-at`, the pick-up point is `auto-dev continue`: `next` decides the
+step. `--checkpoint` marks a context checkpoint inside a session rather than a
+session boundary, and records it, so the `resume` that follows lifts no stop.
 
 Then prints the message to give the user: start a fresh session in the
 worktree and say `auto-dev continue`. Stop after that; do not begin the next
@@ -53,23 +55,24 @@ def main(args):
     opened = st.first_open_phase(state)
     if opened is None or st.run_state(state) == "stopped":
         raise Fail("nothing to hand off: the run is finished or stopped")
-    number, status = opened
+    number, _status = opened
     session = st.SESSIONS[number]
     artifact_dir = Path(state["artifact_dir"])
     kind = "resume" if args.checkpoint else "next session"
-    pick_up = args.pick_up_at or (
-        f"Phase 6, {status} — reconcile with git and gh first" if number == 6
-        and status != "pending" else f"start of Phase {number}")
+    pick_up = args.pick_up_at or "say `auto-dev continue`; `next` decides the step"
     budget = state["budget"]
     done = [f"- Phase {n} {name}: {st.phase(state, n)['notes'] or 'done'}"
             for n, name in st.PHASES if st.phase(state, n)["status"] in st.COMPLETE]
     files = [f"- {artifact_dir / f}" for f in FILES[session]
              if (artifact_dir / f).exists()]
-    ticket = state["task"].get("ticket")
-    title = ticket if ticket and ticket != "none" else state["task"].get("text", "")
+    task = state["task"]
+    ticket = task.get("ticket")
+    title = ticket if ticket and ticket != "none" else task.get("text", "")
     lines = [
         f"# Handoff — {title} → {LABELS[session]} ({kind})",
         "",
+        f"Task: {' '.join(str(task.get('text', '')).split())}",
+        *([f"Ask: {' '.join(str(task['ask']).split())}"] if task.get("ask") else []),
         f"Re-enter with: `cd {state['worktree']}`",
         f"Branch: {state['branch']}   Base: origin/{state['repo']['base']}",
         f"Iteration budget remaining: {budget['remaining']}/{budget['total']}",
@@ -93,6 +96,8 @@ def main(args):
     ]
     (artifact_dir / "HANDOFF.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     st.add_note(state, f"handoff written for {LABELS[session]} ({kind})")
+    if args.checkpoint:
+        state["checkpoint_seq"] = st.seq(state)
     st.save(args.dir, state)
     if args.checkpoint:
         message = (f"Checkpoint: progress saved in {artifact_dir}. Start a fresh "

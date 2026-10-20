@@ -1,8 +1,8 @@
 """The run's state: `.auto-dev/state.json`, written only by autodev.py.
 
 `WORK_LOG.md` is generated from it after every write, for people to read.
-Nothing parses the generated file except `resume-point.py`, which reads the
-same template the 3.x ledger used.
+Nothing parses the generated file; it keeps the 3.x ledger's layout so
+`autodev.py resume` can still recognize a 3.x run (WORK_LOG.md, no state.json).
 """
 
 import json

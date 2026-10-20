@@ -3,8 +3,8 @@
 changed source line, run the tests, record whether they caught it, and put the
 file back exactly as it was.
 
-Run by the Phase 5 verifier (references/subagent-prompts.md, _Verifier_, the
-mutation step). The verifier chooses the mutants; this script only applies,
+Run by the Phase 5 verifier (agents/verifier.md, the mutation step). The
+verifier chooses the mutants; this script only applies,
 runs and restores them, so the source is never left changed. A mutant the tests
 do not catch ("survived") is a behavior no test pins down.
 

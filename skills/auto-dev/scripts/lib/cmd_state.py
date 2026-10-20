@@ -17,7 +17,7 @@ every write.
 stopped (Notes `OVERSIZED`) and Phases 3-6 n/a, and prints `STOP`.
 
 `budget spend` spends one revise round for a correction, before it is
-dispatched. Consumers (references/correction-loop.md): 1 Define re-review,
+dispatched. Consumers (references/tables.md): 1 Define re-review,
 2 plan re-review or acceptance-tester re-spawn, 3 build/acceptance correction,
 4 review-finding correction, 5 CI-red correction. Spending an id that was
 already spent is a no-op (exit 0, `ALREADY-SPENT`), so a resumed run never pays
@@ -74,17 +74,15 @@ CONSUMERS = {
     4: "review-finding correction",
     5: "CI-red correction",
 }
-# What to do at zero, per consumer (references/correction-loop.md, On exhaustion).
+# What to do at zero, per consumer (references/tables.md, _The iteration budget_).
 ON_EXHAUSTED = {
     1: "stop and report the Define review's open blockers, one by one",
     2: "stop and report the plan review's open blockers or the acceptance gaps, "
        "one by one",
     3: "stop and report each unmet condition by name and what was tried; do not "
        "run cleanup or Phase 6",
-    4: "go to the PR gate with every open must-fix finding named; if the user "
-       "opens the PR anyway, list them in the PR body",
-    5: "hold at the next gate (the main gate once the PR is open) with each red "
-       "check named; never merge over it",
+    4: "stop and report every open must-fix finding by name",
+    5: "stop and report each red check by name; never merge over it",
 }
 
 

@@ -1,6 +1,6 @@
 """Read the pipeline's strict Markdown artifacts.
 
-The templates are in references/artifacts.md. These readers are lenient about
+The templates are in templates/. These readers are lenient about
 whitespace and strict about structure: a missing heading, table or column is an
 ArtifactError naming the file and what is wrong, so a worker can be re-spawned
 to fix it rather than a script guessing.

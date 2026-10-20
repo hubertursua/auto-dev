@@ -113,12 +113,24 @@ class InitTest(RunCase):
         # Nothing init wrote is visible to git.
         self.assertEqual(self.sh("git", "status", "--porcelain", cwd=self.worktree), "")
 
-    def test_generated_ledger_still_reads_with_resume_point(self):
+    def test_security_docs_are_found_without_being_named(self):
+        seed = self.tmp / "seed"
+        (seed / "docs" / "security").mkdir(parents=True)
+        (seed / "SECURITY.md").write_text("# Security\n")
+        (seed / "docs" / "security" / "authz.md").write_text("# Authz\n")
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "docs", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
         self.assertEqual(self.init().returncode, 0)
-        r = subprocess.run([sys.executable, str(SCRIPTS / "resume-point.py"), self.dir],
-                           capture_output=True, text=True, check=False)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("Phase:     2 — Define (status: pending)", r.stdout)
+        profile = (self.dir / "profile.md").read_text()
+        self.assertIn("**Security directives:** SECURITY.md, docs/security/authz.md",
+                      profile)
+
+    def test_security_docs_in_the_override_win(self):
+        (self.repo / ".auto-dev.yml").write_text("security_docs: [docs/rules.md]\n")
+        self.assertEqual(self.init().returncode, 0)
+        self.assertIn("**Security directives:** docs/rules.md",
+                      (self.dir / "profile.md").read_text())
 
     def test_signed_out_gh_stops(self):
         self.script_gh([{"args": ["auth", "status"], "stderr": "not logged in",
@@ -376,7 +388,7 @@ class StateCommandsTest(RunCase):
         r = self.cmd("budget", "spend", "--consumer", "4", "--id", "6a-r1")
         self.assertEqual(r.returncode, 3)
         self.assertIn("EXHAUSTED", r.stdout)
-        self.assertIn("PR gate", r.stdout)  # consumer 4's own instruction
+        self.assertIn("every open must-fix finding by name", r.stdout)  # consumer 4
         self.assertEqual(self.state()["budget"]["remaining"], 0)
         self.assertIn("(0 remaining)", (self.dir / "WORK_LOG.md").read_text())
 
@@ -426,6 +438,9 @@ class StateCommandsTest(RunCase):
         self.assertIn("- dates are UTC", text)
         self.assertIn("auto-dev continue", r.stdout)
         self.assertNotIn("opus", r.stdout + text)  # no model-switch advice
+        self.assertIn("Task: Add due dates to todos", text)
+        self.assertIn("Pick up at: say `auto-dev continue`; `next` decides the step", text)
+        self.assertNotIn("start of Phase", text)
 
     def test_handoff_refuses_a_finished_run(self):
         for n in range(2, 7):
@@ -725,6 +740,8 @@ class ShipTest(RunCase):
         r = self.watch("--max-wait", "5")
         self.assertEqual(r.returncode, 3)
         self.assertIn("TIMEOUT", r.stdout)
+        self.assertIn("run `next`; the main gate shows CI as not monitored", r.stdout)
+        self.assertNotIn("hold at the gate", r.stdout)
 
     def test_no_checks_after_grace_is_unavailable(self):
         self.set_settings(ci="github-actions")
@@ -734,6 +751,8 @@ class ShipTest(RunCase):
         r = self.watch("--max-wait", "0", "--grace", "0")
         self.assertEqual(r.returncode, 4)
         self.assertIn("UNAVAILABLE", r.stdout)
+        self.assertIn("run `next`; the main gate shows CI as not monitored", r.stdout)
+        self.assertNotIn("hold at the gate", r.stdout)
 
     # merge-staging
     def staging(self, content=None):

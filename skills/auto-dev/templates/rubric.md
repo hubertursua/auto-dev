@@ -13,6 +13,12 @@
   the wrong thing, or can't fail when its condition is unmet. It goes to the
   acceptance tester's repair mode, never the coder.
 
+A finding that breaks a binding rule (the repo's CLAUDE.md or AGENTS.md,
+CONTRIBUTING and coding-guideline docs, and the security directives
+`profile.md` names) is **correctness**, not conventions, so it can be
+must-fix: cite the rule (file and line) and the code that breaks it
+(`file:line`).
+
 Scope, performance, design, conventions and style findings are **advisory**,
 whatever their severity. Security findings are not the panel's job: they go to
 `Security leads` for Step 2.

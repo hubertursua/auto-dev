@@ -156,8 +156,13 @@ The tree holds the built change, or (before Phase 5) a plan revision changed
 the checks' entry points. The report that sent you here:
 {{report}}
 
-First decide, against SPEC.md alone, whether the report is right. If the check is
-right as it is, change nothing and return `next: STANDS` with your reason.
+A quality-gate failure on a check file is never STANDS: fix its lint, format or
+types without changing what it asserts, or return `failed` naming the rule you
+can't satisfy.
+
+Any other report: first decide, against SPEC.md alone, whether it is right. If
+the check is right as it is, change nothing and return `next: STANDS` with your
+reason.
 
 Otherwise repair only the checks of the conditions in {{scope}}:
 - When the checks are installed (they are in the worktree, byte-identical to
@@ -166,7 +171,10 @@ Otherwise repair only the checks of the conditions in {{scope}}:
   the worktree.
 - When nothing is installed yet: write the checks again as in write mode, scoped
   to those conditions, and seal them, removing them from the worktree again.
-Skip the base run and record each repaired check's Base run as `not re-run
+If the tree holds no change to the source yet (a plan revision before Phase 4:
+`git status` shows nothing outside `.auto-dev/`), run the base run as in write
+mode, since it still proves the check fails for the right reason. Otherwise
+skip the base run and record each repaired check's Base run as `not re-run
 (repair)`. Update its MANIFEST row; in its base-run/C<n>.txt, if there is one,
 change its Result line to `<test name>: not re-run (repair)` and leave the
 Output, which shows the check before the repair; when the tree already holds

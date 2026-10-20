@@ -48,7 +48,8 @@ Read every one. <Pass 2 or later: also read the previous
    - re-vote: the same, raised by 1. The orchestrator collects the votes and
      decides it; put it under "Pending re-vote".
    - advisory Low: an advisory category (scope, performance, design,
-     conventions, style).
+     conventions, style). The rubric says when a broken binding rule is
+     correctness instead.
    - noise: path refuted, or the code already handles it. Give the reason.
    - dropped: pre-existing and not security. Add it to the count only.
    - Security concerns get no verdict. List them under "Security leads".
