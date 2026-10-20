@@ -7,9 +7,10 @@ Publishes the PR description `next` generated (`<artifact-dir>/pr-body.md`,
 from templates/pr-body.md and the run's artifacts) for the verified commit:
 
  - It refuses while the description still holds a `<!-- WRITE: ... -->` line
-   (the Summary, the Assumptions and any section the repo's PR template adds
-   are yours to write), or while
-   `pr-body --check` finds a problem.
+   (the Summary, the Assumptions, any section the repo's PR template adds and
+   the boxes of its checklist are yours to write), or while `pr-body --check`
+   finds a problem. Once the PR has a description, the template's checklist
+   is the live one: its boxes and items stand, and are not checked again.
  - No PR yet: it looks for an open PR from this branch first and uses that one;
    otherwise it opens a draft PR to the base branch, titled with the commit's
    subject (or --title). There is never a second PR.
@@ -266,11 +267,73 @@ def template_sections(path):
     """Lines for the template's sections the generated description lacks.
 
     A section the description already answers is left out; a testing section
-    points at the checks; a checklist is copied with every box unticked; any
+    points at the checks; a checklist is copied with every box unticked and a
+    WRITE line asking for the boxes the run shows are true to be ticked; any
     other section gets a WRITE line carrying what the template asks there (its
     comments and plain text), so the orchestrator answers it from SPEC.md.
-    A heading inside an HTML comment or a code fence is not a section.
     """
+    out = []
+    for heading, lines in _sections(path):
+        key = norm(heading)
+        if not key or key in OURS:
+            continue
+        raw = "\n".join(lines)
+        plain = COMMENT_RE.sub("", raw)
+        boxes = ["- [ ] " + item for item in _items(plain)]
+        asks = [" ".join(m.split()) for m in COMMENT_RE.findall(raw)]
+        asks += [" ".join(ln.split()) for ln in plain.splitlines()
+                 if ln.strip() and not BOX_RE.match(ln)]
+        hint = " ".join(a for a in asks if a)
+        if len(hint) > HINT_LIMIT:
+            hint = hint[:HINT_LIMIT - 1].rstrip() + "…"
+        out.append(f"## {heading}")
+        if key in TESTING:
+            out.append("See _Acceptance conditions_ and _Quality gate_ above.")
+        elif boxes:
+            out += boxes
+            out.append("<!-- WRITE: tick each box SPEC.md, HANDOFF.md or this description "
+                       "shows is true, and leave unticked any only a person can confirm. "
+                       "Keep every item's words as they are -->")
+        else:
+            hint = re.sub(r"-{2,}", "-", hint)  # it can't end the WRITE comment
+            out.append("<!-- WRITE: the repo's PR template asks for this section"
+                       + (f" ({hint})" if hint else "") + ". Answer it in plain words "
+                       "from SPEC.md, or write N/A -->")
+        out.append("")
+    return out
+
+
+def checklist_problems(text, wt):
+    """A template checklist in `text` that is missing, or whose items differ
+    from the template's: the boxes may be ticked, never reworded, added to,
+    dropped or reordered. Two sections under one heading pair up in order."""
+    problems, body = [], split_sections(text)
+    seen = {}
+    for heading, lines in _sections(find_template(wt)):
+        key = norm(heading)
+        items = _items(COMMENT_RE.sub("", "\n".join(lines)))
+        if not key or key in OURS or key in TESTING or not items:
+            continue
+        nth = seen[heading] = seen.get(heading, -1) + 1
+        found = [b for h, b in body if h[3:].strip() == heading]
+        if len(found) <= nth:
+            problems.append(f"missing the PR template's checklist `## {heading}`")
+        elif _items(COMMENT_RE.sub("", found[nth])) != items:
+            problems.append(f"the checklist under `## {heading}` must keep the PR "
+                            "template's items, word for word and in order: only tick them")
+    return problems
+
+
+def _items(text):
+    """A checklist's items, without their boxes. An item that looks like a
+    secret is left out, as the generated description drops it."""
+    return [BOX_RE.sub("", ln.rstrip()) for ln in text.splitlines()
+            if BOX_RE.match(ln) and not SECRET_RE.search(ln)]
+
+
+def _sections(path):
+    """[(heading, lines)] of a PR template. A heading inside an HTML comment or
+    a code fence is not a section."""
     if path is None:
         return []
     try:
@@ -293,33 +356,7 @@ def template_sections(path):
             sections.append(current)
         elif current is not None:
             current[1].append(line)
-    out = []
-    for heading, lines in sections:
-        key = norm(heading)
-        if not key or key in OURS:
-            continue
-        raw = "\n".join(lines)
-        plain = COMMENT_RE.sub("", raw)
-        boxes = [BOX_RE.sub("- [ ] ", ln.rstrip()) for ln in plain.splitlines()
-                 if BOX_RE.match(ln)]
-        asks = [" ".join(m.split()) for m in COMMENT_RE.findall(raw)]
-        asks += [" ".join(ln.split()) for ln in plain.splitlines()
-                 if ln.strip() and not BOX_RE.match(ln)]
-        hint = " ".join(a for a in asks if a)
-        if len(hint) > HINT_LIMIT:
-            hint = hint[:HINT_LIMIT - 1].rstrip() + "…"
-        out.append(f"## {heading}")
-        if key in TESTING:
-            out.append("See _Acceptance conditions_ and _Quality gate_ above.")
-        elif boxes:
-            out += boxes
-        else:
-            hint = re.sub(r"-{2,}", "-", hint)  # it can't end the WRITE comment
-            out.append("<!-- WRITE: the repo's PR template asks for this section"
-                       + (f" ({hint})" if hint else "") + ". Answer it in plain words "
-                       "from SPEC.md, or write N/A -->")
-        out.append("")
-    return out
+    return sections
 
 
 def fit(body, sha):
@@ -676,16 +713,19 @@ def publish_body(args, state):
     path = Path(body["path"])
     text = path.read_text(encoding="utf-8")
     pr = p6.get("pr") or existing_pr(wt, state["branch"])
+    live = ""
     if pr:
         code, out, err = gh(wt, "pr", "view", str(pr), "--json", "body")
         if code != 0:
             raise Fail(f"gh pr view {pr} failed: {(err or out).strip()}", CANNOT_RUN, "ERROR")
-        text = merge_live(json.loads(out).get("body", ""), text)
+        live = json.loads(out).get("body", "")
+        text = merge_live(live, text)
     if WRITE_RE.search(text):
         raise Fail(f"{path} still holds a `<!-- WRITE: ... -->` line: replace each one "
-                   "(the Summary, the Assumptions, a section the repo's PR template adds) "
-                   "first", FAILED, "UNWRITTEN")
-    problems = lint_body(text, state)
+                   "(the Summary, the Assumptions, a section or checklist the repo's PR "
+                   "template adds) first", FAILED, "UNWRITTEN")
+    # Once the PR has a description, its checklist is the live one: edits stand.
+    problems = lint_body(text, state, checklist=not live.strip())
     if problems:
         note_attempt(args, state, "PROBLEMS", problems)
         emit(args.json, "PROBLEMS", f"{len(problems)} problem(s); nothing published",

@@ -67,7 +67,8 @@ pr-body
     a `<!-- WRITE: ... -->` line for the Summary and one for the Assumptions. It
     links the ticket when the run has one, and adds the sections of the repo's
     PR template it lacks: a testing section points at the checks, a checklist
-    is copied unticked, and any other section gets a WRITE line of its own.
+    is copied unticked with a WRITE line to tick the boxes the run shows are
+    true, and any other section gets a WRITE line of its own.
     Links point at the commit; worktree and home paths are hidden and lines that
     look like secrets dropped; output blocks are cut, then moved to
     pr-output-comment.md, to keep it under 60,000 characters. `next` runs it.
@@ -80,7 +81,8 @@ pr-body --check <file>
     none of the run's own condition, finding or mutant IDs (those its artifacts
     define), no "held-out" / "fail-to-pass" / "pass-to-pass", no evidence tier
     used as one, no absolute worktree or home path and nothing that looks like
-    a secret.
+    a secret, and each checklist of the repo's PR template is there with its
+    items unchanged (ticked or not).
     Exit: 0 clean; 1 problems (each printed).
 
 cleanup-worktree
@@ -601,7 +603,10 @@ def pr_body(args):
     return 0
 
 
-def lint_body(text, state):
+def lint_body(text, state, checklist=True):
+    """The problems in a PR description. `checklist` also checks the repo's PR
+    template checklists kept their items; off once the PR is open, where a
+    person may have edited them on GitHub."""
     problems = []
     if len(text) > BODY_LIMIT:
         problems.append(f"{len(text)} characters, over {BODY_LIMIT}: cut output blocks "
@@ -636,6 +641,9 @@ def lint_body(text, state):
     secrets = SECRET_RE.findall(text)
     if secrets:
         problems.append(f"{len(secrets)} line(s) look like a secret; drop them")
+    if checklist:
+        from .cmd_pr import checklist_problems
+        problems += checklist_problems(text, state["worktree"])
     return problems
 
 

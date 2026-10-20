@@ -359,7 +359,10 @@ Planning and build run unattended; the pipeline pauses for approval before
 **draft** unless you ask for it ready for review, and is marked ready before the
 main gate. Its description follows the repo's default PR template when there is
 one (never a template from a `PULL_REQUEST_TEMPLATE/` folder, which GitHub only
-applies when asked), and links the Jira ticket. With
+applies when asked), and links the Jira ticket. A checklist in the template
+keeps its items word for word; the orchestrator ticks a box only when the spec,
+the handoff or the description's own sections show it is true, and leaves the
+rest for a person. With
 `pr_review.inline_comments: true`, the review findings left open or advisory are
 posted on the PR once it opens: inline at their line when it is in the diff, the
 rest in one comment. The main gate doesn't count those posts as people's
@@ -494,10 +497,10 @@ branch), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
 `--admin`, then confirms it merged), `pr-body` (generates the PR description
 from the run's artifacts, with links at the checked commit, paths hidden and
 output cut to fit, the ticket linked and the repo's own PR template's
-sections added, leaving the Summary, the Assumptions and any template section
-it can't fill to write; with
+sections added, leaving the Summary, the Assumptions, any template section
+it can't fill and the template checklist's boxes to write; with
 `--check`, lints one: strict sections, the checked commit, size, no internal
-IDs, paths or secrets), `pr publish` (opens the one PR, or refreshes the
+IDs, paths or secrets, the template checklist's items unchanged), `pr publish` (opens the one PR, or refreshes the
 sections the pipeline writes in the live description, keeps overflowing output
 in one comment edited in place, and reads the PR back) and `cleanup-worktree`. Parsers that turn a worker's artifact into a decision:
 `check-manifest` (the acceptance tester's `MANIFEST.md` against `SPEC.md`: which
@@ -709,7 +712,8 @@ rules for changing a script are in `CLAUDE.md`.
 - **`init` finds the security directives** from `security_docs`, or the repo's
   `SECURITY.md`, `.github/SECURITY.md` and `docs/security/*.md`.
 - **The PR follows the repo's PR template and links the ticket.** The
-  description gets the template's sections, and `pr_review.inline_comments`
+  description gets the template's sections, with a box of its checklist ticked
+  only when the run's files show it is true, and `pr_review.inline_comments`
   now posts once, after the PR opens, only the review findings left open or
   advisory (3.x posted the Phase 6a findings). `record` checks every file a
   worker says it wrote against its template, and refuses a plan, or a plan

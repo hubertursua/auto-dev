@@ -967,6 +967,20 @@ class PublishTest(NextCase):
         self.assertNotIn("old", merged)
         self.assertIn("- [x] **Looks right on a phone**", merged)
 
+    def test_a_refresh_keeps_a_checklist_a_person_edited_on_github(self):
+        cmd_pr = self.cmd_pr()
+        from lib.cmd_ship import lint_body
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "pull_request_template.md").write_text("## Checklist\n- [ ] Docs updated\n")
+        live = "## Summary\nx\n\n## Checklist\n- [x] Docs updated in the wiki\n"
+        merged = cmd_pr.merge_live(live, "## Summary\nz\n\n## Checklist\n- [ ] Docs updated\n")
+        self.assertIn("- [x] Docs updated in the wiki", merged)
+        state = {"worktree": str(tmp), "phase6": {}}
+        self.assertTrue(any("checklist" in p for p in lint_body(merged, state)))
+        self.assertFalse(any("checklist" in p
+                             for p in lint_body(merged, state, checklist=False)))
+
     def cmd_pr(self):
         from importlib import import_module
         sys.path.insert(0, str(SCRIPTS))
@@ -1048,8 +1062,46 @@ class TemplateTest(unittest.TestCase):
         self.assertIn("## How has this been tested?\nSee _Acceptance conditions_", text)
         self.assertIn("## Screenshots\n<!-- WRITE: the repo's PR template asks for this "
                       "section (add screenshots for UI changes)", text)
-        self.assertIn("## Checklist\n- [ ] I added tests\n- [ ] Docs updated", text)
+        self.assertIn("## Checklist\n- [ ] I added tests\n- [ ] Docs updated\n"
+                      "<!-- WRITE: tick each box", text)
         self.assertNotIn("Please check", text)
+
+    def test_a_checklist_may_be_ticked_never_reworded(self):
+        self.write("pull_request_template.md",
+                   "## Testing\n- [ ] Ran it\n\n"  # a testing section is ours to fill
+                   "## Checklist\n<!-- tick what applies -->\n- [ ] I added tests\n"
+                   "- [ ] Docs updated\n")
+        problems = self.cmd_pr.checklist_problems
+        ok = "## Summary\nx\n\n## Checklist\n- [x] I added tests\n- [ ] Docs updated\n"
+        self.assertEqual(problems(ok, self.tmp), [])
+        self.assertEqual(problems(ok.replace("- [ ] Docs", "- [X] Docs"), self.tmp), [])
+        for bad in (ok.replace("I added tests", "I added unit tests"),
+                    ok.replace("- [ ] Docs updated\n", ""),
+                    ok + "- [x] Reviewed by a person\n",
+                    ok.replace("- [x] I added tests\n- [ ] Docs updated",
+                               "- [ ] Docs updated\n- [x] I added tests")):
+            self.assertEqual(len(problems(bad, self.tmp)), 1, bad)
+            self.assertIn("keep the PR template's items", problems(bad, self.tmp)[0])
+        self.assertIn("missing", problems("## Summary\nx\n", self.tmp)[0])
+
+    def test_a_generated_checklist_passes_as_it_is(self):
+        # Two sections under one heading, and an item the secret filter drops.
+        self.write("pull_request_template.md",
+                   "## Frontend\n### Checklist\n- [ ] a11y checked\n"
+                   "## Backend\n### Checklist\n- [ ] migrations reversible\n"
+                   "- [ ] No hardcoded password: verified by grep\n")
+        lines = self.cmd_pr.template_sections(self.cmd_pr.find_template(self.tmp))
+        body = self.cmd_pr.clean("\n".join(lines), str(self.tmp))
+        self.assertEqual(body.count("## Checklist"), 2)
+        self.assertEqual(self.cmd_pr.checklist_problems(body, self.tmp), [])
+        swapped = body.replace("a11y checked", "X").replace("migrations reversible",
+                                                            "a11y checked")
+        self.assertEqual(len(self.cmd_pr.checklist_problems(swapped, self.tmp)), 2)
+
+    def test_no_template_checklist_no_checklist_problem(self):
+        self.assertEqual(self.cmd_pr.checklist_problems("## Summary\n", self.tmp), [])
+        self.write("pull_request_template.md", "## Risk\nDescribe it.\n")
+        self.assertEqual(self.cmd_pr.checklist_problems("## Summary\n", self.tmp), [])
 
     def test_a_template_folder_is_never_the_default(self):
         # GitHub applies a template from this folder only when a PR asks for it.
@@ -1173,6 +1225,58 @@ class TicketTest(NextCase):
         self.assertIn("## Screenshots\n<!-- WRITE: the repo's PR template asks for this "
                       "section (for UI changes)", text)
         self.assertLess(text.index("## Screenshots"), text.index("## Assumptions"))
+
+    def test_publish_refuses_a_reworded_checklist_and_takes_a_ticked_one(self):
+        _, _, _, body = self.to_body()
+        (self.worktree / "pull_request_template.md").write_text(
+            "## Checklist\n- [ ] I added tests\n- [ ] Docs updated\n")
+        r = self.autodev("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = body.read_text()
+        self.assertIn("## Checklist\n- [ ] I added tests\n- [ ] Docs updated\n"
+                      "<!-- WRITE: tick each box", text)
+        text = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
+        body.write_text(text.replace("- [ ] Docs updated", "- [x] Docs updated if needed"))
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("keep the PR template's items", r.stdout)
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("keep the PR template's items", r.stdout)
+        self.assertIsNone(self.state()["phase6"].get("pr"))
+        body.write_text(text.replace("- [ ] I added tests", "- [x] I added tests"))
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["phase6"]["pr"], 12)
+
+    def checklist_on_open_pr(self, live):
+        """A reworded checklist published to an open PR whose description is `live`."""
+        _, _, _, body = self.to_body(first=[
+            {"args": ["pr", "list"], "stdout": '[{"number": 12}]'},
+            {"args": ["pr", "view", "12", "--json", "body"],
+             "stdout": json.dumps({"body": live})},
+            {"args": ["pr", "edit"], "stdout": ""}])
+        (self.worktree / "pull_request_template.md").write_text(
+            "## Checklist\n- [ ] Docs updated\n")
+        r = self.autodev("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                      body.read_text())
+        body.write_text(text.replace("- [ ] Docs updated", "- [x] Docs in the wiki"))
+        return self.autodev("pr", "publish", "--dir", self.dir)
+
+    def test_a_person_s_edits_to_a_live_checklist_stand(self):
+        r = self.checklist_on_open_pr("## Summary\nBy hand.\n\n## Checklist\n"
+                                      "- [x] Docs updated in the wiki\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = [json.loads(ln) for ln in (self.tmp / "gh.log").read_text().splitlines()]
+        sent = next(e["files"] for e in log if e["args"][:2] == ["pr", "edit"])
+        self.assertIn("- [x] Docs updated in the wiki", "".join(sent.values()))
+
+    def test_an_empty_live_description_still_checks_the_checklist(self):
+        r = self.checklist_on_open_pr("")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("keep the PR template's items", r.stdout)
 
     def test_the_ticket_is_linked_in_the_summary(self):
         self.open_pr()
