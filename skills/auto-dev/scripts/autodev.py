@@ -36,7 +36,8 @@ Subcommands:
 Every subcommand takes --json. Exit codes, the same for all:
     0  success
     1  failed, or stop and report: the reason is printed
-    2  could not run (bad arguments, missing state) — never a pass
+    2  could not run (bad arguments, missing state, an unexpected error) — never
+       a pass
     3+ as the subcommand's --help says
 """
 
@@ -139,6 +140,9 @@ def main(argv=None):
         return report_failure(Fail(str(exc), CANNOT_RUN, "ERROR"), args.json)
     except CommandError as exc:
         return report_failure(Fail(str(exc), CANNOT_RUN, "ERROR"), args.json)
+    except Exception as exc:  # a crash must not exit 1, which means red or refused
+        message = f"{type(exc).__name__}: {exc}".encode("utf-8", "replace").decode()
+        return report_failure(Fail(message, CANNOT_RUN, "ERROR"), args.json)
 
 
 if __name__ == "__main__":
