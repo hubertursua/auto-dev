@@ -61,14 +61,21 @@ If the push is rejected, tell the user what git printed and stop; don't run the
 
 `next` names `pr-body.md`. It holds lines like `<!-- WRITE: ... -->`: always
 one for the Summary and one for the Assumptions, and one for each section of
-the repo's own PR template the script couldn't fill. Replace each with plain
-sentences for a developer who has never heard of auto-dev:
+the repo's own PR template the script couldn't fill, or whose checklist is
+yours to tick. Replace each with plain sentences for a developer who has never
+heard of auto-dev:
 
 - **Summary:** what changed and why, 2–4 sentences, from `SPEC.md`'s Context.
 - **Assumptions:** the open assumptions from `SPEC.md`'s Assumptions section a
   reviewer should check, one bullet each, or `None.`
 - **A template section:** answer what its WRITE line asks, from `SPEC.md` or
   `HANDOFF.md`. If neither says, write `N/A`. Never read the code to answer it.
+- **A template checklist:** tick a box (`- [x]`) when `SPEC.md`, `HANDOFF.md`
+  or the description's own sections show it is true, and leave it unticked when
+  they don't, or when only a person can confirm it (a manual test, a sign-off).
+  Never read the code to decide. Add no note saying why: the code and the rest
+  of the description show it. Keep every item's words, and don't add, drop or
+  reorder one (`pr publish` refuses that). Then delete the WRITE line.
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
 "verifier" or "pipeline". Change nothing else in the file: the follow-ups the
