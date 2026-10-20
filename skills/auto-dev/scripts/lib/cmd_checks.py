@@ -32,11 +32,13 @@ eval-status [--install-conflict] [--mutation-left-changes]
       REPAIR                  only defective acceptance checks are open: repair
                               mode for the `repair:` conditions
       ALL_MET                 nothing open; manual conditions go to the PR gate
-    A condition `unmet` or `partial` is repaired, not corrected, when a check
-    of its (by test name, or by path when no other condition has a check in
-    that file, from MANIFEST.md) is listed under `## Defective acceptance
-    checks`; a listed check whose condition is met changes nothing. CORRECT
-    with a `repair:` line means repair those first, then correct. Also printed:
+    A condition with a check listed under `## Defective acceptance checks` (as
+    MANIFEST.md names it, `path` :: "test name", matched exactly; or by path
+    alone when only that condition has checks in that file) goes to `repair:`.
+    A `partial` one is settled by the repair alone; an `unmet` one (a check
+    failed, maybe on a real bug) is also corrected. A listed check whose
+    condition is met changes nothing. CORRECT with a `repair:` line means
+    repair those first, then correct. Also printed:
     `manual:` (the manual conditions) and a `survivor:` line per Mutation row,
     to pass to the next verifier spawn.
     Exit: 0 a decision; 1 SPEC_EVAL.md is malformed or misses a condition
@@ -271,7 +273,9 @@ def eval_decision(ad, install_conflict=False, mutation_left_changes=False):
     for cid, verdict, evidence in open_:
         if cid in defective:
             repair.append(cid)
-        else:
+        # `partial` with a defective check is settled by the repair alone; `unmet`
+        # means a check failed, which may be a real bug, so the coder hears of it too.
+        if cid not in defective or verdict == "unmet":
             correct.append(f"condition {cid} {verdict}: {evidence}")
     for finding in ev["integrity"]:
         if finding.get("Judgment", "").strip().lower() == "unjustified":
@@ -289,28 +293,31 @@ def eval_decision(ad, install_conflict=False, mutation_left_changes=False):
     return "ALL_MET", fields
 
 
+CHECK_REF_RE = re.compile(r'`([^`]+)`\s*::\s*"([^"]+)"')
+PATH_REF_RE = re.compile(r"`([^`]+)`(?!\s*::)")
+
+
 def defective_conditions(ad, section):
     """The conditions with a check listed under `## Defective acceptance checks`.
 
-    A check is listed when the section names its test name, or its path when
-    no other condition has a check in that file (MANIFEST.md says which)."""
+    A check is listed when the section names it as MANIFEST.md does
+    (`path` :: "test name", matched exactly), or names its path alone when only
+    that condition has checks in that file."""
     if not section:
         return set()
     rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
-    text = section.lower()
-    owners = {}
-    for row in rows:
-        path = art.check_path(row["Check (path :: test name)"])
-        if path:
-            owners.setdefault(path.lower(), set()).add(row["#"].strip())
-    found = set()
+    named = {(p.strip(), n.strip()) for p, n in CHECK_REF_RE.findall(section)}
+    paths = {p.strip() for p in PATH_REF_RE.findall(section)}
+    checks, owners = [], {}
     for row in rows:
         cid, cell = row["#"].strip(), row["Check (path :: test name)"]
-        name = cell.split("::", 1)[-1].strip().strip('"').strip().lower()
-        path = (art.check_path(cell) or "").lower()
-        if (name and name in text) or (path and path in text and owners[path] == {cid}):
-            found.add(cid)
-    return found
+        match = CHECK_REF_RE.search(cell)
+        if match:
+            path, name = match.group(1).strip(), match.group(2).strip()
+            checks.append((cid, path, name))
+            owners.setdefault(path, set()).add(cid)
+    return {cid for cid, path, name in checks
+            if (path, name) in named or (path in paths and owners[path] == {cid})}
 
 
 @wrap

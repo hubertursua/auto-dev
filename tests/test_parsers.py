@@ -195,6 +195,46 @@ class EvalStatusTest(ArtifactCase):
         self.assertTrue(r.stdout.startswith("REPAIR"), r.stdout)
         self.assertIn("repair: 1", r.stdout)
 
+    def set_s1(self, verdict):
+        path = self.dir / "SPEC_EVAL.md"
+        path.write_text(path.read_text().replace(
+            "| S1 | owner only | met | Strong | acceptance passed |",
+            f"| S1 | owner only | {verdict} | Strong | acceptance check failed: got 200 |"))
+
+    def test_a_name_in_another_entrys_prose_is_not_a_listing(self):
+        # "owner only" (S1's check) appears only in condition 1's entry's reason.
+        self.spec_eval(v1="partial", defective='- `src/due.acceptance.test.ts` :: "shows '
+                                               'the due date" passes for any user, not '
+                                               'the owner only')
+        self.set_s1("unmet")
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
+        self.assertIn("repair: 1\n", r.stdout)
+        self.assertIn("condition S1 unmet", r.stdout)
+        self.assertNotIn("condition 1 partial", r.stdout)
+
+    def test_a_check_name_that_prefixes_another_does_not_collide(self):
+        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
+            '`src/due.acceptance.test.ts` :: "owner only"',
+            '`src/due.acceptance.test.ts` :: "rejects an invalid date after trim"'))
+        self.spec_eval(v1="partial", defective='- `src/due.acceptance.test.ts` :: '
+                                               '"rejects an invalid date after trim" '
+                                               'checks no owner')
+        self.set_s1("partial")
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
+        self.assertIn("repair: S1\n", r.stdout)
+        self.assertIn("condition 1 partial", r.stdout)
+
+    def test_an_unmet_condition_with_a_defective_check_is_also_corrected(self):
+        self.spec_eval(v2="unmet", e2="acceptance check failed: unsorted",
+                       defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
+                                 'first" asserts an order SPEC.md does not give')
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
+        self.assertIn("repair: 2", r.stdout)
+        self.assertIn("condition 2 unmet", r.stdout)
+
     def test_a_defective_check_of_a_met_condition_is_all_met(self):
         self.spec_eval(defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
                                  'first" is too weak')
