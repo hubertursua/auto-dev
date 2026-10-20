@@ -101,6 +101,45 @@ class CheckStagedTest(GitRepoCase):
         r = run("check-staged.py", self.repo, "--expect", "src/app.py")
         self.assertEqual(r.returncode, 1)  # src/other.py staged but not expected
 
+    def test_a_file_name_that_is_not_utf8_is_checked(self):
+        name = b"caf\xe9.txt"  # Latin-1
+        try:
+            with open(os.path.join(os.fsencode(self.repo), name), "wb") as f:
+                f.write(b"x\n")
+        except OSError as exc:  # macOS APFS refuses names that aren't UTF-8
+            self.skipTest(f"this file system refuses the name: {exc}")
+        self.git("add", "-A")
+        r = run("check-staged.py", self.repo, "--expect", "src/app.py", os.fsdecode(name))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("caf\\xe9.txt", r.stdout)
+        r = run("check-staged.py", self.repo, "--expect", "src/app.py")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("EXTRA: 1", r.stderr)
+        self.assertIn("caf\\xe9.txt", r.stderr)
+
+    def fake_git(self, body):
+        """Run check-staged.py with a `git` on PATH that runs `body` (Python)."""
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        fake = bin_dir / "git"
+        fake.write_text(f"#!{sys.executable}\nimport sys\nargs = sys.argv[1:]\n{body}\n")
+        fake.chmod(0o755)
+        env = {**GIT_ENV, "PATH": f"{bin_dir}{os.pathsep}{GIT_ENV['PATH']}"}
+        return subprocess.run([sys.executable, str(SCRIPTS / "check-staged.py"), self.repo],
+                              capture_output=True, text=True, env=env, check=False)
+
+    def test_git_output_that_is_not_utf8_is_read(self):
+        # Runs where the file system refuses such a name (the test above skips).
+        r = self.fake_git(f"print({str(self.repo)!r}) if 'rev-parse' in args else "
+                          "sys.stdout.buffer.write(b'caf\\xe9.txt\\0')")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("caf\\xe9.txt", r.stdout)
+
+    def test_a_crash_is_exit_2(self):
+        r = self.fake_git("sys.stdout.write('a\\0b')")  # a NUL in the top level crashes Path
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("not a pass", r.stderr)
+
 
 class CheckFreshTest(GitRepoCase):
     """check-fresh.py: reports stamped with the tree they checked."""
