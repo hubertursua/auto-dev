@@ -220,8 +220,10 @@ def ticket_link(task):
 
 
 # Where GitHub looks for a PR template, in its order; matched ignoring case.
-TEMPLATE_PLACES = (".github/pull_request_template.md", "pull_request_template.md",
-                   "docs/pull_request_template.md")
+# GitHub also accepts a .txt template and doesn't say which wins when a folder
+# has both, so the .md one is taken first.
+TEMPLATE_PLACES = tuple(f"{folder}pull_request_template{ext}"
+                        for folder in (".github/", "", "docs/") for ext in (".md", ".txt"))
 # Template headings the generated sections already answer.
 OURS = {"summary", "acceptance conditions", "quality gate", "review", "assumptions",
         "description", "what", "why", "what and why", "what changed", "changes",

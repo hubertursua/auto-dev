@@ -1103,6 +1103,16 @@ class TemplateTest(unittest.TestCase):
         self.write("pull_request_template.md", "## Risk\nDescribe it.\n")
         self.assertEqual(self.cmd_pr.checklist_problems("## Summary\n", self.tmp), [])
 
+    def test_a_txt_template_is_found_and_md_wins_beside_it(self):
+        # GitHub accepts a .txt template in the same places as a .md one.
+        txt = self.write(".github/Pull_Request_Template.TXT", "## Rollout\nThe plan.\n")
+        self.assertEqual(self.cmd_pr.find_template(self.tmp), txt)
+        self.assertIn("## Rollout", self.cmd_pr.template_sections(txt))
+        md = self.write(".github/pull_request_template.md", "## Risk\n")
+        self.assertEqual(self.cmd_pr.find_template(self.tmp), md)
+        self.write("pull_request_template.md", "## Root\n")
+        self.assertEqual(self.cmd_pr.find_template(self.tmp), md)  # .github/ first
+
     def test_a_template_folder_is_never_the_default(self):
         # GitHub applies a template from this folder only when a PR asks for it.
         self.write(".github/PULL_REQUEST_TEMPLATE/bug.md", "## Bug\n")
