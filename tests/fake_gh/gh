@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""A fake `gh` for tests: plays back scripted responses and logs every call.
+
+$FAKE_GH_RESPONSES names a JSON file holding a list of
+    {"args": ["repo", "view"], "stdout": "...", "stderr": "...", "exit": 0,
+     "times": 1}
+The first entry whose `args` is a prefix of the call's arguments answers it.
+`times` (optional) limits how many calls an entry answers, so a test can script
+"pending, then green". An unmatched call exits 1 with `fake gh: no response`.
+$FAKE_GH_LOG, when set, gets one JSON line per call: {"args": [...]}.
+"""
+
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+log = os.environ.get("FAKE_GH_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"args": args}) + "\n")
+path = os.environ.get("FAKE_GH_RESPONSES")
+responses = []
+if path and os.path.exists(path):
+    with open(path, encoding="utf-8") as fh:
+        responses = json.load(fh)
+for entry in responses:
+    want = entry["args"]
+    if args[:len(want)] != want or entry.get("times", 1) == 0:
+        continue
+    if "times" in entry:
+        entry["times"] -= 1
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(responses, fh)
+    sys.stdout.write(entry.get("stdout", ""))
+    sys.stderr.write(entry.get("stderr", ""))
+    sys.exit(entry.get("exit", 0))
+sys.stderr.write(f"fake gh: no response for {args}\n")
+sys.exit(1)

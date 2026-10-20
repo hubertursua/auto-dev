@@ -2,7 +2,9 @@
 
 This repo is the auto-dev plugin: an orchestration skill (`skills/auto-dev/`) and
 its worker agent types (`agents/`). Most of it is Markdown that another agent
-follows; the rest is eight helper scripts (`skills/auto-dev/scripts/`). `README.md`
+follows; the rest is helper scripts (`skills/auto-dev/scripts/`): `autodev.py`, the one
+entry point, with its shared code in `scripts/lib/`, and the single-purpose
+scripts it and the workers call. `README.md`
 is the user-facing description of the pipeline, and it is the file most often
 left stale.
 
@@ -25,15 +27,22 @@ that a script can check, add it there.
 
 ## Changing a helper script
 
-- **Standard library only**, Python 3.9+ (`validate-config.py` alone may use
-  PyYAML). Users run these with whatever `python3` they have.
+- **Standard library only**, Python 3.9+ (`validate-config.py`, and
+  `autodev.py init`, which reads YAML, may use PyYAML). Users run these with
+  whatever `python3` they have.
+- **Shared code goes in `scripts/lib/`**, imported by `autodev.py`. Modules
+  there aren't run directly, so they need no shebang, no executable bit and no
+  README mention. A new subcommand's docstring is its `--help`, as for a script.
 - **Keep the CLI contract.** Each script's docstring is its `--help` and lists
   its exit codes; the skill's docs tell the orchestrator what each code means.
   If you change an exit code or an output line, update the docstring and every
   reference file that quotes it (`grep -rn "<script>.py" skills/`).
-- **Add a test** in `tests/test_scripts.py` for every fix or new behavior, and
+- **Add a test** in `tests/test_scripts.py` (`tests/test_autodev.py` for
+  `autodev.py`) for every fix or new behavior, and
   check that it fails without your change. Tests run the script as a subprocess,
-  the way the pipeline does, and build throwaway git repos in a temp dir.
+  the way the pipeline does, and build throwaway git repos in a temp dir. A
+  command that calls `gh` is tested against `tests/fake_gh/gh`, which plays
+  back the responses the test scripts; never call the real GitHub from a test.
 - **Fail safe.** "Could not run" is exit 2, never a pass. Never leave the user's
   tree changed (see how `mutate.py` backs up and restores).
 - Keep the file executable and its `#!/usr/bin/env python3` line.
