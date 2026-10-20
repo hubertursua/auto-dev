@@ -744,6 +744,17 @@ class ShipTest(RunCase):
         self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
         self.assertEqual(self.git("status", "--porcelain"), "")
 
+    def test_merge_staging_push_rejected_returns_to_the_branch(self):
+        self.staging()
+        hook = self.tmp / "origin.git" / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho 'protected branch' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        r = self.cmd("merge-staging")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("REJECTED", r.stderr)
+        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
     # merge-pr
     def merge(self, merge_response, state="MERGED", view=None, repo=None):
         self.script_gh([
