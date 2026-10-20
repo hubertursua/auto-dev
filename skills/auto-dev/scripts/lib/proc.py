@@ -12,15 +12,18 @@ class CommandError(Exception):
         super().__init__(f"`{shown}` exited {code}: {output.strip()[-500:]}")
 
 
-def run(cmd, cwd=None, check=True, env=None, timeout=None, input_text=None):
+def run(cmd, cwd=None, check=True, env=None, timeout=None, input_text=None,
+        errors=None):
     """Run `cmd` (a list) and return (exit code, stdout, stderr).
 
-    A missing program is exit 127, as a shell reports it.
+    A missing program is exit 127, as a shell reports it; a timeout is 124.
+    `errors="surrogateescape"` reads output that isn't UTF-8 (file names)
+    without crashing, and the names round-trip when passed back as arguments.
     """
     try:
         done = subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout,
                               capture_output=True, text=True, input=input_text,
-                              check=False)
+                              errors=errors, check=False)
     except FileNotFoundError:
         if check:
             raise CommandError(cmd, 127, f"{cmd[0]}: command not found") from None
@@ -34,7 +37,7 @@ def run(cmd, cwd=None, check=True, env=None, timeout=None, input_text=None):
     return done.returncode, done.stdout, done.stderr
 
 
-def git(cwd, *args, check=True):
+def git(cwd, *args, check=True, errors=None):
     """Run git in `cwd`; return stdout (or (code, out, err) when check=False)."""
-    code, out, err = run(["git", *args], cwd=cwd, check=check)
+    code, out, err = run(["git", *args], cwd=cwd, check=check, errors=errors)
     return out if check else (code, out, err)

@@ -15,12 +15,23 @@ Must-fix: <open> open · <fixed> fixed   ·   Advisory: <n>   ·   Noise: <n>   
 ### C1 — <title>
 Trigger path: <entry point `file:line` → … → failure, as the judge confirmed it>
 Judge: <why it holds>
+Where: `<path:line>` — <the code that has to change>
+Test: <the test to add or restore, and what it asserts>
 Required change: <what the code must do and where, for the coder>
 In plain words: <one sentence for the PR's reader>
 
 ## Pending re-vote
 | ID | Finding | Location | Category | Raised by | Re-voters | Votes |
 |----|---------|----------|----------|-----------|-----------|-------|
+| C3 | <title> | `path:line` | acceptance-check | R2 | R1, R3 | |
+
+### C3 — <title>
+Trigger path: <entry point `file:line` → … → failure, as the judge confirmed it>
+Judge: <why it holds>
+Where: `<path:line>` — <the code, or the acceptance check, that has to change>
+Test: <the test to add or restore, and what it asserts>
+Required change: <what must change and where: for the coder, or for the acceptance tester when the category is acceptance-check>
+In plain words: <one sentence for the PR's reader>
 
 ## Advisory
 | ID | Finding | Location | Category | Votes | Confidence | Why advisory |

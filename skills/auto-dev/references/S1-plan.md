@@ -20,6 +20,11 @@ skip to step 7.
   2. `getAccessibleAtlassianResources` → keep the `cloudId`.
   3. `getJiraIssue { cloudId, issueIdOrKey, responseContentFormat: "markdown" }`
      → keep the key, title, link and current status.
+  4. Write the issue's summary and description, exactly as `getJiraIssue`
+     returned them, to a new file under `$TMPDIR` (`<ticket-text>`): the
+     summary on the first line, a blank line, then the description. Don't
+     shorten, reword or translate them. Define has no Jira access; `init`
+     stores this file's text and gives it to Define verbatim as the task.
 - ELSE the task is the user's words.
 
 Write a one- or two-sentence restatement of the ask (`--ask` below).
@@ -83,7 +88,8 @@ Run, from `<repo>`:
 
 ```
 autodev.py init --repo <repo> --slug <slug> --task "<task, one line>" \
-  --ask "<restated ask>" [--ticket <KEY> --ticket-url <link>] \
+  --ask "<restated ask>" [--ticket <KEY> --ticket-url <link> \
+  --ticket-text-file <ticket-text>] \
   [--profile <file> --profile-source "<where it came from>"] \
   --jira "<available, cloudId <id> | unavailable: <why> | no ticket>"
 ```
@@ -95,7 +101,8 @@ autodev.py init --repo <repo> --slug <slug> --task "<task, one line>" \
 | 2 | could not run: tell the user the error |
 | 3 | setup is still running: run `autodev.py init --continue <worktree>` until it exits 0 or 1 |
 
-`init` finds the security directives itself (`security_docs` in
+Pass `--ticket-text-file` whenever step 1 wrote one: without it, Define
+works from your restated ask alone. `init` finds the security directives itself (`security_docs` in
 `.auto-dev.yml`, else `SECURITY.md` and `docs/security/`).
 
 ### 6. Move into the worktree
@@ -109,7 +116,8 @@ autodev.py init --repo <repo> --slug <slug> --task "<task, one line>" \
 Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
 see in S1, in order:
 
-1. `define` writes `SPEC.md` and the size check. `OVERSIZED` → exit 4: tell
+1. `define` writes `SPEC.md` and the size check, from the ticket text `init`
+   stored (else your `--ask`). `OVERSIZED` → exit 4: tell
    the user Define's reasons, the subsystems it found and its suggested split
    lines, all in the `REPORT`. Nothing else.
 2. With a ticket: the Jira question (exit 5). On `Move it`, a later exit 0
@@ -120,6 +128,8 @@ see in S1, in order:
 4. `planner`, then `plan-reviewer` the same way.
 5. `acceptance-tester`. It may be spawned again for listed conditions, or send
    `define` a question about a condition that reads two ways.
+   A worker whose result `record` refuses (exit 1) is briefed again by the
+   next `next`, with the refused issues: just run `next`.
 6. The post-plan gate (exit 5) when the task is high-risk or the repo turns it
    on.
 7. Exit 6: run `autodev.py handoff`, give the user its message, stop.

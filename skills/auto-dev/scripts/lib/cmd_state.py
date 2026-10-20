@@ -28,7 +28,9 @@ consumer, and exits 3.
 jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
 MCP tools, or skipped: --value skipped), pushed (--value <the sha pushed>),
 pr-ready (the draft PR marked ready for review), final-report, main-ci (CI on
-main checked after the merge), staging-ci.
+main checked after the merge), staging-ci; and triage-<ID> (the user's answer at
+the PR gate for a pre-existing security finding, `triage-Others` for the
+grouped rest: --value separate or ignore; it is also noted in WORK_LOG.md).
 
 `gate` records a gate decision. Gates: post-plan, pr, staging, main, profile,
 jira, cleanup. Choices: proceed, hold, stop, skip (staging only), revise
@@ -39,10 +41,13 @@ stopped (the run ends); `skip` records the staging gate as n/a.
 
 Exit codes:
     0  done (and for `budget spend`, a round was spent or was already spent)
-    1  refused: a bad value, or a choice the gate doesn't offer
+    1  refused: a bad value, a choice the gate doesn't offer, or a `mark` step
+       that is not one of those above (or a triage answer not separate/ignore)
     2  could not run (no state.json, unreadable) — not a pass
     3  `budget spend` only: the budget is exhausted; nothing was spent
 """
+
+import re
 
 from . import state as st
 from .output import FAILED, Fail, emit
@@ -60,6 +65,8 @@ GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "cleanup": {"proceed", "keep"}}
 MARKS = ("jira-in-progress", "jira-in-review", "jira-done", "pushed", "pr-ready",
          "final-report", "main-ci", "staging-ci")
+TRIAGE_RE = re.compile(r"triage-[A-Za-z0-9]+")
+TRIAGE_ANSWERS = ("separate", "ignore")
 CONSUMERS = {
     1: "Define re-review",
     2: "plan re-review or acceptance-tester re-spawn",
@@ -97,7 +104,7 @@ def add_arguments(parser, name):
         parser.add_argument("--id", dest="spend_id")
         parser.add_argument("--what", default="")
     elif name == "mark":
-        parser.add_argument("step", choices=MARKS)
+        parser.add_argument("step", help=f"one of {', '.join(MARKS)}, or triage-<ID>")
         parser.add_argument("--value", default="done")
     elif name == "gate":
         parser.add_argument("gate", choices=sorted(GATE_PHASE))
@@ -199,9 +206,18 @@ def spend_round(state, consumer, spend_id, what=""):
 
 
 def mark(args):
+    triage = TRIAGE_RE.fullmatch(args.step)
+    if args.step not in MARKS and not triage:
+        raise Fail(f"no step {args.step!r}: one of {', '.join(MARKS)}, or triage-<ID>",
+                   FAILED, "ERROR")
+    if triage and args.value not in TRIAGE_ANSWERS:
+        raise Fail(f"{args.step} takes --value {' or '.join(TRIAGE_ANSWERS)}", FAILED,
+                   "ERROR")
     state = load(args)
     state.setdefault("marks", {})[args.step] = {"value": args.value, "at": st.now(),
                                                 "seq": st.seq(state)}
+    if triage:
+        st.add_note(state, f"PR gate triage, {args.step[len('triage-'):]}: {args.value}")
     st.save(args.dir, state)
     emit(args.json, "MARKED", f"{args.step}: {args.value}")
     return 0

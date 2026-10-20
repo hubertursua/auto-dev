@@ -17,21 +17,34 @@ see in S3, in order:
 1. Three `code-reviewer`s in one message, then the `review-judge`, maybe
    re-votes by the reviewers, then a security reviewer and the judge again.
    A must-fix finding runs a correction (`coder`, `cleanup`, `verifier`) and
-   the panel reviews the files it changed.
-2. The PR gate (exit 5).
+   the panel reviews the files it changed. A finding that a held-out
+   acceptance check is wrong goes to the `acceptance-tester` in repair mode,
+   never the coder; it may fix the check or answer `STANDS` with its reason,
+   and a check that stands is not sent back a second time.
+2. The PR gate (exit 5). With pre-existing security findings it asks one more
+   question per finding (_What each gate option does_ in
+   `references/tables.md`): run the `mark triage-<ID>` line for each answer.
 3. Commit, push, PR body, publish: steps 3–5 below.
-4. `ci-watch`; a red check sends the `triager`, and a code failure runs a
-   correction, a review and a new commit.
+4. `ci-watch`; a red check sends the `triager`. A code failure runs a
+   correction, a review and a new commit. Any other class (`INFRA`, `FLAKY`,
+   `UNKNOWN`, `SECRET`) is not the code's to fix: `next` stops and reports it
+   (exit 4) before Jira moves to In Review or staging is asked. Once CI is
+   fixed or re-run, `auto-dev continue` watches it again.
 5. Jira In Review, the staging gate, the `triager` on human PR comments, `gh pr
-   ready`, the main gate, `merge-pr`.
+   ready`, CI watched once more (some workflows skip drafts, so green from the
+   draft's checks doesn't count), the main gate, `merge-pr`. A human blocker
+   goes to the coder; a comment saying a held-out check is wrong goes to the
+   acceptance tester's repair mode (the triager writes it to
+   `triage/human-<n>-checks.md`). When both come back, the tester goes first.
 6. CI on the base branch, Jira Done, the final report, the worktree question.
 
 ## 3. Commit
 
 `next` prints a `commit` command with `--message "<type>(<scope>): <summary>"`.
-Replace it with a Conventional Commits subject for the change: `feat`, `fix`,
-`refactor`, `test`, `docs` or `chore`; a scope only if the repo's history uses
-them; an imperative summary under 72 characters. Take the summary from the
+Replace it, inside its single quotes, with a Conventional Commits subject for
+the change: `feat`, `fix`, `refactor`, `test`, `docs` or `chore`; a scope only
+if the repo's history uses them; an imperative summary under 72 characters,
+with no single quote in it (rephrase, or use ’). Take the summary from the
 `HANDOFF.md` task line, not from the code. Run it, then `next` (it reads the
 result, whatever the exit code).
 
@@ -52,7 +65,10 @@ auto-dev:
   reviewer should check, one bullet each, or `None.`
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
-"verifier" or "pipeline". Change nothing else in the file. Then run the `AFTER`
+"verifier" or "pipeline". Change nothing else in the file: the follow-ups the
+user sent to a separate PR at the PR gate are already listed in it.
+`pr publish` ends everything it posts with `<!-- auto-dev -->`, which tells
+the triager to skip it; never post on the PR yourself. Then run the `AFTER`
 line, `autodev.py pr publish`:
 
 | Exit | Do |
@@ -94,7 +110,7 @@ printed. Then run its `AFTER` line.
 - **Built:** <what changed, 1–3 sentences>
 - **Quality gate:** <each check and its final status>
 - **Checked at:** <the verified commit>
-- **Review:** <must-fix fixed and open, from the code and security reviews; pre-existing findings left for the user>
+- **Review:** <must-fix fixed and open, from the code and security reviews; pre-existing findings the user ignored>
 - **Jira:** <transitions made | none — no ticket>
 - **Iteration budget:** <remaining>/<total>
 

@@ -93,8 +93,8 @@ The repo's own checks, run on commit <short sha>:
   <n> problems that had to be fixed: <n> fixed, <n> open
 <then one line per problem still open: what it is, where, and why it is being
 shipped anyway. Minor suggestions stay out. A security problem that predates
-this change appears here only if the user chose `Separate PR` (listed as a
-follow-up) or `Fix it in this PR` (listed as fixed) at the PR gate.>
+this change appears here only if the user chose `Separate PR` at the PR gate,
+listed as a follow-up.>
 
 ## Assumptions
 <the unresolved assumptions from SPEC.md a reviewer should sanity-check>

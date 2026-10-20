@@ -29,6 +29,9 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the ACCEPTANCE-TEST phase. Work inside the worktree at {{worktree}};
@@ -127,8 +130,9 @@ Then SEAL the checks:
   path>.sealed (the `.sealed` suffix keeps every test runner from collecting it);
 - delete it from the worktree, and any directory you created for it;
 - confirm `git status --porcelain --untracked-files=all` lists none of your files.
+
 Write {{artifact_dir}}/acceptance/MANIFEST.md to the template at `{{skill_dir}}/templates/MANIFEST.md` (strict): read
-it there and copy everything below its first comment line
+it there and copy everything below its first comment line.
 
 Spill long output to $TMPDIR; quote only failing tails. Keep each command under
 5 minutes.
@@ -183,7 +187,7 @@ verifier counts it as Adequate evidence at most.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `SEALED` (write mode), `REPAIRED` or `STANDS` (repair mode).
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `SEALED` (write mode), `REPAIRED` or `STANDS` (repair mode).
 
 ```auto-dev-result
 worker: acceptance-tester

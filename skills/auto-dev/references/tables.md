@@ -43,8 +43,8 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing | `init` exit 1 |
 | 4 | the run was started on auto-dev 3.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | Define returns `OVERSIZED` |
-| 6 | a worker stopped on purpose, or failed twice running | `record` logs `blocked` or a second `failed` |
-| 7 | a worker was spawned three times and never left a result `record` accepts | `next` |
+| 6 | a worker stopped on purpose, or failed twice running (lifted by `auto-dev continue`) | `record` logs `blocked` or a second `failed` |
+| 7 | a worker was spawned three times and never left a result `record` accepts (lifted by `auto-dev continue`) | `next` |
 | 8 | a reviewer found blockers but wrote no FIX block | `next` |
 | 9 | the planner judged the spec impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
 | 10 | the quality gate can't be made green | cleanup returns `RED` |
@@ -53,7 +53,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 13 | a report is stale again right after its own re-run | `check-fresh`, inside `next` |
 | 14 | no code reviewer wrote a usable report, twice | `next` |
 | 15 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
-| 16 | CI failed on a secret or credential | triager returns `SECRET` |
+| 16 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), or infrastructure, a flaky test or no clear cause (`INFRA`, `FLAKY`, `UNKNOWN`; once CI is fixed or re-run, `auto-dev continue` watches it again). Reported before Jira moves to In Review or staging is asked | triager's CI mode |
 | 17 | the staging merge conflicted or its push was rejected | `merge-staging` exit 1 or 3, then `next` |
 | 18 | someone pushed commits to the PR branch the pipeline didn't check | `check-fresh --ref`, inside `next` |
 | 19 | CI is red at the main gate | `next` |
@@ -68,7 +68,18 @@ They are different states.
   `auto-dev continue` asks **that gate** again, starting with its checks, since
   the code may have changed meanwhile.
 - **Stop** ends the run. The phase is `stopped`. Nothing resumes it: `resume`
-  reports it as `FINISHED`.
+  reports it as `FINISHED`. This is a gate's `Stop` answer.
+
+Every other stop (exit 4) leaves the phase open, and `next` decides again in
+the next session:
+
+- A stop on a **worker** (#6, #7), a refused `pr publish`, and a red CI run the
+  code can't fix (#16, except `SECRET`) are lifted when the user fixes the cause
+  and says `auto-dev continue`: the worker is spawned again, the PR published
+  again, or CI watched again.
+- A stop on a **result** stays: a red quality gate (#10), an impossible spec
+  (#9), a mutation that may have left changes (#11), the budget used up (#12).
+  A resumed run stops at the same place.
 
 ## What each gate option does
 
@@ -95,9 +106,13 @@ what they said, then run `next`.
 | | Stop | `gate main stop --reason "<why>"` | the run stops; the PR stays open |
 | Worktree (after the final report) | Remove it / Keep it | `gate cleanup proceed` / `keep` | the worktree (and `.auto-dev/`) is removed or kept |
 
-The PR gate may add a question per pre-existing security finding: `Separate PR
-(note it as a follow-up)`, `Fix it in this PR`, `Ignore it`. Record each answer
-with the `"each triage answer"` line.
+The PR gate may add a question per pre-existing security finding (the two most
+severe on their own, the rest grouped as `Others`): `Separate PR (note it as a
+follow-up)` · `Ignore it`. This PR never fixes a pre-existing finding. Each
+answer's `AFTER` line is `autodev.py mark triage-<ID> --value separate|ignore`:
+run the one for each answer the user gave. A `separate` finding is listed in
+the PR body and the final report as a follow-up for its own PR; the pipeline
+doesn't open that PR.
 
 The profile confirmation (Phase 1) has its own options: `S1-plan.md`, step 4.
 
