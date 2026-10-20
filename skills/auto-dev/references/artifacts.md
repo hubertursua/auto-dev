@@ -103,6 +103,8 @@ brief** — always substitute `<artifact-dir>`.
     files/<repo-path>.sealed  # the sealed copy of each check; the verifier installs it at <repo-path>
   SPEC_EVAL.md            # code vs. spec, with an evidence tier per condition (Phase 5, verifier)
   evidence/               # what the verifier ran and saw: integrity.txt, acceptance.txt, C<n>.txt, mutants.json(+.results.json)
+    corrections.md        # the verifier's required changes for the coder (Phase 5)
+  fixes/                  # the Define and plan reviewers' FIX blocks: define-<n>.md, plan-<n>.md (Phases 2–3)
   lint/                   # one report per quality-gate check (Phase 5)
     TYPECHECK.md          # one file per check in the profile's `gate` list —
     LINT.md               # example in TypeScript; the filenames come from the
@@ -112,8 +114,12 @@ brief** — always substitute `<artifact-dir>`.
     pass-1/
       R1.md  R2.md  R3.md   # the three panelists' own findings
       VOTES-R2.md           # re-votes on lone findings, when any
+      corrections.md        # the judge's required changes for this pass's open must-fix findings
+    security-corrections.md # the security-verify judge's required changes
   CODE_REVIEW.md          # the judge's consolidated code review: verdicts, votes, confidence (Phase 6a)
   SECURITY_REVIEW.md      # the security review: origin, confidence, verification (Phase 6a)
+  triage/                 # the triager's required changes: ci-<n>.md, human-<n>.md (Phase 6)
+  lookups/                # lookup answers, <n>.md (any phase)
 ```
 
 ## Never commit `.auto-dev/`
@@ -593,9 +599,11 @@ A worker has no path to this file and cannot follow a reference to it.
 | `IMPLEMENTATION.md` | headings strict, content flexible | coder (`Build sequence`), plan reviewer, acceptance tester (entry points only), code reviewers |
 | `acceptance/MANIFEST.md` | strict | the orchestrator's check of the tester's return (coverage, levels), verifier (tiers, install), post-plan gate summary, correction briefs (the paths not to touch), PR body (each test's name and its result on the old code) |
 | `acceptance/base-run/C<n>.txt` | strict | the orchestrator's check of the tester's return, verifier (Strong tier), PR body (the old code's output) |
-| `SPEC_EVAL.md` | strict | the orchestrator's correction briefs, the next verifier re-check, the PR body, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
+| `SPEC_EVAL.md` | strict | `autodev.py eval-status` (the Phase 5 decision), the next verifier re-check, the PR body, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
+| `evidence/corrections.md`, `review/pass-<n>/corrections.md`, `review/security-corrections.md`, `triage/<ci|human>-<n>.md` | strict (`# Required changes`, numbered entries) | the coder, passed unedited as its correction brief; `autodev.py spec-overlap` |
+| `fixes/<define|plan>-<n>.md` | strict (FIX blocks) | `autodev.py apply-fix`; the Define agent's or planner's revise mode when a block doesn't apply |
 | `review/pass-<n>/R<k>.md` | strict | the review judge |
-| `review/pass-<n>/VOTES-R<k>.md` | strict | the orchestrator, applying the votes |
+| `review/pass-<n>/VOTES-R<k>.md` | strict | `autodev.py votes --apply` |
 | `CODE_REVIEW.md` | strict | open must-fix → correction loop; PR gate and main gate summaries; PR body `Review`; `scripts/check-fresh.py` (`Tree:`) |
 | `SECURITY_REVIEW.md` | strict | the security-verify judge; open must-fix → correction loop; PR gate triage; PR body `Review`; `scripts/check-fresh.py` (`Tree:`) |
 | `lint/<CHECK>.md` | strict | PR body `Quality gate`, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
@@ -792,14 +800,14 @@ Read from the working tree, against the commit the worktree was cut from (`<CUT 
 Tree: <hash from check-fresh.py --print-tree after your last run>
 Pass: <first | re-check after <what changed>> · acceptance run: <n passed / n total> (`evidence/acceptance.txt`)
 
-| # | Condition | Verdict | Tier | Evidence |
-|---|-----------|---------|------|----------|
-| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todo-delete.acceptance.test.ts` :: "owner deleting…" passed (`evidence/C1.txt`) |
-| 2 | <condition> | met | Adequate | expected `GET /todos` without the deleted id; saw it (`evidence/C2.txt`) |
-| 3 | <condition> | partial | Weak | <what holds, what was not run, and why> |
-| 4 | <condition> | unmet | Strong | acceptance check failed: <the failing assertion, one line> |
-| 5 | <condition> | manual | — | a human must check: <exactly what, and how> |
-| S1 | <security/compliance criterion> | met | Strong | <check passed> |
+| # | Condition | Verdict | Tier | Evidence | In plain words |
+|---|-----------|---------|------|----------|----------------|
+| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todo-delete.acceptance.test.ts` :: "owner deleting…" passed (`evidence/C1.txt`) | the test written before the code passes |
+| 2 | <condition> | met | Adequate | expected `GET /todos` without the deleted id; saw it (`evidence/C2.txt`) | checked by listing the todos after a delete |
+| 3 | <condition> | partial | Weak | <what holds, what was not run, and why> | <the same, for a reader who doesn't know this pipeline> |
+| 4 | <condition> | unmet | Strong | acceptance check failed: <the failing assertion, one line> | <what still fails, in a sentence> |
+| 5 | <condition> | manual | — | a human must check: <exactly what, and how> | <what a person should check> |
+| S1 | <security/compliance criterion> | met | Strong | <check passed> | <one sentence> |
 
 Verdicts: `met` needs every acceptance check for the condition passing AND Strong
 or Adequate evidence AND no surviving mutant judged a test gap on its lines; Weak evidence caps a condition at `partial`; a failing
@@ -905,6 +913,8 @@ Must-fix: <open> open · <fixed> fixed   ·   Advisory: <n>   ·   Noise: <n>   
 ### C1 — <title>
 Trigger path: <entry point `file:line` → … → failure, as the judge confirmed it>
 Judge: <why it holds>
+Required change: <what the code must do and where, for the coder>
+In plain words: <one sentence for the PR's reader>
 
 ## Pending re-vote
 | ID | Finding | Location | Category | Raised by | Re-voters | Votes |
@@ -955,6 +965,8 @@ Must-fix: <open> open · <fixed> fixed   ·   For the user (pre-existing): <n>  
 Path: <untrusted input → `file:line` → … → the exploit>
 Depends on: <the configuration or assumption — Medium only>
 Verified: <the judge's reason>
+Required change: <confirmed, introduced must-fix only: what the code must do and where>
+In plain words: <one sentence for the PR's reader>
 
 ## Panel leads checked
 | Lead | Result |

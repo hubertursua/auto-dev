@@ -23,9 +23,10 @@ merged pull request — using purpose-built **workers** (subagents, one per
 delegated job) and handing structured artifacts between them through
 `.auto-dev/`. You (the main agent) are
 the **orchestrator**: you own the pipeline, hold the spec, run the human gates,
-and never write implementation code yourself. Phase 1 is yours; so is turning the
-Phase 5 verifier's verdicts into correction briefs. You never judge the build
-yourself: you hold the plan and every round's story, which is exactly the
+and never write implementation code yourself. Phase 1 is yours. Correction
+briefs are written by the workers that hold the facts — the verifier, the
+review judge, the triager — and you pass them on unedited. You never judge the
+build yourself: you hold the plan and every round's story, which is exactly the
 context a judge must not have.
 
 This skill is **stack-agnostic** and ships no stack profile. A **stack profile**
@@ -119,7 +120,7 @@ At the end of S1 and S2, do exactly this and then stop:
 On entry to S2 or S3, read `WORK_LOG.md`, `HANDOFF.md` and `profile.md` (the
 resolved `gate` commands, CI provider and Jira mapping — never re-derive them).
 Beyond those, read an artifact only when a phase **of yours** needs it: in S2,
-`SPEC.md` and `SPEC_EVAL.md` for the correction briefs; in S3, `SPEC.md`, `SPEC_EVAL.md`,
+none (`autodev.py eval-status` reads `SPEC_EVAL.md` for you); in S3, `SPEC.md`, `SPEC_EVAL.md`,
 `lint/*.md`, `CODE_REVIEW.md` and `SECURITY_REVIEW.md` for the PR body and the PR
 gate summary, `acceptance/MANIFEST.md`, `acceptance/base-run/C<n>.txt` and
 `evidence/C<n>.txt` for the PR body,
@@ -204,9 +205,7 @@ over turns 201–400).
 - **Never hold an artifact you can delegate.** If you are about to `Read` a file
   in `.auto-dev/` longer than ~200 lines, stop and spawn a worker that reads it
   and returns a verdict. The artifacts exist so that you _don't_ have to hold
-  them. `SPEC.md` and `SPEC_EVAL.md` are exempt at any length — the correction
-  briefs are yours by design, and they must be written from the contract and the
-  verdicts, not from a worker's summary of them.
+  them. No artifact is exempt: the correction briefs are the workers' now.
 
 ## Tool permissions & models
 
@@ -231,7 +230,8 @@ Write/Edit/Bash**, so an artifact writer spawned with one silently fails.
 | Review judge (Phase 6a)                        | `auto-dev:review-judge`          | `opus` · xhigh    |
 | Security reviewer (Phase 6a)                   | `auto-dev:security-reviewer`     | `opus` · xhigh    |
 | Security reviewer, sensitive paths (Phase 6a)  | `auto-dev:security-reviewer-sensitive` | `fable` · high |
-| Your read-and-answer lookups                   | `auto-dev:lookup`                | `sonnet` · low    |
+| Triager: red CI, human PR comments (Phase 6)   | `auto-dev:triager`               | `sonnet` · high   |
+| Your read-and-answer lookups                   | `auto-dev:lookup`                | `sonnet` · medium |
 
 **Resolving a type.** The table and the rules below write each type as
 `auto-dev:<x>`. To spawn worker `<x>`, use the first of these that is in the
@@ -331,8 +331,10 @@ conditions **as a testable contract** — each with a concrete **Example**, an
    stop (_Size check_ above). FITS → record it and `HIGH_RISK`, and go on.
 2. **Jira → In Progress** (if a ticket exists), confirmed with the user.
 3. **Define reviewer** (read-only) → critique, including an **ambiguity probe**
-   (two implementations that fit a condition's words but differ); apply fixes
-   yourself; re-review while it finds blockers (each re-review spends a round).
+   (two implementations that fit a condition's words but differ), written as
+   exact FIX blocks that `autodev.py apply-fix` applies (no match → the Define
+   agent's revise mode); re-review while it finds blockers (each re-review
+   spends a round).
 
 Hold `SPEC.md` — you withhold it from the coder and use it for Phase 5.
 
@@ -340,7 +342,8 @@ Hold `SPEC.md` — you withhold it from the coder and use it for Phase 5.
 
 1. **Planner** → `.auto-dev/IMPLEMENTATION.md`, the self-contained technical plan;
    every spec condition maps to a step and a test.
-2. **Plan reviewer** (read-only) → critique; apply fixes; re-review while it finds
+2. **Plan reviewer** (read-only) → critique as FIX blocks; `autodev.py
+   apply-fix` (no match → the planner's revise mode); re-review while it finds
    blockers (each re-review spends a round).
 3. **Acceptance tester** → `.auto-dev/acceptance/`: from
    `SPEC.md` alone (the plan only for entry points), one or more black-box checks
@@ -368,8 +371,8 @@ defects — the verifier never sees them.
 
 Four steps, never reordered. **Before step 1, consult
 `references/subagent-prompts.md`, _Phase 5 — Verify_** (already read for Phase 4;
-don't re-read the whole file) — the verifier's brief, acting on its verdicts, the
-correction brief, and the cleanup agent's brief.
+don't re-read the whole file) — the verifier's brief, acting on its verdicts
+(`autodev.py eval-status`), the correction brief, and the cleanup agent's brief.
 
 1. **Verifier** (`auto-dev:verifier`, no plan, no coder report) installs the
    sealed checks, audits every test change (`scripts/check-tests.py`), **runs**
@@ -382,10 +385,12 @@ correction brief, and the cleanup agent's brief.
    verdict at `partial`). It also plants **targeted mutants** in the changed
    lines (`scripts/mutate.py`, capped by `mutation.max`): one the tests don't
    catch on a condition's lines is a **test gap** and caps that condition at
-   `partial`. You read `SPEC_EVAL.md`, not the diff. An unmet or
-   partial condition, or an unjustified integrity finding → a **specific**
-   correction brief to the coder (concrete behavior, never the spec verbatim),
-   then a verifier re-check; each correction spends budget
+   `partial`. With its verdicts final, it writes `evidence/corrections.md`:
+   the changes the code needs, in concrete terms, never the spec's wording.
+   You read neither `SPEC_EVAL.md` nor the diff: `autodev.py eval-status`
+   prints the decision. An unmet or partial condition, or an unjustified
+   integrity finding → the coder, briefed with `corrections.md` unedited, then
+   a verifier re-check; each correction spends budget
    (`references/correction-loop.md`). A `manual` condition goes to the PR gate
    for a human, never to the coder.
 2. **Simplify.** Once the loop settles, spawn the cleanup agent to run
@@ -439,7 +444,8 @@ pushed until they settle and the user approves.
    default. Its body is written for a developer who has never heard of
    auto-dev, names the commit its results were checked on, and keeps every
    section `references/artifacts.md`, _The PR body_, marks strict.
-6. **CI monitoring**, bounded. Red pre-merge → the correction loop, whose fix is
+6. **CI monitoring**, bounded. Red pre-merge → the triager (CI mode) reads the
+   logs; a code failure → the correction loop, whose fix is
    reviewed (both steps) before the Phase 6a refresh commits and re-pushes it.
 7. **Jira → In Review.**
 
@@ -450,7 +456,8 @@ resolve conflicts on staging or force the push unasked.
 
 ### 6c — Main **[gate]**
 
-1. **Read what humans said**; mark the PR ready. A human blocker goes through the
+1. **Triage what humans said** (the triager's human mode: you never read the
+   comments yourself); mark the PR ready. A human blocker goes through the
    correction loop (its fix reviewed like any other), never merged over.
 2. **Check the PR still holds the checked code:** fetch the branch and base, and run
    `scripts/check-fresh.py --ref origin/<branch>`. Commits pushed from outside the

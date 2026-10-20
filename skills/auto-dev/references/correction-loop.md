@@ -21,14 +21,19 @@ is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 
 ## The loop
 
-1. **Re-dispatch the coder** with a targeted correction brief (template in
-   `references/subagent-prompts.md`, under Phase 5). Describe the required
-   behavior concretely; never quote the spec verbatim. One correction, one brief.
-   The one exception: a finding about an **acceptance check itself** — from the
-   verifier, a reviewer or a human — is never the coder's to fix. If you agree
-   against `SPEC.md` that the check is wrong, the acceptance tester repairs it
-   instead (`references/subagent-prompts.md`, _Acceptance tester_, repair mode);
-   it spends the same round.
+1. **Re-dispatch the coder** with the correction brief
+   (`references/subagent-prompts.md`, _Acting on SPEC_EVAL.md_), pointed at the
+   required-changes file the worker who found the problem wrote: the verifier's
+   `evidence/corrections.md` (Phase 5), the review judge's
+   `review/pass-<n>/corrections.md` or `review/security-corrections.md`
+   (review findings), or the triager's `triage/ci-<n>.md` (red CI) or
+   `triage/human-<n>.md` (a human blocker). Pass it unedited; you never write
+   the changes yourself. One correction, one brief. The one exception: a
+   finding about an **acceptance check itself** — the verifier's defective
+   check, the judge's `acceptance-check` category, the triager's
+   `ACCEPTANCE_CHECK` — is never the coder's to fix: the acceptance tester
+   repairs it (`references/subagent-prompts.md`, _Acceptance tester_, repair
+   mode), and may answer that it stands. It spends the same round.
 2. **Spend a round** from the shared budget (below) *before* dispatching. At zero,
    do not dispatch — stop and report.
 3. **Re-spawn the cleanup agent on the changed code** (`auto-dev:cleanup`,

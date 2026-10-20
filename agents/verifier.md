@@ -1,6 +1,6 @@
 ---
 name: auto-dev-verifier
-description: auto-dev pipeline only — Phase 5 verifier. Checks the uncommitted build against every SPEC.md condition by running things (the sealed acceptance checks, the tests it cites, direct observations, targeted mutants) and writes SPEC_EVAL.md with an evidence tier per condition; re-spawned after every later change. Never sees the plan or the coder's report. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 5 verifier. Checks the uncommitted build against every SPEC.md condition by running things (the sealed acceptance checks, the tests it cites, direct observations, targeted mutants) and writes SPEC_EVAL.md with an evidence tier per condition, then the required changes for anything still open; re-spawned after every later change. Never sees the plan or the coder's report. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write

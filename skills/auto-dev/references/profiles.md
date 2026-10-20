@@ -57,9 +57,10 @@ worktree does not exist yet.
 3. **Research.** Otherwise run `git fetch origin <base>` (the profiler reads
    files as they are on `origin/<base>`, which the run is cut from), then spawn
    `auto-dev:profiler` on `<repo>` with its brief
-   (`references/subagent-prompts.md`, _Phase 1 — Profile research_). It reads
-   the repo and returns a draft profile, the evidence for each command, and what
-   it had to guess.
+   (`references/subagent-prompts.md`, _Phase 1 — Profile research_), giving it
+   a `<draft-path>` under `$TMPDIR`. It reads the repo, writes the draft profile
+   there, and returns it with the evidence for each command and what it had to
+   guess.
 4. **Confirm with the user** — the **profile confirmation** pause
    (`references/gates-and-jira.md`, _Conditional pauses_). Show the draft, its
    evidence and guesses, which keys `.auto-dev.yml` will override, the save path,

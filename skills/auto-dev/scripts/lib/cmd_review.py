@@ -13,11 +13,20 @@ votes --apply
     CODE_REVIEW.md: the reviewer who raised it plus every `agree` reaching 2 is
     must-fix, Medium; fewer is advisory, Low. Then recomputes the header counts
     and the overall confidence (High: 3/3 reviewers, full coverage, nothing
-    decided 2-1; Low: fewer than 2 reviewers; Medium otherwise). Each slot
-    --plan names must have voted, in its VOTES-R<k>.md, on every finding it
-    was given. One vote per slot and finding counts; a vote on a finding the
-    slot was not given (the raiser's own) is ignored.
-    Exit: 0 applied; 1 a planned re-voter's file or vote is missing, or an
+    decided 2-1; Low: fewer than 2 reviewers; Medium otherwise), and appends
+    each new must-fix finding to review/pass-<n>/corrections.md, numbered after
+    the entries already there: its `Required change:` line, then the `Where:`
+    (else the row's Location), `Now:` (its `Trigger path:`) and `Test:` lines
+    from its `### <id>` block. A new must-fix finding whose Category is
+    `acceptance-check` is not added there: it is printed on the
+    `acceptance_check:` line, for the acceptance tester's repair mode;
+    `must_fix:` lists the ones added for the coder. Each slot --plan names must
+    have voted, in its VOTES-R<k>.md, on every finding it was given. One vote
+    per slot and finding counts; a vote on a finding the slot was not given
+    (the raiser's own) is ignored.
+    Exit: 0 applied; 1 a planned re-voter's file or vote is missing, a new
+    must-fix finding for the coder has no `Required change:` line, or an empty
+    one (re-spawn the judge), or an
     artifact is malformed (a vote not agree/disagree, a finding voted both
     ways, an `**Overall confidence` line without `reviewers finished: <n>/3`
     and `coverage:`); nothing is written.
@@ -203,16 +212,20 @@ def apply_votes(args, path, text, pass_dir, pending):
     if not pending:
         emit(args.json, "NONE", "no pending re-votes")
         return 0
-    must, advisory = apply_vote_files(path, text, pass_dir, pending)
-    emit(args.json, "APPLIED", f"{len(must)} must-fix, {advisory} advisory",
-         must_fix=", ".join(must) or "none")
+    must, advisory, tester = apply_vote_files(path, text, pass_dir, pending)
+    of_them = f" ({len(tester)} acceptance-check)" if tester else ""
+    emit(args.json, "APPLIED", f"{len(must) + len(tester)} must-fix{of_them}, "
+         f"{advisory} advisory",
+         must_fix=", ".join(must) or "none", acceptance_check=", ".join(tester))
     return 0
 
 
 def apply_vote_files(path, text, pass_dir, pending):
-    """Move each pending finding by its votes; returns (new must-fix ids, advisory count).
+    """Move each pending finding by its votes.
 
-    Every slot vote_plan names must have voted on each finding it was given."""
+    Returns (new must-fix ids for the coder, advisory count, new must-fix ids
+    whose Category is acceptance-check, for the acceptance tester). Every slot
+    vote_plan names must have voted on each finding it was given."""
     plan = vote_plan(pass_dir, pending)
     cast, missing = read_votes(pass_dir, plan)
     if not plan:
@@ -221,6 +234,7 @@ def apply_vote_files(path, text, pass_dir, pending):
         raise art.ArtifactError(f"no re-vote recorded for {', '.join(missing)} in "
                                 f"{pass_dir}: re-spawn those re-voters")
     must, advisory, decided_2_1 = [], [], []
+    coder, tester, where = [], [], {}
     for row in pending:
         fid = row["ID"].strip()
         count = 1 + sum(1 for agree in cast.get(fid, {}).values() if agree)
@@ -228,6 +242,11 @@ def apply_vote_files(path, text, pass_dir, pending):
                  row.get("Category", ""))
         if count >= 2:
             must.append(f"| {' | '.join(cells)} | {count}/3 (re-vote) | Medium | open |")
+            if row.get("Category", "").strip().strip("`").lower() == "acceptance-check":
+                tester.append(fid)
+            else:
+                coder.append(fid)
+                where[fid] = row.get("Location", "").strip()
             if count == 2:
                 decided_2_1.append(fid)
         else:
@@ -237,10 +256,53 @@ def apply_vote_files(path, text, pass_dir, pending):
     text = add_rows(text, "Advisory", advisory)
     text = clear_pending(text)
     text = recount(text, decided_2_1)
+    # Corrections first: it raises before writing if a Required change is missing,
+    # so a failure leaves both files as they were.
+    add_corrections(text, pass_dir / "corrections.md", coder, where)
     tmp = path.with_name(".CODE_REVIEW.md.votes")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
-    return [r.split("|")[1].strip() for r in must], len(advisory)
+    return coder, len(advisory), tester
+
+
+def detail_line(block, key):
+    """The non-empty value of a `<key>: <value>` line in a finding's block, or None."""
+    match = re.search(rf"^[ \t]*{key}:[ \t]*(\S.*)$", block, re.MULTILINE)
+    return match.group(1).strip() if match else None
+
+
+def add_corrections(text, path, ids, where=None):
+    """Append each new must-fix finding's Required change to corrections.md.
+
+    Each entry also carries the finding's Where (else `where[id]`, the row's
+    Location), Now (its Trigger path) and Test lines, when it has them."""
+    if not ids:
+        return
+    entries = []
+    for fid in ids:
+        found = re.search(rf"^### {re.escape(fid)}\b.*?(?=^### |^## |\Z)", text,
+                          re.MULTILINE | re.DOTALL)
+        block = found.group(0) if found else ""
+        change = detail_line(block, "Required change")
+        if not change:
+            raise art.ArtifactError(f"CODE_REVIEW.md: {fid} has no `Required change:` "
+                                    "line under its heading; re-spawn the judge")
+        lines = [f"{fid}: {change}"]
+        for label, value in (("Where", detail_line(block, "Where")
+                              or (where or {}).get(fid)),
+                             ("Now", detail_line(block, "Trigger path")),
+                             ("Test", detail_line(block, "Test"))):
+            if value:
+                lines.append(f"   {label}: {value}")
+        entries.append("\n".join(lines))
+    existing = path.read_text(encoding="utf-8") if path.exists() else "# Required changes\n"
+    existing = re.sub(r"^[ \t]*None\.[ \t]*$", "", existing,
+                      flags=re.MULTILINE).rstrip() + "\n"
+    count = len(re.findall(r"^[ \t]*\d+\. ", existing, re.MULTILINE))
+    for i, entry in enumerate(entries, count + 1):
+        existing += f"{i}. {entry}\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(existing, encoding="utf-8")
 
 
 def section_span(lines, name):

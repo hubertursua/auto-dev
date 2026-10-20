@@ -1,6 +1,6 @@
 ---
 name: auto-dev-cleanup
-description: auto-dev pipeline only — Phase 5 cleanup agent, re-spawned after a late Phase 5 correction, after every Phase 6 correction, and when its reports go stale because the code changed outside the pipeline. Runs /simplify over the branch diff (in Phase 6, only the files the correction changed; skipped for code changed outside the pipeline), then the profile's quality gate to green, writing lint reports. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 5 cleanup agent, re-spawned after a late Phase 5 correction, after every Phase 6 correction, and when its reports go stale because the code changed outside the pipeline. Runs /simplify over the branch diff (in Phase 6, only the files the correction changed; skipped for code changed outside the pipeline), then the profile's quality gate to green, writing lint reports and returning GREEN, RED or ACCEPTANCE_CHECK_FAILS_GATE. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: sonnet
 effort: medium
 tools: Read, Edit, Write, Bash, Grep, Glob, Skill

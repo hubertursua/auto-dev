@@ -1,6 +1,6 @@
 ---
 name: auto-dev-review-judge
-description: auto-dev pipeline only — Phase 6a review judge. Merges the three code reviewers' reports, confirms each trigger path in the code, applies the review rubric and writes CODE_REVIEW.md; in security-verify mode, confirms or refutes each High/Medium security finding. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6a review judge. Merges the three code reviewers' reports, confirms each trigger path in the code, applies the review rubric and writes CODE_REVIEW.md with the required change for each must-fix finding; in security-verify mode, confirms or refutes each High/Medium security finding. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: xhigh
 tools: Read, Grep, Glob, Bash, Write

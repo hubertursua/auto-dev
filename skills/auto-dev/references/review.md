@@ -119,18 +119,21 @@ hole that only shows up through another file.
    there is no one to re-vote, and every lone finding stays advisory. Each one writes `review/pass-<n>/VOTES-R<k>.md`
    with `agree` or `disagree` and a reason for each finding. A re-voter is told
    the finding, not who raised it or how anyone else voted.
-6. **Apply the votes.** This is mechanical, so do it yourself. For each re-vote
-   finding, count the reviewer who raised it plus every `agree`. With 2 or more,
-   it is **must-fix, Medium**. With fewer, it is **advisory, Low**. Write the
-   verdict, the vote count and the confidence into the finding's row in
-   `CODE_REVIEW.md`, then update the counts in its header.
+6. **Apply the votes** with `autodev.py votes --apply` (`votes --plan` names
+   the re-voters to spawn in step 5). For each re-vote finding it counts the
+   reviewer who raised it plus every `agree`. With 2 or more, it is
+   **must-fix, Medium**. With fewer, it is **advisory, Low**. It writes the
+   verdict, the vote count and the confidence into `CODE_REVIEW.md`, updates
+   the header, and adds each new must-fix finding's required change to
+   `review/pass-<n>/corrections.md`.
 7. **Security leads.** The panel is told not to review security. Any security
    finding a reviewer raises anyway is listed by the judge under
    `Security leads`. Pass each one to Step 2's brief to check. The panel never
    decides them.
 8. **Open must-fix findings** go to the correction loop
    (`references/correction-loop.md`, entry _Phase 6a — review_): one correction
-   brief per pass, covering every open must-fix finding. Take the snapshot
+   brief per pass, covering every open must-fix finding, pointed at the judge's
+   `review/pass-<n>/corrections.md`. Take the snapshot
    (_What each review pass covers_) just before dispatching it. Then run Step 1
    again, scoped to the files the snapshot diff names. Exit Step 1 only when a pass leaves no
    open must-fix finding, or the budget runs out.

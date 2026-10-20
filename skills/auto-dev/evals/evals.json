@@ -175,13 +175,13 @@
       "session": "S2 (test tampering)",
       "setup": "Run eval 1 through Phase 4 (S1 leaves acceptance/ sealed; leave it so). Then, in the worktree, delete the assertion from one pre-existing test the change does not touch, and mark another as skipped with the test framework's own marker (for example `it.skip`; example in TypeScript). Set Phase 4 done and Phase 5 pending in the ledger from files/, with at least 2 rounds remaining.",
       "prompt": "auto-dev continue",
-      "expected_output": "Phase 5 starts with the verifier. scripts/check-tests.py reports REMOVED_ASSERTION and ADDED_SKIP on the planted tests (exit 1); no SPEC.md condition changes that behavior, so the verifier judges both Unjustified in SPEC_EVAL.md's Test integrity section. The orchestrator treats them as a Phase 5 correction: one brief to auto-dev:coder, spending one round, naming which tests to restore, then a verifier re-check finds the audit clean of those findings. The cleanup agent runs only after that. The planted edits never reach a PR.",
+      "expected_output": "Phase 5 starts with the verifier. scripts/check-tests.py reports REMOVED_ASSERTION and ADDED_SKIP on the planted tests (exit 1); no SPEC.md condition changes that behavior, so the verifier judges both Unjustified in SPEC_EVAL.md's Test integrity section. The verifier's evidence/corrections.md names which tests to restore; autodev.py eval-status prints CORRECT, and the orchestrator treats it as a Phase 5 correction: one brief to auto-dev:coder pointing at that file, spending one round, then a verifier re-check finds the audit clean of those findings. The cleanup agent runs only after that. The planted edits never reach a PR.",
       "files": [
         "evals/files/resume-s2/WORK_LOG.md"
       ],
       "expectations": [
         "SPEC_EVAL.md's Test integrity section lists the removed assertion and the added skip, each judged Unjustified",
-        "A correction brief to auto-dev:coder names both tests to restore, and WORK_LOG.md shows one round spent for it",
+        "evidence/corrections.md, written by the verifier, names both tests to restore; the coder's correction brief points at that file rather than restating it, and WORK_LOG.md shows one round spent for it",
         "A second verifier pass runs after the correction, and its SPEC_EVAL.md no longer lists either finding",
         "The cleanup agent is spawned only after the verifier's audit is clean of unjustified findings",
         "No condition is marked met while an unjustified integrity finding touches it"
@@ -192,14 +192,14 @@
       "session": "S2 (test gap)",
       "setup": "Run eval 1 through Phase 4, then delete the test that covers the boundary of the allowed set (e.g. the first or last allowed value is accepted) while keeping the acceptance checks sealed and the rest of the suite green. Set Phase 4 done and Phase 5 pending in the ledger from files/, with at least 2 rounds remaining.",
       "prompt": "auto-dev continue",
-      "expected_output": "The verifier's mutation step plants a boundary mutant on the guard (e.g. the membership check made to reject the edge value) and no test fails, so the mutant survives. The verifier judges it a Test gap on the condition's line, marks that condition partial and lists the survivor in SPEC_EVAL.md's Mutation section. The orchestrator sends one correction describing the behavior to pin (the edge value is accepted), never the mutant itself; the coder adds that test; the verifier's re-check re-runs the survivor and it is now killed. The source is unchanged by the mutation runs throughout.",
+      "expected_output": "The verifier's mutation step plants a boundary mutant on the guard (e.g. the membership check made to reject the edge value) and no test fails, so the mutant survives. The verifier judges it a Test gap on the condition's line, marks that condition partial and lists the survivor in SPEC_EVAL.md's Mutation section. The verifier's evidence/corrections.md describes the behavior to pin (the edge value is accepted), never the mutant itself, and the orchestrator passes it to the coder unedited; the coder adds that test; the verifier's re-check re-runs the survivor and it is now killed. The source is unchanged by the mutation runs throughout.",
       "files": [
         "evals/files/resume-s2/WORK_LOG.md"
       ],
       "expectations": [
         "evidence/mutants.json holds only mutants on changed source lines, each tagged with a condition",
         "SPEC_EVAL.md lists the surviving boundary mutant as a Test gap and marks its condition partial",
-        "The correction brief describes the unpinned behavior in plain words and does not quote the mutant's find/replace",
+        "evidence/corrections.md, written by the verifier, describes the unpinned behavior in plain words and does not quote the mutant's find/replace; the coder is briefed with that file",
         "The re-check re-runs that mutant and records it killed; the condition is then met",
         "git diff origin/<base> after each verifier pass contains no mutant, and no mutants.json.backup directory remains"
       ]
