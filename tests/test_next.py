@@ -10,8 +10,12 @@ in TypeScript, as CLAUDE.md asks.
 
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import unittest
+from importlib import import_module
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -514,6 +518,65 @@ class PublishTest(NextCase):
         self.assertNotIn("WRITE", merged)
         self.assertNotIn("old", merged)
         self.assertIn("- [x] **Looks right on a phone**", merged)
+
+
+class TemplateTest(unittest.TestCase):
+    """The repo's own PR template and the ticket link in the generated body."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+        self.cmd_pr = import_module("lib.cmd_pr")
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def write(self, rel, text):
+        path = self.tmp / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def test_template_sections_are_added_answered_or_left_to_write(self):
+        self.write(".GitHub/PULL_REQUEST_TEMPLATE.md",
+                   "## Description\n<!-- what and why -->\n\n"
+                   "## How has this been tested?\n<!-- describe -->\n\n"
+                   "## Screenshots\n<!-- add screenshots for UI changes -->\n\n"
+                   "## Checklist\nPlease check:\n- [x] I added tests\n- [ ] Docs updated\n")
+        found = self.cmd_pr.find_template(self.tmp)
+        self.assertIsNotNone(found)
+        text = "\n".join(self.cmd_pr.template_sections(found))
+        self.assertNotIn("Description", text)
+        self.assertIn("## How has this been tested?\nSee _Acceptance conditions_", text)
+        self.assertIn("## Screenshots\n<!-- WRITE: the repo's PR template asks for this "
+                      "section (add screenshots for UI changes)", text)
+        self.assertIn("## Checklist\n- [ ] I added tests\n- [ ] Docs updated", text)
+        self.assertNotIn("Please check", text)
+
+    def test_a_folder_of_several_templates_has_no_default(self):
+        self.write(".github/PULL_REQUEST_TEMPLATE/bug.md", "## Bug\n")
+        self.write(".github/PULL_REQUEST_TEMPLATE/feature.md", "## Feature\n")
+        self.assertIsNone(self.cmd_pr.find_template(self.tmp))
+        (self.tmp / ".github/PULL_REQUEST_TEMPLATE/feature.md").unlink()
+        self.assertEqual(self.cmd_pr.find_template(self.tmp).name, "bug.md")
+
+    def test_no_template_adds_nothing(self):
+        self.assertEqual(self.cmd_pr.template_sections(self.cmd_pr.find_template(self.tmp)),
+                         [])
+
+
+class TicketTest(NextCase):
+    open_pr = ShipTest.open_pr
+
+    def ship_ready(self):
+        ShipTest.ship_ready(self)
+        state = self.state()
+        state["task"].update(ticket="TODO-7", ticket_url="https://acme.atlassian.net/browse/TODO-7")
+        self.write_state(state)
+
+    def test_the_ticket_is_linked_in_the_summary(self):
+        self.open_pr()
+        text = (self.dir / "pr-body.md").read_text()
+        summary = text.split("## Acceptance conditions")[0]
+        self.assertIn("Ticket: [TODO-7](https://acme.atlassian.net/browse/TODO-7)", summary)
 
 
 class CiTest(NextCase):

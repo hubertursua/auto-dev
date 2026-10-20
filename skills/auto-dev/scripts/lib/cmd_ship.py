@@ -43,7 +43,10 @@ merge-pr --pr N --sha <checked commit>
 pr-body
     Generates the PR description for the verified commit from the run's
     artifacts and templates/pr-body.md, into <artifact-dir>/pr-body.md, leaving
-    a `<!-- WRITE: ... -->` line for the Summary and one for the Assumptions.
+    a `<!-- WRITE: ... -->` line for the Summary and one for the Assumptions. It
+    links the ticket when the run has one, and adds the sections of the repo's
+    PR template it lacks: a testing section points at the checks, a checklist
+    is copied unticked, and any other section gets a WRITE line of its own.
     Links point at the commit; worktree and home paths are hidden and lines that
     look like secrets dropped; output blocks are cut, then moved to
     pr-output-comment.md, to keep it under 60,000 characters. `next` runs it.
@@ -416,7 +419,7 @@ def pr_body(args):
         state["phase6"]["body"] = {"sha": sha, "path": str(path), "seq": st.seq(state)}
         st.save(args.dir, state)
         emit(args.json, "WRITTEN", str(path), commit=sha,
-             then="write its Summary and Assumptions, then `autodev.py pr publish`")
+             then="replace its WRITE lines, then `autodev.py pr publish`")
         return 0
     try:
         text = Path(args.check).read_text(encoding="utf-8")

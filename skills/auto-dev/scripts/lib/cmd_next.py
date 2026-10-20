@@ -1114,8 +1114,9 @@ def body_step(c, sha):
         return action(f"publish the refreshed PR body: run `{c.cmd('pr', 'publish')}`",
                       "a new commit was pushed: the PR body describes the old one",
                       AFTER=[c.cmd("next")])
-    return action(f"write the PR body's Summary and Assumptions in {body['path']}: "
-                  "replace the two `<!-- WRITE: ... -->` lines, in plain words for a "
+    return action(f"fill in the PR body {body['path']}: "
+                  "replace every `<!-- WRITE: ... -->` line (references/S3-ship.md, "
+                  "_The PR body_), in plain words for a "
                   "developer who has never heard of auto-dev; change nothing else. Then "
                   "run AFTER", "the commit is pushed: the PR opens next",
                   AFTER=[c.cmd("pr", "publish")])

@@ -7,7 +7,8 @@ Publishes the PR description `next` generated (`<artifact-dir>/pr-body.md`,
 from templates/pr-body.md and the run's artifacts) for the verified commit:
 
  - It refuses while the description still holds a `<!-- WRITE: ... -->` line
-   (the Summary and Assumptions are yours to write), or while
+   (the Summary, the Assumptions and any section the repo's PR template adds
+   are yours to write), or while
    `pr-body --check` finds a problem.
  - No PR yet: it looks for an open PR from this branch first and uses that one;
    otherwise it opens a draft PR to the base branch, titled with the commit's
@@ -109,6 +110,10 @@ def generate(state, ad, sha):
     body.text("## Summary")
     body.text("<!-- WRITE: what changed and why, 2–4 sentences, drawn from SPEC.md's "
               "Context -->")
+    ticket = ticket_line(state["task"])
+    if ticket:
+        body.text("")
+        body.text(ticket)
     body.text("")
     body.text("## Acceptance conditions")
     checked = [r for r in rows if r["#"].strip() in verdicts]
@@ -169,6 +174,8 @@ def generate(state, ad, sha):
     for line in review_lines(ad):
         body.text(line)
     body.text("")
+    for line in template_sections(find_template(wt)):
+        body.text(line)
     body.text("## Assumptions")
     body.text("<!-- WRITE: the unresolved assumptions from SPEC.md a reviewer should "
               "sanity-check -->")
@@ -184,6 +191,107 @@ def generate(state, ad, sha):
     elif comment_path.exists():
         comment_path.unlink()
     return path
+
+
+def ticket_line(task):
+    """`Ticket: [KEY](link)` for a run started from a ticket, else ''."""
+    key = (task.get("ticket") or "").strip()
+    if not key or key == "none":
+        return ""
+    url = (task.get("ticket_url") or "").strip()
+    return f"Ticket: [{key}]({url})" if url else f"Ticket: {key}"
+
+
+# Where GitHub looks for a PR template, in its order; matched ignoring case.
+TEMPLATE_PLACES = (".github/pull_request_template.md", "pull_request_template.md",
+                   "docs/pull_request_template.md")
+TEMPLATE_DIR = ".github/pull_request_template"
+# Template headings the generated sections already answer.
+OURS = {"summary", "acceptance conditions", "quality gate", "review", "assumptions",
+        "description", "what", "why", "what and why", "what changed", "changes",
+        "overview", "summary of changes", "what does this pr do", "context",
+        "motivation", "details"}
+TESTING = {"testing", "tests", "test", "test plan", "testing done", "how to test",
+           "how has this been tested", "how was this tested", "how is this tested",
+           "verification"}
+HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
+BOX_RE = re.compile(r"^\s*[-*] \[[ xX]\]\s+")
+COMMENT_RE = re.compile(r"<!--(.*?)-->", re.DOTALL)
+
+
+def find_template(wt):
+    """The repo's PR template (as GitHub picks it), or None. A folder of several
+    templates has no default, so none is used then."""
+    root = Path(wt)
+    for rel in TEMPLATE_PLACES:
+        found = _ci_path(root, rel)
+        if found and found.is_file():
+            return found
+    folder = _ci_path(root, TEMPLATE_DIR)
+    if folder and folder.is_dir():
+        files = sorted(f for f in folder.iterdir() if f.suffix.lower() == ".md")
+        if len(files) == 1:
+            return files[0]
+    return None
+
+
+def _ci_path(root, rel):
+    here = root
+    for part in rel.split("/"):
+        try:
+            here = next(c for c in here.iterdir() if c.name.lower() == part)
+        except (StopIteration, OSError):
+            return None
+    return here
+
+
+def norm(heading):
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", heading.lower()).split())
+
+
+def template_sections(path):
+    """Lines for the template's sections the generated description lacks.
+
+    A section the description already answers is left out; a testing section
+    points at the checks; a checklist is copied with every box unticked; any
+    other section gets a WRITE line, so the orchestrator answers it from SPEC.md.
+    """
+    if path is None:
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    sections, current = [], None
+    for line in text.splitlines():
+        match = HEADING_RE.match(line)
+        if match:
+            current = [match.group(1).strip(), []]
+            sections.append(current)
+        elif current is not None:
+            current[1].append(line)
+    out = []
+    for heading, lines in sections:
+        key = norm(heading)
+        if not key or key in OURS:
+            continue
+        raw = "\n".join(lines)
+        hint = " ".join(" ".join(m.split()) for m in COMMENT_RE.findall(raw)).strip()
+        plain = COMMENT_RE.sub("", raw)
+        boxes = [BOX_RE.sub("- [ ] ", ln.rstrip()) for ln in plain.splitlines()
+                 if BOX_RE.match(ln)]
+        out.append(f"## {heading}")
+        if key in TESTING:
+            out.append("See _Acceptance conditions_ and _Quality gate_ above.")
+        elif boxes:
+            out += boxes
+        else:
+            hint = hint.replace("--", "-")
+            out.append("<!-- WRITE: the repo's PR template asks for this section"
+                       + (f" ({hint})" if hint else "") + ". Answer it in plain words "
+                       "from SPEC.md, or write N/A -->")
+        out.append("")
+    return out
 
 
 def fit(body, sha):

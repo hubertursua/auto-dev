@@ -43,13 +43,16 @@ If the push is rejected, tell the user what git printed and stop; don't run the
 
 ## 5. The PR body
 
-`next` names `pr-body.md`. It holds two lines like `<!-- WRITE: ... -->`.
-Replace each with plain sentences for a developer who has never heard of
-auto-dev:
+`next` names `pr-body.md`. It holds lines like `<!-- WRITE: ... -->`: always
+one for the Summary and one for the Assumptions, and one for each section of
+the repo's own PR template the script couldn't fill. Replace each with plain
+sentences for a developer who has never heard of auto-dev:
 
 - **Summary:** what changed and why, 2–4 sentences, from `SPEC.md`'s Context.
 - **Assumptions:** the open assumptions from `SPEC.md`'s Assumptions section a
   reviewer should check, one bullet each, or `None.`
+- **A template section:** answer what its WRITE line asks, from `SPEC.md` or
+  `HANDOFF.md`. If neither says, write `N/A`. Never read the code to answer it.
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
 "verifier" or "pipeline". Change nothing else in the file. Then run the `AFTER`
@@ -58,7 +61,7 @@ line, `autodev.py pr publish`:
 | Exit | Do |
 |---|---|
 | 0 | published: run `next` |
-| 1 | IF it names a WRITE line or a problem in your two sections, fix them and run it again. ELSE tell the user what it printed and stop |
+| 1 | IF it names a WRITE line or a problem in a section you wrote, fix them and run it again. ELSE tell the user what it printed and stop |
 | 2 | tell the user the error and stop |
 
 ## 6. Jira

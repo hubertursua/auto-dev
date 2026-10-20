@@ -450,7 +450,9 @@ green), `merge-staging` (direct merge, never forced, always back on the
 branch), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
 `--admin`, then confirms it merged), `pr-body` (generates the PR description
 from the run's artifacts, with links at the checked commit, paths hidden and
-output cut to fit, leaving only the Summary and Assumptions to write; with
+output cut to fit, the ticket linked and the repo's own PR template's
+sections added, leaving the Summary, the Assumptions and any template section
+it can't fill to write; with
 `--check`, lints one: strict sections, the checked commit, size, no internal
 IDs, paths or secrets), `pr publish` (opens the one PR, or refreshes the
 sections the pipeline writes in the live description, keeps overflowing output
