@@ -156,7 +156,7 @@ Orchestrator context is the real cost driver: every added turn makes every later
 turn more expensive. So the orchestrator holds the pipeline, not the code — it
 delegates reads and keeps large artifacts in workers — and `next` ends a long
 session at a **checkpoint**: after 80 recorded events in one session (about 35
-workers), at the next point where the step would be an action and no worker is
+workers; `checkpoint_events` in `.auto-dev.yml` changes the count), at the next point where the step would be an action and no worker is
 in flight (a stop or a question the step would print comes first), it writes `HANDOFF.md`
 and asks you to continue in a fresh session. Continuing after a checkpoint
 lifts no stop: a worker that failed once before it and once after still stops
@@ -336,12 +336,16 @@ The keys most runs touch in `.auto-dev.yml`: `iteration_budget` (revise rounds,
 default 4), `mutation.max` (mutants per verifier pass, default 20, `0` = off),
 `gates.post_plan` (turn the post-plan gate on), `branches` (`base`, `staging`,
 `prefix`), `ci` and `ci_timeout_minutes`, `worktree_files`, `security_docs`,
-`symbol_lookup` (a code-index tool to use instead of grep), and `jira.states`.
+`symbol_lookup` (a code-index tool to use instead of grep),
+`pr_review.inline_comments` (post the open and advisory review findings on the
+PR), `checkpoint_events` (events one session writes before `next` checkpoints
+it, default 80), and `jira.states`.
 It can also set any profile key (`setup`, `gate`, `test_notes`, …) to override the
 profile. Phase 1 validates the file with `scripts/validate-config.py`, so a
 mistyped key is reported rather than silently ignored. Without
 `security_docs`, `autodev.py init` uses the repo's `SECURITY.md`,
-`.github/SECURITY.md` and `docs/security/*.md`. See
+`.github/SECURITY.md` and `docs/security/*.md`; `security_docs: []` turns them
+off, and a listed path the worktree doesn't have is dropped with a warning. See
 `skills/auto-dev/references/profiles.md`.
 
 ## Human gates & integrations
@@ -350,12 +354,24 @@ Planning and build run unattended; the pipeline pauses for approval before
 **opening the PR**, before the **staging merge**, and before the **main merge**
 (plus an optional post-plan gate you can enable per run). The PR opens as a
 **draft** unless you ask for it ready for review, and is marked ready before the
-main gate. Main is merged only via `gh pr merge` (respecting branch protection,
+main gate. Its description follows the repo's default PR template when there is
+one (never a template from a `PULL_REQUEST_TEMPLATE/` folder, which GitHub only
+applies when asked), and links the Jira ticket. With
+`pr_review.inline_comments: true`, the review findings left open or advisory are
+posted on the PR once it opens: inline at their line when it is in the diff, the
+rest in one comment. The main gate doesn't count those posts as people's
+comments, and its summary shows the staging branch's CI result after the
+staging merge (CI that timed out or couldn't be watched shows as not monitored,
+never as green). Main is merged only via `gh pr merge` (respecting branch protection,
 never `--admin`), with `--squash` by default — `--merge` if the repo disallows
 squash, `--rebase` only when it is the one method allowed. Before the main gate
 the pipeline fetches the PR branch and checks it still holds the code every
 result was checked on. If someone pushed to it, the run stops and tells you,
-rather than merging commits nothing checked. The merge is locked to that commit with
+rather than merging commits nothing checked. To ship those commits, bring them
+into the worktree with the `git merge --ff-only origin/<branch>` command the stop
+names and say `auto-dev continue`: the quality gate and the verifier run again,
+a review pass covers what the commits (and the re-check) changed, `commit`
+verifies the new head, and the main gate is asked again. The merge is locked to that commit with
 `--match-head-commit`, so a push made after the check makes GitHub refuse the
 merge instead of shipping unchecked code. Staging is a direct
 merge where the project uses that convention. **Jira** integration is
@@ -474,7 +490,9 @@ green), `merge-staging` (direct merge, never forced, always back on the
 branch), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
 `--admin`, then confirms it merged), `pr-body` (generates the PR description
 from the run's artifacts, with links at the checked commit, paths hidden and
-output cut to fit, leaving only the Summary and Assumptions to write; with
+output cut to fit, the ticket linked and the repo's own PR template's
+sections added, leaving the Summary, the Assumptions and any template section
+it can't fill to write; with
 `--check`, lints one: strict sections, the checked commit, size, no internal
 IDs, paths or secrets), `pr publish` (opens the one PR, or refreshes the
 sections the pipeline writes in the live description, keeps overflowing output
@@ -494,8 +512,9 @@ and prints its summary and question). For workers: `brief` (writes a worker's
 brief file from state (with `--out`, a profiler or pre-run lookup brief, before
 any state exists), refusing when a value only the orchestrator can give is
 missing, and prints the one-line prompt to spawn it with), `record` (checks the
-result a worker wrote against the artifact it wrote, and stops on a mismatch,
-saving the issues so the next `next` re-spawns that job with them; `brief
+result a worker wrote against the artifact it wrote, checks every other file it
+wrote against its template and the planner's IMPLEMENTATION.md with
+`spec-overlap`, and stops on a mismatch, saving the issues so the next `next` re-spawns that job with them; `brief
 --retry <n>` does the same by hand) and
 `check-artifact` (workers check what they wrote against its template before
 returning). And `next`, the orchestrator's loop: it reads the state, the recorded results and the artifacts,
@@ -557,7 +576,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `briefs/`, `returns/` | `autodev.py brief` and `next`, each worker | each worker's brief file, and the result it returned |
 | `blocked/` | Phases 4–6, coder | the build steps the coder stopped, for the planner |
 | `pr-body.md`, `pr-output-comment.md` | Phase 6, `autodev.py next` | the generated PR description, and the command output moved out of it when it would be too long |
-| `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session: the task, what is done, what comes next |
+| `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session: the task, what is done, what comes next, the run files its orchestrator may open |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
 | `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code; `AMBIGUOUS.md` lists a condition that reads two ways, for the Define agent |
@@ -589,7 +608,9 @@ changes nothing, or when a re-voter fails twice. A stop on a worker (it
 stopped on purpose, failed twice, or never returned) lasts until you resume:
 then that worker is spawned again, and a refused `pr publish` is run
 again the same way. A stop on a result (a red quality gate, an
-impossible spec, a possibly planted bug, the budget used up) stays. If Define's size check returns OVERSIZED, it builds nothing and hands
+impossible spec, a possibly planted bug, the budget used up) stays. A stop
+because someone pushed to the PR branch lasts until you bring those commits
+into the worktree; then they are re-checked before the main gate. If Define's size check returns OVERSIZED, it builds nothing and hands
 the task back to you; Jira is left alone, and the worktree and branch stay in
 place (see *Size check* above). It never asks you at a gate, or writes a PR description, on results
 that were checked on other code. It refuses a
@@ -684,6 +705,13 @@ rules for changing a script are in `CLAUDE.md`.
   in Phase 1. `resume-point.py` is removed: `autodev.py resume` finds the run.
 - **`init` finds the security directives** from `security_docs`, or the repo's
   `SECURITY.md`, `.github/SECURITY.md` and `docs/security/*.md`.
+- **The PR follows the repo's PR template and links the ticket.** The
+  description gets the template's sections, and `pr_review.inline_comments`
+  now posts once, after the PR opens, only the review findings left open or
+  advisory (3.x posted the Phase 6a findings). `record` checks every file a
+  worker says it wrote against its template, and refuses a plan, or a plan
+  reviewer's FIX, that copies `SPEC.md`'s wording. A push to the PR branch can
+  now be brought in and re-checked instead of ending the run.
 
 A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
 and start again.

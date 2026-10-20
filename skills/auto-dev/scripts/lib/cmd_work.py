@@ -35,7 +35,14 @@ record <worker> <n>
     against its triage files (blockers in `triage_file`, held-out check
     comments in `checks_file`); the lookup's answer at lookups/<n>.md. A
     required-changes file that reaches the coder unedited (the verifier's, the
-    judge's, the triager's) must not copy SPEC.md's wording (`spec-overlap`).
+    judge's, the triager's) must not copy SPEC.md's wording (`spec-overlap`),
+    nor may the planner's IMPLEMENTATION.md, the coder's other brief from a
+    SPEC.md reader, nor the new text of the plan reviewer's FIX blocks, which
+    `next` applies to IMPLEMENTATION.md. Every other file the return says the
+    worker wrote must pass check-artifact: a reviewer's fix file, SPEC_EVAL.md,
+    the lint reports, a code reviewer's report or votes, CODE_REVIEW.md and
+    SECURITY_REVIEW.md. Each must exist, except a lint report, which only
+    cleanup's GREEN requires (every report passing).
     On a match it updates state.json (for an ok return of the Define agent, the
     size check; after Define or its reviewer, a Security/Compliance criterion in
     SPEC.md turns a run that FITS high-risk with the post-plan gate on; a note
@@ -51,7 +58,8 @@ record <worker> <n>
 
 check-artifact <file>
     Checks one artifact against its template before a worker returns it:
-    SPEC.md, IMPLEMENTATION.md, acceptance/MANIFEST.md, SPEC_EVAL.md,
+    SPEC.md, IMPLEMENTATION.md (also refused when it copies the run's SPEC.md,
+    as `spec-overlap` checks), acceptance/MANIFEST.md, SPEC_EVAL.md,
     CODE_REVIEW.md, SECURITY_REVIEW.md, review/pass-<n>/R<k>.md and
     VOTES-R<k>.md, lint/<CHECK>.md, a required-changes file (corrections.md,
     triage/*.md; also refused when it copies the run's SPEC.md, as
@@ -384,10 +392,71 @@ def entries(path):
 
 def derive(worker, data, ad, state, n):
     """Return a list of disagreements between the return and the artifacts."""
+    if data.get("status") != "ok":
+        return []
+    return result_issues(worker, data, ad, state, n) + artifact_issues(
+        worker, data, ad, state, n)
+
+
+def written_files(worker, data, ad, state, n):
+    """[(path, required)]: the files this result says the worker wrote that no
+    other check reads (required-changes files are checked by coder_bound)."""
+    nxt = data.get("next")
+    issued = next((b for b in state.get("briefs", [])
+                   if b["worker"] == worker and b["n"] == n), {})
+    mode, sets = issued.get("mode"), issued.get("sets", {})
+    review = ad / "review" / f"pass-{state.get('phase6', {}).get('review_pass') or 1}"
+    files = []
+    if worker in ("define-reviewer", "plan-reviewer"):
+        fix = str(data.get("fix_file", "none")).strip()
+        if fix not in ("none", ""):
+            files.append((Path(fix), False))  # result_issues reports a missing one
+    elif worker == "verifier" and nxt not in ("INSTALL_CONFLICT", "MUTATION_LEFT_CHANGES"):
+        files.append((ad / "SPEC_EVAL.md", True))
+    elif worker == "cleanup":
+        files += [(ad / "lint" / c["report"], False)
+                  for c in state["settings"].get("gate", []) if c.get("report")]
+    elif worker == "code-reviewer" and sets.get("reviewer"):
+        name = "VOTES-" if mode == "re-vote" else ""
+        files.append((review / f"{name}{sets['reviewer']}.md", True))
+    elif worker == "review-judge":
+        files.append((ad / ("SECURITY_REVIEW.md" if nxt == "VERIFIED" else "CODE_REVIEW.md"),
+                      True))
+    elif worker in ("security-reviewer", "security-reviewer-sensitive"):
+        files.append((ad / "SECURITY_REVIEW.md", True))
+    return files
+
+
+def artifact_issues(worker, data, ad, state, n):
+    """Each file the worker wrote must follow its template; the plan reviewer's
+    FIX text, which goes into the plan the coder is briefed with, must not copy
+    SPEC.md's wording (the planner's own plan is checked by check_file)."""
+    issues = []
+    for path, required in written_files(worker, data, ad, state, n):
+        if not path.exists():
+            if required:
+                issues.append(f"{path} does not exist")
+            continue
+        issues += [f"{path.name}: {p}" for p in check_file(path)]
+    fix = str(data.get("fix_file", "none")).strip()
+    if worker == "plan-reviewer" and fix not in ("none", "") and Path(fix).exists():
+        # `next` applies these blocks to IMPLEMENTATION.md with no planner in
+        # between, so their new text is held to the plan's rule. Old text was
+        # copied from the plan, which already passed.
+        try:
+            new = "\n".join(b[2] for b in FIX_RE.findall(art.read(Path(fix))))
+            issues += [f"{Path(fix).name}'s new text copies SPEC.md's wording ({hit}): "
+                       "the coder never sees SPEC.md, so say what the code must do in "
+                       "the plan's own words"
+                       for hit in overlaps(Path(fix), ad / "SPEC.md", text=new)]
+        except art.ArtifactError as exc:
+            issues.append(f"{Path(fix).name}: {exc}")
+    return issues
+
+
+def result_issues(worker, data, ad, state, n):
     nxt = data.get("next")
     issues = []
-    if data.get("status") != "ok":
-        return issues
     if worker == "define":
         if nxt in ("FITS", "OVERSIZED"):
             conds = art.spec_conditions(ad / "SPEC.md")
@@ -614,8 +683,19 @@ def check_file(path):
         if name == "IMPLEMENTATION.md":
             heads = [ln.strip() for ln in text.splitlines() if ln.startswith("## ")]
             want = list(IMPLEMENTATION_HEADINGS)
-            return [] if [h for h in heads if h in want] == want else [
+            problems = [] if [h for h in heads if h in want] == want else [
                 f"headings must be, in order: {', '.join(want)} (found: {', '.join(heads)})"]
+            # The coder never sees SPEC.md: a plan that echoes it lets a test name
+            # echo it too. In a run (state.json beside it), a missing SPEC.md is
+            # reported, not skipped.
+            spec = run_spec(path)
+            if spec is None and (path.parent / "state.json").is_file():
+                spec = path.parent / "SPEC.md"
+            if spec is not None:
+                problems += [f"copies SPEC.md's wording ({hit}): the coder never sees "
+                             "SPEC.md, so say what the code must do in your own words"
+                             for hit in overlaps(path, spec)]
+            return problems
         if name == "MANIFEST.md":
             rows, _ = art.manifest(path)
             return [f"row {r['#']}: Kind `{r['Kind']}` is not fail-to-pass/pass-to-pass"

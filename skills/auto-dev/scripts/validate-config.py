@@ -75,6 +75,7 @@ TOP_LEVEL = {
     "ci": (str, "CI provider"),
     "ci_timeout_minutes": (int, "bound on CI watching"),
     "iteration_budget": (int, "revise rounds per task"),
+    "checkpoint_events": (int, "events one session writes before `next` checkpoints it"),
     "security_docs": (list, "paths to the security directives"),
     "pr_review": (dict, "inline_comments"),
     "gates": (dict, "post_plan"),
@@ -295,7 +296,7 @@ def main() -> int:
             if key == "ci" and value not in CI_PROVIDERS:
                 errors.append(
                     f"ci: `{value}` is not one of {', '.join(sorted(CI_PROVIDERS))}")
-            if (key in ("iteration_budget", "ci_timeout_minutes")
+            if (key in ("iteration_budget", "ci_timeout_minutes", "checkpoint_events")
                     and value < MIN_POSITIVE):
                 errors.append(f"{key}: must be at least {MIN_POSITIVE}, got "
                               f"{value} — 0 would skip the step it bounds")

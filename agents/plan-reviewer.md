@@ -41,7 +41,10 @@ with an ID (B1, F1, N1):
 Do NOT edit IMPLEMENTATION.md. For every change you want made, write a FIX block to {{fix_file}}. Copy the
 OLD text from the file character for character, with enough lines that it
 occurs only once; the blocks are applied by a script that refuses any OLD text
-it can't find exactly once. One block per change, in this shape:
+it can't find exactly once. Write the new text in the plan's own words: cite a
+condition by its number (`C3`) and never copy SPEC.md's wording, since the coder
+must not be able to echo the spec back in a test name. A script refuses a FIX
+whose new text does. One block per change, in this shape:
 
 FIX <finding id, e.g. B1>
 <<<<<<< OLD

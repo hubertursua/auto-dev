@@ -59,13 +59,16 @@ If the push is rejected, tell the user what git printed and stop; don't run the
 
 ## 5. The PR body
 
-`next` names `pr-body.md`. It holds two lines like `<!-- WRITE: ... -->`.
-Replace each with plain sentences for a developer who has never heard of
-auto-dev:
+`next` names `pr-body.md`. It holds lines like `<!-- WRITE: ... -->`: always
+one for the Summary and one for the Assumptions, and one for each section of
+the repo's own PR template the script couldn't fill. Replace each with plain
+sentences for a developer who has never heard of auto-dev:
 
 - **Summary:** what changed and why, 2–4 sentences, from `SPEC.md`'s Context.
 - **Assumptions:** the open assumptions from `SPEC.md`'s Assumptions section a
   reviewer should check, one bullet each, or `None.`
+- **A template section:** answer what its WRITE line asks, from `SPEC.md` or
+  `HANDOFF.md`. If neither says, write `N/A`. Never read the code to answer it.
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
 "verifier" or "pipeline". Change nothing else in the file: the follow-ups the
@@ -76,8 +79,8 @@ line, `autodev.py pr publish`:
 
 | Exit | Do |
 |---|---|
-| 0 | published: run `next` |
-| 1 | IF it names a WRITE line or a problem in your two sections, fix them and run it again. ELSE tell the user what it printed and stop |
+| 0 | published: run `next`. A failure to post the review findings (its `inline_comments` line) is saved; `next`'s final-report step names it |
+| 1 | IF it names a WRITE line or a problem in a section you wrote, fix them and run it again. ELSE tell the user what it printed and stop |
 | 2 | tell the user the error and stop |
 
 ## 6. Jira
@@ -95,8 +98,8 @@ _Moving a ticket_ says, then run its `AFTER` line.
    only GitHub Actions.
 2. ELSE find the commit the merge made with the command `next`'s `ACTION`
    names: for the base branch, `gh pr view <PR number> --json mergeCommit -q
-   .mergeCommit.oid`; for staging, `git -C <worktree> rev-parse
-   origin/<staging>` (the commit `merge-staging` pushed).
+   .mergeCommit.oid`; for staging, the commit `merge-staging` pushed, which
+   `next` names (saved as `phase6.staging_merge`).
 3. Run `gh run list --commit <sha> --json status,conclusion,url,workflowName`
    every 30 seconds, for up to the CI timeout in `profile.md`:
    - any run `completed` with a conclusion other than `success`, `skipped` or
@@ -148,7 +151,11 @@ Every stop is exit 4 with its reason in `REPORT`
 (`references/tables.md`, _Stop conditions_). The ones that need care:
 
 - **CI red at the main gate (#19):** never merge over it; name each red check.
-- **Someone pushed to the PR branch (#18):** tell the user; the pipeline must
-  re-check those commits before merging.
+- **Someone pushed to the PR branch (#18):** tell the user what the `REPORT`
+  says: to ship those commits, they bring them into the worktree with the
+  `git merge --ff-only` command it names and say `auto-dev continue`. `next`
+  then re-checks them (quality gate, verifier, a review pass on what they
+  changed), `commit` verifies the new head, or commits the re-check's edits on
+  top, and the main gate is asked again.
 - **GitHub refused or queued the merge (#20):** say what blocks it; Jira stays
   where it is.

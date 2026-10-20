@@ -9,3 +9,6 @@ Must-fix: 0 open · 0 fixed   ·   For the user (pre-existing): 1   ·   Advisor
 | ID | Finding | Location | Origin | Confidence | Verified | Verdict | Status |
 |----|---------|----------|--------|------------|----------|---------|--------|
 | S2 | session token not rotated | `src/auth.ts:88` | pre-existing | Medium | confirmed | for the user | — |
+
+## Coverage
+Every changed file.

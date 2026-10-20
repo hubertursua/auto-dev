@@ -37,9 +37,14 @@ that a script can check, add it there.
   its exit codes; the skill's docs tell the orchestrator what each code means.
   If you change an exit code or an output line, update the docstring and every
   reference file that quotes it (`grep -rn "<script>.py" skills/`).
-- **Add a test** in `tests/test_scripts.py` (`tests/test_autodev.py` for
-  `autodev.py`) for every fix or new behavior, and
-  check that it fails without your change. Tests run the script as a subprocess,
+- **Add a test** for every fix or new behavior, in the file for what you
+  changed: `tests/test_scripts.py` (the single-purpose scripts),
+  `tests/test_autodev.py` (`autodev.py`'s other subcommands),
+  `tests/test_work.py` (`brief`, `record`, `check-artifact`),
+  `tests/test_next.py` (`next`, `pr publish`), `tests/test_parsers.py` (the
+  artifact parsers) or `tests/test_eval_fixtures.py` (the eval fixtures;
+  regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
+  tests.test_eval_fixtures`), and check that it fails without your change. Tests run the script as a subprocess,
   the way the pipeline does, and build throwaway git repos in a temp dir. A
   command that calls `gh` is tested against `tests/fake_gh/gh`, which plays
   back the responses the test scripts; never call the real GitHub from a test.
@@ -78,10 +83,11 @@ becomes a default for every repo.
   profile back; teach the profiler's brief what to look for instead.
 - **A rule for one stack goes through the profile.** If a step needs a tool
   only one ecosystem has, add an optional profile key the step reads, with a
-  stack-neutral fallback when it's absent. `symbol_lookup` is the model:
-  `SKILL.md` says "use `profile.md`'s symbol lookup", which falls back to
-  `grep -n`, and the profiler fills it in only when the repo's ecosystem has a
-  code-index tool on PATH.
+  stack-neutral fallback when it's absent. `symbol_lookup` is the model: the
+  `lookup` worker's agent file uses `{{symbol_lookup}}`, which `brief` fills
+  from `profile.md`'s Symbol lookup line and which falls back to `grep -n`, and
+  the profiler fills it in only when the repo's ecosystem has a code-index tool
+  on PATH.
 - **Examples are in TypeScript, and say so.** An example that names a command,
   path or code uses TypeScript, a language most readers know, and is labeled
   "example in TypeScript" (or "Filled-in rows are an example in TypeScript." above

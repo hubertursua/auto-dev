@@ -7,7 +7,8 @@ $FAKE_GH_RESPONSES names a JSON file holding a list of
 The first entry whose `args` is a prefix of the call's arguments answers it.
 `times` (optional) limits how many calls an entry answers, so a test can script
 "pending, then green". An unmatched call exits 1 with `fake gh: no response`.
-$FAKE_GH_LOG, when set, gets one JSON line per call: {"args": [...]}.
+$FAKE_GH_LOG, when set, gets one JSON line per call: {"args": [...]}, plus
+"files": {path: contents} for a file passed with --input or --body-file.
 """
 
 import json
@@ -17,8 +18,13 @@ import sys
 args = sys.argv[1:]
 log = os.environ.get("FAKE_GH_LOG")
 if log:
+    files = {}
+    for flag, value in zip(args, args[1:]):
+        if flag in ("--input", "--body-file") and os.path.isfile(value):
+            with open(value, encoding="utf-8") as fh:
+                files[value] = fh.read()
     with open(log, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"args": args}) + "\n")
+        fh.write(json.dumps({"args": args, "files": files}) + "\n")
 path = os.environ.get("FAKE_GH_RESPONSES")
 responses = []
 if path and os.path.exists(path):

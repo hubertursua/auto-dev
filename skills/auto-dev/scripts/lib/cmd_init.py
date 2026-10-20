@@ -216,6 +216,7 @@ def create_run(repo, worktree, branch, config, args, staging, base, prefix):
         raise Fail(f"exclude-artifacts.py exited {code}: {(err or out).strip()}",
                    CANNOT_RUN if code == 2 else 1)
     seeded, missing = seed_files(repo, worktree, config.get("worktree_files", []))
+    docs, missing_docs = security_docs(worktree, config, args.security_doc)
 
     settings = {
         "stack": config.get("stack", ""),
@@ -226,7 +227,9 @@ def create_run(repo, worktree, branch, config, args, staging, base, prefix):
         "inline_comments": bool(config.get("pr_review", {}).get("inline_comments",
                                                                 False)),
         "jira_states": config.get("jira", {}).get("states", {}),
-        "security_docs": security_docs(worktree, config, args.security_doc),
+        "security_docs": docs,
+        # None: `next` uses its own default (CHECKPOINT_EVENTS)
+        "checkpoint_events": config.get("checkpoint_events"),
         "test_notes": config.get("test_notes", ""),
         "setup": config.get("setup", []),
         "gate": config.get("gate", []),
@@ -245,8 +248,12 @@ def create_run(repo, worktree, branch, config, args, staging, base, prefix):
     if missing:
         st.add_note(state, "worktree_files not found in the main checkout: "
                     + ", ".join(missing))
+    if missing_docs:
+        st.add_note(state, "security_docs not found in the worktree: "
+                    + ", ".join(missing_docs))
     (artifact_dir / "profile.md").write_text(
-        render_profile(state, config, args, seeded, missing), encoding="utf-8")
+        render_profile(state, config, args, seeded, missing, missing_docs),
+        encoding="utf-8")
     st.save(artifact_dir, state)
     return state
 
@@ -367,18 +374,21 @@ def seed_files(repo, worktree, files):
 
 
 def security_docs(worktree, config, given):
-    """The security directives, from the first source that has any: --security-doc,
-    `security_docs` in .auto-dev.yml, then SECURITY.md, .github/SECURITY.md and
-    docs/security/*.md in the worktree."""
-    if given:
-        return list(given)
-    if config.get("security_docs"):
-        return list(config["security_docs"])
+    """(the security directives, the listed ones not found in the worktree).
+
+    An explicit list, from --security-doc or `security_docs` in .auto-dev.yml,
+    is used as given (an empty one turns them off), less any path the worktree
+    doesn't have; only without one are SECURITY.md, .github/SECURITY.md and
+    docs/security/*.md looked for."""
+    if given or "security_docs" in config:
+        listed = list(given or config.get("security_docs") or [])
+        missing = [p for p in listed if not (worktree / p).is_file()]
+        return [p for p in listed if p not in missing], missing
     found = [rel for rel in ("SECURITY.md", ".github/SECURITY.md")
              if (worktree / rel).is_file()]
     found += sorted(str(p.relative_to(worktree))
                     for p in (worktree / "docs" / "security").glob("*.md"))
-    return found
+    return found, []
 
 
 def symbol_lookup(config):
@@ -392,7 +402,17 @@ def symbol_lookup(config):
     return f"`{definition}` / `{lookup.get('references', '')}`"
 
 
-def render_profile(state, config, args, seeded, missing):
+def security_line(docs, missing_docs, config, args):
+    if docs:
+        text = ", ".join(docs)
+    elif args.security_doc or "security_docs" in config:
+        text = "none — `security_docs` lists none the worktree has; repo coding rules only"
+    else:
+        text = "none found — repo coding rules only"
+    return text + (f" (not found: {', '.join(missing_docs)})" if missing_docs else "")
+
+
+def render_profile(state, config, args, seeded, missing, missing_docs=()):
     s, repo = state["settings"], state["repo"]
     mutation = f"{s['mutation_max']} mutants per verifier pass" if s["mutation_max"] \
         else "off (`mutation.max: 0`)"
@@ -418,8 +438,8 @@ def render_profile(state, config, args, seeded, missing):
         f"- **Symbol lookup:** {symbol_lookup(config)}",
         f"- **`.auto-dev.yml`:** {override}",
         f"- **Post-plan gate:** {'on — gates.post_plan' if s['post_plan_gate'] else 'off'}",
-        "- **Security directives:** " + (", ".join(s["security_docs"])
-                                         or "none found — repo coding rules only"),
+        "- **Security directives:** " + security_line(s["security_docs"], missing_docs,
+                                                      config, args),
         f"- **Jira:** {args.jira or 'unavailable — no ticket'}",
         f"  {jira_map}", "",
         *setup_and_gate_lines(s),

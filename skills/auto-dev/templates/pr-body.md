@@ -2,6 +2,8 @@
 ## Summary
 <what changed and why, 2–4 sentences — drawn from SPEC.md's Context>
 
+<only when the run has a ticket: Ticket: [<KEY>](<link>)>
+
 ## Acceptance conditions
 **How this was checked.** Before any code was written, a test was written from
 the requirements alone for each requirement below that a test could check, and
@@ -96,7 +98,13 @@ shipped anyway. Minor suggestions stay out. A security problem that predates
 this change appears here only if the user chose `Separate PR` at the PR gate,
 listed as a follow-up.>
 
+<only when the repo has a default PR template: each of its sections this body
+lacks, under its own heading — a testing section points at the checks above, a
+checklist is copied with every box unticked, and any other section is answered
+in plain words from SPEC.md, or N/A>
+
 ## Assumptions
 <the unresolved assumptions from SPEC.md a reviewer should sanity-check>
 
 Generated with [Claude Code](https://claude.com/claude-code)
+<!-- auto-dev -->

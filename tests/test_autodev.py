@@ -126,11 +126,44 @@ class InitTest(RunCase):
         self.assertIn("**Security directives:** SECURITY.md, docs/security/authz.md",
                       profile)
 
+    def push_docs(self, *paths):
+        seed = self.tmp / "seed"
+        for rel in paths:
+            (seed / rel).parent.mkdir(parents=True, exist_ok=True)
+            (seed / rel).write_text("# Rules\n")
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "docs", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+
     def test_security_docs_in_the_override_win(self):
+        self.push_docs("docs/rules.md", "SECURITY.md")
         (self.repo / ".auto-dev.yml").write_text("security_docs: [docs/rules.md]\n")
         self.assertEqual(self.init().returncode, 0)
-        self.assertIn("**Security directives:** docs/rules.md",
+        self.assertIn("**Security directives:** docs/rules.md\n",
                       (self.dir / "profile.md").read_text())
+
+    def test_an_empty_security_docs_list_turns_them_off(self):
+        self.push_docs("SECURITY.md")
+        (self.repo / ".auto-dev.yml").write_text("security_docs: []\n")
+        self.assertEqual(self.init().returncode, 0)
+        self.assertEqual(self.state()["settings"]["security_docs"], [])
+        self.assertIn("**Security directives:** none", (self.dir / "profile.md").read_text())
+
+    def test_a_listed_security_doc_that_is_missing_is_dropped_with_a_note(self):
+        self.push_docs("docs/rules.md")
+        (self.repo / ".auto-dev.yml").write_text(
+            "security_docs: [docs/rules.md, docs/gone.md]\n")
+        self.assertEqual(self.init().returncode, 0)
+        self.assertEqual(self.state()["settings"]["security_docs"], ["docs/rules.md"])
+        self.assertIn("**Security directives:** docs/rules.md (not found: docs/gone.md)",
+                      (self.dir / "profile.md").read_text())
+        self.assertIn("security_docs not found in the worktree: docs/gone.md",
+                      json.dumps(self.state()["notes"]))
+
+    def test_checkpoint_events_come_from_the_override(self):
+        (self.repo / ".auto-dev.yml").write_text("checkpoint_events: 40\n")
+        self.assertEqual(self.init().returncode, 0)
+        self.assertEqual(self.state()["settings"]["checkpoint_events"], 40)
 
     def test_signed_out_gh_stops(self):
         self.script_gh([{"args": ["auth", "status"], "stderr": "not logged in",
@@ -441,6 +474,9 @@ class StateCommandsTest(RunCase):
         self.assertIn("Task: Add due dates to todos", text)
         self.assertIn("Pick up at: say `auto-dev continue`; `next` decides the step", text)
         self.assertNotIn("start of Phase", text)
+        # S2's orchestrator reads HANDOFF.md and nothing else in .auto-dev/ but the profile
+        opened = text.split("## Files you may open\n", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(opened, f"- {self.dir / 'profile.md'}")
 
     def test_handoff_refuses_a_finished_run(self):
         for n in range(2, 7):

@@ -69,6 +69,8 @@ spec-overlap <file> [--spec SPEC.md] [--words N]
     when shorter) of a condition's text found in <file>. In a required-changes
     file (`*corrections.md`, `triage/*.md`) text in backticks or double quotes
     is left out: it quotes a test name, an assertion or output, not the spec.
+    `record` runs the same check on the planner's IMPLEMENTATION.md and on each
+    required-changes file the coder gets unedited.
     Exit: 0 no overlap; 1 overlap (the copied words are printed): rewrite it as
     concrete behavior.
 
@@ -428,11 +430,12 @@ def is_corrections(path):
     return path.name.endswith("corrections.md") or path.parent.name == "triage"
 
 
-def overlaps(path, spec, n=6, quoted=None):
+def overlaps(path, spec, n=6, quoted=None, text=None):
     """Each condition whose wording `path` copies: `condition <id>: "<words>"`.
     Quoted spans (test names, assertions, output) count only when `quoted` is
-    true; by default, everywhere but in a required-changes file."""
-    text = art.read(path)
+    true; by default, everywhere but in a required-changes file. `text`, when
+    given, is checked in place of the file's text (part of it)."""
+    text = art.read(path) if text is None else text
     if quoted is None:
         quoted = not is_corrections(path)
     # A phrase may not run across a left-out span: each piece is matched alone.

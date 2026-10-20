@@ -44,7 +44,8 @@ migration/config. It must be self-contained — a competent engineer who has NOT
 seen the spec should build the right thing from this plan alone. Ensure every
 SPEC.md condition maps to a build step AND a test. Cite a condition by its
 number (`C3`) and describe it in the plan's own words; never copy its wording,
-since the coder must not be able to echo the spec back in a test name.
+since the coder must not be able to echo the spec back in a test name. A script
+refuses a plan that does.
 
 Return: assumptions, key risks.
 
