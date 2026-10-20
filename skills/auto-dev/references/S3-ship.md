@@ -155,7 +155,7 @@ Every stop is exit 4 with its reason in `REPORT`
   says: to ship those commits, they bring them into the worktree with the
   `git merge --ff-only` command it names and say `auto-dev continue`. `next`
   then re-checks them (quality gate, verifier, a review pass on what they
-  changed), `commit` verifies the new head without committing, and the main
-  gate is asked again.
+  changed), `commit` verifies the new head, or commits the re-check's edits on
+  top, and the main gate is asked again.
 - **GitHub refused or queued the merge (#20):** say what blocks it; Jira stays
   where it is.

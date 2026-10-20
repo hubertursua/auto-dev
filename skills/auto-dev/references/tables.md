@@ -130,7 +130,7 @@ points; you never run it yourself.
 | Start of Phase 6, nothing committed yet | the code changed outside the pipeline since S2 | the quality gate and the verifier run again, then the full review |
 | The PR gate | the code changed while the gate waited | re-checked as above, then the gate is asked again |
 | `commit` | the code changed after the gate | re-checked as above, then the gate is asked again |
-| Before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#18); once the user brings the commits into the worktree, the quality gate and the verifier run again, a review pass covers what they changed, `commit` verifies the new head without committing, and the main gate is asked again |
+| Before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#18); once the user brings the commits into the worktree, the quality gate and the verifier run again, a review pass covers what they changed, `commit` verifies the new head, or commits the re-check's edits on top, and the main gate is asked again |
 | The same check, stale twice running | the re-run didn't settle it | stop (#13) |
 
 ## Lookups

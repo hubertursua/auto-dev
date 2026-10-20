@@ -1706,7 +1706,8 @@ def outside_push(c, sha, stale):
     """The PR's branch moved past the verified commit. Once the user has brought
     those commits into the worktree, they are re-checked like any outside
     change (the quality gate, the verifier, then a review pass on what they
-    changed since `sha`), and `commit` then verifies HEAD without committing."""
+    changed since `sha`), and `commit` then verifies HEAD, or commits the
+    re-check's edits on top."""
     branch = c.state["branch"]
     head = git(c.wt, "rev-parse", "HEAD").strip()
     code, remote, _ = git(c.wt, "rev-parse", f"origin/{branch}", check=False)
@@ -1717,7 +1718,7 @@ def outside_push(c, sha, stale):
             return twice
         c.would("re-check the PR branch's commits brought into the worktree",
                 "the user brought the outside commits in")
-        c.p6["unverified_commit"] = head  # `commit` verifies it, no new commit
+        c.p6["unverified_commit"] = head  # a clean `commit` verifies it, no new commit
         c.dirty = True
         return stale_again(c, stale, since=sha)
     return stop([("The PR's branch holds commits the pipeline did not check (someone "
