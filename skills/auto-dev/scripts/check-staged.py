@@ -42,7 +42,7 @@ Exit codes:
        unexpected error) — NOT a pass
 
 A staged file name that isn't valid UTF-8 is checked like any other and
-printed with U+FFFD in place of the bytes it can't show.
+printed with each byte that isn't UTF-8 as `\\xNN` (`caf\\xe9.txt`).
 """
 
 import argparse
@@ -80,8 +80,9 @@ def git(worktree, *args):
 
 
 def printable(path):
-    """`path` with any byte that isn't UTF-8 shown as U+FFFD, so it prints."""
-    return path.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+    """`path` with each byte that isn't UTF-8 shown as `\\xNN`, so it prints and
+    two such names stay distinct."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
 
 
 def quoted(paths):
@@ -127,8 +128,7 @@ def main() -> int:
         return check()
     except Exception as exc:  # a crash must never read as clean or not clean
         print(f"ERROR: {type(exc).__name__}: {printable(str(exc))}. Nothing was "
-              f"checked — this "
-              f"is not a pass.", file=sys.stderr)
+              f"checked — this is not a pass.", file=sys.stderr)
         return EXIT_CANNOT_RUN
 
 

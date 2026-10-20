@@ -111,11 +111,11 @@ class CheckStagedTest(GitRepoCase):
         self.git("add", "-A")
         r = run("check-staged.py", self.repo, "--expect", "src/app.py", os.fsdecode(name))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("caf\ufffd.txt", r.stdout)
+        self.assertIn("caf\\xe9.txt", r.stdout)
         r = run("check-staged.py", self.repo, "--expect", "src/app.py")
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertIn("EXTRA: 1", r.stderr)
-        self.assertIn("caf\ufffd.txt", r.stderr)
+        self.assertIn("caf\\xe9.txt", r.stderr)
 
     def fake_git(self, body):
         """Run check-staged.py with a `git` on PATH that runs `body` (Python)."""
@@ -130,10 +130,10 @@ class CheckStagedTest(GitRepoCase):
 
     def test_git_output_that_is_not_utf8_is_read(self):
         # Runs where the file system refuses such a name (the test above skips).
-        r = self.fake_git("print(sys.argv[0]) if 'rev-parse' in args else "
+        r = self.fake_git(f"print({str(self.repo)!r}) if 'rev-parse' in args else "
                           "sys.stdout.buffer.write(b'caf\\xe9.txt\\0')")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("caf\ufffd.txt", r.stdout)
+        self.assertIn("caf\\xe9.txt", r.stdout)
 
     def test_a_crash_is_exit_2(self):
         r = self.fake_git("sys.stdout.write('a\\0b')")  # a NUL in the top level crashes Path
