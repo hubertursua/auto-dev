@@ -1605,8 +1605,10 @@ def human_step(c):
     published = (c.p6.get("body") or {}).get("published_seq", 0)
     triage = c.last("triager", after=published, mode="human")
     if triage is None:
-        return spawn(c, "triager", "human", rule="before the main gate, the triager "
-                     "sorts what people said on the PR (you never read it)")
+        earlier = earlier_triage(c)
+        return spawn(c, "triager", "human", sets={"earlier": earlier} if earlier else None,
+                     rule="before the main gate, the triager sorts what people said on "
+                     "the PR (you never read it)")
     spend_id = f"human-{triage['n']}"
     if closed_correction(c, spend_id):
         return None  # handled; a change would have re-published and re-triaged
@@ -1622,6 +1624,32 @@ def human_step(c):
                                 "(consumer 4): checks to the tester, blockers to the coder",
                                 checks=checks)
     return None
+
+
+def earlier_triage(c):
+    """Each earlier human triage whose correction closed: its files and what
+    became of them, so the next triager doesn't sort the same comments again."""
+    rounds = []
+    for t in c.recs("triager", mode="human"):
+        corr = closed_correction(c, f"human-{t['n']}")
+        if corr is None:
+            continue
+        done = []
+        if corr.get("file"):
+            done.append(f"the coder worked on the blockers in {corr['file']}")
+        if corr.get("checks"):
+            tester = next(iter(c.recs("acceptance-tester", after=corr["seq"],
+                                      mode="repair")), None)
+            ruling = {"STANDS": "ruled they stand as written (right against SPEC.md)",
+                      "REPAIRED": "repaired them"}.get((tester or {}).get("next"),
+                                                       "answered")
+            done.append(f"the acceptance tester {ruling} for the comments in "
+                        f"{corr['checks']['report']}")
+        at = next((b.get("at") for b in c.state.get("briefs", [])
+                   if b["worker"] == "triager" and b["n"] == t["n"]), None)
+        rounds.append(f"human-{t['n']}" + (f" (triaged {at})" if at else "") + ": "
+                      + "; ".join(done))
+    return "\n".join(rounds)
 
 
 def main_step(c, sha):

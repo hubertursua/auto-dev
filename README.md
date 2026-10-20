@@ -226,7 +226,10 @@ open, a **triager** reads what the orchestrator never sees: a red CI run's logs
 code goes to the coder) and human reviewers' comments (blocker, nit, question,
 already addressed, or about a held-out check, which goes to the acceptance
 tester rather than the coder; when both kinds come back, the tester goes first
-and the coder second, in one revise round). Everything the pipeline posts on
+and the coder second, in one revise round). After a correction refreshes the PR,
+the next triager reads the earlier rounds' triage files and what became of them,
+so a comment about a check the tester ruled right, or a blocker the code now
+fixes, is sorted as addressed and doesn't spend another round. Everything the pipeline posts on
 the PR ends with `<!-- auto-dev -->`, and the triager skips those comments.
 A red CI run the code can't fix (a secret, infrastructure, a flaky test,
 unknown) stops the run and is reported before Jira moves or staging is asked;

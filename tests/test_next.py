@@ -812,6 +812,60 @@ class ShipTest(NextCase):
         self.assertIn("ruled they stand", " ".join(self.next(4)["REPORT"]))
         self.assertEqual(self.state()["budget"]["remaining"], left)
 
+    def republished_triage(self, ruling):
+        """A human round (one blocker, one check comment the tester answers
+        `ruling`), then the refreshed PR: returns the second triager's sets and
+        the first round's two files."""
+        _, url = self.open_pr()
+        blockers, checks = self.triage_files()
+        self.expect("triager", "TRIAGED", blockers="1", acceptance_checks="1",
+                    triage_file=str(blockers), checks_file=str(checks))
+        self.expect("acceptance-tester", ruling, checks="0", ambiguous="none")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        self.expect("cleanup", "GREEN")
+        self.spec_eval()
+        self.expect("verifier", "ALL_MET", tree="x", corrections="0")
+        self.review_clean()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "fix: x", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertIn("push", out["ACTION"])
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.after(out)
+        out = self.next(0)
+        self.assertIn("pr publish", out["ACTION"])
+        body = self.dir / "pr-body.md"
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        sha = self.state()["phase6"]["verified_sha"]
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([
+            {"args": ["pr", "edit", "12"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json", "number,url,body"],
+             "stdout": json.dumps({"number": 12, "url": f"{url}/pull/12",
+                                   "body": f"Checked at commit {sha}"})}] + gh)
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        self.assertIn("earlier: human-1 (triaged ", (self.dir / "briefs" /
+                                                    f"triager-{jobs[0][1]}.md").read_text())
+        self.assertNotIn("earlier", self.sets("triager", 1))  # nothing earlier then
+        return self.sets(*jobs[0]), blockers, checks
+
+    def test_a_republished_pr_tells_the_triager_what_earlier_rounds_handled(self):
+        sets, blockers, checks = self.republished_triage("STANDS")
+        self.assertIn(f"the coder worked on the blockers in {blockers}", sets["earlier"])
+        self.assertIn(f"the acceptance tester ruled they stand as written (right against "
+                      f"SPEC.md) for the comments in {checks}", sets["earlier"])
+
+    def test_a_repaired_check_is_named_as_repaired_to_the_next_triager(self):
+        sets, _, checks = self.republished_triage("REPAIRED")
+        self.assertIn(f"the acceptance tester repaired them for the comments in {checks}",
+                      sets["earlier"])
+
     def test_a_refused_publish_stops(self):
         _sha, _url, out, body = self.to_body()
         r = self.autodev("pr", "publish", "--dir", self.dir)
