@@ -75,7 +75,9 @@ heard of auto-dev:
   they don't, or when only a person can confirm it (a manual test, a sign-off).
   Never read the code to decide. Add no note saying why: the code and the rest
   of the description show it. Keep every item's words, and don't add, drop or
-  reorder one (`pr publish` refuses that). Then delete the WRITE line.
+  reorder one (`pr publish` refuses that). Then delete the WRITE line. This
+  counts only when the PR has no description yet: after that the live
+  checklist stands, as a person may have ticked or edited it on GitHub.
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
 "verifier" or "pipeline". Change nothing else in the file: the follow-ups the

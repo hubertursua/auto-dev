@@ -9,8 +9,8 @@ from templates/pr-body.md and the run's artifacts) for the verified commit:
  - It refuses while the description still holds a `<!-- WRITE: ... -->` line
    (the Summary, the Assumptions, any section the repo's PR template adds and
    the boxes of its checklist are yours to write), or while `pr-body --check`
-   finds a problem. Once the PR is open, the template's checklist is the live
-   one, so its items are not checked again.
+   finds a problem. Once the PR has a description, the template's checklist
+   is the live one: its boxes and items stand, and are not checked again.
  - No PR yet: it looks for an open PR from this branch first and uses that one;
    otherwise it opens a draft PR to the base branch, titled with the commit's
    subject (or --title). There is never a second PR.
@@ -306,25 +306,29 @@ def template_sections(path):
 def checklist_problems(text, wt):
     """A template checklist in `text` that is missing, or whose items differ
     from the template's: the boxes may be ticked, never reworded, added to,
-    dropped or reordered."""
-    problems = []
+    dropped or reordered. Two sections under one heading pair up in order."""
+    problems, body = [], split_sections(text)
+    seen = {}
     for heading, lines in _sections(find_template(wt)):
         key = norm(heading)
         items = _items(COMMENT_RE.sub("", "\n".join(lines)))
         if not key or key in OURS or key in TESTING or not items:
             continue
-        found = [b for h, b in split_sections(text) if h[3:].strip() == heading]
-        if not found:
+        nth = seen[heading] = seen.get(heading, -1) + 1
+        found = [b for h, b in body if h[3:].strip() == heading]
+        if len(found) <= nth:
             problems.append(f"missing the PR template's checklist `## {heading}`")
-        elif _items(COMMENT_RE.sub("", found[0])) != items:
+        elif _items(COMMENT_RE.sub("", found[nth])) != items:
             problems.append(f"the checklist under `## {heading}` must keep the PR "
                             "template's items, word for word and in order: only tick them")
     return problems
 
 
 def _items(text):
-    """A checklist's items, without their boxes."""
-    return [BOX_RE.sub("", ln.rstrip()) for ln in text.splitlines() if BOX_RE.match(ln)]
+    """A checklist's items, without their boxes. An item that looks like a
+    secret is left out, as the generated description drops it."""
+    return [BOX_RE.sub("", ln.rstrip()) for ln in text.splitlines()
+            if BOX_RE.match(ln) and not SECRET_RE.search(ln)]
 
 
 def _sections(path):
@@ -709,16 +713,19 @@ def publish_body(args, state):
     path = Path(body["path"])
     text = path.read_text(encoding="utf-8")
     pr = p6.get("pr") or existing_pr(wt, state["branch"])
+    live = ""
     if pr:
         code, out, err = gh(wt, "pr", "view", str(pr), "--json", "body")
         if code != 0:
             raise Fail(f"gh pr view {pr} failed: {(err or out).strip()}", CANNOT_RUN, "ERROR")
-        text = merge_live(json.loads(out).get("body", ""), text)
+        live = json.loads(out).get("body", "")
+        text = merge_live(live, text)
     if WRITE_RE.search(text):
         raise Fail(f"{path} still holds a `<!-- WRITE: ... -->` line: replace each one "
                    "(the Summary, the Assumptions, a section or checklist the repo's PR "
                    "template adds) first", FAILED, "UNWRITTEN")
-    problems = lint_body(text, state, checklist=not pr)  # live edits stand
+    # Once the PR has a description, its checklist is the live one: edits stand.
+    problems = lint_body(text, state, checklist=not live.strip())
     if problems:
         note_attempt(args, state, "PROBLEMS", problems)
         emit(args.json, "PROBLEMS", f"{len(problems)} problem(s); nothing published",
