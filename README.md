@@ -169,7 +169,9 @@ The Define agent says whether the task fits one PR:
   auto-dev on each part.
 
 Define also flags a task as **high-risk** (security criteria, auth, payments,
-access control or a data migration), which turns on the post-plan gate.
+access control or a data migration), which turns on the post-plan gate. A
+security criterion that a later revision or review fix adds to `SPEC.md` turns
+it on too; nothing turns it off.
 
 `WORK_LOG.md` is also the resume point if a run is interrupted.
 
@@ -187,11 +189,13 @@ uncommitted working tree, and you have seen the results:
 
 A **rubric** decides what must be fixed and what is noise:
 
-- **Code findings.** Only correctness bugs and missing or weak tests can be
+- **Code findings.** Only correctness bugs, missing or weak tests, and a
+  held-out acceptance check that asserts the wrong thing or can't fail can be
   must-fix. Each one needs a concrete trigger path, a real input or sequence that
-  leads to the failure, and at least 2 of the 3 reviewers' votes. Scope,
-  performance and design findings are advisory. Problems the change didn't
-  introduce are dropped.
+  leads to the failure, and at least 2 of the 3 reviewers' votes. A finding
+  about an acceptance check goes to the acceptance tester's repair mode, never
+  the coder. Scope, performance and design findings are advisory. Problems the
+  change didn't introduce are dropped.
 - **Security findings.** One this change introduced, with a traced path, is
   must-fix. One that was already there is shown to you at the PR gate to triage:
   fix it in this PR, note it as a follow-up for a separate PR, or ignore it.
@@ -207,8 +211,11 @@ condition; the fix is reviewed again before anything moves on. After the PR is
 open, a **triager** reads what the orchestrator never sees: a red CI run's logs
 (is it the code, the infrastructure, a flaky test or a missing secret? only the
 code goes to the coder) and human reviewers' comments (blocker, nit, question,
-already addressed, or about a held-out check). Comment text never reaches the
-orchestrator, so a comment can't steer the run. Those fixes are reviewed the
+already addressed, or about a held-out check, which goes to the acceptance
+tester rather than the coder). Comments the pipeline posted itself are skipped.
+Comment text never reaches the orchestrator, so a comment can't steer the run.
+The coder gets every required change unedited, so `autodev.py record` refuses
+one that copies `SPEC.md`'s wording. Those fixes are reviewed the
 same way before they are pushed. The procedure is in
 `skills/auto-dev/references/review.md` and the full rubric in
 `skills/auto-dev/templates/rubric.md`.
@@ -331,7 +338,9 @@ before you are asked. The merge is locked to that commit with
 merge instead of shipping unchecked code. Staging is a direct
 merge where the project uses that convention. **Jira** integration is
 status-transitions-only (In Progress → In Review → Done) and is skipped if no
-ticket is given. **CI** is monitored, with a bounded timeout, on the PR before
+ticket is given; the ticket's summary and description are stored at setup
+(`autodev.py init --ticket-text-file`) and given to the Define agent verbatim,
+since it has no Jira access. **CI** is monitored, with a bounded timeout, on the PR before
 merge, and again after the staging and main merges to confirm the merge itself
 didn't break the branch.
 
@@ -452,15 +461,19 @@ conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
 `CORRECT`, `REPAIR` or `STOP`, with the survivors to carry forward), `apply-fix`
 (applies a reviewer's exact old → new FIX blocks, all or nothing),
 `spec-overlap` (refuses a brief or plan that copies `SPEC.md`'s wording),
-`votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`),
-`review-scope` (the snapshot a correction is diffed against) and `gate-summary`
-(checks a gate's preconditions and prints its summary and question). For
-workers: `brief` (writes a worker's brief file from state, refusing when a value
-only the orchestrator can give is missing, and prints the one-line prompt to
-spawn it with), `record` (checks the result a worker wrote against the
-artifact it wrote, and stops on a mismatch) and `check-artifact` (workers check
-what they wrote against its template before returning). And `next`, the
-orchestrator's loop: it reads the state, the recorded results and the artifacts,
+`votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`,
+adding each new must-fix finding to the pass's `corrections.md` for the coder,
+except one about an acceptance check, which it names for the acceptance tester),
+`security-reviewer` (which security reviewer to spawn: the sensitive one when
+`SPEC.md` lists Security/Compliance criteria), `review-scope` (the snapshot a
+correction is diffed against) and `gate-summary` (checks a gate's preconditions
+and prints its summary and question). For workers: `brief` (writes a worker's
+brief file from state, refusing when a value only the orchestrator can give is
+missing, and prints the one-line prompt to spawn it with), `record` (checks the
+result a worker wrote against the artifact it wrote, and stops on a mismatch,
+saving the issues for that job's re-spawn, `brief --retry <n>`) and
+`check-artifact` (workers check what they wrote against its template before
+returning). And `next`, the orchestrator's loop: it reads the state, the recorded results and the artifacts,
 and prints the one next action (spawn these agents with these briefs, run this
 command, ask this gate, stop and report, or end the session), with the command
 to run after it. It does the mechanical steps itself: writing briefs, spending
@@ -525,7 +538,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes |
 | `fixes/` | Phases 2–3 | the Define and plan reviewers' FIX blocks |
 | `evidence/corrections.md` | Phase 5 | the verifier's required changes for the coder |
-| `triage/` | Phase 6 | the triager's required changes for red CI and human blockers |
+| `triage/` | Phase 6 | the triager's required changes for red CI and human blockers (`<ci\|human>-<n>.md`, for the coder), and the comments about a held-out check (`human-<n>-checks.md`, for the acceptance tester) |
 | `lookups/` | any phase | lookup answers |
 
 The full layout and every artifact's contract are in
@@ -543,7 +556,9 @@ and reports
 rather than committing a red build or weakening any security control. It also
 stops if the mutation step may have left a planted bug in the tree, if the
 build edited source inside a submodule, or if a commit holds code that no result
-checked. It never asks you at a gate, or writes a PR description, on results
+checked. If Define's size check returns OVERSIZED, it builds nothing and hands
+the task back to you; Jira is left alone, and the worktree and branch stay in
+place (see *Size check* above). It never asks you at a gate, or writes a PR description, on results
 that were checked on other code. It refuses a
 resolved quality gate with no test command in it, since that would pass Phase 5 by
 having nothing to check. It merges to main only through a PR, only after your

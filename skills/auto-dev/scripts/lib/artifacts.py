@@ -54,8 +54,44 @@ def find_section(text, name, level="##"):
     return None
 
 
+def split_cells(line):
+    """A table row's cells, split on each `|` that is neither escaped (`\\|`) nor
+    inside a backtick code span; `\\|` reads as `|`. A backtick run with no
+    closing run of the same length is plain text."""
+    line = line.strip()
+    cells, cell, i = [], [], 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\" and line[i + 1:i + 2] == "|":
+            cell.append("|")
+            i += 2
+        elif ch == "`":
+            run = len(line[i:]) - len(line[i:].lstrip("`"))
+            ticks = "`" * run
+            close = re.search(rf"(?<!`){ticks}(?!`)", line[i + run:])
+            if close is None:
+                cell.append(ticks)
+                i += run
+                continue
+            end = i + run + close.end()
+            cell.append(line[i:end].replace("\\|", "|"))
+            i = end
+        elif ch == "|":
+            cells.append("".join(cell))
+            cell, i = [], i + 1
+        else:
+            cell.append(ch)
+            i += 1
+    cells.append("".join(cell))
+    if cells and not cells[0].strip() and line.startswith("|"):
+        cells = cells[1:]
+    if len(cells) > 1 and not cells[-1].strip() and line.endswith("|"):
+        cells = cells[:-1]
+    return [c.strip() for c in cells]
+
+
 def split_row(line, width=0):
-    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    cells = split_cells(line)
     if width and len(cells) > width:  # a stray `|` in the last column
         cells = cells[:width - 1] + [" | ".join(cells[width - 1:])]
     return cells
@@ -115,13 +151,16 @@ def spec_conditions(path):
     return items
 
 
+LEVEL_RE = re.compile(r"\b(end-to-end|e2e|integration|unit)", re.IGNORECASE)
+
+
 def level_of(text):
     """The first test level named in `text`, or None (manual, unknown)."""
-    lowered = text.lower()
-    for level in reversed(LEVELS):  # end-to-end before its substring checks
-        if level in lowered or (level == "end-to-end" and "e2e" in lowered):
-            return level
-    return None
+    match = LEVEL_RE.search(text)
+    if not match:
+        return None
+    word = match.group(1).lower()
+    return "end-to-end" if word == "e2e" else word
 
 
 def manifest(path):

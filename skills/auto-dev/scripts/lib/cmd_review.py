@@ -13,11 +13,23 @@ votes --apply
     CODE_REVIEW.md: the reviewer who raised it plus every `agree` reaching 2 is
     must-fix, Medium; fewer is advisory, Low. Then recomputes the header counts
     and the overall confidence (High: 3/3 reviewers, full coverage, nothing
-    decided 2-1; Low: fewer than 2 reviewers; Medium otherwise), and adds each
-    new must-fix finding's `Required change:` line to
-    review/pass-<n>/corrections.md.
-    Exit: 0 applied; 1 a re-voter's file is missing or malformed, or a new
-    must-fix finding has no Required change line (re-spawn the judge).
+    decided 2-1; Low: fewer than 2 reviewers; Medium otherwise), and appends
+    each new must-fix finding to review/pass-<n>/corrections.md, numbered after
+    the entries already there: its `Required change:` line, then the `Where:`
+    (else the row's Location), `Now:` (its `Trigger path:`) and `Test:` lines
+    from its `### <id>` block. A new must-fix finding whose Category is
+    `acceptance-check` is not added there: it is printed on the
+    `acceptance_check:` line, for the acceptance tester's repair mode;
+    `must_fix:` lists the ones added for the coder. Each slot --plan names must
+    have voted, in its VOTES-R<k>.md, on every finding it was given. One vote
+    per slot and finding counts; a vote on a finding the slot was not given
+    (the raiser's own) is ignored.
+    Exit: 0 applied; 1 a planned re-voter's file or vote is missing, a new
+    must-fix finding for the coder has no `Required change:` line, or an empty
+    one (re-spawn the judge), or an
+    artifact is malformed (a vote not agree/disagree, a finding voted both
+    ways, an `**Overall confidence` line without `reviewers finished: <n>/3`
+    and `coverage:`); nothing is written.
 
 review-scope --snapshot | --files | --clear | --next-pass
     --snapshot  marks untracked files intent-to-add, then records the working
@@ -33,30 +45,35 @@ gate-summary <post-plan|pr|staging|main> [--pr N]
     Checks the gate's preconditions, then prints the summary and the
     AskUserQuestion JSON to ask with (on the line after `QUESTION:`).
     pr: every report is fresh, one passing lint report per gate command, no
-    submodule holds uncommitted edits, no Unjustified integrity finding is
-    open; then the acceptance block and the two reviews, and one triage
-    question per pre-existing security finding (at most three).
+    submodule holds uncommitted edits (`git submodule foreach` lists them),
+    no Unjustified integrity finding is open; then the acceptance block and
+    the two reviews, and one triage question per pre-existing security finding
+    whose Verdict is `for the user`, most severe first (with more than three,
+    the two most severe and one question for the rest).
+    main: the PR is open and not a draft, and every result was checked on its
+    head commit.
     Exit: 0 printed; 1 a precondition failed (the reason says what to do; do
-    not ask the gate).
+    not ask the gate); 2 check-fresh.py, `git submodule foreach` or gh could
+    not run.
 
 All exit 2 when they could not run — never a pass.
 """
 
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 from . import artifacts as art
 from . import state as st
 from .cmd_checks import git_add_intent
+from .cmd_ship import check_fresh
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
 
 SCRIPTS = Path(__file__).resolve().parent.parent
 PASS_RE = re.compile(r"Latest pass:\s*(\d+)")
-REVIEWERS_RE = re.compile(r"reviewers finished:\s*(\d)/3")
+REVIEWERS_RE = re.compile(r"reviewers finished:\s*([0-3])/3")
 COVERAGE_RE = re.compile(r"coverage:\s*(full|partial)")
 GATE_OPTIONS = {
     "post-plan": ["Approve & build", "Revise plan (tell me what to change)", "Stop"],
@@ -162,49 +179,80 @@ def plan_votes(args, pass_dir, pending):
     return 0
 
 
-def read_votes(pass_dir):
-    """{finding id: [(slot, agree?)]} from every VOTES-R<k>.md."""
-    found = {}
-    for path in sorted(pass_dir.glob("VOTES-R*.md")):
-        slot = path.stem.split("-")[-1]
+def read_votes(pass_dir, plan):
+    """{finding id: {slot: agree?}}: each planned slot's one vote per finding.
+
+    A vote on a finding not planned for that slot (the raiser's own, or one it
+    was not asked about) is ignored."""
+    found, missing = {}, []
+    for slot, ids in sorted(plan.items()):
+        path = pass_dir / f"VOTES-{slot}.md"
+        if not path.exists():
+            missing += [f"{fid} ({slot}: no {path.name})" for fid in ids]
+            continue
         _, rows = art.first_table(art.read(path), ("Finding", "Vote"), str(path))
+        mine = {}
         for row in rows:
-            vote = row["Vote"].strip().lower()
+            fid, vote = row["Finding"].strip(), row["Vote"].strip().lower()
             if vote not in ("agree", "disagree"):
                 raise art.ArtifactError(f"{path}: vote `{row['Vote']}` is not "
                                         "agree/disagree")
-            found.setdefault(row["Finding"].strip(), []).append((slot, vote == "agree"))
-    return found
+            if fid not in ids:
+                continue
+            if mine.get(fid, vote == "agree") != (vote == "agree"):
+                raise art.ArtifactError(f"{path}: {fid} is voted both agree and disagree")
+            mine[fid] = vote == "agree"
+        missing += [f"{fid} ({slot})" for fid in ids if fid not in mine]
+        for fid, agree in mine.items():
+            found.setdefault(fid, {})[slot] = agree
+    return found, missing
 
 
 def apply_votes(args, path, text, pass_dir, pending):
     if not pending:
         emit(args.json, "NONE", "no pending re-votes")
         return 0
-    must, advisory = apply_vote_files(path, text, pass_dir, pending)
-    emit(args.json, "APPLIED", f"{len(must)} must-fix, {advisory} advisory",
-         must_fix=", ".join(must) or "none")
+    must, advisory, tester = apply_vote_files(path, text, pass_dir, pending)
+    of_them = f" ({len(tester)} acceptance-check)" if tester else ""
+    emit(args.json, "APPLIED", f"{len(must) + len(tester)} must-fix{of_them}, "
+         f"{advisory} advisory",
+         must_fix=", ".join(must) or "none", acceptance_check=", ".join(tester))
     return 0
 
 
 def apply_vote_files(path, text, pass_dir, pending, votes_expected=True):
-    """Move each pending finding by its votes; returns (new must-fix ids, advisory count).
+    """Move each pending finding by its votes.
+
+    Returns (new must-fix ids for the coder, advisory count, new must-fix ids
+    whose Category is acceptance-check, for the acceptance tester). Every slot
+    vote_plan names must have voted on each finding it was given.
 
     With votes_expected False (fewer than two usable reports, so nobody re-voted)
     every pending finding counts its raiser alone and stays advisory."""
-    cast = read_votes(pass_dir) if votes_expected else {}
-    missing = [r["ID"] for r in pending if r["ID"].strip() not in cast]
-    if missing and votes_expected:
+    if not votes_expected:
+        cast, missing = {}, []
+    else:
+        plan = vote_plan(pass_dir, pending)
+        cast, missing = read_votes(pass_dir, plan)
+        if not plan:
+            missing = [r["ID"].strip() for r in pending]
+    if missing:
         raise art.ArtifactError(f"no re-vote recorded for {', '.join(missing)} in "
                                 f"{pass_dir}: re-spawn those re-voters")
     must, advisory, decided_2_1 = [], [], []
+    coder, tester, where = [], [], {}
     for row in pending:
         fid = row["ID"].strip()
-        count = 1 + sum(1 for _, agree in cast.get(fid, []) if agree)
+        count = 1 + sum(1 for agree in cast.get(fid, {}).values() if agree)
         cells = (fid, row.get("Finding", ""), row.get("Location", ""),
                  row.get("Category", ""))
         if count >= 2:
             must.append(f"| {' | '.join(cells)} | {count}/3 (re-vote) | Medium | open |")
+            if row.get("Category", "").strip().strip("`").lower() == "acceptance-check":
+                tester.append(fid)
+            else:
+                coder.append(fid)
+                where[fid] = row.get("Location", "").strip()
             if count == 2:
                 decided_2_1.append(fid)
         else:
@@ -214,33 +262,49 @@ def apply_vote_files(path, text, pass_dir, pending, votes_expected=True):
     text = add_rows(text, "Advisory", advisory)
     text = clear_pending(text)
     text = recount(text, decided_2_1)
+    # Corrections first: it raises before writing if a Required change is missing,
+    # so a failure leaves both files as they were.
+    add_corrections(text, pass_dir / "corrections.md", coder, where)
     tmp = path.with_name(".CODE_REVIEW.md.votes")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
-    ids = [r.split("|")[1].strip() for r in must]
-    add_corrections(text, pass_dir / "corrections.md", ids)
-    return ids, len(advisory)
+    return coder, len(advisory), tester
 
 
-def add_corrections(text, path, ids):
-    """Append each new must-fix finding's Required change to corrections.md."""
+def detail_line(block, key):
+    """The non-empty value of a `<key>: <value>` line in a finding's block, or None."""
+    match = re.search(rf"^[ \t]*{key}:[ \t]*(\S.*)$", block, re.MULTILINE)
+    return match.group(1).strip() if match else None
+
+
+def add_corrections(text, path, ids, where=None):
+    """Append each new must-fix finding's Required change to corrections.md.
+
+    Each entry also carries the finding's Where (else `where[id]`, the row's
+    Location), Now (its Trigger path) and Test lines, when it has them."""
     if not ids:
         return
     entries = []
     for fid in ids:
-        block = re.search(rf"^### {re.escape(fid)}\b.*?(?=^### |^## |\Z)", text,
+        found = re.search(rf"^### {re.escape(fid)}\b.*?(?=^### |^## |\Z)", text,
                           re.MULTILINE | re.DOTALL)
-        change = re.search(r"^Required change:\s*(.+)$", block.group(0),
-                           re.MULTILINE) if block else None
+        block = found.group(0) if found else ""
+        change = detail_line(block, "Required change")
         if not change:
             raise art.ArtifactError(f"CODE_REVIEW.md: {fid} has no `Required change:` "
                                     "line under its heading; re-spawn the judge")
-        location = re.search(r"Trigger path:\s*(.+)$", block.group(0), re.MULTILINE)
-        entries.append(f"{fid}: {change.group(1).strip()}"
-                       + (f"\n   Now: {location.group(1).strip()}" if location else ""))
+        lines = [f"{fid}: {change}"]
+        for label, value in (("Where", detail_line(block, "Where")
+                              or (where or {}).get(fid)),
+                             ("Now", detail_line(block, "Trigger path")),
+                             ("Test", detail_line(block, "Test"))):
+            if value:
+                lines.append(f"   {label}: {value}")
+        entries.append("\n".join(lines))
     existing = path.read_text(encoding="utf-8") if path.exists() else "# Required changes\n"
-    existing = re.sub(r"^None\.\s*$", "", existing, flags=re.MULTILINE).rstrip() + "\n"
-    count = len(re.findall(r"^\d+\. ", existing, re.MULTILINE))
+    existing = re.sub(r"^[ \t]*None\.[ \t]*$", "", existing,
+                      flags=re.MULTILINE).rstrip() + "\n"
+    count = len(re.findall(r"^[ \t]*\d+\. ", existing, re.MULTILINE))
     for i, entry in enumerate(entries, count + 1):
         existing += f"{i}. {entry}\n"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,9 +362,13 @@ def recount(text, decided_2_1):
     head = art.header_line(text, "**Overall confidence")
     reviewers = REVIEWERS_RE.search(head)
     coverage = COVERAGE_RE.search(head)
-    finished = int(reviewers.group(1)) if reviewers else 3
-    full = (coverage.group(1) if coverage else "full") == "full"
-    prior = re.search(r"must-fix decided 2–1:\s*([^>*\n]*)", head)
+    if not reviewers or not coverage:
+        raise art.ArtifactError("CODE_REVIEW.md: the `**Overall confidence` line does "
+                                "not say `reviewers finished: <n>/3` and `coverage: "
+                                "full|partial`; re-spawn the judge")
+    finished = int(reviewers.group(1))
+    full = coverage.group(1) == "full"
+    prior = re.search(r"must-fix decided 2[–-]1:\s*([^>*\n]*)", head)
     earlier = [x.strip() for x in (prior.group(1) if prior else "").split(",")
                if x.strip() and x.strip() != "none"]
     two_one = earlier + [x for x in decided_2_1 if x not in earlier]
@@ -313,8 +381,7 @@ def recount(text, decided_2_1):
     new_head = (f"**Overall confidence: {level}** — reviewers finished: {finished}/3; "
                 f"coverage: {'full' if full else 'partial'}; must-fix decided 2–1: "
                 f"{', '.join(two_one) or 'none'}")
-    if head:
-        text = text.replace(head, new_head, 1)
+    text = text.replace(head, new_head, 1)
     dropped = re.search(r"Dropped \(pre-existing\):\s*(\d+)", text)
     counts = (f"Must-fix: {open_} open · {fixed} fixed   ·   Advisory: {advisory}   ·   "
               f"Noise: {noise}   ·   Dropped (pre-existing): "
@@ -456,12 +523,7 @@ def review_block(ad):
         lines.append(f"  {counts}")
         if head and "Low" in head.split("—")[0]:
             lines.append("  WARNING: Low confidence is not a clean pass; say what failed")
-    sec = art.read(ad / "SECURITY_REVIEW.md")
-    pre = []
-    body = art.find_section(sec, "Findings") or ""
-    for header, rows in art.tables(body):
-        if "Origin" in header:
-            pre = [r for r in rows if r.get("Origin", "").strip() == "pre-existing"]
+    pre = for_the_user(art.read(ad / "SECURITY_REVIEW.md"))
     if pre:
         lines.append(f"  Pre-existing, for you: {len(pre)}")
         for row in pre:
@@ -478,13 +540,53 @@ def review_block(ad):
     return lines, questions
 
 
+SEVERITY = {"high": 0, "medium": 1, "low": 2}
+
+
+def for_the_user(sec):
+    """SECURITY_REVIEW.md's pre-existing findings whose Verdict is `for the user`,
+    most severe (by Confidence) first, in table order within a level."""
+    body = art.find_section(sec, "Findings") or ""
+    tables = [rows for header, rows in art.tables(body) if "Origin" in header]
+    if not tables:
+        return []  # no findings table: nothing was found
+    _, rows = art.first_table(body, ("ID", "Origin", "Confidence", "Verdict"),
+                              "SECURITY_REVIEW.md (Findings)")
+    pre = [r for r in rows if r.get("Origin", "").strip().lower() == "pre-existing"
+           and r.get("Verdict", "").strip().lower() == "for the user"]
+    return sorted(pre, key=lambda r: SEVERITY.get(r.get("Confidence", "").strip().lower(),
+                                                   len(SEVERITY)))
+
+
+def fresh_or_fail(wt, ad, stale_message, *extra):
+    """Run check-fresh.py: exit 1 is a stale PRECONDITION, exit 2 could not run."""
+    code, detail = check_fresh(wt, str(ad), *extra)
+    if code != 0:
+        raise Fail(f"{stale_message}\n{detail}", FAILED, "PRECONDITION")
+
+
+def submodule_edits(wt):
+    """`<submodule path>: <status line>` for each uncommitted edit in a submodule."""
+    # No pipe: a `git status` failing inside a submodule fails the foreach.
+    code, out, err = run(["git", "submodule", "foreach", "git status --porcelain"],
+                         cwd=wt, check=False)
+    if code != 0:
+        raise Fail(f"git submodule foreach failed, so the submodules are unchecked: "
+                   f"{(err or out).strip()}", CANNOT_RUN, "ERROR")
+    edits, sub = [], "?"
+    for line in out.splitlines():
+        header = re.match(r"^Entering '(.*)'$", line)
+        if header:
+            sub = header.group(1)
+        elif line.strip():
+            edits.append(f"{sub}: {line}")
+    return edits
+
+
 def pr_summary(state, ad, args):
     wt = state["worktree"]
-    code, out, err = run([sys.executable, str(SCRIPTS / "check-fresh.py"), wt, str(ad)],
-                         check=False)
-    if code != 0:
-        raise Fail(f"results are stale; re-run them first, never ask this gate on "
-                   f"them:\n{(err or out).strip()}", FAILED, "PRECONDITION")
+    fresh_or_fail(wt, ad, "results are stale; re-run them first, never ask this gate "
+                  "on them:")
     missing = []
     for check in state["settings"].get("gate", []):
         report = ad / "lint" / check.get("report", "")
@@ -495,9 +597,13 @@ def pr_summary(state, ad, args):
         raise Fail(f"quality gate not green ({', '.join(missing)} missing or failing): "
                    "that is Phase 5's stop-and-report, not this gate", FAILED,
                    "PRECONDITION")
-    subs = subprocess.run(["git", "submodule", "foreach", "--quiet",
-                           "git status --porcelain | sed \"s|^|$sm_path: |\""],
-                          cwd=wt, capture_output=True, text=True, check=False).stdout
+    subs = submodule_edits(wt)
+    if subs:
+        raise Fail("a submodule holds uncommitted edits, which this PR will not carry. "
+                   "If any is source, stop and report: the pipeline never commits inside "
+                   "a submodule. If all are generated output this run made, delete them "
+                   "and run the gate summary again:\n" + "\n".join(subs), FAILED,
+                   "PRECONDITION")
     status = git(wt, "status", "--porcelain", "--untracked-files=all", "--no-renames",
                  "--ignore-submodules=dirty")
     files = [ln[3:] for ln in status.splitlines() if not ln[3:].startswith(".auto-dev/")]
@@ -507,9 +613,6 @@ def pr_summary(state, ad, args):
                                                if files else ""),
              "Quality gate: " + ", ".join(f"{c.get('report', '')} pass"
                                           for c in state["settings"].get("gate", []))]
-    if subs.strip():
-        lines.append("Submodules with uncommitted edits (stop if any is source):")
-        lines += [f"  {ln}" for ln in subs.strip().splitlines()]
     lines += acceptance_block(ad)
     review_lines, questions = review_block(ad)
     lines += review_lines
@@ -551,12 +654,8 @@ def main_summary(state, ad, args):
         raise Fail(f"PR #{pr} is still a draft: mark it ready (`gh pr ready {pr}`) and "
                    "confirm its checks ran first", FAILED, "PRECONDITION")
     head = info.get("headRefOid", "")
-    code, out, err = run([sys.executable, str(SCRIPTS / "check-fresh.py"), wt, str(ad),
-                          "--ref", head], check=False)
-    if code != 0:
-        raise Fail(f"the PR's head {head[:12]} holds code no result checked: bring it "
-                   f"in and re-run the stale results first.\n{(err or out).strip()}",
-                   FAILED, "PRECONDITION")
+    fresh_or_fail(wt, ad, f"the PR's head {head[:12]} holds code no result checked: "
+                  "bring it in and re-run the stale results first.", "--ref", head)
     ci = state.get("phase6", {}).get("ci", {}).get("status", "not watched")
     if state["settings"].get("ci") == "none":
         ci = "none"

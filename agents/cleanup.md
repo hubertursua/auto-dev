@@ -27,13 +27,16 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the SIMPLIFY + QUALITY-GATE phase. Work inside the worktree at {{worktree}}.
 
 Step 1 — Simplify: run /simplify over the scope `{{scope}}` names (Scopes, below). Never
-simplify, reformat or otherwise edit an acceptance check (<installed paths from
-MANIFEST.md>), whatever the scope says. Apply
+simplify, reformat or otherwise edit an acceptance check ({{acceptance_paths}}),
+whatever the scope says. Apply
 behavior-preserving simplifications only
 (clarity, DRY, remove dead/over-built code). Do NOT change what the code does.
 
@@ -115,7 +118,7 @@ for `outside`; a return that says it was skipped on any other scope is a bug.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `GREEN`, `RED` or `ACCEPTANCE_CHECK_FAILS_GATE`.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `GREEN`, `RED` or `ACCEPTANCE_CHECK_FAILS_GATE`.
 
 ```auto-dev-result
 worker: cleanup

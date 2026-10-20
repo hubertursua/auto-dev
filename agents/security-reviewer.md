@@ -24,6 +24,9 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the SECURITY REVIEW. Work inside the worktree at {{worktree}}. Your job is
@@ -60,11 +63,11 @@ intent-to-add, so the diff shows them.
    prints that hash, write it; if not, the code changed while you reviewed, so
    write `Tree: changed during the run`.
 
-The rubric:
-read `{{skill_dir}}/templates/rubric.md`: its security findings and overall report confidence sections
+The rubric: read the security findings and overall report confidence sections of
+`{{skill_dir}}/templates/rubric.md`.
 
 Write {{artifact_dir}}/SECURITY_REVIEW.md to the template at `{{skill_dir}}/templates/SECURITY_REVIEW.md` (strict): read
-it there and copy everything below its first comment line
+it there and copy everything below its first comment line.
 Leave every Verified cell as `pending`; the judge fills them in.
 
 Do NOT modify code. Return: counts by origin and confidence, and anything you
@@ -75,7 +78,7 @@ could not cover.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `MUST_FIX` when any introduced finding is must-fix, else `CLEAN`.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `MUST_FIX` when any introduced finding is must-fix, else `CLEAN`.
 
 ```auto-dev-result
 worker: security-reviewer

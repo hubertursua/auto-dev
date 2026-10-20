@@ -37,7 +37,9 @@ Exit codes:
     6  session boundary: run the AFTER command, give the user its message, stop
 
 A brief issued but not yet recorded is re-issued as the same spawn (after a
-cut-off session, say). Spawned three times with no usable result, it stops.
+cut-off session, say); one `record` refused is re-issued as a new brief that
+carries the refused issues (as `brief --retry <n>` writes). Spawned three
+times with no usable result, it stops.
 """
 
 import json
@@ -302,20 +304,37 @@ def ended(c, how):
 
 
 def pending_briefs(c):
-    """Re-issue the briefs issued after the last recorded result and not recorded."""
+    """Re-issue the briefs issued after the last recorded result and not recorded.
+
+    A job `record` refused (MISSING, MALFORMED, MISMATCH) is re-spawned as
+    `brief --retry <n>` would: a new brief whose previous_issues carries the
+    issues, replacing the old one."""
     done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
     issued = c.state.get("briefs", [])
-    open_ = [b for b in issued if (b["worker"], b["n"]) not in done]
+    open_ = [b for b in issued if (b["worker"], b["n"]) not in done
+             and not b.get("retried_as")]
     if not open_:
         return None
-    for b in open_:
-        b["emitted"] = b.get("emitted", 1) + 1
-        c.dirty = True
-        if b["emitted"] > MAX_EMITS:
+    refused = c.state.get("refused", {})
+    for i, b in enumerate(open_):
+        tries = b.get("emitted", 1) + 1
+        if tries > MAX_EMITS:
+            b["emitted"] = tries
+            c.dirty = True
             return stop([(f"{b['worker']} #{b['n']} was spawned {MAX_EMITS} times and "
                          "never left a result that `record` accepts. Tell the user; its "
                          f"brief is {c.ad}/briefs/{b['worker']}-{b['n']}.md.")],
                         "a worker failed to return three times")
+        if cmd_work.job(b["worker"], b["n"]) in refused:
+            cmd_work.write_brief(c.state, c.ad, b["worker"], b.get("mode"),
+                                 dict(b.get("sets", {})), retry=b["n"])
+            new = c.state["briefs"][-1]
+            new["emitted"] = tries
+            b["retried_as"] = new["n"]
+            open_[i] = new
+        else:
+            b["emitted"] = tries
+        c.dirty = True
     agents = [f"auto-dev:{b['worker']}" for b in open_]
     paths = [c.ad / "briefs" / f"{b['worker']}-{b['n']}.md" for b in open_]
     return spawn_lines(agents, [str(p) for p in paths],
@@ -904,7 +923,7 @@ def review_step(c, p):
             return stop([("No code reviewer wrote a usable report, twice. Tell the user; "
                          f"see {c.ad}/review/pass-{p['n']}/.")], "the panel produced nothing")
         return spawn(c, "review-judge", "consolidate", {
-            "reviewers": ", ".join(usable), "scope": scope_text(p)},
+            "reviewers": ", ".join(usable), "scope": scope_text(p), "tree": p["tree"]},
             rule="the panel is done: the judge consolidates its reports")
     after = judge["seq"]
     if judge["next"] == "REVOTE":

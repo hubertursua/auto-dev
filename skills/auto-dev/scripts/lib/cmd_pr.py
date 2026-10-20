@@ -35,6 +35,7 @@ from pathlib import Path
 
 from . import artifacts as art
 from . import state as st
+from .cmd_ship import SECRET_RE  # one secret pattern for generating and linting
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
 
@@ -43,10 +44,6 @@ TAIL = 10
 WRITE_RE = re.compile(r"<!-- WRITE: .*?-->")
 STRICT = ("Acceptance conditions", "Quality gate", "Review")
 COMMENT_HEAD = "Command output for commit"
-SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*"
-                       r"PRIVATE KEY|xox[baprs]-[A-Za-z0-9-]{10,}|"
-                       r"(?:password|passwd|secret|token)\s*[=:]\s*\S{6,})",
-                       re.IGNORECASE)
 ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 
 

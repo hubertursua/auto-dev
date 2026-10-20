@@ -276,6 +276,21 @@ class PlanTest(NextCase):
         out = self.next(4)
         self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
 
+    def test_a_refused_return_is_respawned_with_its_issues(self):
+        self.expect("define")
+        (self.dir / "returns" / "define-1.json").write_text(json.dumps(
+            {"worker": "define", "status": "ok", "next": "FITS"}))
+        r = self.autodev("record", "define", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("MALFORMED", r.stdout)
+        out = self.next(0)
+        self.assertEqual(self.spawned(out), [("define", 2)])
+        self.assertIn("record define 2", " ".join(out["AFTER"]))
+        brief = (self.dir / "briefs" / "define-2.md").read_text()
+        self.assertIn("high_risk", brief)  # the refused issues ride along
+        self.next(0)
+        self.assertIn("spawned 3 times", " ".join(self.next(4)["REPORT"]))
+
     def test_a_worker_that_failed_is_respawned_once(self):
         _, jobs = self.expect("define")
         self.answer(*jobs[0], "", status="failed")
@@ -349,7 +364,12 @@ class ShipTest(NextCase):
                 "## Findings\n- null due date crashes sort\n")
             self.answer(w, n, "REVIEWED", findings="1", leads="0")
         (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
-        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
+            "missing due date\n")
+        _, jobs = self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        self.assertEqual(self.sets(*jobs[0])["tree"],  # the tree the panel reviewed
+                         self.state()["phase6"]["passes"][0]["tree"])
         out, jobs = self.expect("coder")
         self.assertEqual(self.sets(*jobs[0])["corrections_file"],
                          f"{self.dir}/review/pass-1/corrections.md")
@@ -395,6 +415,9 @@ class ShipTest(NextCase):
             {"args": ["pr", "view", "12", "--json"],  # the main gate's summary
              "stdout": json.dumps({"url": f"{url}/pull/12", "isDraft": False,
                                    "state": "OPEN", "headRefOid": sha})},
+            {"args": ["repo", "view", "--json",
+                      "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"],
+             "stdout": json.dumps({"squashMergeAllowed": True})},
             {"args": ["pr", "merge"], "stdout": ""},
             *extra,
         ])
@@ -424,6 +447,9 @@ class ShipTest(NextCase):
                 "## Findings\n- null due date crashes sort\n")
             self.answer(w, n, "REVIEWED", findings="1", leads="0")
         (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
+            "missing due date\n")
         self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
             tree=self.tree()))
@@ -434,7 +460,8 @@ class ShipTest(NextCase):
 
     def test_ship_session_runs_to_the_merge(self):
         sha, _ = self.open_pr()
-        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0")
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none")
         out = self.next(0)
         self.assertIn("gh pr ready 12", out["ACTION"])
         self.after(out)
@@ -511,7 +538,8 @@ class CiTest(NextCase):
         self.assertEqual(self.sets(*jobs[0])["failing"], "test — https://ci/1")
         (self.dir / "triage" / "ci-1.md").write_text(
             "# Required changes\n1. Handle a missing due date in src/sort.ts\n")
-        self.answer(*jobs[0], "CODE", blockers="0", acceptance_checks="0")
+        self.answer(*jobs[0], "CODE", blockers="0", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
         out, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
         self.assertEqual(self.sets(*jobs[0])["corrections_file"],
                          f"{self.dir}/triage/ci-1.md")

@@ -118,7 +118,8 @@ brief** — always substitute `<artifact-dir>`.
     security-corrections.md # the security-verify judge's required changes
   CODE_REVIEW.md          # the judge's consolidated code review: verdicts, votes, confidence (Phase 6a)
   SECURITY_REVIEW.md      # the security review: origin, confidence, verification (Phase 6a)
-  triage/                 # the triager's required changes: ci-<n>.md, human-<n>.md (Phase 6)
+  triage/                 # the triager's required changes: ci-<n>.md, human-<n>.md for the coder,
+                          # human-<n>-checks.md for the acceptance tester (Phase 6)
   briefs/                 # each worker's brief file, <worker>-<n>.md (autodev.py brief)
   returns/                # each worker's result, <worker>-<n>.json
   lookups/                # lookup answers, <n>.md (any phase)
@@ -519,9 +520,9 @@ writer that checks over a while compares the tree before and after, and writes
 `Tree: changed during the run` (read as no stamp, so stale) if they differ. The
 verifier does this itself. The two reviews are checked by other agents before
 their writer runs, so you take the hash: run `--print-tree` just before
-spawning the code review panel, and again before spawning the security
-reviewer: `autodev.py brief` fills it into the judge's and the security
-reviewer's `tree` slot. The writer writes it only if its own `--print-tree`
+spawning the code review panel, and pass it to the judge's brief
+(`--set tree=<hash taken before the panel>`); `autodev.py brief` fills the
+security reviewer's `tree` slot itself, at its spawn. The writer writes it only if its own `--print-tree`
 still matches.
 
 **Why a tree hash.** The checks run before anything is committed, so there is no
@@ -604,7 +605,8 @@ check-artifact` checks the result against it.
 | `acceptance/MANIFEST.md` | strict | the orchestrator's check of the tester's return (coverage, levels), verifier (tiers, install), post-plan gate summary, correction briefs (the paths not to touch), PR body (each test's name and its result on the old code) |
 | `acceptance/base-run/C<n>.txt` | strict | the orchestrator's check of the tester's return, verifier (Strong tier), PR body (the old code's output) |
 | `SPEC_EVAL.md` | strict | `autodev.py eval-status` (the Phase 5 decision), the next verifier re-check, the PR body, PR gate summary, `scripts/check-fresh.py` (`Tree:`) |
-| `evidence/corrections.md`, `review/pass-<n>/corrections.md`, `review/security-corrections.md`, `triage/<ci|human>-<n>.md` | strict (`# Required changes`, numbered entries) | the coder, passed unedited as its correction brief; `autodev.py spec-overlap` |
+| `evidence/corrections.md`, `review/pass-<n>/corrections.md`, `review/security-corrections.md`, `triage/<ci|human>-<n>.md` | strict (`# Required changes`, numbered entries) | the coder, passed unedited as its correction brief; `autodev.py spec-overlap`, which `autodev.py record` runs on it |
+| `triage/human-<n>-checks.md` | strict (as above) | the acceptance tester's repair mode: comments saying a held-out check is wrong |
 | `fixes/<define|plan>-<n>.md` | strict (FIX blocks) | `autodev.py apply-fix`; the Define agent's or planner's revise mode when a block doesn't apply |
 | `review/pass-<n>/R<k>.md` | strict | the review judge |
 | `review/pass-<n>/VOTES-R<k>.md` | strict | `autodev.py votes --apply` |

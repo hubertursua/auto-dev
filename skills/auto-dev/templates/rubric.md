@@ -3,12 +3,15 @@
 
 ### Code review findings
 
-**Category.** Only two categories can ever be must-fix:
+**Category.** Only three categories can ever be must-fix:
 
 - **Correctness:** wrong output, a crash, data loss, a race, or a broken edge
   case or error path.
 - **Tests:** a changed behavior with no test, a test that cannot fail, or a test
   that misses the case the change is about.
+- **Acceptance check** (`acceptance-check`): a held-out acceptance check asserts
+  the wrong thing, or can't fail when its condition is unmet. It goes to the
+  acceptance tester's repair mode, never the coder.
 
 Scope, performance, design, conventions and style findings are **advisory**,
 whatever their severity. Security findings are not the panel's job: they go to

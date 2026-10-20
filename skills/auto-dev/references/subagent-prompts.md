@@ -19,9 +19,11 @@ with a `## Mode: <name>` section for each mode.
    `SKILL.md`).
 3. When it returns, `autodev.py record <worker> <n>` checks the result block it
    wrote to `returns/<worker>-<n>.json` against the artifact it wrote. `RECORDED`
-   prints the `next` token to act on, as each section below says. `MISMATCH`
-   means the return and the artifact disagree: re-spawn the worker with the
-   issues it printed, never guess which is right.
+   prints the `next` token to act on, as each section below says. `MISSING`
+   (no result file), `MALFORMED` (a key or token wrong) and `MISMATCH` (the
+   return and the artifact disagree) mean re-spawn that job: brief it again
+   with `--retry <n>`, which carries the printed issues in its
+   `previous_issues` slot. Never guess which side is right.
 
 Workers read the templates (`templates/`) and the rubric (`templates/rubric.md`)
 by path, and run `autodev.py check-artifact` on what they write before they
@@ -664,7 +666,7 @@ _Tools: Read, Grep, Glob, Bash, Write._
 The brief is `agents/review-judge.md`, mode `consolidate`. Write its slots and spawn it:
 
 ```bash
-python3 <skill-dir>/scripts/autodev.py brief review-judge --mode consolidate --set reviewers="R1, R2, R3" --set scope=<scope>
+python3 <skill-dir>/scripts/autodev.py brief review-judge --mode consolidate --set reviewers="R1, R2, R3" --set scope=<scope> --set tree=<hash taken with --print-tree before the panel>
 ```
 
 Spawn `auto-dev:review-judge` with the one-line prompt it prints. When the worker returns, run `autodev.py record review-judge <n>` and act on its `next`.
