@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -46,6 +47,25 @@ class CheckRepoTest(unittest.TestCase):
         for ref in ("evals/files/gone/notes.md", "evals/files/resume-s2/missing.json",
                     "evals/files/no-such-dir"):
             self.assertTrue(any(f"names {ref}," in e for e in errors), (ref, errors))
+
+    def check_description(self, length):
+        description = ("word " * length)[:length - 1] + "."
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "SKILL.md"
+            folded = textwrap.indent(textwrap.fill(description, 76), "  ")
+            path.write_text(f"---\nname: x\ndescription: >-\n{folded}\n---\n\n# x\n",
+                            encoding="utf-8")
+            tool.check_skill_description(path)
+        return tool.errors
+
+    def test_description_at_the_limit_passes(self):
+        self.assertEqual(self.check_description(1024), [])
+
+    def test_description_over_the_limit_fails(self):
+        errors = self.check_description(1025)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("1025 characters", errors[0])
 
 
 if __name__ == "__main__":

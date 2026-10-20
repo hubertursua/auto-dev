@@ -22,7 +22,8 @@ python3 -m unittest discover -s tests     # helper-script tests
 `tools/check-repo.py` catches drift a reviewer would miss: the model tables in
 `SKILL.md` and `README.md` against `agents/*.md`, paths the docs name that don't
 exist, an `evals/files/` fixture `evals.json` names that doesn't exist, a script
-the README doesn't mention, a script that isn't executable, and
+the README doesn't mention, a script that isn't executable, a `SKILL.md`
+description over Claude Code's 1024-character limit, and
 `plugin.json` / `marketplace.json` disagreeing. When you add a sync rule below
 that a script can check, add it there.
 
