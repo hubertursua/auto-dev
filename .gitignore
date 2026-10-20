@@ -9,3 +9,10 @@ __pycache__/
 
 # macOS finder metadata
 .DS_Store
+
+# Claude Code: personal files stay out of git. Shared files such as
+# .claude/settings.json, agents/, skills/ and commands/ are committed.
+.claude/*.local.*
+.claude/worktrees/
+.claude/agent-memory-local/
+CLAUDE.local.md
