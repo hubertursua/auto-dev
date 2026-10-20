@@ -21,12 +21,19 @@ see in S2, in order:
    writes its verdicts and, if anything is open, `evidence/corrections.md`.
 3. While something is open: the `coder` in correction mode with that file
    (each one spends a round; `BUDGET:` shows what's left), then a `verifier`
-   re-check. Defective checks go to the `acceptance-tester` first.
+   re-check. Defective checks go to the `acceptance-tester` first, in repair
+   mode: it fixes them, or answers `STANDS` with its reason, and the verifier
+   then judges those checks as written. A check that stands is never sent back
+   on the same condition; if the verifier and the tester still disagree, `next`
+   stops and reports both sides.
 4. `cleanup` simplifies the change and runs the quality gate to green.
 5. A last `verifier` re-check on the cleaned code.
-6. Exit 6: run `autodev.py handoff`, give the user its message, stop.
+6. Exit 6: run its `AFTER` command exactly as printed (`handoff` at the end of the
+   session, `handoff --checkpoint` at a checkpoint), give the user its message,
+   stop.
 
-You pass every file on as `next` names it. You never read `SPEC_EVAL.md`,
+A worker whose result `record` refuses (exit 1) is briefed again by the next
+`next`, with the refused issues. You pass every file on as `next` names it. You never read `SPEC_EVAL.md`,
 `corrections.md` or the code.
 
 ## Stops in S2

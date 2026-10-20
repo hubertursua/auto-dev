@@ -10,7 +10,11 @@ decision on the first line:
     FRESH            --task names no run here: start a fresh run (init)
     RESUME <tree>    continue this run: session, phase and status follow. It
                      records that a new session holds the run, and un-holds a
-                     phase held at a gate, so `next` asks that gate again
+                     phase held at a gate, so `next` asks that gate again. A
+                     stop on a worker (blocked, failed twice, never returned)
+                     is lifted: `next` spawns that worker again. A session
+                     that ended at a checkpoint (`handoff --checkpoint`) lifts
+                     nothing: nothing was stopped
     ASK              ask the user: several runs fit, a run only nearly matches
                      the task (NEAR-MISS), or no task was given and no run is open
     FINISHED <tree>  the run the task names already finished or was stopped
@@ -22,9 +26,14 @@ Pass --task whenever the user states the task (its Jira key or what it does);
 omit it on a bare `auto-dev continue` or a loose name like "the dark-mode run".
 Being given a task never resumes a run that doesn't match it.
 
+A run whose setup failed is open: RESUME at Phase 1, with the
+`init --continue` command to run once the cause is fixed.
+
 Exit codes:
     0  a decision was printed
-    2  could not run (not a git checkout, git failed) — not a decision
+    2  could not run (not a git checkout, git failed), or a run's state.json is
+       unreadable and no readable run matches (`ERROR` names the tree) — not a
+       decision
 """
 
 from pathlib import Path
@@ -72,8 +81,8 @@ def candidates(repo):
         if (artifact_dir / st.STATE_FILE).exists():
             try:
                 state = st.load(artifact_dir)
-            except st.StateError:
-                found.append(("broken", tree, {}, None))
+            except st.StateError as exc:
+                found.append(("broken", tree, {"error": str(exc)}, None))
                 continue
             fields = {"Task": state["task"].get("text", ""),
                       "Ticket": st.ticket_line(state["task"])}
@@ -88,11 +97,24 @@ def describe(tree, state):
     if opened is None:
         return {"tree": tree, "run": st.run_state(state)}
     number, status = opened
-    return {"tree": tree, "run": st.run_state(state),
+    info = {"tree": tree, "run": st.run_state(state),
             "session": st.SESSION_NAMES[st.SESSIONS[number]],
             "phase": f"{number} — {st.PHASE_NAMES[number]}", "status": status,
             "task": state["task"].get("text", ""),
             "budget": f"{state['budget']['remaining']} of {state['budget']['total']}"}
+    if number == 1 and state["init"].get("setup") != "done":
+        info["setup"] = state["init"].get("setup", "pending")
+        info["action"] = f"run `autodev.py init --continue {tree}`"
+    return info
+
+
+def unreadable(found):
+    """Stop on runs whose state.json can't be read: one may be the run wanted."""
+    broken = [item for item in found if item[0] == "broken"]
+    if broken:
+        raise Fail("; ".join(f"the run in {tree} is unreadable: {fields['error']}"
+                             for _, tree, fields, _ in broken)
+                   + ". Fix or remove it, then run resume again", CANNOT_RUN, "ERROR")
 
 
 def main(args):
@@ -109,6 +131,8 @@ def main(args):
                 matched.append(item)
             elif verdict == NEAR_MISS:
                 near.append(item)
+        if not matched:
+            unreadable(found)
         if len(matched) > 1 or (not matched and near):
             pool = matched or near
             emit(args.json, "ASK", "several runs may be this task; ask the user "
@@ -128,6 +152,7 @@ def main(args):
         emit(args.json, "ASK", "several runs are open; ask the user which one",
              candidates=[f"{t} — {f.get('Task', '')}" for _, t, f, _ in open_runs])
         return 0
+    unreadable(found)
     old = [i for i in found if i[0] == "v3"]
     if len(old) == 1:
         return decide_one(old[0], args)
@@ -143,8 +168,6 @@ def decide_one(item, args):
              action="this run was started on auto-dev 3.x; finish it on 3.9, or "
                     "remove its worktree and start again on 4.x")
         return 0
-    if kind == "broken":
-        raise Fail(f"{tree}/.auto-dev/state.json is unreadable", CANNOT_RUN, "ERROR")
     info = describe(tree, state)
     if info["run"] in ("finished", "stopped"):
         emit(args.json, "FINISHED", tree, run=info["run"],
@@ -163,6 +186,13 @@ def start_session(tree, state):
     for n, _ in st.PHASES:
         if st.phase(state, n)["status"] == "held":
             st.set_phase(state, n, "in-progress")
-    state["resumed_seq"] = st.seq(state)
+    # A checkpoint ended the last session at a clean point, with nothing to fix:
+    # the stops' windows (failed twice, stale twice, a refused publish) go on.
+    after_checkpoint = state.get("checkpoint_seq", 0) > state.get("session_seq", 0)
+    if not after_checkpoint:
+        for brief in state.get("briefs", []):
+            brief.pop("emitted", None)  # a worker that never returned gets new tries
+        state["resumed_seq"] = st.seq(state)
+    state["session_seq"] = st.seq(state)
     st.add_note(state, f"resumed in a new session ({st.SESSION_NAMES[state['session']]})")
     st.save(Path(tree) / ".auto-dev", state)

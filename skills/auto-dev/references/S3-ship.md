@@ -17,22 +17,38 @@ see in S3, in order:
 1. Three `code-reviewer`s in one message, then the `review-judge`, maybe
    re-votes by the reviewers, then a security reviewer and the judge again.
    A must-fix finding runs a correction (`coder`, `cleanup`, `verifier`) and
-   the panel reviews the files it changed.
-2. The PR gate (exit 5).
+   the panel reviews the files it changed. A finding that a held-out
+   acceptance check is wrong goes to the `acceptance-tester` in repair mode,
+   never the coder; it may fix the check or answer `STANDS` with its reason,
+   and a check that stands is not sent back a second time.
+2. The PR gate (exit 5). With pre-existing security findings it asks one more
+   question per finding (_What each gate option does_ in
+   `references/tables.md`): run the `mark triage-<ID>` line for each answer.
 3. Commit, push, PR body, publish: steps 3–5 below.
-4. `ci-watch`; a red check sends the `triager`, and a code failure runs a
-   correction, a review and a new commit.
+4. `ci-watch`. Whatever it exits, run its `AFTER` line (`next`): `next` asks
+   for `ci-watch` again only while CI is `PENDING`. After `TIMEOUT` or
+   `UNAVAILABLE` the run goes on, and the main gate shows CI as not monitored;
+   never call it green. A red check sends the `triager`. A code failure runs a
+   correction, a review and a new commit. Any other class (`INFRA`, `FLAKY`,
+   `UNKNOWN`, `SECRET`) is not the code's to fix: `next` stops and reports it
+   (exit 4) before Jira moves to In Review or staging is asked. Once the cause
+   is fixed and CI re-run, `auto-dev continue` watches it again.
 5. Jira In Review, the staging gate, the `triager` on human PR comments, `gh pr
-   ready`, the main gate, `merge-pr`.
+   ready`, CI watched once more (some workflows skip drafts, so green from the
+   draft's checks doesn't count), the main gate, `merge-pr`. A human blocker
+   goes to the coder; a comment saying a held-out check is wrong goes to the
+   acceptance tester's repair mode (the triager writes it to
+   `triage/human-<n>-checks.md`). When both come back, the tester goes first.
 6. CI on the base branch, Jira Done, the final report, the worktree question.
 
 ## 3. Commit
 
 `next` prints a `commit` command with `--message "<type>(<scope>): <summary>"`.
-Replace it with a Conventional Commits subject for the change: `feat`, `fix`,
-`refactor`, `test`, `docs` or `chore`; a scope only if the repo's history uses
-them; an imperative summary under 72 characters. Take the summary from the
-`HANDOFF.md` task line, not from the code. Run it, then `next` (it reads the
+Replace it, inside its single quotes, with a Conventional Commits subject for
+the change: `feat`, `fix`, `refactor`, `test`, `docs` or `chore`; a scope only
+if the repo's history uses them; an imperative summary under 72 characters,
+with no single quote in it (rephrase, or use ’). Take the summary from the
+`Task:` and `Ask:` lines of `HANDOFF.md`, not from the code. Run it, then `next` (it reads the
 result, whatever the exit code).
 
 ## 4. Push
@@ -52,7 +68,10 @@ auto-dev:
   reviewer should check, one bullet each, or `None.`
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
-"verifier" or "pipeline". Change nothing else in the file. Then run the `AFTER`
+"verifier" or "pipeline". Change nothing else in the file: the follow-ups the
+user sent to a separate PR at the PR gate are already listed in it.
+`pr publish` ends everything it posts with `<!-- auto-dev -->`, which tells
+the triager to skip it; never post on the PR yourself. Then run the `AFTER`
 line, `autodev.py pr publish`:
 
 | Exit | Do |
@@ -71,13 +90,21 @@ _Moving a ticket_ says, then run its `AFTER` line.
 `next` asks you to watch CI on a branch that was just merged into, then run
 `autodev.py mark <staging-ci | main-ci> --value <result>`.
 
-1. IF `profile.md`'s CI line says `none`, the value is `not watched`.
-2. ELSE run `gh run list --branch <branch> --limit 1 --json
-   status,conclusion,url` every 30 seconds, for up to the CI timeout in
-   `profile.md`. `completed` with `success` → `green`. `completed` with
-   anything else → `red`. Still running at the timeout, or nothing listed →
-   `not watched`.
-3. IF `red`: tell the user at once, with the link, that the merge is already in
+1. IF `profile.md`'s CI line is anything but `github-actions` (`none`,
+   `circleci`, `gitlab`, …), the value is `not watched`: `gh run list` sees
+   only GitHub Actions.
+2. ELSE find the commit the merge made with the command `next`'s `ACTION`
+   names: for the base branch, `gh pr view <PR number> --json mergeCommit -q
+   .mergeCommit.oid`; for staging, `git -C <worktree> rev-parse
+   origin/<staging>` (the commit `merge-staging` pushed).
+3. Run `gh run list --commit <sha> --json status,conclusion,url,workflowName`
+   every 30 seconds, for up to the CI timeout in `profile.md`:
+   - any run `completed` with a conclusion other than `success`, `skipped` or
+     `neutral` → `red`;
+   - at least one run listed, and every run `completed` with `success`,
+     `skipped` or `neutral` → `green`;
+   - nothing listed, or a run still going, at the timeout → `not watched`.
+4. IF `red`: tell the user at once, with the link, that the merge is already in
    and the branch's CI failed. Never revert, re-push or fix it unasked. Then
    mark it and run `next`.
 
@@ -94,7 +121,7 @@ printed. Then run its `AFTER` line.
 - **Built:** <what changed, 1–3 sentences>
 - **Quality gate:** <each check and its final status>
 - **Checked at:** <the verified commit>
-- **Review:** <must-fix fixed and open, from the code and security reviews; pre-existing findings left for the user>
+- **Review:** <must-fix fixed and open, from the code and security reviews; pre-existing findings the user ignored>
 - **Jira:** <transitions made | none — no ticket>
 - **Iteration budget:** <remaining>/<total>
 

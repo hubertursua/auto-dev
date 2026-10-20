@@ -28,6 +28,9 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the VERIFY phase. Work inside the worktree at {{worktree}}; {{artifact_dir}}
@@ -67,9 +70,12 @@ directly — it moves when anything fetches.
    {{worktree}}/<path>.
    - FIRST PASS: check every path before copying any. A file already there and
      byte-identical to its sealed copy is already installed (a resumed pass):
-     leave it. A file there that differs is not yours: copy NOTHING, and return
-     INSTALL CONFLICT with every such path. Otherwise install the rest, then run
-     the audit (below).
+     leave it. A file there that differs is not yours: copy NOTHING, write
+     {{artifact_dir}}/evidence/corrections.md in the shape of
+     `{{skill_dir}}/templates/corrections.md` with one entry per such path
+     ("move `<path>`; an acceptance check installs there"), and return INSTALL
+     CONFLICT with every such path; nothing below applies. Otherwise install
+     the rest, then run the audit (below).
    - RE-CHECK: run the audit first, then re-copy every sealed check over its
      installed path (this undoes any edit; the audit has already recorded it).
    Audit: python3 {{skill_dir}}/scripts/check-tests.py {{worktree}} --base $CUT --acceptance {{artifact_dir}}/acceptance
@@ -223,7 +229,7 @@ directly — it moves when anything fetches.
    is advisory.
 
 Write {{artifact_dir}}/SPEC_EVAL.md to the template at `{{skill_dir}}/templates/SPEC_EVAL.md` (strict): read
-it there and copy everything below its first comment line
+it there and copy everything below its first comment line.
 Its Tree line says which code you checked. After your last run (and after
 mutate.py has restored every file), run --print-tree again. If it prints the
 hash you noted in step 1, write that hash. If not, something changed the code
@@ -233,13 +239,13 @@ during your runs: write `Tree: changed during the run` and list the files
 Never downgrade a failure you saw without writing why in its row.
 
 Then, with SPEC_EVAL.md final, write {{artifact_dir}}/evidence/corrections.md: the
-changes the code needs, for the coder, who has not seen SPEC.md. Write it after
-the verdicts, and never change a verdict to fit it. One entry per open item:
-each condition still `unmet` or `partial` (except one that is `partial` only
-because of a defective acceptance check: that is a repair, not a code change),
-each Unjustified integrity finding, and each Test gap.
-in the shape of `{{skill_dir}}/templates/corrections.md`. Never copy SPEC.md's
-wording; a script refuses a correction that does.
+changes the code needs, for the coder, who has not seen SPEC.md, in the shape
+of `{{skill_dir}}/templates/corrections.md`. Write it after the verdicts, and
+never change a verdict to fit it. One entry per open item: each condition still
+`unmet` (even if its check is also defective) or `partial` (except one that is
+`partial` only because of a defective acceptance check: that is a repair, not a
+code change), each Unjustified integrity finding, and each Test gap. Never copy
+SPEC.md's wording; a script refuses a correction that does.
 For an integrity finding, say which test to restore or strengthen, or what
 special case to remove. For a Test gap, describe the behavior no test pins
 down, never the mutant: "nothing fails if 10 items are rejected; add a test
@@ -255,15 +261,15 @@ Spill long output to $TMPDIR; keep each command under 5 minutes.
 Return: the Tree line you wrote; one line per condition (number, verdict, tier);
 the unjustified integrity findings; the mutation summary and each Test gap (mutant, line, condition, and the
 behavior no test pins down); any defective acceptance check; the number of required changes in
-evidence/corrections.md; INSTALL CONFLICT or MUTATION LEFT CHANGES if either
-happened.
+evidence/corrections.md; INSTALL CONFLICT (with its entries in
+evidence/corrections.md) or MUTATION LEFT CHANGES if either happened.
 
 ## Result
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `INSTALL_CONFLICT` or `MUTATION_LEFT_CHANGES` when either happened; else `CORRECT` when any condition is unmet or partial (not only because of a defective check) or an integrity finding is Unjustified, `REPAIR` when only a defective check holds a condition back, `ALL_MET` otherwise.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `INSTALL_CONFLICT` or `MUTATION_LEFT_CHANGES` when either happened; else `CORRECT` when any condition is unmet (even if its check is also defective), partial for a reason other than a defective check, or an integrity finding is Unjustified; `REPAIR` when every open condition is partial only because its check is defective; `ALL_MET` otherwise.
 
 ```auto-dev-result
 worker: verifier

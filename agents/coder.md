@@ -22,6 +22,9 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the IMPLEMENTATION phase. Work inside the worktree at {{worktree}}. Do NOT
@@ -59,8 +62,9 @@ Return:
 - TEST CHANGES: every existing test you edited, skipped or removed, and why
   (write "none" if none)
 - BLOCKED: each step you stopped, what conflicts, and what you would need to
-  finish it (write "none" if none). When there is any, also write the same
-  list to {{blocked_file}}: the planner reads it there.
+  finish it (write "none" if none; the result's `blocked` count is then 0).
+  When there is any, also write the same list to {{blocked_file}}: the planner
+  reads it there.
 - DEVIATIONS: any step you did differently than the plan describes, and why. Be
   specific and honest — a better route is a fine reason, and this report is read
   as information, not as a failure.
@@ -92,12 +96,12 @@ Report what changed, TEST CHANGES and BLOCKED. Do not commit or open a PR.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `BUILT`, or `BLOCKED` when any step is under BLOCKED.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `BUILT`, or `BLOCKED` when any step is under BLOCKED.
 
 ```auto-dev-result
 worker: coder
 status: ok
 next: BUILT | BLOCKED
-blocked: <steps stopped>
+blocked: <number of steps under BLOCKED; 0 if none>
 test_changes: <existing tests edited, skipped or removed>
 ```

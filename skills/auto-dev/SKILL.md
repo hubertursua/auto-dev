@@ -72,7 +72,7 @@ repo. Below, `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 | Prints | Do |
 |---|---|
 | `FRESH` | a new run: follow `references/S1-plan.md` from step 1 |
-| `RESUME <tree>` | read the runbook for the session it names (`S1-plan.md`, `S2-build.md` or `S3-ship.md`), then go to **The loop** |
+| `RESUME <tree>` | read the runbook for the session it names (`S1-plan.md`, `S2-build.md` or `S3-ship.md`). IF it also printed an `action:` line (setup is not done), run that `init --continue` command first, as `S1-plan.md` says. Then go to **The loop** |
 | `ASK` | show the user the `candidates` lines and ask which run is theirs, or whether to start fresh. Then run `resume` again with `--task` set to the chosen run's task, or follow `S1-plan.md` for a fresh one |
 | `FINISHED <tree>` | tell the user that run already finished or was stopped; ask whether to start a fresh one |
 | `OLD-VERSION <tree>` | tell the user: "This run was started on auto-dev 3.x. Finish it on auto-dev 3.9, or remove its worktree (`git worktree remove <tree>`) and start again." Then stop |
@@ -102,12 +102,29 @@ Its exit code says what kind of step it is:
 | 5 | ask the user | Show the `SUMMARY` lines, then call AskUserQuestion with the `QUESTION` JSON as given. Run the `AFTER` line whose label matches the answer, filling in any `<…>` with what the user said |
 | 6 | end of session, or a checkpoint | Run the `AFTER` command, give the user the message it prints, and stop. Do not start the next phase |
 
-`next --explain` adds a `RULE:` line naming why it chose the action; use it
-when the user asks why.
+`next` never exits 1: a step it can't take is a stop (4) that says why.
+
+Every path and value in a printed command is already shell-quoted. A `<…>`
+placeholder (a reason, a commit subject) sits inside single quotes: replace it
+there with text that holds no single quote (rephrase, or use the typographic
+apostrophe ’), and change nothing else on the line.
+
+`next --explain` only looks: it prints the action `next` would take and a
+`RULE:` line naming why, but writes no brief and saves nothing. Use it when the
+user asks why; run `next` without it to act.
 
 **After a worker returns**, its `AFTER` line is `autodev.py record <worker>
-<n>`. If `record` exits 1 (`MISMATCH`), run `next`: it spawns the worker again
-with the same brief. Never fix the worker's file yourself.
+<n>`. If `record` exits 1 (`MISSING`, `MALFORMED` or `MISMATCH`, printed on
+stdout with the issues), run `next`: it briefs that job again with those
+issues in its `previous_issues` slot. Never write the retry brief yourself
+(`brief --retry`) and never fix the worker's file yourself.
+
+**A stop on a worker** (it stopped on purpose, failed twice, or never left a
+result `record` accepts) and a stop at `pr publish` last until the user fixes
+the cause and says `auto-dev continue`: the new session spawns that worker, or
+publishes, again. A stop on a result (a red quality gate, an impossible spec, a
+mutation that may have left changes, the budget used up) stays: a resumed run
+stops at the same place (`references/tables.md`, _Hold and Stop_).
 
 **Never skip a step or run one `next` didn't print**, except the ones in your
 session's runbook.
