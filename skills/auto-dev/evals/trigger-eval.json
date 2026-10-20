@@ -172,11 +172,11 @@
     "should_trigger": true
   },
   {
-    "query": "new session, switched to opus on high like you said. continue the auto-dev run for PROJ-4821, the plan session already wrote .auto-dev/HANDOFF.md so the build is next",
+    "query": "new session like you said. continue the auto-dev run for PROJ-4821, the plan session already wrote .auto-dev/HANDOFF.md so the build is next",
     "should_trigger": true
   },
   {
-    "query": "ok the build session finished and told me to start fresh on sonnet for shipping. pick up where it left off — the worktree is ../acme-settlement-void-fix",
+    "query": "ok the build session finished and told me to start a fresh session for shipping. pick up where it left off — the worktree is ../acme-settlement-void-fix",
     "should_trigger": true
   },
   {

@@ -1108,6 +1108,53 @@ class CiTest(NextCase):
                       " ".join(out["SUMMARY"]))
 
 
+class HumanAndMainGateTest(NextCase):
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    open_pr = ShipTest.open_pr
+
+    def test_a_reviewer_blocker_becomes_a_correction(self):
+        self.open_pr()
+        _, jobs = self.expect("triager")
+        self.assertEqual(next(b for b in self.state()["briefs"]
+                              if (b["worker"], b["n"]) == jobs[0])["mode"], "human")
+        (self.dir / "triage" / "human-1.md").write_text(
+            "# Required changes\n1. c-77: keep the field name when it is empty\n")
+        self.answer(*jobs[0], "TRIAGED", blockers="1", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "human-1.md"), checks_file="none")
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/triage/human-1.md")
+        self.assertIn("human-1", out["BUDGET"])
+
+    def test_an_outside_push_after_a_held_main_gate_stops_before_it_is_asked_again(self):
+        # Eval 16: the main gate is held, someone pushes to the PR branch, and a
+        # fresh session resumes the run.
+        self.open_pr()
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none")
+        out = self.next(0)
+        self.assertIn("gh pr ready", out["ACTION"])
+        self.after(out)
+        out = self.next(5)
+        self.assertIn("main", out["QUESTION"])
+        self.after(out, "Hold")
+        self.next(4)
+        branch = self.state()["branch"]
+        other = self.tmp / "other"
+        self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"), str(other))
+        (other / "app.ts").write_text("export const one = 1; // reworded\n")
+        self.sh("git", "commit", "-q", "-am", "reword", cwd=other)
+        self.sh("git", "push", "-q", "origin", branch, cwd=other)
+        self.resume()  # un-holds the main gate
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("someone pushed", report)
+        self.assertIn("app.ts", report)
+        self.assertNotIn("QUESTION", out)  # the main gate is not asked
+        self.assertNotIn("merge-pr", json.dumps(out))
+
+
 class ReVoteTest(NextCase):
     def test_lone_findings_are_re_voted_then_applied(self):
         self.plan_session()
