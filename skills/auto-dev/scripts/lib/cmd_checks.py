@@ -271,14 +271,26 @@ def apply_fix(args):
             continue
         text = text.replace(old, new, 1)
     if failed:
+        note_fix(args, "no-match")
         emit(args.json, "NO-MATCH", f"nothing written to {target}: spawn its author in "
              f"revise mode with {args.fix_file}", block=failed)
         return FAILED
     tmp = target.with_name(f".{target.name}.fix")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(target)
+    note_fix(args, "applied")
     emit(args.json, "APPLIED", f"{len(blocks)} FIX block(s) to {target}")
     return 0
+
+
+def note_fix(args, outcome):
+    """Record the outcome in state.json, when there is a run, for `next`."""
+    try:
+        state = st.load(args.dir)
+    except st.StateError:
+        return
+    state.setdefault("fixes", {})[str(Path(args.fix_file).resolve())] = outcome
+    st.save(args.dir, state)
 
 
 def words(text):

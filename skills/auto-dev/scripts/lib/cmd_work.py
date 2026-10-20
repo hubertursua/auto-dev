@@ -17,7 +17,8 @@ record <worker> <n>
     the artifact the worker wrote (for example: the verifier's `next` against
     `eval-status`, the judge's open must-fix count against CODE_REVIEW.md, the
     cleanup agent's GREEN against the lint reports). On a match it updates
-    state.json (the Define agent's size check, a note of what came back) and
+    state.json (the Define agent's size check, and the result in the log
+    `autodev.py next` reads) and
     prints `RECORDED` with the `next` token.
     Exit: 0 recorded; 1 the return and the artifact disagree, or the return is
     malformed (both sides are printed: re-spawn the worker, don't guess).
@@ -214,6 +215,10 @@ def brief(args):
             (ad / sub).mkdir(exist_ok=True)
     path = directory / f"{worker}-{n}.md"
     path.write_text(briefs.render(worker, n, args.mode, values), encoding="utf-8")
+    if ad is not None:
+        state.setdefault("briefs", []).append(
+            {"worker": worker, "n": n, "mode": args.mode, "sets": given, "at": st.now()})
+        st.save(args.dir, state)
     emit(args.json, "BRIEF", str(path), agent=f"auto-dev:{worker}", n=n,
          prompt=f"Your brief is at {path}. Read it first.",
          result_file=values.get("result_file", ""))
@@ -291,9 +296,8 @@ def derive(worker, data, ad, state):
     elif worker == "planner" and nxt in ("WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST"):
         issues += [f"IMPLEMENTATION.md: {p}" for p in check_file(ad / "IMPLEMENTATION.md")]
     elif worker == "acceptance-tester" and nxt in ("SEALED", "REPAIRED"):
-        code, out, err = run_autodev("check-manifest", "--dir", str(ad))
-        if code != 0:
-            issues.append("check-manifest found gaps:\n" + (out + err).strip())
+        # Gaps are not a disagreement: `next` re-spawns the tester for them.
+        art.manifest(ad / "acceptance" / "MANIFEST.md")
     elif worker == "coder":
         if (nxt == "BLOCKED") != (as_int(data, "blocked") > 0):
             issues.append(f"next is {nxt} but blocked is {data.get('blocked')}")
@@ -370,6 +374,14 @@ def record(args):
                 st.set_phase(state, number, "n/a", "")
         elif state["high_risk"]:
             state["settings"]["post_plan_gate"] = True
+    issued = next((b for b in state.get("briefs", [])
+                   if b["worker"] == args.worker and b["n"] == args.n), {})
+    log = state.setdefault("log", [])
+    log[:] = [e for e in log if not (e["worker"] == args.worker and e["n"] == args.n)]
+    log.append({"worker": args.worker, "n": args.n, "mode": issued.get("mode"),
+                "sets": issued.get("sets", {}), "status": data.get("status"),
+                "next": data.get("next", ""), "data": data,
+                "seq": max((e.get("seq", 0) for e in log), default=0) + 1})
     st.add_note(state, f"{args.worker} #{args.n} returned {data.get('status')} "
                 f"{data.get('next', '')}".rstrip())
     st.save(args.dir, state)

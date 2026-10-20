@@ -8,6 +8,7 @@ Usage (each takes `--dir <artifact-dir>`, default `./.auto-dev`, and `--json`):
     autodev.py budget show
     autodev.py budget spend --consumer <1-5> --id <correction-id> [--what TEXT]
     autodev.py gate <gate> <choice> [--reason TEXT]
+    autodev.py mark <step> [--value TEXT]
 
 Only these commands (and init) write state.json; WORK_LOG.md is regenerated on
 every write.
@@ -22,6 +23,12 @@ dispatched. Consumers (references/correction-loop.md): 1 Define re-review,
 already spent is a no-op (exit 0, `ALREADY-SPENT`), so a resumed run never pays
 twice. At zero it spends nothing, prints `EXHAUSTED` and what to do for that
 consumer, and exits 3.
+
+`mark` records a step done outside autodev.py, so `next` moves past it. Steps:
+jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
+MCP tools, or skipped: --value skipped), pushed, pr-written (the PR body's
+Summary and Assumptions written), final-report, main-ci (CI on main checked
+after the merge), staging-ci.
 
 `gate` records a gate decision. Gates: post-plan, pr, staging, main, profile,
 jira, cleanup. Choices: proceed, hold, stop, skip (staging only), revise
@@ -50,6 +57,8 @@ GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "profile": {"proceed", "stop"},
                 "jira": {"proceed", "leave", "stop"},
                 "cleanup": {"proceed", "stop"}}
+MARKS = ("jira-in-progress", "jira-in-review", "jira-done", "pushed", "pr-written",
+         "final-report", "main-ci", "staging-ci")
 CONSUMERS = {
     1: "Define re-review",
     2: "plan re-review or acceptance-tester re-spawn",
@@ -87,6 +96,9 @@ def add_arguments(parser, name):
         parser.add_argument("--consumer", type=int, choices=sorted(CONSUMERS))
         parser.add_argument("--id", dest="spend_id")
         parser.add_argument("--what", default="")
+    elif name == "mark":
+        parser.add_argument("step", choices=MARKS)
+        parser.add_argument("--value", default="done")
     elif name == "gate":
         parser.add_argument("gate", choices=sorted(GATE_PHASE))
         parser.add_argument("choice")
@@ -172,6 +184,14 @@ def budget(args):
     st.save(args.dir, state)
     emit(args.json, "SPENT", f"`{args.spend_id}` — {b['remaining']} of {b['total']} left",
          remaining=b["remaining"])
+    return 0
+
+
+def mark(args):
+    state = load(args)
+    state.setdefault("marks", {})[args.step] = {"value": args.value, "at": st.now()}
+    st.save(args.dir, state)
+    emit(args.json, "MARKED", f"{args.step}: {args.value}")
     return 0
 
 

@@ -17,6 +17,7 @@ Subcommands:
     size      record the Define agent's size check (FITS or OVERSIZED)
     budget    show the iteration budget, or spend one round before a correction
     gate      record a gate decision
+    mark      record a step done outside autodev.py (a Jira move, the push)
     handoff   write HANDOFF.md and print the message that ends the session
     commit    stage by name, check, commit, and verify the commit (Phase 6)
     ci-watch  poll the PR's checks, bounded; green, red, pending or unavailable
@@ -72,6 +73,7 @@ COMMANDS = {
     "size": (cmd_state, cmd_state.size),
     "budget": (cmd_state, cmd_state.budget),
     "gate": (cmd_state, cmd_state.gate),
+    "mark": (cmd_state, cmd_state.mark),
     "handoff": (cmd_handoff, cmd_handoff.main),
     "commit": (cmd_ship, cmd_ship.commit),
     "ci-watch": (cmd_ship, cmd_ship.ci_watch),
