@@ -639,7 +639,7 @@ skills/auto-dev/
     lib/                shared code for autodev.py (not run directly)
   evals/                evals.json (pipeline evals, with fixtures in files/)
                         and trigger-eval.json (should / shouldn't trigger)
-tests/                  unit tests for the helper scripts and the eval fixtures
+tests/                  unit tests for the helper scripts, tools/ and the eval fixtures
   fake_gh/              a fake `gh` that plays back scripted responses
 tools/check-repo.py     checks that the repo's files agree with each other
 tools/check-pr.py       checks a branch name and PR title against the conventions

@@ -16,7 +16,9 @@ Checks:
   or OPTIONAL in scripts/lib/briefs.py), its Result block lists exactly the
   `next` tokens briefs.RESULTS allows, and every templates/<file> it names
   exists; every worker in briefs.RESULTS has an agent file and vice versa;
-- every template a script parses exists in templates/.
+- every template a script parses exists in templates/;
+- every evals/files/ path a string in evals/evals.json names exists (the
+  setup and expectations as well as each eval's `files`).
 """
 
 import json
@@ -183,6 +185,34 @@ def check_briefs():
             fail(f"templates/{name} is missing: a script parses it")
 
 
+# An eval fixture path, wherever it appears in evals.json. It ends on a name
+# character, so a sentence's closing period isn't part of it. A path with a
+# placeholder or glob (`<slug>`, `*`) is checked only up to that character.
+EVAL_PATH = re.compile(r"(?<![\w./-])(?:skills/auto-dev/)?(evals/files/[\w./-]*[\w-])")
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+
+
+def check_eval_paths(evals=SKILL_DIR / "evals" / "evals.json"):
+    try:
+        data = json.loads(evals.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return  # check_json reports it
+    rel = evals.relative_to(ROOT) if evals.is_relative_to(ROOT) else evals
+    for ref in sorted({r for text in strings(data) for r in EVAL_PATH.findall(text)}):
+        if not (SKILL_DIR / ref).exists():
+            fail(f"{rel}: names {ref}, which does not exist")
+
+
 def main():
     check_json()
     check_plugin_metadata()
@@ -190,6 +220,7 @@ def main():
     check_agents()
     check_paths()
     check_briefs()
+    check_eval_paths()
     for msg in errors:
         print(f"FAIL {msg}")
     if errors:
