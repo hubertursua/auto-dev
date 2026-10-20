@@ -16,6 +16,8 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     Exit: 0 committed and verified (push it); 1 refused: stale results (re-run
     them and ask the PR gate again), nothing to commit, staged-set check or the
     commit failed; 3 committed but NOT verified: do not push, stop and report.
+    A refusal is recorded for `next` as `commit_attempt`, except "nothing to
+    commit" (`next` never asks for a commit with nothing changed) and exit 2.
 
 ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     Polls the PR's checks with `gh pr checks` (GitHub Actions, and CircleCI or
@@ -36,7 +38,8 @@ merge-staging
     Merges the branch into the staging branch directly (fetch, detach at
     origin/<staging>, merge, push without --force) and always switches back to
     the branch. Exit: 0 merged and pushed; 1 conflict (merge aborted) or no
-    staging branch; 3 push rejected.
+    staging branch; 3 push rejected; 2 git could not run (not recorded as an
+    attempt).
 
 merge-pr --pr N --sha <checked commit>
     `gh pr merge` with the repo's allowed method (squash first), locked with
@@ -44,7 +47,8 @@ merge-pr --pr N --sha <checked commit>
     Exit: 0 merged; 1 the head moved (re-check the code and ask the main gate
     again); 2 could not run: gh missing, signed out, offline or too old, the
     repo's merge methods unreadable, or the merge succeeded but the PR's state
-    could not be read (it says so: don't merge again); 3 queued or auto-merge
+    could not be read (it says so, and records the merge as `unknown`, so
+    `next` never offers it again); 3 queued or auto-merge
     enabled, not merged (report and stop; don't move Jira); 4 refused (report
     the requirement blocking it and stop).
 
@@ -85,7 +89,7 @@ from pathlib import Path
 
 from . import state as st
 from .output import CANNOT_RUN, FAILED, Fail, emit
-from .proc import git, run
+from .proc import CommandError, git, run
 
 SCRIPTS = Path(__file__).resolve().parent.parent
 ARTIFACTS = ".auto-dev/"
@@ -206,7 +210,7 @@ def commit(args):
     try:
         return make_commit(args, state)
     except Fail as exc:
-        if exc.code != CANNOT_RUN:
+        if exc.code != CANNOT_RUN and exc.token != "NOTHING":
             state.setdefault("phase6", {})["commit_attempt"] = {
                 "result": exc.token.lower(), "seq": st.seq(state)}
             st.save(args.dir, state)
@@ -415,13 +419,17 @@ def merge_staging(args):
     wt, branch, staging = state["worktree"], state["branch"], state["repo"].get("staging")
     if not staging:
         raise Fail("no staging branch: the staging gate is n/a", FAILED, "NO-STAGING")
-    git(wt, "fetch", "origin", staging)
     try:
-        merged = staging_merge(wt, branch, staging)
+        try:
+            git(wt, "fetch", "origin", staging)
+            merged = staging_merge(wt, branch, staging)
+        except CommandError as exc:
+            raise Fail(f"git could not run: {exc}", CANNOT_RUN, "ERROR") from None
     except Fail as exc:
-        state.setdefault("phase6", {})["staging_attempt"] = {
-            "result": exc.token.lower(), "seq": st.seq(state)}
-        st.save(args.dir, state)
+        if exc.code != CANNOT_RUN:  # could not run is not an attempt
+            state.setdefault("phase6", {})["staging_attempt"] = {
+                "result": exc.token.lower(), "seq": st.seq(state)}
+            st.save(args.dir, state)
         raise
     state.setdefault("phase6", {})["staging_merge"] = merged
     st.add_note(state, f"merged into {staging} at {merged}")
@@ -508,7 +516,7 @@ def merge_pr(args):
     if not pr_state:
         st.add_note(state, f"gh pr merge succeeded for PR #{args.pr} at {args.sha}, "
                     "but its state could not be read")
-        st.save(args.dir, state)
+        note_merge(args, state, "unknown")  # `next` never offers this merge again
         raise Fail(f"`gh pr merge` succeeded, but `gh pr view {args.pr}` could not read "
                    f"the PR's state (exit {code}): {(err or out).strip()[-500:]}\n"
                    f"Do not merge again: check `gh pr view {args.pr} --json state` and "
