@@ -20,6 +20,9 @@ Pass --task whenever the user states the task (its Jira key or what it does);
 omit it on a bare `auto-dev continue` or a loose name like "the dark-mode run".
 Being given a task never resumes a run that doesn't match it.
 
+A run whose setup failed is open: RESUME at Phase 1, with the
+`init --continue` command to run once the cause is fixed.
+
 Exit codes:
     0  a decision was printed
     2  could not run (not a git checkout, git failed), or a run's state.json is
@@ -88,11 +91,15 @@ def describe(tree, state):
     if opened is None:
         return {"tree": tree, "run": st.run_state(state)}
     number, status = opened
-    return {"tree": tree, "run": st.run_state(state),
+    info = {"tree": tree, "run": st.run_state(state),
             "session": st.SESSION_NAMES[st.SESSIONS[number]],
             "phase": f"{number} — {st.PHASE_NAMES[number]}", "status": status,
             "task": state["task"].get("text", ""),
             "budget": f"{state['budget']['remaining']} of {state['budget']['total']}"}
+    if number == 1 and state["init"].get("setup") != "done":
+        info["setup"] = state["init"].get("setup", "pending")
+        info["action"] = f"run `autodev.py init --continue {tree}`"
+    return info
 
 
 def unreadable(found):

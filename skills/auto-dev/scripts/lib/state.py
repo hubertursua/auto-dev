@@ -22,7 +22,8 @@ PHASE_NAMES = dict(PHASES)
 SESSIONS = {1: "S1", 2: "S1", 3: "S1", 4: "S2", 5: "S2", 6: "S3"}
 SESSION_NAMES = {"S1": "S1 — Plan", "S2": "S2 — Build", "S3": "S3 — Ship"}
 
-# `held` pauses the run where it is (resuming re-fires the gate that held it);
+# `held` pauses the run where it is (resuming re-fires the gate that held it, or
+# for Phase 1 a failed setup, which `init --continue` runs again);
 # `stopped` ends it (nothing resumes on its own).
 STATUSES = ("pending", "in-progress", "done", "n/a", "held", "stopped")
 COMPLETE = ("done", "n/a")

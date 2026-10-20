@@ -153,17 +153,127 @@ class InitTest(RunCase):
         self.assertEqual(self.state()["branch"], "feature/due-dates")
         self.assertEqual(self.state()["budget"]["total"], 2)
 
-    def test_failed_setup_stops_and_continue_retries(self):
-        self.profile.write_text(PROFILE.replace("echo ready > setup-ran.txt",
-                                                "test -f fixed.flag"))
+    def fail_setup(self):
+        self.profile.write_text(PROFILE.replace("echo ready > setup-ran.txt", "false"))
         r = self.init()
-        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("exited 1", r.stderr)
-        self.assertEqual(self.state()["phases"]["1"]["status"], "stopped")
-        (self.worktree / "fixed.flag").write_text("")
-        r = self.autodev("init", "--continue", self.worktree, "--max-wait", "30")
+
+    def cont(self, *extra, wait="30"):
+        return self.autodev("init", "--continue", self.worktree, "--max-wait", wait,
+                            *extra)
+
+    def test_failed_setup_keeps_the_run_open_and_continue_retries(self):
+        self.fail_setup()
+        state = self.state()
+        self.assertEqual(state["init"]["setup"], "failed")
+        self.assertEqual(state["phases"]["1"]["status"], "held")
+        r = self.autodev("resume", "--repo", self.repo)
+        self.assertTrue(r.stdout.startswith(f"RESUME: {self.worktree}"), r.stdout)
+        self.assertIn("phase: 1 — Setup", r.stdout)
+        self.assertIn(f"init --continue {self.worktree}", r.stdout)
+        self.profile.write_text(PROFILE)
+        r = self.cont("--profile", self.profile)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.state()["phases"]["1"]["status"], "done")
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+
+    def test_continue_reads_a_fixed_override(self):
+        self.fail_setup()
+        (self.repo / ".auto-dev.yml").write_text(
+            'setup: ["echo ready > setup-ran.txt"]\n')
+        r = self.cont()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["settings"]["setup"],
+                         ["echo ready > setup-ran.txt"])
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+        profile_md = (self.dir / "profile.md").read_text()
+        self.assertIn("1. `echo ready > setup-ran.txt`", profile_md)
+        self.assertNotIn("`false`", profile_md)
+
+    def test_dead_setup_runner_is_restarted(self):
+        self.assertEqual(self.init().returncode, 0)
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        state = self.state()
+        state["init"].update(setup="pending", setup_pid=gone.pid)
+        state["phases"]["1"]["status"] = "in-progress"
+        self.write_state(state)
+        (self.dir / "setup.json").unlink()
+        (self.worktree / "setup-ran.txt").unlink()
+        r = self.cont(wait="5")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("setup runner stopped without a result", r.stderr)
+        self.assertEqual(self.state()["init"]["setup"], "failed")
+        r = self.cont()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+
+    def test_setup_runner_error_still_writes_a_result(self):
+        self.assertEqual(self.init().returncode, 0)
+        state = self.state()
+        state["init"]["setup"] = "pending"
+        state["settings"]["setup"] = 5  # not a list: the runner raises
+        self.write_state(state)
+        (self.dir / "setup.json").unlink()
+        self.autodev("_run-setup", self.dir)
+        result = json.loads((self.dir / "setup.json").read_text())
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("TypeError", result["error"])
+        r = self.cont(wait="5")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("setup runner failed", r.stderr)
+
+    def test_same_slug_for_another_task_stops(self):
+        self.assertEqual(self.init().returncode, 0)
+        before = (self.dir / "state.json").read_text()
+        r = self.init(task="Rename the settings page")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("slug due-dates is already used by another run", r.stderr)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+        self.assertEqual(self.init().returncode, 0)  # the same task reattaches
+
+    def test_failure_after_worktree_add_removes_it(self):
+        self.profile.write_text(PROFILE.replace('[".env"]', '["app.ts"]'))
+        (self.repo / "app.ts").write_text("export const one = 2;\n")
+        r = self.init()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not gitignored", r.stderr)
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(self.sh("git", "branch", "--list", "feat/due-dates",
+                                 cwd=self.repo), "")
+        self.assertEqual((self.repo / "app.ts").read_text(), "export const one = 2;\n")
+        self.profile.write_text(PROFILE)
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.worktree / "app.ts").read_text(),
+                         "export const one = 1;\n")
+
+    def test_staging_must_match_the_whole_branch_name(self):
+        self.sh("git", "push", "-q", "origin", "main:release/staging", cwd=self.repo)
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(self.state()["repo"]["staging"])
+        self.assertIn("staging gate: n/a", self.state()["phases"]["6"]["notes"])
+
+    def test_staging_branch_on_origin_is_used(self):
+        self.sh("git", "push", "-q", "origin", "main:staging", cwd=self.repo)
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["repo"]["staging"], "staging")
+
+    def test_worktree_path_taken_stops(self):
+        self.worktree.mkdir()
+        r = self.init()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("already exists", r.stderr)
+
+    def test_no_profile_cannot_run(self):
+        r = self.autodev("init", "--repo", self.repo, "--slug", "due-dates",
+                         "--task", "Add due dates")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no profile", r.stderr)
+        self.assertFalse(self.worktree.exists())
 
     def test_missing_setup_tool_is_reported(self):
         self.profile.write_text(PROFILE.replace("echo ready > setup-ran.txt",
