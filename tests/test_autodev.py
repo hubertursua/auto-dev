@@ -766,6 +766,15 @@ class ShipTest(RunCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertNotIn("staging_attempt", self.state()["phase6"])
 
+    def test_merge_staging_git_failing_midway_is_not_an_attempt(self):
+        self.staging(content="export const one = 9;\n")
+        # A local edit the switch to staging would overwrite: git switch fails.
+        (self.worktree / "app.ts").write_text("export const one = 5;\n")
+        r = self.cmd("merge-staging")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("staging_attempt", self.state()["phase6"])
+        self.assertEqual(self.git("branch", "--show-current").strip(), "feat/due-dates")
+
     def test_merge_staging_conflict_aborts_and_returns(self):
         self.staging(content="export const one = 9;\n")
         r = self.cmd("merge-staging")

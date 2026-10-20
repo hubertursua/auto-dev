@@ -23,12 +23,15 @@ from templates/pr-body.md and the run's artifacts) for the verified commit:
    knows the pipeline wrote it.
  - Then it reads the PR back and checks it names the verified commit.
  - A refusal (exit 1) is recorded in state.json as `publish_attempt`, so `next`
-   stops and shows what was wrong instead of asking to publish again.
+   stops and shows what was wrong instead of asking to publish again (a
+   `resume` lifts that stop). gh failing before GitHub answered (signed out,
+   offline, a 5xx) is exit 2 and is not recorded: run it again once gh works.
 
 Exit codes:
     0  published; the PR number and URL are printed
     1  refused: a WRITE line is left, the lint failed, or GitHub did not take it
-    2  could not run (no state, no description generated yet, gh missing)
+    2  could not run (no state, no description generated yet, gh missing, signed
+       out or offline, or the PR could not be read back)
 """
 
 import json
@@ -39,7 +42,7 @@ from pathlib import Path
 
 from . import artifacts as art
 from . import state as st
-from .cmd_ship import SECRET_RE  # one secret pattern for generating and linting
+from .cmd_ship import SECRET_RE, gh_cannot_run  # shared with the ship steps
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
 
@@ -573,13 +576,18 @@ def publish_body(args, state):
     finally:
         os.unlink(final)
     if code != 0 or not pr:
+        gh_cannot_run(code, err + out, "gh pr create/edit")  # gh broken: not a refusal
         raise Fail(f"GitHub did not take the PR: {(err or out).strip()}", FAILED, "REFUSED")
     comment_id = output_comment(wt, ad, pr, p6.get("output_comment"), sha)
     code, out, err = gh(wt, "pr", "view", str(pr), "--json", "number,url,body")
     try:
-        live = json.loads(out)
+        live = json.loads(out) if code == 0 else None
     except ValueError:
-        live = {}
+        live = None
+    if not isinstance(live, dict):
+        raise Fail(f"PR #{pr} was published, but `gh pr view {pr}` could not read it back "
+                   f"(exit {code}): {(err or out).strip()[-300:]}. Run `pr publish` again "
+                   "once gh works; it updates the same PR.", CANNOT_RUN, "ERROR")
     if f"Checked at commit {sha}" not in live.get("body", ""):
         raise Fail(f"PR #{pr} does not name commit {sha} after publishing: read it with "
                    f"`gh pr view {pr}`", FAILED, "NOT-PUBLISHED")
@@ -681,6 +689,7 @@ def output_comment(wt, ad, pr, comment_id, sha):
     finally:
         os.unlink(name)
     if code != 0:
+        gh_cannot_run(code, err + out, "the output comment")
         raise Fail(f"could not write the output comment: {(err or out).strip()}", FAILED,
                    "REFUSED")
     return comment_id

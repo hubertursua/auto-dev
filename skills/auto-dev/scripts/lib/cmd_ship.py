@@ -28,7 +28,11 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     clock again). Checks count only once the PR's head on GitHub is the local
     HEAD; until then the watch is pending. "No checks reported", or a PR head
     that is still another commit, is pending for --grace seconds (default 300),
-    then the watcher is unavailable. CI provider `none` skips the watch.
+    then the watcher is unavailable. Once the PR is marked ready (`mark
+    pr-ready`), green counts only when a check started after the mark, or
+    --grace seconds after it: workflows that skip drafts take a moment to
+    register, and until then the draft's old checks still read green.
+    CI provider `none` skips the watch.
     Exit: 0 green, or skipped (CI: none); 1 red: the failing checks are printed
     with their links; 3 pending (call again) or timed out (TIMEOUT: hold at the
     gate); 4 the watcher is unavailable (no checks after the grace period, or a
@@ -85,6 +89,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from . import state as st
@@ -322,8 +327,13 @@ def ci_watch(args):
     st.save(args.dir, state)
     timeout = state["settings"].get("ci_timeout", 30) * 60
     deadline = time.monotonic() + max(args.max_wait, 0)
+    ready = epoch((state.get("marks") or {}).get("pr-ready", {}).get("at"))
     while True:
-        status, failing, detail = poll_checks(wt, pr, sha, deadline)
+        status, failing, detail = poll_checks(wt, pr, sha, deadline, ready)
+        if status == "stale-green":  # only the draft's checks so far
+            status = "green" if time.time() - ready > args.grace else "pending"
+            detail = ("no check has started since the PR was marked ready; the draft's "
+                      "checks are green" if status == "pending" else "")
         elapsed = time.time() - ci["started"]
         if status in ("none", "elsewhere") and elapsed > args.grace:
             status = "unavailable"
@@ -369,12 +379,23 @@ def gh_poll(cwd, deadline, *args):
     return code, out, err
 
 
-def poll_checks(cwd, pr, sha, deadline):
-    """('green'|'red'|'pending'|'none'|'elsewhere', [lines], detail) for `sha`.
+def epoch(stamp):
+    """An ISO 8601 time (`...Z` or `+00:00`) as seconds since the epoch, or None."""
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def poll_checks(cwd, pr, sha, deadline, ready=None):
+    """('green'|'red'|'pending'|'none'|'elsewhere'|'stale-green', [lines], detail).
 
     `gh pr checks` reports the PR's head on GitHub, so it counts only once that
     head is `sha`; until then the poll is 'elsewhere' (pending), never another
-    commit's result.
+    commit's result. With `ready` (when the PR was marked ready, in epoch
+    seconds), all-green checks none of which started after it are 'stale-green'.
     """
     code, out, err = gh_poll(cwd, deadline, "pr", "view", str(pr), "--json", "headRefOid")
     if code == 124:
@@ -388,7 +409,7 @@ def poll_checks(cwd, pr, sha, deadline):
         return "elsewhere", [], (f"the PR's head is {head[:12] or 'unknown'}, not the "
                                  f"local HEAD {sha[:12]} (not pushed yet?)")
     code, out, err = gh_poll(cwd, deadline, "pr", "checks", str(pr), "--json",
-                             "name,state,bucket,link")
+                             "name,state,bucket,link,startedAt")
     if code == 124:
         return "pending", [], "gh timed out; still waiting"
     if "no checks reported" in (out + err).lower():
@@ -410,6 +431,8 @@ def poll_checks(cwd, pr, sha, deadline):
     if pending:
         return "pending", pending, ""
     if buckets <= {"pass", "skipping"}:
+        if ready and not any((epoch(c.get("startedAt")) or 0) > ready for c in checks):
+            return "stale-green", [], ""
         return "green", [], ""
     return "pending", [c["name"] for c in checks], ""
 
