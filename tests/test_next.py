@@ -557,6 +557,42 @@ class CiTest(NextCase):
         self.assertNotIn("hold", report)
 
 
+class HumanAndMainGateTest(NextCase):
+    ship_ready = ShipTest.ship_ready
+    open_pr = ShipTest.open_pr
+
+    def test_a_reviewer_blocker_becomes_a_correction(self):
+        self.open_pr()
+        _, jobs = self.expect("triager")
+        self.assertEqual(next(b for b in self.state()["briefs"]
+                              if (b["worker"], b["n"]) == jobs[0])["mode"], "human")
+        (self.dir / "triage" / "human-1.md").write_text(
+            "# Required changes\n1. c-77: keep the field name when it is empty\n")
+        self.answer(*jobs[0], "TRIAGED", blockers="1", acceptance_checks="0")
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/triage/human-1.md")
+        self.assertIn("human-1", out["BUDGET"])
+
+    def test_an_outside_push_to_the_pr_branch_stops_before_the_main_gate(self):
+        self.open_pr()
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0")
+        out = self.next(0)
+        self.assertIn("gh pr ready", out["ACTION"])
+        self.after(out)
+        branch = self.state()["branch"]
+        other = self.tmp / "other"
+        self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"), str(other))
+        (other / "app.ts").write_text("export const one = 1; // reworded\n")
+        self.sh("git", "commit", "-q", "-am", "reword", cwd=other)
+        self.sh("git", "push", "-q", "origin", branch, cwd=other)
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("someone pushed", report)
+        self.assertIn("app.ts", report)
+        log = (self.tmp / "gh.log").read_text()
+        self.assertNotIn('"merge"', log)
+
+
 class ReVoteTest(NextCase):
     def test_lone_findings_are_re_voted_then_applied(self):
         self.plan_session()

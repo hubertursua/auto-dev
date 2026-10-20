@@ -139,7 +139,10 @@ wrong about something? If yes, fix the README.
 - **Descriptions.** `plugin.json` and `marketplace.json` carry the same plugin
   description.
 - **Evals.** When behavior changes, update the expectations in
-  `skills/auto-dev/evals/evals.json` that describe it.
+  `skills/auto-dev/evals/evals.json` that describe it. A `state.json` fixture in
+  `evals/files/` sits beside the `WORK_LOG.md` generated from it; regenerate
+  both when the state's shape changes. `tests/test_eval_fixtures.py` checks that
+  they agree and that `resume` and `next` accept each fixture.
 - **Briefs and results.** Each `{{slot}}` in an agent file is listed as AUTO,
   CALLER or OPTIONAL in `skills/auto-dev/scripts/lib/briefs.py`, and each agent
   file's `auto-dev-result` block lists exactly the `next` tokens `RESULTS` gives

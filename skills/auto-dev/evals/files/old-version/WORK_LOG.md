@@ -5,19 +5,18 @@
 - **Repo:** <repo-name>   **Base:** main   **Stack:** <profile>
 - **Worktree:** <abs-path-to-worktree>   **Branch:** feat/allowed-set-guard
 - **Size:** FITS   **High risk:** no
-- **Iteration budget:** 4 total revise rounds (0 remaining)
+- **Iteration budget:** 4 total revise rounds (4 remaining)
 
 ## Phase status
 | # | Phase | Status | Notes |
 |---|-------|--------|-------|
 | 1 | Setup | done | |
-| 2 | Define | done | size FITS; 1 define re-review (round 1) |
-| 3 | Plan | done | 1 plan re-review (round 2) |
-| 4 | Build | done | |
-| 5 | Verify | in-progress | acceptance corrections: rounds 3 and 4 spent; cut off before re-check |
+| 2 | Define | done | size FITS; define review clean on first pass |
+| 3 | Plan | done | plan review clean on first pass; post-plan gate off |
+| 4 | Build | pending | |
+| 5 | Verify | pending | |
 | 6 | Ship | pending | staging gate: n/a (no staging branch) |
 
 ## Decisions & assumptions
 - Phase 2: an out-of-set value is rejected outright — no default value is substituted.
-- Round 3: told the coder to reject out-of-set values in the bulk-create path too.
-- Round 4: told the coder to return the handled error, not raise, in the bulk-create path.
+- Phase 2: the allowed set is per context, read from the existing context config.
