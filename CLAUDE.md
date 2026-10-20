@@ -140,9 +140,13 @@ wrong about something? If yes, fix the README.
   description.
 - **Evals.** When behavior changes, update the expectations in
   `skills/auto-dev/evals/evals.json` that describe it. A `state.json` fixture in
-  `evals/files/` sits beside the `WORK_LOG.md` generated from it; regenerate
-  both when the state's shape changes. `tests/test_eval_fixtures.py` checks that
-  they agree and that `resume` and `next` accept each fixture.
+  `evals/files/` sits beside the `WORK_LOG.md` generated from it.
+  `tests/test_eval_fixtures.py` checks that each pair agrees, replays S1 to
+  check that the resume-s2 fixtures (with its `HANDOFF.md`) are what S1 writes
+  now, and runs `resume` on the resume-s2 and old-version fixtures (and `next`
+  on resume-s2). When the state or the handoff changes, regenerate the resume-s2
+  fixtures with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
+  tests.test_eval_fixtures`, never by hand.
 - **Briefs and results.** Each `{{slot}}` in an agent file is listed as AUTO,
   CALLER or OPTIONAL in `skills/auto-dev/scripts/lib/briefs.py`, and each agent
   file's `auto-dev-result` block lists exactly the `next` tokens `RESULTS` gives
