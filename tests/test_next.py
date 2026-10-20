@@ -276,6 +276,21 @@ class PlanTest(NextCase):
         out = self.next(4)
         self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
 
+    def test_a_long_session_checkpoints_and_resumes_where_it_stopped(self):
+        state = self.state()
+        state["settings"]["checkpoint_events"] = state["events"] + 4
+        (self.dir / "state.json").write_text(json.dumps(state))
+        self.expect("define", "FITS", high_risk="yes", reading="none")
+        _, jobs = self.expect("define-reviewer")  # a brief in flight is finished first
+        self.assertEqual(self.spawned(self.next(0)), jobs)
+        self.answer(*jobs[0], "CLEAN", blockers="0", fix_file="none")
+        out = self.next(6)
+        self.assertIn("--checkpoint", out["AFTER"][0])
+        self.after(out)
+        self.assertIn("resume", (self.dir / "HANDOFF.md").read_text())
+        self.resume()
+        self.expect("planner")
+
     def test_a_worker_that_failed_is_respawned_once(self):
         _, jobs = self.expect("define")
         self.answer(*jobs[0], "", status="failed")
@@ -521,6 +536,25 @@ class CiTest(NextCase):
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
         out, jobs = self.expect("code-reviewer")
         self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
+
+    def test_red_ci_with_no_round_left_stops_and_names_the_check(self):
+        state = self.state()
+        state["settings"]["ci"] = "github"
+        self.write_state(state)
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.next(0)
+        self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        _, jobs = self.expect("triager")
+        state = self.state()
+        state["budget"]["remaining"] = 0
+        self.write_state(state)
+        (self.dir / "triage" / "ci-1.md").write_text("# Required changes\n1. x\n")
+        self.answer(*jobs[0], "CODE", blockers="0", acceptance_checks="0")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("stop and report each red check", report)
+        self.assertNotIn("hold", report)
 
 
 class ReVoteTest(NextCase):

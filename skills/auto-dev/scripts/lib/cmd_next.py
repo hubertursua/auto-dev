@@ -34,7 +34,14 @@ Exit codes:
     3  the run is complete
     4  stop and report: tell the user the REPORT lines; do nothing more
     5  ask the user: show SUMMARY, ask QUESTION, run the AFTER line for the answer
-    6  session boundary: run the AFTER command, give the user its message, stop
+    6  session boundary, or a checkpoint: run the AFTER command, give the user its
+       message, stop
+
+Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
+(80 by default; `settings.checkpoint_events` overrides it), `next` ends the
+session at the next clean point (no brief in flight) with exit 6 and
+`handoff --checkpoint`, so no session's context grows without bound. A new
+session says `auto-dev continue` and picks up where this one stopped.
 
 A brief issued but not yet recorded is re-issued as the same spawn (after a
 cut-off session, say). Spawned three times with no usable result, it stops.
@@ -66,6 +73,7 @@ from .proc import git, run
 SCRIPTS = Path(__file__).resolve().parent.parent
 AUTODEV = SCRIPTS / "autodev.py"
 MAX_EMITS = 3
+CHECKPOINT_EVENTS = 80  # about 35 workers; tune on the fixture repo
 SLOTS = ("R1", "R2", "R3")
 JIRA_DEFAULTS = {"in_progress": "In Progress", "in_review": "In Review", "done": "Done"}
 # Workers whose results drive the build-verify loop (Phases 4-6).
@@ -276,6 +284,8 @@ def decide(c):
         session = st.SESSIONS[number]
         if session != c.state.get("session", "S1"):
             return boundary(c, session)
+        if checkpoint_due(c):
+            return checkpoint(c)
         result = PHASES[number](c)
         if result is not None:
             return result
@@ -365,6 +375,21 @@ def boundary(c, session):
             "RULE": f"the next phase belongs to {session}"}
 
 
+def checkpoint_due(c):
+    limit = int(c.state["settings"].get("checkpoint_events") or CHECKPOINT_EVENTS)
+    return c.state.get("events", 0) - c.state.get("resumed_seq", 0) >= limit
+
+
+def checkpoint(c):
+    name = st.SESSION_NAMES[c.state.get("session", "S1")]
+    return {"code": NEXT_BOUNDARY,
+            "ACTION": "checkpoint: run AFTER, give the user its message, stop",
+            "REPORT": [(f"{name} has run long enough that a fresh session is cheaper; "
+                        "it continues from here.")],
+            "AFTER": [c.cmd("handoff", "--checkpoint")],
+            "RULE": "this session reached its checkpoint event count"}
+
+
 # ---------------------------------------------------------------- Phase 2
 
 def phase2(c):
@@ -402,7 +427,7 @@ def jira_step(c, key, step):
         return None
     name = c.state["settings"].get("jira_states", {}).get(key, JIRA_DEFAULTS[key])
     return action(f"move Jira ticket {ticket} to `{name}` with the Atlassian MCP tools "
-                  "(references/gates-and-jira.md, Jira); never edit the ticket. If it "
+                  "(references/gates-and-jira.md, _Moving a ticket_); never edit the ticket. If it "
                   "can't be moved, tell the user and run the AFTER command with "
                   "`--value skipped`",
                   f"Jira milestone {step}",
@@ -1149,8 +1174,8 @@ def staging_step(c):
         return action(f"merge into staging: run `{c.cmd('merge-staging')}`",
                       "the staging gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("staging-ci"):
-        return action("watch CI on the staging branch (references/gates-and-jira.md, CI "
-                      "monitoring); report a failure to the user, don't gate on it",
+        return action("watch CI on the staging branch (references/S3-ship.md, CI "
+                      "after a merge); report a failure to the user, don't gate on it",
                       "staging was merged", AFTER=[c.cmd("mark", "staging-ci", "--value",
                                                          "<green | red | not watched>")])
     return None
@@ -1203,15 +1228,15 @@ def main_step(c, sha):
                       "the main gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("main-ci"):
         return action(f"check CI on {c.state['repo']['base']} for the merge "
-                      "(references/gates-and-jira.md); a failure there is reported, "
-                      "never fixed by re-pushing", "the PR is merged",
+                      "(references/S3-ship.md, CI after a merge); a failure there is "
+                      "reported, never fixed by re-pushing", "the PR is merged",
                       AFTER=[c.cmd("mark", "main-ci", "--value",
                                    "<green | red | not watched>")])
     jira = jira_step(c, "done", "jira-done")
     if jira:
         return jira
     if not c.mark("final-report"):
-        return action("write the final report for the user (references/artifacts.md, "
+        return action("write the final report for the user (references/S3-ship.md, "
                       "_The final report_): what shipped, the PR, the checks for a "
                       "person, the budget used, anything left open",
                       "the PR is merged", AFTER=[c.cmd("mark", "final-report")])
