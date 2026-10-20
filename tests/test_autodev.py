@@ -783,9 +783,20 @@ class ShipTest(RunCase):
                         "exit": 1})
         self.assertEqual(r.returncode, 1)
         self.assertIn("HEAD-MOVED", r.stderr)
-        r = self.merge({"stderr": "Pull request is not mergeable: review required",
-                        "exit": 1})
-        self.assertEqual(r.returncode, 4)
+        refusals = (
+            "Pull request is not mergeable: review required",
+            ("X Pull request acme/app#7 is not mergeable: the base branch policy "
+             "prohibits the merge."),
+            'GraphQL: Required status check "test" is expected. (mergePullRequest)',
+            ("GraphQL: At least 1 approving review is required by reviewers with write "
+             "access. (mergePullRequest)"),
+            ("X Pull request acme/app#7 is not mergeable: the merge commit cannot be "
+             "cleanly created."))
+        for refusal in refusals:
+            with self.subTest(refusal=refusal[:30]):
+                r = self.merge({"stderr": refusal, "exit": 1})
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                self.assertIn("REFUSED", r.stderr)
         r = self.merge({"stdout": "auto-merge enabled"}, state="OPEN")
         self.assertEqual(r.returncode, 3)
         self.assertIn("QUEUED", r.stdout)
@@ -797,8 +808,12 @@ class ShipTest(RunCase):
         for response in ({"stderr": usage, "exit": 1},
                          {"stderr": "To get started with GitHub CLI, please run:  gh auth "
                           "login", "exit": 4},
-                         {"stderr": "error connecting to api.github.com", "exit": 1,
-                          "stdout": "dial tcp: lookup api.github.com: no such host"}):
+                         {"stderr": "error connecting to api.github.com\ncheck your "
+                          "internet connection or https://githubstatus.com\n", "exit": 1},
+                         {"stderr": "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+                          "exit": 1},
+                         {"stderr": "Post \"https://api.github.com/graphql\": context "
+                          "deadline exceeded", "exit": 1}):
             with self.subTest(response=response["stderr"][:30]):
                 r = self.merge(response)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
@@ -863,6 +878,26 @@ class ShipTest(RunCase):
         self.assertEqual(r.returncode, 1)
         for text in ("S1", "home directory", "evidence tier", "secret"):
             self.assertIn(text, r.stdout)
+
+    def test_pr_body_lint_secrets(self):
+        state = self.state()
+        state["phase6"]["verified_sha"] = "a" * 40
+        self.write_state(state)
+        body = self.tmp / "body.md"
+        for line in ("password=hunter2", "DB_PASSWORD=Tr0ub4dor&3",
+                     "secret=Sup3rS3cret!", "password: correcthorsebatterystaple",
+                     'API_KEY="abcd1234"', "GH=ghp_" + "z" * 36):
+            with self.subTest(line=line):
+                body.write_text(GOOD_BODY.format(sha="a" * 40) + line + "\n")
+                r = self.cmd("pr-body", "--check", body)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("secret", r.stdout)
+        # Type annotations (example in TypeScript) are not secrets.
+        body.write_text(GOOD_BODY.format(sha="a" * 40) + (
+            "`token: string`\n`{ token: string }`\n`password: string;`\n"
+            "`function login(password: Password) {}`\n`token: number | null`\n"))
+        r = self.cmd("pr-body", "--check", body)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     # cleanup-worktree
     def test_cleanup_worktree(self):

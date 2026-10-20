@@ -105,10 +105,13 @@ TIERS = r"(?:Strong|Adequate|Weak)"
 TIER_RE = re.compile(rf"\|\s*{TIERS}\s*\||\*\*{TIERS}\*\*|"
                      rf"\b{TIERS}\s+(?i:tier|evidence)\b|"
                      rf"\b(?i:tier)\s*[:=(]?\s*{TIERS}\b")
-# A credential-looking value: quoted (8+ characters, no spaces) or 16+
-# characters of a token's alphabet with a digit. `token: string` is a type.
-SECRET_VALUE = (r"(?:[\"'][^\"'\s]{8,}[\"']|"
-                r"(?=[A-Za-z_+/=-]*\d)[A-Za-z0-9_+/=-]{16,}(?![\w.(]))")
+# A secret's value: quoted, or 6+ non-space characters, except what reads as a
+# type annotation: a common type name (`token: string`), or an identifier
+# followed by `;` `,` `}` or `)` (`{ token: Token }`, `f(password: Secret)`).
+TYPE_NAMES = (r"(?:string|number|boolean|bool|str|int|float|bytes|any|unknown|object|"
+              r"null|undefined|none|optional|secretstr)")
+SECRET_VALUE = (r"(?:[\"'][^\"'\s]{6,}[\"']|"
+                r"(?!" + TYPE_NAMES + r"(?!\w))(?![A-Za-z_][\w.]*\s*[;,})])\S{6,})")
 SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*"
                        r"PRIVATE KEY|xox[baprs]-[A-Za-z0-9-]{10,}|"
                        r"(?:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*"
@@ -120,7 +123,9 @@ GH_BROKEN_RE = re.compile(
     r"unknown (flag|command|shorthand flag)|^usage:|\bUsage:|accepts \d+ arg|"
     r"not logged in|gh auth login|authentication (failed|required)|bad credentials|"
     r"HTTP 401|could not resolve host|no such host|connection (refused|reset|timed out)|"
-    r"network is unreachable|i/o timeout|TLS handshake timeout|dial tcp",
+    r"network is unreachable|i/o timeout|TLS handshake timeout|dial tcp|"
+    r"error connecting to|check your internet connection|githubstatus\.com|"
+    r"HTTP 5\d\d|context deadline exceeded",
     re.IGNORECASE | re.MULTILINE)
 HEAD_MOVED_RE = re.compile(r"head (branch )?(was modified|has moved)|not the expected head|"
                            r"expected head (sha|oid)", re.IGNORECASE)
