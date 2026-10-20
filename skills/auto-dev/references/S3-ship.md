@@ -60,7 +60,7 @@ line, `autodev.py pr publish`:
 
 | Exit | Do |
 |---|---|
-| 0 | published: run `next` |
+| 0 | published: run `next`. If its `inline_comments` line says posting failed, say so in the final report |
 | 1 | IF it names a WRITE line or a problem in a section you wrote, fix them and run it again. ELSE tell the user what it printed and stop |
 | 2 | tell the user the error and stop |
 

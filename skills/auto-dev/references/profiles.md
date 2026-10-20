@@ -220,7 +220,7 @@ security_docs:                # the security directives every worker must obey;
   - "SECURITY.md"             # first source Phase 1 checks, ahead of repo defaults
   - "docs/security/authz.md"
 pr_review:
-  inline_comments: false      # post Phase 6a findings as inline PR comments
+  inline_comments: false      # when the PR opens, post the review findings left open or advisory on it
 gates:
   post_plan: true             # force the Phase 3 post-plan gate on for this repo
 mutation:

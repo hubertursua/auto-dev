@@ -22,8 +22,15 @@ from templates/pr-body.md and the run's artifacts) for the verified commit:
    description fits again.
  - Then it reads the PR back and checks it names the verified commit.
 
+ - With `pr_review.inline_comments: true` in .auto-dev.yml, the first publish
+   also posts the review findings still open or advisory, once: inline at
+   their line when it is in the PR's diff, the rest in one general comment.
+   A pre-existing security finding is posted only when the user sent it to a
+   separate PR at the gate. A failure to post is printed, never fatal.
+
 Exit codes:
-    0  published; the PR number and URL are printed
+    0  published; the PR number and URL are printed (and how the findings
+       were posted, when inline comments are on)
     1  refused: a WRITE line is left, the lint failed, or GitHub did not take it
     2  could not run (no state, no description generated yet, gh missing)
 """
@@ -630,9 +637,158 @@ def publish(args):
                "output_comment": comment_id})
     p6["body"]["published_seq"] = st.seq(state)
     st.add_note(state, f"PR #{pr} description published for {sha}")
+    inline = ""
+    if state["settings"].get("inline_comments") and not p6.get("inline"):
+        p6["inline"] = post_findings(state, ad, pr, sha)
+        inline = describe_inline(p6["inline"])
+        st.add_note(state, f"review findings on PR #{pr}: {inline}")
     st.save(args.dir, state)
-    emit(args.json, "PUBLISHED", f"PR #{pr}", url=live.get("url", ""), commit=sha)
+    emit(args.json, "PUBLISHED", f"PR #{pr}", url=live.get("url", ""), commit=sha,
+         inline_comments=inline)
     return 0
+
+
+# ---------------------------------------------------------------- inline findings
+
+def post_findings(state, ad, pr, sha):
+    """Post the review findings still open or advisory on the PR, once.
+
+    Each goes inline at its `path:line` when that line is in the PR's diff
+    (GitHub refuses any other line); the rest go in one general comment.
+    A failure is reported, never fatal: the findings are still on disk.
+    """
+    wt = state["worktree"]
+    findings = review_findings(ad, state)
+    if not findings:
+        return {"sha": sha, "inline": 0, "general": 0, "error": ""}
+    in_diff = diff_lines(wt, state["repo"]["base"], sha)
+    inline = [f for f in findings if f["line"] and f["line"] in in_diff.get(f["path"], ())]
+    general = [f for f in findings if f not in inline]
+    error = ""
+    if inline:
+        payload = {"commit_id": sha, "event": "COMMENT",
+                   "body": "Findings from the automated code and security review that "
+                           "were not fixed in this PR, for reference.",
+                   "comments": [{"path": f["path"], "line": f["line"], "side": "RIGHT",
+                                 "body": f["text"]} for f in inline]}
+        code, out, err = gh_with_file(wt, json.dumps(payload), "api", "--method", "POST",
+                                      f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews",
+                                      "--input")
+        if code != 0:
+            error = f"inline review comments: {(err or out).strip()[:200]}"
+            general, inline = findings, []
+    if general:
+        lines = [("Findings from the automated code and security review that were not "
+                  "fixed in this PR, outside its diff:"), ""]
+        lines += [f"- `{f['where']}`: {f['text']}" for f in general]
+        code, out, err = gh_with_file(wt, "\n".join(lines) + "\n", "pr", "comment",
+                                      str(pr), "--body-file")
+        if code != 0:
+            error = (error + "; " if error else "") + \
+                f"general comment: {(err or out).strip()[:200]}"
+            general = []
+    return {"sha": sha, "inline": len(inline), "general": len(general), "error": error}
+
+
+def describe_inline(result):
+    text = f"{result['inline']} posted inline, {result['general']} in a general comment"
+    return text + (f"; failed: {result['error']}" if result["error"] else "")
+
+
+def gh_with_file(wt, text, *args):
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(clean(text, wt))
+        name = fh.name
+    try:
+        return gh(wt, *args, name)
+    finally:
+        os.unlink(name)
+
+
+def review_findings(ad, state):
+    """[{path, line, where, text}] for each finding to post: open must-fix and
+    advisory ones from both reviews, and a pre-existing security finding only
+    when the user sent it to a separate PR at the gate."""
+    found = []
+    code = _read(ad / "CODE_REVIEW.md")
+    for section, label in (("Must-fix", "Must-fix, left open at the PR gate"),
+                           ("Advisory", "Advisory")):
+        for _, rows in art.tables(art.find_section(code, section) or ""):
+            for row in rows:
+                if section == "Must-fix" and not row.get("Status", "").strip().lower(
+                        ).startswith("open"):
+                    continue
+                found.append(finding(code, row, label))
+    sec = _read(ad / "SECURITY_REVIEW.md")
+    separate = separate_pr(state)
+    for _, rows in art.tables(art.find_section(sec, "Findings") or ""):
+        for row in rows:
+            verdict = row.get("Verdict", "").strip().lower()
+            fid = row.get("ID", "").strip()
+            if verdict == "must-fix" and row.get("Status", "").strip().lower().startswith(
+                    "open"):
+                found.append(finding(sec, row, "Security must-fix, left open at the PR gate"))
+            elif verdict == "advisory":
+                found.append(finding(sec, row, "Security advisory"))
+            elif row.get("Origin", "").strip() == "pre-existing" and (
+                    fid in separate or "*" in separate):
+                found.append(finding(sec, row, "Pre-existing security finding, left for a "
+                                               "separate PR"))
+    return found
+
+
+def finding(text, row, label):
+    fid = row.get("ID", "").strip()
+    plain = re.search(rf"^### {re.escape(fid)}\b.*?^In plain words:\s*(.+)$", text,
+                      re.MULTILINE | re.DOTALL) if fid else None
+    what = plain.group(1).strip() if plain else row.get("Finding", "").strip()
+    where = row.get("Location", "").strip().strip("`")
+    path, _, rest = where.rpartition(":")
+    number = re.match(r"\d+", rest)
+    confidence = row.get("Confidence", "").strip()
+    return {"path": path if number else where, "line": int(number.group(0)) if number
+            else None, "where": where,
+            "text": f"**{label}**" + (f" (confidence {confidence})" if confidence else "")
+                    + f": {what}"}
+
+
+def separate_pr(state):
+    """The pre-existing security findings the user sent to a separate PR."""
+    ids = set()
+    for note in state.get("notes", []):
+        text = note.get("text", "")
+        if "Separate PR" not in text:
+            continue
+        head = text.split(":", 1)[0]
+        if head.strip().lower().startswith("others"):
+            ids.add("*")
+        ids.update(re.findall(r"\bS\d+\b", head))
+    return ids
+
+
+def diff_lines(wt, base, sha):
+    """{path: set of new-side line numbers} the PR's diff shows (hunks with context)."""
+    code, merge_base, _ = git(wt, "merge-base", f"origin/{base}", sha, check=False)
+    if code != 0:
+        return {}
+    code, out, _ = git(wt, "diff", "-U3", merge_base.strip(), sha, check=False)
+    lines, path = {}, None
+    for line in out.splitlines() if code == 0 else []:
+        if line.startswith("+++ "):
+            path = line[6:] if line.startswith("+++ b/") else None
+        match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+        if match and path:
+            start, count = int(match.group(1)), int(match.group(2) or 1)
+            lines.setdefault(path, set()).update(range(start, start + count))
+    return lines
+
+
+def _read(path):
+    try:
+        return art.read(path)
+    except art.ArtifactError:
+        return ""
 
 
 def existing_pr(wt, branch):

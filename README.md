@@ -331,7 +331,10 @@ Planning and build run unattended; the pipeline pauses for approval before
 **opening the PR**, before the **staging merge**, and before the **main merge**
 (plus an optional post-plan gate you can enable per run). The PR opens as a
 **draft** unless you ask for it ready for review, and is marked ready before the
-main gate. Main is merged only via `gh pr merge` (respecting branch protection,
+main gate. Its description follows the repo's own PR template when there is one,
+and links the Jira ticket. With `pr_review.inline_comments: true`, the review
+findings left open or advisory are posted on the PR once it opens: inline at
+their line when it is in the diff, the rest in one comment. Main is merged only via `gh pr merge` (respecting branch protection,
 never `--admin`), with `--squash` by default — `--merge` if the repo disallows
 squash, `--rebase` only when it is the one method allowed. Before the main gate
 the pipeline fetches the PR branch and checks it still holds the code every

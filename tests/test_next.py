@@ -191,7 +191,8 @@ class NextCase(RunCase):
             pass_dir = self.dir / "review" / f"pass-{self.state()['phase6']['review_pass']}"
             (pass_dir / f"{slot}.md").write_text(r_report("none"))
             self.answer(w, n, "REVIEWED", findings="0", leads="0")
-        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        review = getattr(self, "review_text", CLEAN_REVIEW)
+        (self.dir / "CODE_REVIEW.md").write_text(review.format(tree=self.tree()))
         self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
             tree=self.tree()))
@@ -577,6 +578,62 @@ class TicketTest(NextCase):
         text = (self.dir / "pr-body.md").read_text()
         summary = text.split("## Acceptance conditions")[0]
         self.assertIn("Ticket: [TODO-7](https://acme.atlassian.net/browse/TODO-7)", summary)
+
+
+class InlineCommentsTest(NextCase):
+    open_pr = ShipTest.open_pr
+    review_text = CLEAN_REVIEW.replace(
+        "|----|---------|----------|----------|-------|------------|--------------|\n",
+        "|----|---------|----------|----------|-------|------------|--------------|\n"
+        "| C5 | magic number | `due.ts:1` | style | 1/3 | Low | style only |\n"
+        "| C6 | slow loop | `app.ts:40` | performance | 1/3 | Medium | not on a hot path |\n")
+
+    inline = True
+
+    def ship_ready(self):
+        ShipTest.ship_ready(self)
+        state = self.state()
+        state["settings"]["inline_comments"] = self.inline
+        self.write_state(state)
+
+    def calls(self):
+        return [json.loads(ln) for ln in (self.tmp / "gh.log").read_text().splitlines()]
+
+    def test_findings_go_inline_in_the_diff_and_the_rest_in_one_comment(self):
+        sha, _ = self.open_pr(extra=[
+            {"args": ["api", "--method", "POST"], "stdout": "{}"},
+            {"args": ["pr", "comment"], "stdout": "https://x/pull/12#issuecomment-5\n"}])
+        calls = self.calls()
+        review = [c for c in calls if c["args"][:3] == ["api", "--method", "POST"]]
+        self.assertEqual(len(review), 1)
+        self.assertIn("repos/{owner}/{repo}/pulls/12/reviews", review[0]["args"])
+        payload = json.loads(next(iter(review[0]["files"].values())))
+        self.assertEqual(payload["commit_id"], sha)
+        self.assertEqual([(c["path"], c["line"]) for c in payload["comments"]],
+                         [("due.ts", 1)])
+        self.assertIn("**Advisory** (confidence Low): magic number",
+                      payload["comments"][0]["body"])
+        general = [c for c in calls if c["args"][:2] == ["pr", "comment"]]
+        self.assertEqual(len(general), 1)
+        self.assertIn("`app.ts:40`: **Advisory** (confidence Medium): slow loop",
+                      next(iter(general[0]["files"].values())))
+        self.assertEqual(self.state()["phase6"]["inline"]["inline"], 1)
+
+    def test_a_failed_post_is_reported_not_fatal(self):
+        self.open_pr(extra=[
+            {"args": ["api", "--method", "POST"], "stderr": "Unprocessable", "exit": 1},
+            {"args": ["pr", "comment"], "stderr": "Forbidden", "exit": 1}])
+        inline = self.state()["phase6"]["inline"]
+        self.assertEqual((inline["inline"], inline["general"]), (0, 0))
+        self.assertIn("Unprocessable", inline["error"])
+        self.assertIn("Forbidden", inline["error"])
+
+    def test_nothing_is_posted_when_the_key_is_off(self):
+        self.inline = False
+        self.open_pr()
+        self.assertFalse([c for c in self.calls() if c["args"][:1] == ["api"]
+                          or c["args"][:2] == ["pr", "comment"]])
+        self.assertNotIn("inline", self.state()["phase6"])
 
 
 class CiTest(NextCase):
