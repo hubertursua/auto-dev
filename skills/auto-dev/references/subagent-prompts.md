@@ -283,7 +283,8 @@ user picks `Revise plan` at the post-plan gate (`--set direction="<the user's
 words, verbatim>"`). Its result says `entry_points_changed`.
 
 **Blocked mode** (`autodev.py brief planner --mode blocked --set
-blocked="<the coder's BLOCKED section, verbatim>"`), when the coder returns
+blocked="the steps listed in <artifact-dir>/blocked/coder-<n>.md"`, the file
+the coder wrote; `autodev.py next` fills it in), when the coder returns
 `next: BLOCKED` (_Coder (TDD)_, below). Its `next` is the decision.
 
 ### Plan reviewer
@@ -344,7 +345,7 @@ Anything short of this is a gap. A MANIFEST.md written before 3.9 has no Covers
 or Level column and no base-run/ beside it. On a resumed run, keep it as it is
 and don't re-spawn the tester for that; the verifier works from what it has.
 For each **AMBIGUOUS** condition, spawn the Define agent in revise mode with
-both readings; it records the meant one in `SPEC.md`'s Assumptions and returns
+both readings (the tester writes them to `acceptance/AMBIGUOUS.md`); it records the meant one in `SPEC.md`'s Assumptions and returns
 `READING: tester` (done, no round) or `READING: other` (re-spawn the tester with
 Scope "ONLY condition <n>", a round, consumer #2).
 Fix a gap by re-spawning this agent with Scope "ONLY conditions <the gap>" (a

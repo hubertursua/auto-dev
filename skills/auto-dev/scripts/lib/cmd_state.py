@@ -26,13 +26,14 @@ consumer, and exits 3.
 
 `mark` records a step done outside autodev.py, so `next` moves past it. Steps:
 jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
-MCP tools, or skipped: --value skipped), pushed, pr-written (the PR body's
-Summary and Assumptions written), final-report, main-ci (CI on main checked
-after the merge), staging-ci.
+MCP tools, or skipped: --value skipped), pushed (--value <the sha pushed>),
+pr-ready (the draft PR marked ready for review), final-report, main-ci (CI on
+main checked after the merge), staging-ci.
 
 `gate` records a gate decision. Gates: post-plan, pr, staging, main, profile,
 jira, cleanup. Choices: proceed, hold, stop, skip (staging only), revise
-(post-plan only), leave (jira only: start work but leave Jira alone).
+(post-plan only), leave (jira only: start work but leave Jira alone), keep
+(cleanup only: keep the worktree).
 `hold` marks the gate's phase held (resuming re-fires the gate); `stop` marks it
 stopped (the run ends); `skip` records the staging gate as n/a.
 
@@ -56,8 +57,8 @@ GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "main": {"proceed", "hold", "stop"},
                 "profile": {"proceed", "stop"},
                 "jira": {"proceed", "leave", "stop"},
-                "cleanup": {"proceed", "stop"}}
-MARKS = ("jira-in-progress", "jira-in-review", "jira-done", "pushed", "pr-written",
+                "cleanup": {"proceed", "keep"}}
+MARKS = ("jira-in-progress", "jira-in-review", "jira-done", "pushed", "pr-ready",
          "final-report", "main-ci", "staging-ci")
 CONSUMERS = {
     1: "Define re-review",
@@ -170,26 +171,38 @@ def budget(args):
         return 0
     if args.consumer is None or not args.spend_id:
         raise Fail("budget spend needs --consumer and --id", FAILED, "ERROR")
-    if any(s["id"] == args.spend_id for s in b["spends"]):
+    outcome = spend_round(state, args.consumer, args.spend_id, args.what)
+    if outcome == "already":
         emit(args.json, "ALREADY-SPENT", f"`{args.spend_id}` was already paid for; "
              "dispatch without spending again", remaining=b["remaining"])
         return 0
-    if b["remaining"] <= 0:
+    if outcome == "exhausted":
         emit(args.json, "EXHAUSTED", f"no revise rounds left ({CONSUMERS[args.consumer]})",
              action=ON_EXHAUSTED[args.consumer])
         return EXIT_EXHAUSTED
-    b["remaining"] -= 1
-    b["spends"].append({"id": args.spend_id, "consumer": args.consumer,
-                        "what": args.what, "at": st.now()})
     st.save(args.dir, state)
     emit(args.json, "SPENT", f"`{args.spend_id}` — {b['remaining']} of {b['total']} left",
          remaining=b["remaining"])
     return 0
 
 
+def spend_round(state, consumer, spend_id, what=""):
+    """Spend one round in `state` (not saved): `spent`, `already` or `exhausted`."""
+    b = state["budget"]
+    if any(s["id"] == spend_id for s in b["spends"]):
+        return "already"
+    if b["remaining"] <= 0:
+        return "exhausted"
+    b["remaining"] -= 1
+    b["spends"].append({"id": spend_id, "consumer": consumer, "what": what,
+                        "at": st.now(), "seq": st.seq(state)})
+    return "spent"
+
+
 def mark(args):
     state = load(args)
-    state.setdefault("marks", {})[args.step] = {"value": args.value, "at": st.now()}
+    state.setdefault("marks", {})[args.step] = {"value": args.value, "at": st.now(),
+                                                "seq": st.seq(state)}
     st.save(args.dir, state)
     emit(args.json, "MARKED", f"{args.step}: {args.value}")
     return 0
@@ -202,7 +215,7 @@ def gate(args):
         raise Fail(f"gate {args.gate} offers {', '.join(sorted(GATE_CHOICES[args.gate]))}, "
                    f"not {args.choice!r}", FAILED, "ERROR")
     state["gates"].append({"gate": args.gate, "choice": choice,
-                           "reason": args.reason, "at": st.now()})
+                           "reason": args.reason, "at": st.now(), "seq": st.seq(state)})
     number = GATE_PHASE[args.gate]
     after = "continue"
     if choice == "hold":

@@ -25,7 +25,8 @@ MODE_RE = re.compile(r"^## Mode: ([a-z-]+)\s*$", re.MULTILINE)
 AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "ticket",
         "binding_rules", "test_command", "test_notes", "mutation_cap",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
-        "symbol_lookup", "pass", "tree", "run", "pr", "triage_file", "answer_file"}
+        "symbol_lookup", "pass", "tree", "run", "pr", "triage_file", "answer_file",
+        "blocked_file"}
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
           "report", "blocked", "failing", "question", "corrections_file", "leads"}
 OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed"}

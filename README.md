@@ -440,9 +440,13 @@ unstaging if anything fails), `ci-watch` (polls `gh pr checks` with a bound and
 says green, red with links, pending, timed out or unwatchable; never assumes
 green), `merge-staging` (direct merge, never forced, always back on the
 branch), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
-`--admin`, then confirms it merged), `pr-body --check` (lints a PR description:
-strict sections, the checked commit, size, no internal IDs, paths or secrets)
-and `cleanup-worktree`. Parsers that turn a worker's artifact into a decision:
+`--admin`, then confirms it merged), `pr-body` (generates the PR description
+from the run's artifacts, with links at the checked commit, paths hidden and
+output cut to fit, leaving only the Summary and Assumptions to write; with
+`--check`, lints one: strict sections, the checked commit, size, no internal
+IDs, paths or secrets), `pr publish` (opens the one PR, or refreshes the
+sections the pipeline writes in the live description, keeps overflowing output
+in one comment edited in place, and reads the PR back) and `cleanup-worktree`. Parsers that turn a worker's artifact into a decision:
 `check-manifest` (the acceptance tester's `MANIFEST.md` against `SPEC.md`: which
 conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
 `CORRECT`, `REPAIR` or `STOP`, with the survivors to carry forward), `apply-fix`
@@ -455,8 +459,15 @@ workers: `brief` (writes a worker's brief file from state, refusing when a value
 only the orchestrator can give is missing, and prints the one-line prompt to
 spawn it with), `record` (checks the result a worker wrote against the
 artifact it wrote, and stops on a mismatch) and `check-artifact` (workers check
-what they wrote against its template before returning). Shared code lives in
-`skills/auto-dev/scripts/lib/`.
+what they wrote against its template before returning). And `next`, the
+orchestrator's loop: it reads the state, the recorded results and the artifacts,
+and prints the one next action (spawn these agents with these briefs, run this
+command, ask this gate, stop and report, or end the session), with the command
+to run after it. It does the mechanical steps itself: writing briefs, spending
+a round before a correction, applying FIX blocks, checking the manifest,
+reading the verdicts, planning and applying re-votes, taking the review
+snapshot and generating the PR body. `next --explain` names the rule it applied.
+Shared code lives in `skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
 The profiler names one only if the repo's ecosystem uses one and it is on your
@@ -502,11 +513,13 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `state.json` | `autodev.py`, Phase 1 onward | the run's state: phases, size check, gates, budget and every round spent; written only by `autodev.py` |
 | `WORK_LOG.md` | generated from `state.json` | the ledger for people to read: phase status, size check, high-risk flag, gate decisions, budget |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
-| `briefs/`, `returns/` | `autodev.py brief`, each worker | each worker's brief file, and the result it returned |
+| `briefs/`, `returns/` | `autodev.py brief` and `next`, each worker | each worker's brief file, and the result it returned |
+| `blocked/` | Phases 4–6, coder | the build steps the coder stopped, for the planner |
+| `pr-body.md`, `pr-output-comment.md` | Phase 6, `autodev.py next` | the generated PR description, and the command output moved out of it when it would be too long |
 | `HANDOFF.md` | each session's end | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
-| `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code |
+| `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code; `AMBIGUOUS.md` lists a condition that reads two ways, for the Define agent |
 | `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and evidence tiers, and what it ran |
 | `lint/` | Phase 5 | one report per quality-gate check |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes |
@@ -606,6 +619,11 @@ rules for changing a script are in `CLAUDE.md`.
   values that vary, and the spawn prompt is one line. Every worker ends with an
   `auto-dev-result` block, which `autodev.py record` checks against what it
   wrote. Templates and the rubric moved to `skills/auto-dev/templates/`.
+- **`autodev.py next` drives the run.** It prints the one next action from the
+  run's state, so the orchestrator no longer works out the order of steps,
+  when to spend a round, or how to assemble the PR description; `pr publish`
+  opens or refreshes the PR. `resume` now records that a new session holds the
+  run, and un-holds a gate so it is asked again.
 
 A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
 and start again.

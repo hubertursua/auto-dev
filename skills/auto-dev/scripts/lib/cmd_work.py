@@ -146,6 +146,7 @@ def auto_values(worker, n, state, ad, mode):
         "run": str(phase6.get("security_run", 0) + 1),
         "triage_file": str(ad / "triage" / f"{mode or 'triage'}-{n}.md"),
         "answer_file": str(ad / "lookups" / f"{n}.md"),
+        "blocked_file": str(ad / "blocked" / f"coder-{n}.md"),
         "fix_file": str(ad / "fixes" / f"{FIX_PREFIX.get(worker, 'plan')}-{n}.md"),
     }
     return values
@@ -157,36 +158,55 @@ LAZY = {"acceptance_paths": acceptance_paths, "survivors": survivors,
 
 def brief(args):
     worker = args.worker
-    if worker not in briefs.RESULTS:
-        raise Fail(f"unknown worker {worker!r}; one of {', '.join(sorted(briefs.RESULTS))}",
-                   CANNOT_RUN, "ERROR")
-    worker_modes = briefs.modes(worker)
-    if worker_modes and args.mode not in worker_modes:
-        raise Fail(f"{worker} needs --mode, one of {', '.join(worker_modes)}",
-                   FAILED, "REFUSED")
-    if not worker_modes and args.mode:
-        raise Fail(f"{worker} has no modes", FAILED, "REFUSED")
     given = parse_sets(args.set)
     if worker == "profiler":
         if not args.out:
             raise Fail("a profiler brief needs --out <dir> (there is no run yet)",
                        CANNOT_RUN, "ERROR")
-        out = Path(args.out).resolve()
-        directory = out
-        n = next_number(directory, worker)
-        auto = {"skill_dir": str(SKILL_DIR),
-                "result_file": str(out / f"profiler-{n}.json")}
-        ad = None
+        path, values = write_brief(None, Path(args.out).resolve(), worker, args.mode, given)
     else:
         try:
             state = st.load(args.dir)
         except st.StateError as exc:
             raise Fail(str(exc), CANNOT_RUN, "ERROR") from None
-        ad = Path(state["artifact_dir"])
+        path, values = write_brief(state, Path(state["artifact_dir"]), worker,
+                                   args.mode, given)
+        st.save(args.dir, state)
+    n = int(path.stem.rsplit("-", 1)[1])
+    emit(args.json, "BRIEF", str(path), agent=f"auto-dev:{worker}", n=n,
+         prompt=prompt_for(path), result_file=values.get("result_file", ""))
+    return 0
+
+
+def prompt_for(path):
+    return f"Your brief is at {path}. Read it first."
+
+
+def write_brief(state, where, worker, mode, given):
+    """Write briefs/<worker>-<n>.md and log it in `state` (the caller saves).
+
+    `where` is the artifact dir, or for the profiler (state None) the folder
+    to write into. Returns (path, the slot values)."""
+    if worker not in briefs.RESULTS:
+        raise Fail(f"unknown worker {worker!r}; one of {', '.join(sorted(briefs.RESULTS))}",
+                   CANNOT_RUN, "ERROR")
+    worker_modes = briefs.modes(worker)
+    if worker_modes and mode not in worker_modes:
+        raise Fail(f"{worker} needs --mode, one of {', '.join(worker_modes)}",
+                   FAILED, "REFUSED")
+    if not worker_modes and mode:
+        raise Fail(f"{worker} has no modes", FAILED, "REFUSED")
+    if state is None:
+        ad, directory = None, where
+        n = next_number(directory, worker)
+        auto = {"skill_dir": str(SKILL_DIR),
+                "result_file": str(where / f"profiler-{n}.json")}
+    else:
+        ad = where
         directory = ad / "briefs"
         n = next_number(directory, worker)
-        auto = auto_values(worker, n, state, ad, args.mode)
-    needed = briefs.slots(worker, args.mode)
+        auto = auto_values(worker, n, state, ad, mode)
+    needed = briefs.slots(worker, mode)
     values, missing = {}, []
     for slot in sorted(needed):
         kind = briefs.kind(worker, slot)
@@ -207,22 +227,19 @@ def brief(args):
         raise Fail(f"{worker} needs " + ", ".join(f"--set {m}=..." for m in missing),
                    FAILED, "REFUSED")
     if unknown:
-        raise Fail(f"{worker} ({args.mode or 'no mode'}) uses no slot named "
+        raise Fail(f"{worker} ({mode or 'no mode'}) uses no slot named "
                    f"{', '.join(unknown)}", FAILED, "REFUSED")
     directory.mkdir(parents=True, exist_ok=True)
     if ad is not None:
-        for sub in ("returns", "fixes", "triage", "lookups"):
+        for sub in ("returns", "fixes", "triage", "lookups", "blocked"):
             (ad / sub).mkdir(exist_ok=True)
     path = directory / f"{worker}-{n}.md"
-    path.write_text(briefs.render(worker, n, args.mode, values), encoding="utf-8")
-    if ad is not None:
+    path.write_text(briefs.render(worker, n, mode, values), encoding="utf-8")
+    if state is not None:
         state.setdefault("briefs", []).append(
-            {"worker": worker, "n": n, "mode": args.mode, "sets": given, "at": st.now()})
-        st.save(args.dir, state)
-    emit(args.json, "BRIEF", str(path), agent=f"auto-dev:{worker}", n=n,
-         prompt=f"Your brief is at {path}. Read it first.",
-         result_file=values.get("result_file", ""))
-    return 0
+            {"worker": worker, "n": n, "mode": mode, "sets": given, "at": st.now(),
+             "seq": st.seq(state)})
+    return path, values
 
 
 # ---------------------------------------------------------------- record
@@ -274,7 +291,7 @@ def entries(path):
     return len(re.findall(r"^\d+\.\s", text, re.MULTILINE))
 
 
-def derive(worker, data, ad, state):
+def derive(worker, n, data, ad, state):
     """Return a list of disagreements between the return and the artifacts."""
     nxt = data.get("next")
     issues = []
@@ -301,6 +318,9 @@ def derive(worker, data, ad, state):
     elif worker == "coder":
         if (nxt == "BLOCKED") != (as_int(data, "blocked") > 0):
             issues.append(f"next is {nxt} but blocked is {data.get('blocked')}")
+        listed = ad / "blocked" / f"coder-{n}.md"
+        if nxt == "BLOCKED" and not listed.exists():
+            issues.append(f"next is BLOCKED but {listed} does not exist")
     elif worker == "verifier":
         flags = {"INSTALL_CONFLICT": "--install-conflict",
                  "MUTATION_LEFT_CHANGES": "--mutation-left-changes"}
@@ -357,7 +377,7 @@ def record(args):
     ad = Path(state["artifact_dir"])
     data = load_return(ad, args.worker, args.n)
     try:
-        issues = derive(args.worker, data, ad, state)
+        issues = derive(args.worker, args.n, data, ad, state)
     except art.ArtifactError as exc:
         issues = [str(exc)]
     if issues:
@@ -381,7 +401,7 @@ def record(args):
     log.append({"worker": args.worker, "n": args.n, "mode": issued.get("mode"),
                 "sets": issued.get("sets", {}), "status": data.get("status"),
                 "next": data.get("next", ""), "data": data,
-                "seq": max((e.get("seq", 0) for e in log), default=0) + 1})
+                "seq": st.seq(state)})
     st.add_note(state, f"{args.worker} #{args.n} returned {data.get('status')} "
                 f"{data.get('next', '')}".rstrip())
     st.save(args.dir, state)

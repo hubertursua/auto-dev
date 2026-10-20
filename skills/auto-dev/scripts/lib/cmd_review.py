@@ -138,7 +138,8 @@ def usable(path):
         return False
 
 
-def plan_votes(args, pass_dir, pending):
+def vote_plan(pass_dir, pending):
+    """{reviewer slot: [finding ids]}: who re-votes on what."""
     slots = [f"R{k}" for k in (1, 2, 3) if usable(pass_dir / f"R{k}.md")]
     plan = {}
     if len(slots) >= 2:
@@ -146,6 +147,11 @@ def plan_votes(args, pass_dir, pending):
             for slot in slots:
                 if slot not in raisers(row.get("Raised by", "")):
                     plan.setdefault(slot, []).append(row["ID"].strip())
+    return plan
+
+
+def plan_votes(args, pass_dir, pending):
+    plan = vote_plan(pass_dir, pending)
     if not plan:
         emit(args.json, "NONE", "no re-votes: nothing pending, or fewer than two "
              "usable reports (every lone finding stays advisory)")
@@ -175,15 +181,26 @@ def apply_votes(args, path, text, pass_dir, pending):
     if not pending:
         emit(args.json, "NONE", "no pending re-votes")
         return 0
-    cast = read_votes(pass_dir)
+    must, advisory = apply_vote_files(path, text, pass_dir, pending)
+    emit(args.json, "APPLIED", f"{len(must)} must-fix, {advisory} advisory",
+         must_fix=", ".join(must) or "none")
+    return 0
+
+
+def apply_vote_files(path, text, pass_dir, pending, votes_expected=True):
+    """Move each pending finding by its votes; returns (new must-fix ids, advisory count).
+
+    With votes_expected False (fewer than two usable reports, so nobody re-voted)
+    every pending finding counts its raiser alone and stays advisory."""
+    cast = read_votes(pass_dir) if votes_expected else {}
     missing = [r["ID"] for r in pending if r["ID"].strip() not in cast]
-    if missing:
+    if missing and votes_expected:
         raise art.ArtifactError(f"no re-vote recorded for {', '.join(missing)} in "
                                 f"{pass_dir}: re-spawn those re-voters")
     must, advisory, decided_2_1 = [], [], []
     for row in pending:
         fid = row["ID"].strip()
-        count = 1 + sum(1 for _, agree in cast[fid] if agree)
+        count = 1 + sum(1 for _, agree in cast.get(fid, []) if agree)
         cells = (fid, row.get("Finding", ""), row.get("Location", ""),
                  row.get("Category", ""))
         if count >= 2:
@@ -200,11 +217,9 @@ def apply_votes(args, path, text, pass_dir, pending):
     tmp = path.with_name(".CODE_REVIEW.md.votes")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
-    add_corrections(text, pass_dir / "corrections.md",
-                    [r.split("|")[1].strip() for r in must])
-    emit(args.json, "APPLIED", f"{len(must)} must-fix, {len(advisory)} advisory",
-         must_fix=", ".join(r.split("|")[1].strip() for r in must) or "none")
-    return 0
+    ids = [r.split("|")[1].strip() for r in must]
+    add_corrections(text, pass_dir / "corrections.md", ids)
+    return ids, len(advisory)
 
 
 def add_corrections(text, path, ids):

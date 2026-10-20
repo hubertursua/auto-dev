@@ -201,12 +201,27 @@ def sort_key(cid):
 
 @wrap
 def eval_status(args):
-    ad = Path(args.dir)
-    if args.mutation_left_changes:
-        emit(args.json, "STOP", "the mutation step may have left changes in the "
-             "source: stop and report the paths the verifier gave; build nothing "
-             "more on this tree")
-        return 0
+    token, fields = eval_decision(Path(args.dir), args.install_conflict,
+                                  args.mutation_left_changes)
+    message = {
+        "STOP": "the mutation step may have left changes in the source: stop and "
+                "report the paths the verifier gave; build nothing more on this tree",
+        "CORRECT": f"{len(fields.get('correct', []))} open item(s): spend a round "
+                   "(consumer 3), then brief the coder" + (
+                       "; repair the listed checks first" if fields.get("repair") else ""),
+        "REPAIR": "only defective acceptance checks are open: repair mode for these "
+                  "conditions, then a verifier re-check",
+        "ALL_MET": "nothing open" + ("; the manual conditions go to the PR gate"
+                                     if fields.get("manual") else ""),
+    }[token]
+    emit(args.json, token, message, **fields)
+    return 0
+
+
+def eval_decision(ad, install_conflict=False, mutation_left_changes=False):
+    """SPEC_EVAL.md as one decision: (STOP|CORRECT|REPAIR|ALL_MET, fields)."""
+    if mutation_left_changes:
+        return "STOP", {}
     conditions = art.spec_conditions(ad / "SPEC.md")
     ev = art.spec_eval(ad / "SPEC_EVAL.md")
     verdicts = {r["#"].strip(): r for r in ev["rows"]}
@@ -233,7 +248,7 @@ def eval_status(args):
         if finding.get("Judgment", "").strip().lower() == "unjustified":
             correct.append(f"integrity {finding.get('Finding', '')} at "
                            f"{finding.get('Location', '')}: {finding.get('Reason', '')}")
-    if args.install_conflict:
+    if install_conflict:
         correct.insert(0, "install conflict: the coder wrote a file at an acceptance "
                        "check's path; move it, then re-run the verifier's first pass")
     if ev["defective"] and not repair:
@@ -244,25 +259,32 @@ def eval_status(args):
     fields = {"correct": correct, "repair": ", ".join(repair), "manual": ", ".join(manual),
               "survivor": survivors}
     if correct:
-        emit(args.json, "CORRECT", f"{len(correct)} open item(s): spend a round "
-             "(consumer 3), then brief the coder" + ("; repair the listed checks "
-                                                     "first" if repair else ""), **fields)
-    elif repair:
-        emit(args.json, "REPAIR", "only defective acceptance checks are open: repair "
-             "mode for these conditions, then a verifier re-check", **fields)
-    else:
-        emit(args.json, "ALL_MET", "nothing open" + (
-            "; the manual conditions go to the PR gate" if manual else ""), **fields)
-    return 0
+        return "CORRECT", fields
+    if repair:
+        return "REPAIR", fields
+    return "ALL_MET", fields
 
 
 @wrap
 def apply_fix(args):
-    target, fixes = Path(args.file), art.read(args.fix_file)
-    text = art.read(target)
-    blocks = FIX_RE.findall(fixes)
+    target = Path(args.file)
+    blocks, failed = apply_fix_file(target, args.fix_file)
     if not blocks:
         raise Fail(f"{args.fix_file} holds no FIX block", FAILED, "NO-MATCH")
+    if failed:
+        note_fix(args, "no-match")
+        emit(args.json, "NO-MATCH", f"nothing written to {target}: spawn its author in "
+             f"revise mode with {args.fix_file}", block=failed)
+        return FAILED
+    note_fix(args, "applied")
+    emit(args.json, "APPLIED", f"{len(blocks)} FIX block(s) to {target}")
+    return 0
+
+
+def apply_fix_file(target, fix_file):
+    """Apply every FIX block, or none: (blocks, [why each failed])."""
+    fixes, text = art.read(fix_file), art.read(target)
+    blocks = FIX_RE.findall(fixes)
     failed = []
     for fix_id, old, new in blocks:
         count = text.count(old)
@@ -270,17 +292,11 @@ def apply_fix(args):
             failed.append(f"FIX {fix_id}: old text found {count} times")
             continue
         text = text.replace(old, new, 1)
-    if failed:
-        note_fix(args, "no-match")
-        emit(args.json, "NO-MATCH", f"nothing written to {target}: spawn its author in "
-             f"revise mode with {args.fix_file}", block=failed)
-        return FAILED
-    tmp = target.with_name(f".{target.name}.fix")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(target)
-    note_fix(args, "applied")
-    emit(args.json, "APPLIED", f"{len(blocks)} FIX block(s) to {target}")
-    return 0
+    if blocks and not failed:
+        tmp = Path(target).with_name(f".{Path(target).name}.fix")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(target)
+    return blocks, failed
 
 
 def note_fix(args, outcome):
@@ -289,7 +305,8 @@ def note_fix(args, outcome):
         state = st.load(args.dir)
     except st.StateError:
         return
-    state.setdefault("fixes", {})[str(Path(args.fix_file).resolve())] = outcome
+    state.setdefault("fixes", {})[str(Path(args.fix_file).resolve())] = {
+        "outcome": outcome, "seq": st.seq(state)}
     st.save(args.dir, state)
 
 

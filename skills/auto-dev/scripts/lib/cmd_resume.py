@@ -8,7 +8,9 @@ run) or a `WORK_LOG.md` with no state.json (a 3.x run), and prints one
 decision on the first line:
 
     FRESH            --task names no run here: start a fresh run (init)
-    RESUME <tree>    continue this run: session, phase and status follow
+    RESUME <tree>    continue this run: session, phase and status follow. It
+                     records that a new session holds the run, and un-holds a
+                     phase held at a gate, so `next` asks that gate again
     ASK              ask the user: several runs fit, a run only nearly matches
                      the task (NEAR-MISS), or no task was given and no run is open
     FINISHED <tree>  the run the task names already finished or was stopped
@@ -148,5 +150,19 @@ def decide_one(item, args):
         emit(args.json, "FINISHED", tree, run=info["run"],
              task=state["task"].get("text", ""))
         return 0
+    start_session(tree, state)
     emit(args.json, "RESUME", tree, **{k: v for k, v in info.items() if k != "tree"})
     return 0
+
+
+def start_session(tree, state):
+    """A new session picks the run up: it holds the first open phase's session,
+    and a held gate is asked again (`next` re-fires it)."""
+    number, _ = st.first_open_phase(state)
+    state["session"] = st.SESSIONS[number]
+    for n, _ in st.PHASES:
+        if st.phase(state, n)["status"] == "held":
+            st.set_phase(state, n, "in-progress")
+    state["resumed_seq"] = st.seq(state)
+    st.add_note(state, f"resumed in a new session ({st.SESSION_NAMES[state['session']]})")
+    st.save(Path(tree) / ".auto-dev", state)

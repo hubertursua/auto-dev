@@ -40,6 +40,15 @@ merge-pr --pr N --sha <checked commit>
     again); 3 queued or auto-merge enabled, not merged (report and stop; don't
     move Jira); 4 refused (report the requirement blocking it and stop).
 
+pr-body
+    Generates the PR description for the verified commit from the run's
+    artifacts and templates/pr-body.md, into <artifact-dir>/pr-body.md, leaving
+    a `<!-- WRITE: ... -->` line for the Summary and one for the Assumptions.
+    Links point at the commit; worktree and home paths are hidden and lines that
+    look like secrets dropped; output blocks are cut, then moved to
+    pr-output-comment.md, to keep it under 60,000 characters. `next` runs it.
+    Exit: 0 written; 1 no verified commit yet.
+
 pr-body --check <file>
     Lints a PR description before it is published: the strict sections and the
     attribution line are present, `Checked at commit <sha>` names the verified
@@ -103,7 +112,7 @@ def add_arguments(parser, name):
         parser.add_argument("--pr", required=True)
         parser.add_argument("--sha", required=True, help="the checked commit")
     elif name == "pr-body":
-        parser.add_argument("--check", required=True, metavar="FILE",
+        parser.add_argument("--check", metavar="FILE",
                             help="the PR description to lint")
 
 
@@ -147,6 +156,17 @@ def unstage(worktree, paths):
 
 def commit(args):
     state = load(args)
+    try:
+        return make_commit(args, state)
+    except Fail as exc:
+        if exc.code != CANNOT_RUN:
+            state.setdefault("phase6", {})["commit_attempt"] = {
+                "result": exc.token.lower(), "seq": st.seq(state)}
+            st.save(args.dir, state)
+        raise
+
+
+def make_commit(args, state):
     wt, ad = state["worktree"], state["artifact_dir"]
     code, detail = check_fresh(wt, ad)
     if code != 0:
@@ -178,12 +198,14 @@ def commit(args):
     phase6 = state.setdefault("phase6", {})
     if code != 0:
         phase6["unverified_commit"] = sha
+        phase6["commit_attempt"] = {"result": "not-verified", "seq": st.seq(state)}
         st.add_note(state, f"commit {sha} holds code no result checked; not pushed")
         st.save(args.dir, state)
         emit(args.json, "NOT-VERIFIED", f"commit {sha} holds code no result checked: "
              "do not push; stop and report", detail=detail)
         return EXIT_NOT_VERIFIED
     phase6["verified_sha"] = sha
+    phase6["commit_seq"] = st.seq(state)
     st.add_note(state, f"verified commit {sha}")
     st.save(args.dir, state)
     emit(args.json, "COMMITTED", sha, paths=len(staged),
@@ -204,6 +226,10 @@ def ci_watch(args):
         emit(args.json, "SKIPPED", "CI: none — no CI to watch; say so at the gate")
         return 0
     if provider == "gitlab":
+        state.setdefault("phase6", {})["ci"] = {
+            "sha": git(wt, "rev-parse", "HEAD").strip(), "status": "unavailable",
+            "failing": [], "seq": st.seq(state)}
+        st.save(args.dir, state)
         emit(args.json, "UNAVAILABLE", "ci-watch reads GitHub checks only; GitLab CI "
              "can't be watched here: hold at the gate and say CI was not monitored")
         return EXIT_UNAVAILABLE
@@ -228,7 +254,7 @@ def ci_watch(args):
         time.sleep(max(args.interval, 1))
     if status not in ("green", "red", "unavailable") and elapsed > timeout:
         status = "timeout"
-    ci["status"] = status
+    ci["status"], ci["failing"], ci["seq"] = status, failing, st.seq(state)
     phase6["ci"] = ci
     st.save(args.dir, state)
     if status == "green":
@@ -287,6 +313,22 @@ def merge_staging(args):
         raise Fail("no staging branch: the staging gate is n/a", FAILED, "NO-STAGING")
     git(wt, "fetch", "origin", staging)
     try:
+        merged = staging_merge(wt, branch, staging)
+    except Fail as exc:
+        state.setdefault("phase6", {})["staging_attempt"] = {
+            "result": exc.token.lower(), "seq": st.seq(state)}
+        st.save(args.dir, state)
+        raise
+    state.setdefault("phase6", {})["staging_merge"] = merged
+    st.add_note(state, f"merged into {staging} at {merged}")
+    st.save(args.dir, state)
+    emit(args.json, "MERGED", f"{branch} into {staging} at {merged}",
+         next="watch CI on staging; report a failure, don't gate on it")
+    return 0
+
+
+def staging_merge(wt, branch, staging):
+    try:
         git(wt, "switch", "-q", "--detach", f"origin/{staging}")
         code, out, err = git(wt, "merge", "--no-edit", branch, check=False)
         if code != 0:
@@ -301,12 +343,7 @@ def merge_staging(args):
                        f"{(out + err).strip()[-800:]}", EXIT_PUSH_REJECTED, "REJECTED")
     finally:
         git(wt, "switch", "-q", branch, check=False)
-    state.setdefault("phase6", {})["staging_merge"] = merged
-    st.add_note(state, f"merged into {staging} at {merged}")
-    st.save(args.dir, state)
-    emit(args.json, "MERGED", f"{branch} into {staging} at {merged}",
-         next="watch CI on staging; report a failure, don't gate on it")
-    return 0
+    return merged
 
 
 def merge_method(cwd):
@@ -332,8 +369,10 @@ def merge_pr(args):
                              "--match-head-commit", args.sha)
     text = (out + err).strip()
     if code != 0:
-        if re.search(r"head (branch )?(was modified|has moved)|not the expected head|"
-                     r"match-head-commit|head commit", text, re.IGNORECASE):
+        moved = re.search(r"head (branch )?(was modified|has moved)|not the expected head|"
+                          r"match-head-commit|head commit", text, re.IGNORECASE)
+        note_merge(args, state, "head-moved" if moved else "refused")
+        if moved:
             raise Fail(f"the PR's head is no longer {args.sha}: re-check the code "
                        f"(check-fresh --ref origin/<branch>) and ask the main gate "
                        f"again.\n{text[-500:]}", FAILED, "HEAD-MOVED")
@@ -348,7 +387,7 @@ def merge_pr(args):
     phase6 = state.setdefault("phase6", {})
     if pr_state != "MERGED":
         st.add_note(state, f"PR #{args.pr} queued or set to auto-merge, not merged")
-        st.save(args.dir, state)
+        note_merge(args, state, "queued")
         emit(args.json, "QUEUED", f"PR #{args.pr} is {pr_state or 'not merged'}: "
              "report it and stop; don't move Jira")
         return EXIT_QUEUED
@@ -359,8 +398,26 @@ def merge_pr(args):
     return 0
 
 
+def note_merge(args, state, result):
+    """Record a merge attempt that did not merge, for `next`."""
+    state.setdefault("phase6", {})["merge_attempt"] = {
+        "result": result, "sha": args.sha, "seq": st.seq(state)}
+    st.save(args.dir, state)
+
+
 def pr_body(args):
     state = load(args)
+    if not args.check:
+        from .cmd_pr import generate
+        sha = state.get("phase6", {}).get("verified_sha")
+        if not sha:
+            raise Fail("no verified commit yet: commit first", FAILED, "NO-COMMIT")
+        path = generate(state, Path(state["artifact_dir"]), sha)
+        state["phase6"]["body"] = {"sha": sha, "path": str(path), "seq": st.seq(state)}
+        st.save(args.dir, state)
+        emit(args.json, "WRITTEN", str(path), commit=sha,
+             then="write its Summary and Assumptions, then `autodev.py pr publish`")
+        return 0
     try:
         text = Path(args.check).read_text(encoding="utf-8")
     except OSError as exc:

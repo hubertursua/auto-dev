@@ -15,7 +15,8 @@ OK, FAILED, CANNOT_RUN = 0, 1, 2
 NEXT_ACTION, NEXT_COMPLETE, NEXT_STOP, NEXT_ASK, NEXT_BOUNDARY = 0, 3, 4, 5, 6
 
 # The lines an action is printed as, in this order; empty ones are left out.
-ACTION_KEYS = ("ACTION", "AGENT", "BRIEF", "BUDGET", "AFTER")
+ACTION_KEYS = ("ACTION", "AGENT", "BRIEF", "PROMPT", "BUDGET", "SUMMARY", "QUESTION",
+               "REPORT", "AFTER", "RULE")
 
 
 class Fail(Exception):
@@ -44,9 +45,15 @@ def emit(as_json, token, message="", **fields):
 
 
 def action_lines(action):
-    """Format an action dict as the ACTION / AGENT / BRIEF / BUDGET / AFTER lines."""
-    return "\n".join(f"{key}: {action[key]}" for key in ACTION_KEYS
-                     if action.get(key))
+    """Format an action dict as `KEY: value` lines, in ACTION_KEYS order; a list
+    value prints one line per item."""
+    lines = []
+    for key in ACTION_KEYS:
+        value = action.get(key)
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if item:
+                lines.append(f"{key}: {item}")
+    return "\n".join(lines)
 
 
 def report_failure(exc, as_json):
