@@ -10,9 +10,6 @@ any clone or worktree of the same repo find it.
 
 ## Contents
 
-- **How Phase 1 resolves the profile** — find a saved profile, else research and
-  confirm one, offer to save it, apply the override, drop missing tools, record
-  `profile.md`.
 - **Profile schema** — the keys a profile holds and what each means.
 - **Saved profiles** — where they live and how a run finds them.
 - **Permissions** — what the user allows so a run reads and saves the profile
@@ -21,114 +18,9 @@ any clone or worktree of the same repo find it.
   the right package.
 - **Repo-local override — `.auto-dev.yml`** — every key a project can override.
 
-## How Phase 1 resolves the profile
-
-`<repo>` below is the main checkout you started in, as an absolute path; the
-worktree does not exist yet.
-
-1. **Look for a saved profile.** Run the script; don't work the path out
-   yourself:
-   ```bash
-   python3 <skill-dir>/scripts/profile-path.py <repo>
-   ```
-   `<skill-dir>` is this skill's own directory (the one holding `SKILL.md`; Claude
-   Code names it as the skill's base directory when the skill loads). It prints
-   `FOUND: <path>` or `NOT FOUND: <path>`, then `DIR: <profiles-dir>`. Keep both
-   paths: the second line is the directory the permissions guidance names.
-   - `0` — **found.** Validate it with
-     `python3 <skill-dir>/scripts/validate-config.py --profile <path>`, then read
-     it. Exit `0`: use it as the profile and tell the user in one line
-     ("Using the saved profile at `<path>`"); **don't ask again**, since the user
-     confirmed it when it was saved. Exit `1`: show the user the errors, then
-     research as if none were saved (step 3), and offer to overwrite the file at
-     the confirmation. Exit `2` (no PyYAML): check the file by hand against
-     _Profile schema_ and record "not machine-validated" on `profile.md`'s
-     _Profile_ line. If reading the file is denied or prompts, show the
-     _Permissions_ guidance; if the user won't allow it, research instead.
-   - `1` — **none saved.** The printed path is where a save goes (step 5).
-   - `2` — it can't name a location (the reason is on stderr: no `origin`, or a
-     URL it can't turn into a safe path). Research anyway, and leave the save
-     option out of the confirmation. Record the reason.
-   - `127` — no `python3`. Same as `2`: research, and offer no save.
-2. **A committed full override skips research.** If there is no usable saved
-   profile and `.auto-dev.yml` sets both `setup` and `gate`, the repo has already
-   declared its profile: use it (step 6) with no research, no confirmation and no
-   save offer.
-3. **Research.** Otherwise run `git fetch origin <base>` (the profiler reads
-   files as they are on `origin/<base>`, which the run is cut from), then spawn
-   `auto-dev:profiler` on `<repo>` with its brief
-   (`references/subagent-prompts.md`, _Phase 1 — Profile research_), giving it
-   a `<draft-path>` under `$TMPDIR`. It reads the repo, writes the draft profile
-   there, and returns it with the evidence for each command and what it had to
-   guess.
-4. **Confirm with the user** — the **profile confirmation** pause
-   (`references/gates-and-jira.md`, _Conditional pauses_). Show the draft, its
-   evidence and guesses, which keys `.auto-dev.yml` will override, the save path,
-   and the _Permissions_ guidance filled in with this run's paths and commands.
-   On `Change something`, apply the user's corrections to the draft yourself and
-   ask again. A correction here is the user's, so it spends no iteration-budget
-   round. `Stop` ends the run before any worktree exists.
-5. **Save, if the user chose to.** Write the confirmed profile, exactly as
-   confirmed and without the `.auto-dev.yml` overrides, to the path `profile-path.py`
-   printed (over a broken saved file, when step 1 found one)
-   (the Write tool creates the folders). Start the file with a comment naming the
-   repo and the date. Then run `validate-config.py --profile <path>`; on exit `1`,
-   fix what it names and re-run. If the write is denied or blocked, don't retry
-   another way: show the _Permissions_ guidance and the YAML, tell the user they
-   can save it at that path themselves, and continue with the confirmed profile.
-   A save that failed never stops the run. Never save a profile the user did not
-   confirm.
-6. **Apply** the repo-local `.auto-dev.yml` override (if present) — it wins over
-   the profile. **Validate it first** — run the script, don't read it:
-   ```bash
-   python3 <skill-dir>/scripts/validate-config.py <repo>/.auto-dev.yml
-   ```
-   Use absolute paths for both arguments so the command works from any working
-   directory. A wrong script path makes `python3` itself exit `2` ("can't open
-   file"), which is easy to misread as the validator's own exit `2`.
-   Output: `VALID: …` on stdout, or `ERROR …` lines then `INVALID: …` (or
-   `SKIPPED: …`) on stderr; `warning …` lines never fail the run.
-   **Requires** Python 3.9+ and the third-party package PyYAML; everything else
-   it imports is standard library. It checks for PyYAML itself, so there is no
-   separate pre-check to run. On Python older than 3.9 it dies with a
-   traceback (exit `1`, no `INVALID:` line) — treat that like exit `2`, not as an
-   invalid file. No `python3` on PATH at all (exit `127`, "command not found") is
-   handled the same way as exit `2`.
-   An unrecognized key is silently ignored otherwise, so a typo reads as "the
-   override did nothing" — the validator names the key and suggests the one it
-   probably meant. Exit `0` is a pass — apply the file. Exit `1` is a
-   stop-and-report; once the user has fixed `.auto-dev.yml`, re-run the validator
-   on the fixed file before applying it, and continue only on exit `0`, handling
-   every exit code exactly as on the first run. Exit `2` means validation could not run (no PyYAML, or the
-   file could not be read), which is not a pass. Don't install PyYAML into the
-   user's environment yourself. Instead check every key in the file by hand
-   against "Repo-local override" below (spelling, type, allowed values), then apply it.
-   Record "not machine-validated: <reason>" on `profile.md`'s `.auto-dev.yml`
-   line and repeat it in the final report.
-7. **Drop any quality-gate check whose tool isn't actually there.** A profile
-   may list a check the repo doesn't use — a saved profile written before the
-   repo dropped a tool, or a guess the user let through. Keep a check only where
-   its tool is genuinely available — the dependency is declared, or its config
-   file exists — and otherwise drop it and **record the omission** in
-   `profile.md` (an ESLint check in a repo with no ESLint config is the usual
-   case; example in TypeScript). Never keep a check that cannot run: Phase 5
-   would never go green, and the pipeline would stop on a tool the project never
-   adopted. "Available" means the project adopted it, not that it is on your
-   PATH: a declared tool, or the toolchain itself, that is adopted but not
-   installed is a setup failure. Stop and report the missing command; don't drop
-   the check (Phase 1 step 5). When the profile came from a saved file, name that
-   file in the report so the user can fix or delete it.
-8. **Refuse an empty quality gate.** Once unavailable checks are dropped, the resolved
-   `gate` must still contain at least one command that runs the project's tests. A
-   quality gate with nothing in it makes Phase 5 pass by having nothing to check, and the
-   change then rides through every remaining human gate unverified — the one failure mode
-   this pipeline cannot detect downstream. If neither the profile nor the
-   override has a way to run the tests, **stop and report**: it is a setup
-   problem the user fixes in one line of `.auto-dev.yml`, and guessing is worse
-   than asking.
-9. **Record** the fully-resolved result to `.auto-dev/profile.md`, with where
-   the profile came from. Every later phase reads that file rather than
-   resolving it again.
+How a run finds, researches and confirms the profile is `references/S1-plan.md`,
+step 4. `autodev.py init` then validates it, applies `.auto-dev.yml` over it,
+refuses a quality gate with no test command, and writes `.auto-dev/profile.md`.
 
 ## Profile schema
 
@@ -293,10 +185,10 @@ in, which is the main checkout, also when the run works in a worktree.
   the saved profile.
 - **Polyglot monorepo** (e.g. a JS frontend + Python backend): scope to the
   package the task actually touches. Detect the sub-package from the task/ticket
-  and the files in play, record the chosen package and its own `gate` in
-  `profile.md`, and note in `WORK_LOG.md` that other packages were out of scope.
+  and the files in play, and use that package's own `gate`; record with
+  `autodev.py note` that the other packages were out of scope.
   If the task genuinely spans packages, that's a sign it is OVERSIZED (the Define
-  agent's size check, `SKILL.md`).
+  agent's size check).
 - When scoping is ambiguous, surface it rather than guess.
 
 ## Repo-local override — `.auto-dev.yml`
@@ -344,9 +236,8 @@ Resolution order (last wins): **saved or researched profile → `.auto-dev.yml`*
 The fully-resolved values are written to `.auto-dev/profile.md`.
 
 `iteration_budget`, `ci_timeout_minutes`, `security_docs`, `pr_review`,
-`gates.post_plan` and `mutation.max` are not stack settings, but they resolve the same way and land in
-the same `profile.md` — see `references/correction-loop.md`,
-`references/gates-and-jira.md`, Phase 1 step 4 in `references/phase-1-setup.md`,
-and, for `mutation.max`, the verifier's mutation step in
-`references/subagent-prompts.md`. Turn mutation off only for a repo whose suite
-cannot run a scoped subset in seconds: each mutant is one scoped test run.
+`gates.post_plan` and `mutation.max` are not stack settings, but they resolve the
+same way and land in the same `profile.md`: the budget is in
+`references/tables.md`; the verifier reads the mutation cap. Turn mutation off
+only for a repo whose suite cannot run a scoped subset in seconds: each mutant
+is one scoped test run.

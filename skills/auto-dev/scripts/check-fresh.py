@@ -5,8 +5,8 @@ Each report that judges the code (SPEC_EVAL.md, every lint/<CHECK>.md,
 CODE_REVIEW.md, SECURITY_REVIEW.md) carries a `Tree: <hash>` line: the git tree
 hash of the worktree when its writer checked it. This script prints that hash
 for a worktree, and compares the reports' stamps with it, so a result checked
-on older code is never presented as current (references/artifacts.md, _Stamps:
-which code each result checked_). Read-only: it never touches the real index,
+on older code is never presented as current (references/tables.md,
+_Freshness_). Read-only: it never touches the real index,
 the working tree or any branch.
 
 Usage:
@@ -235,7 +235,7 @@ def main() -> int:
 
     if stale:
         print("NOT FRESH: re-run what wrote each report above, then check again "
-              "(references/correction-loop.md, _Stale results_).", file=sys.stderr)
+              "(references/tables.md, _Freshness_).", file=sys.stderr)
         return EXIT_STALE
     print(f"FRESH: {len(fresh)} report(s) checked this tree:")
     for name in fresh:

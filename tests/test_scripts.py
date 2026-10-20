@@ -18,7 +18,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "auto-dev" / "scripts"
-FIXTURES = ROOT / "skills" / "auto-dev" / "evals" / "files"
 
 GIT_ENV = {
     **os.environ,
@@ -57,66 +56,6 @@ class GitRepoCase(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         return path
-
-
-class ResumePointTest(unittest.TestCase):
-    """resume-point.py against the eval fixtures' ledgers."""
-
-    CASES = {  # noqa: RUF012
-        "resume-s2": ("4 — Build (status: pending)", "S2 — Build"),
-        "resume-s3": ("6 — Ship (status: in-progress)", "S3 — Ship"),
-        "ci-none": ("6 — Ship (status: pending)", "S3 — Ship"),
-        "budget-exhausted": ("5 — Verify (status: in-progress)", "S2 — Build"),
-    }
-
-    def test_fixtures_resume_where_expected(self):
-        for name, (phase, session) in self.CASES.items():
-            with self.subTest(fixture=name):
-                r = run("resume-point.py", FIXTURES / name)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertIn(f"Phase:     {phase}", r.stdout)
-                self.assertIn(f"Session:   {session}", r.stdout)
-
-    def test_matching_task_resumes(self):
-        task = "Reject record creation when the requested value isn't in the context's allowed set"
-        r = run("resume-point.py", FIXTURES / "resume-s2", "--task", task)
-        self.assertEqual(r.returncode, 0, r.stderr)
-
-    def test_unrelated_task_is_not_a_resume(self):
-        r = run("resume-point.py", FIXTURES / "resume-s2", "--task", "Add dark mode to settings")
-        self.assertNotEqual(r.returncode, 0)
-
-    def test_missing_ledger(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            r = run("resume-point.py", tmp)
-        self.assertEqual(r.returncode, 1)
-
-    LEDGER_HEAD = ("# Work Log\n\n- **Task:** Add a due date\n- **Ticket:** none — add a due date\n"
-                   "- **Iteration budget:** 4 total revise rounds (3 remaining)\n\n")
-
-    def write_ledger(self, tmp, body):
-        Path(tmp, "WORK_LOG.md").write_text(self.LEDGER_HEAD + body)
-
-    def test_ledger_needs_no_mode_line(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.write_ledger(tmp, "## Phase status\n"
-                                   "| # | Phase | Status | Notes |\n|---|---|---|---|\n"
-                                   "| 1 | Setup | done | |\n| 2 | Define | pending | |\n")
-            r = run("resume-point.py", tmp)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("Phase:     2 — Define (status: pending)", r.stdout)
-        self.assertIn("Budget:    3 remaining of 4", r.stdout)
-
-    def test_sub_task_ledger_is_malformed(self):
-        # Multi-PR runs were removed in 4.0: a sub-task table is not a phase table.
-        with tempfile.TemporaryDirectory() as tmp:
-            self.write_ledger(tmp, "## Sub-tasks\n"
-                                   "| id | slug | depends on | scope | budget | status |\n"
-                                   "|---|---|---|---|---|---|\n"
-                                   "| 01 | a | — | STANDARD | 4/4 | pending |\n")
-            r = run("resume-point.py", tmp)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("no `## Phase status` heading", r.stderr)
 
 
 class ExcludeArtifactsTest(GitRepoCase):

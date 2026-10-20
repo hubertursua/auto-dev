@@ -15,7 +15,9 @@ when absent.
 
 The main agent stays the orchestrator and never writes code itself — it spawns a
 fresh worker per delegated job and hands off through files in `.auto-dev/`,
-never shared memory. Phase 1 is its own work. Correction briefs come from the
+never shared memory. It doesn't decide the order of steps either: it runs
+`autodev.py next`, does the one action printed, and runs it again. Phase 1's
+profile and ticket steps are its own work. Correction briefs come from the
 workers that found the problem (the verifier, the review judge, the triager),
 and the orchestrator passes them on unedited. Judging the build is not its job
 either — it holds the plan and the story of every round, which is the context a
@@ -145,11 +147,17 @@ cut into three sessions — **Plan** (phases 1–3), **Build** (4–5) and **Shi
 — and stops at each boundary after writing `.auto-dev/HANDOFF.md`, a short brief
 for the next one. Start a fresh session and say `auto-dev continue` to pick up.
 
-Orchestrator context is the real cost driver: it grows about 1k tokens per turn
-and every added turn makes every later turn more expensive. So the orchestrator
-holds the pipeline, not the code — it delegates reads, keeps large artifacts in
-workers, and checkpoints at ~120k tokens rather than running until a 1M window
-fills. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,
+Every session runs on whatever model you pick; the orchestrator follows short
+runbooks (`skills/auto-dev/references/S1-plan.md`, `S2-build.md`,
+`S3-ship.md`) and is never asked to judge, so it doesn't need a stronger model
+for any of them, and it never asks you to switch.
+
+Orchestrator context is the real cost driver: every added turn makes every later
+turn more expensive. So the orchestrator holds the pipeline, not the code — it
+delegates reads and keeps large artifacts in workers — and `next` ends a long
+session at a **checkpoint**: after 80 recorded events in one session (about 35
+workers), at the next point where no worker is in flight, it writes
+`HANDOFF.md` and asks you to continue in a fresh session. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,
 which is also what makes an interrupted run resumable.
 
 ## Size check: one PR, or back to you
@@ -209,8 +217,9 @@ open, a **triager** reads what the orchestrator never sees: a red CI run's logs
 code goes to the coder) and human reviewers' comments (blocker, nit, question,
 already addressed, or about a held-out check). Comment text never reaches the
 orchestrator, so a comment can't steer the run. Those fixes are reviewed the
-same way before they are pushed. The procedure is in
-`skills/auto-dev/references/review.md` and the full rubric in
+same way before they are pushed. The reviewers' instructions are in
+`agents/code-reviewer.md`, `agents/review-judge.md` and
+`agents/security-reviewer.md`, and the full rubric in
 `skills/auto-dev/templates/rubric.md`.
 
 ## Stack profiles
@@ -230,8 +239,9 @@ in this order:
    The run pauses to show you the draft and asks: save it for this repo, use it
    for this run only, change something, or stop.
 
-`.auto-dev.yml` is applied on top in every case. The schema and the full
-procedure are in `skills/auto-dev/references/profiles.md`.
+`.auto-dev.yml` is applied on top in every case. The schema is in
+`skills/auto-dev/references/profiles.md`, and the steps in
+`skills/auto-dev/references/S1-plan.md`.
 
 ### Where saved profiles live
 
@@ -310,9 +320,10 @@ default 4), `mutation.max` (mutants per verifier pass, default 20, `0` = off),
 `symbol_lookup` (a code-index tool to use instead of grep), and `jira.states`.
 It can also set any profile key (`setup`, `gate`, `test_notes`, …) to override the
 profile. Phase 1 validates the file with `scripts/validate-config.py`, so a
-mistyped key is reported rather than silently ignored. See
-`skills/auto-dev/references/profiles.md`, and
-`skills/auto-dev/references/phase-1-setup.md` for the full Phase 1 procedure.
+mistyped key is reported rather than silently ignored. Without
+`security_docs`, `autodev.py init` uses the repo's `SECURITY.md`,
+`.github/SECURITY.md` and `docs/security/*.md`. See
+`skills/auto-dev/references/profiles.md`.
 
 ## Human gates & integrations
 
@@ -324,9 +335,8 @@ main gate. Main is merged only via `gh pr merge` (respecting branch protection,
 never `--admin`), with `--squash` by default — `--merge` if the repo disallows
 squash, `--rebase` only when it is the one method allowed. Before the main gate
 the pipeline fetches the PR branch and checks it still holds the code every
-result was checked on. If someone pushed to it, their commits are brought into
-the worktree and checked like any change, and the PR description is refreshed,
-before you are asked. The merge is locked to that commit with
+result was checked on. If someone pushed to it, the run stops and tells you,
+rather than merging commits nothing checked. The merge is locked to that commit with
 `--match-head-commit`, so a push made after the check makes GitHub refuse the
 merge instead of shipping unchecked code. Staging is a direct
 merge where the project uses that convention. **Jira** integration is
@@ -344,9 +354,9 @@ else runs without check-ins.
 
 Declining is safe at every gate: `Stop` ends the run, `Hold` (where a gate offers
 it) pauses a run you can resume later, and both leave the branch, the worktree,
-and every artifact on disk. See `skills/auto-dev/references/gates-and-jira.md`
-for the gates, and `skills/auto-dev/references/phase-6-ship.md` for the exact
-commit, PR and merge sequences.
+and every artifact on disk. What each option does is in
+`skills/auto-dev/references/tables.md`, and how a Jira ticket is moved in
+`skills/auto-dev/references/gates-and-jira.md`.
 
 ## Install
 
@@ -395,7 +405,7 @@ Link `skills/auto-dev` into `~/.claude/skills/` too.
 
 ## Dependencies
 
-Built-in tools only — no plugins required: `TodoWrite`, `Task`/`Agent`, `Bash`,
+Built-in tools only — no plugins required: `Task`/`Agent`, `Bash`,
 `Read`, `Edit`, `Write`, `Grep`, `Glob`, `AskUserQuestion`, and the `Skill` tool
 (the Phase 5 cleanup agent runs `/simplify` with it, the code reviewers
 `/code-review`, and the security reviewer `/security-review`). `gh` must be on your `PATH`
@@ -405,31 +415,29 @@ The Jira tools are found by base name (`getJiraIssue`, …) with `ToolSearch`, s
 the MCP server can be registered under any name; no match means Jira is skipped.
 Phase 6a opens the PR with `gh pr create`, or through any PR skill Claude already
 has that meets the pipeline's PR requirements — none is required.
-Optional tooling: **Python 3.9+** with **PyYAML** (`pip install pyyaml`), used by
-`skills/auto-dev/scripts/validate-config.py` to check a repo's `.auto-dev.yml` in
-Phase 1 — a mistyped key is silently ignored otherwise. Without it the pipeline
-still runs; it checks the file by hand and reports that it went unvalidated.
-The other helpers in `skills/auto-dev/scripts/` need only Python's standard
-library. Five are run by the orchestrator: `profile-path.py` (names the saved
-profile's path for a repo and says whether it exists), `resume-point.py` (finds where an
-interrupted run resumes, from `WORK_LOG.md`), `exclude-artifacts.py` (makes
-`.auto-dev/` self-excluding in Phase 1 and verifies it with git),
-`check-staged.py` (the read-only check before each Phase 6a commit that nothing
-under `.auto-dev/` is staged) and `check-fresh.py` (the read-only check that
-every report was produced on the code as it is now; the verifier, cleanup agent,
+**Python 3.9+** with **PyYAML** (`pip install pyyaml`) is required:
+`autodev.py init` checks both and stops before doing any work without them.
+The helpers in `skills/auto-dev/scripts/` need only Python's standard library,
+except `validate-config.py` (checks a repo's `.auto-dev.yml`, or a saved
+profile with `--profile`, so a mistyped key is reported rather than silently
+ignored) and `autodev.py init`, which read YAML. The orchestrator runs
+`profile-path.py` itself (names the saved profile's path for a repo and says
+whether it exists). `autodev.py` runs the others: `exclude-artifacts.py`
+(makes `.auto-dev/` self-excluding and verifies it with git),
+`check-staged.py` (the read-only check before each commit that nothing under
+`.auto-dev/` is staged) and `check-fresh.py` (the read-only check that every
+report was produced on the code as it is now; the verifier, cleanup agent,
 review judge and security reviewer also run its `--print-tree` to stamp their
-reports); without `python3` the orchestrator runs the same
-steps by hand, except that it can't find or save a profile, so it researches one
-every run. `validate-config.py` also checks a saved profile (`--profile`). Two are run by the Phase 5 verifier: `check-tests.py` (the
-test-integrity audit) and `mutate.py` (applies mutants one at a time and restores
-every file afterwards).
+reports). Two are run by the Phase 5 verifier: `check-tests.py` (the
+test-integrity audit) and `mutate.py` (applies mutants one at a time and
+restores every file afterwards).
 `skills/auto-dev/scripts/autodev.py` is the one entry point for the steps
 4.0 moves out of the orchestrator's prose, so a user allows one command. It
-needs **Python 3.9+** and **PyYAML**, and keeps the run's state in
+keeps the run's state in
 `.auto-dev/state.json`, which only it writes; `WORK_LOG.md` is generated from
-it. Its subcommands so far: `init` (Phase 1's preflight, config, worktree,
-seeded files and setup, run in the background past the Bash tool's 10-minute
-limit), `resume` (finds the run to continue, or says to start fresh or ask),
+it. Its subcommands: `init` (Phase 1's preflight, config, worktree,
+seeded files, security directives and setup, run in the background past the
+Bash tool's 10-minute limit), `resume` (finds the run to continue, or says to start fresh or ask),
 `show`, `phase`, `note`, `size` (the Define agent's size check), `budget`
 (spends a revise round once per correction, and refuses at zero with what to do
 next), `gate` (records a gate decision; `hold` and `stop` are different states)
@@ -466,7 +474,8 @@ command, ask this gate, stop and report, or end the session), with the command
 to run after it. It does the mechanical steps itself: writing briefs, spending
 a round before a correction, applying FIX blocks, checking the manifest,
 reading the verdicts, planning and applying re-votes, taking the review
-snapshot and generating the PR body. `next --explain` names the rule it applied.
+snapshot and generating the PR body. It also ends a long session at a
+checkpoint. `next --explain` names the rule it applied.
 Shared code lives in `skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
@@ -497,9 +506,9 @@ versions, so a new release is picked up without editing the plugin.
 | Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
 | Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · medium |
 
-The orchestrator runs on the session's model, which you pick when starting each
-session: `opus` at high effort for Plan and Build, `sonnet` at medium for Ship.
-Each session's stop message names the model for the next one. To retune a worker,
+The orchestrator runs on the session's model, whichever you pick; `sonnet` at
+medium effort is enough for every session, since `next` makes the decisions and
+the workers above do the judging. To retune a worker,
 edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
 `SKILL.md`.
 
@@ -528,8 +537,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `triage/` | Phase 6 | the triager's required changes for red CI and human blockers |
 | `lookups/` | any phase | lookup answers |
 
-The full layout and every artifact's contract are in
-`skills/auto-dev/references/artifacts.md`. This is scratch, not part of your
+Each artifact's template is in `skills/auto-dev/templates/`. This is scratch, not part of your
 project — the pipeline never commits it and makes the directory self-ignoring (a
 `.gitignore` containing `*`, written into `.auto-dev/` itself) automatically, so
 it cannot be staged even by a stray `git add -A`. (Note: a committed
@@ -556,8 +564,9 @@ branch protection.
 .claude-plugin/         plugin.json (name, version) and marketplace.json
 agents/                 one agent type per worker: tools, model, effort, and its whole brief
 skills/auto-dev/
-  SKILL.md              the orchestrator's spine: phases, sessions, gates, rules
-  references/           detail read on demand, one file per phase or topic
+  SKILL.md              the orchestrator's spine: the rules and the `next` loop
+  references/           one runbook per session (S1-plan, S2-build, S3-ship), the
+                        shared tables, the profile schema and the Jira steps
   templates/            the artifact templates and the review rubric workers read by path
   scripts/              the Python helpers listed under Dependencies
     lib/                shared code for autodev.py (not run directly)
@@ -624,6 +633,17 @@ rules for changing a script are in `CLAUDE.md`.
   when to spend a round, or how to assemble the PR description; `pr publish`
   opens or refreshes the PR. `resume` now records that a new session holds the
   run, and un-holds a gate so it is asked again.
+- **Any model runs the orchestrator.** `SKILL.md` is now the `next` loop and
+  its hard rules, with one short runbook per session
+  (`skills/auto-dev/references/S1-plan.md`, `S2-build.md`, `S3-ship.md`) and
+  one file of shared tables. The old phase references are gone. No session
+  asks you to switch models.
+- **Checkpoints count events, not tokens.** `next` ends a long session after 80
+  events (about 35 workers) and asks you to continue in a fresh session.
+- **No more by-hand fallbacks.** Without python3 3.9+ and PyYAML the run stops
+  in Phase 1. `resume-point.py` is removed: `autodev.py resume` finds the run.
+- **`init` finds the security directives** from `security_docs`, or the repo's
+  `SECURITY.md`, `.github/SECURITY.md` and `docs/security/*.md`.
 
 A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
 and start again.

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Make a worktree's .auto-dev/ exclude itself from git, then prove it.
 
-Does exactly the Phase 1 step (references/phase-1-setup.md, step 6, and
-references/artifacts.md, _Never commit `.auto-dev/`_): creates
+Does exactly the Phase 1 step (`autodev.py init` runs it): creates
 <worktree>/.auto-dev/lint/ if missing and writes .auto-dev/.gitignore containing
 `*` if it is absent or holds anything else. Never touches .git/info/exclude.
 Then verifies with git that nothing under .auto-dev/ is visible. Running it

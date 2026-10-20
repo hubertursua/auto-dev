@@ -3,8 +3,8 @@
 deleted, skipped, focused, weakened or tampered with, and new tests that assert
 nothing.
 
-Run by the Phase 5 verifier on every pass (references/subagent-prompts.md,
-_Verifier_). Read-only: it never stages, edits or restores anything. Each
+Run by the Phase 5 verifier on every pass (agents/verifier.md). Read-only: it
+never stages, edits or restores anything. Each
 finding is a claim for the verifier to judge against SPEC.md — a deleted test
 can be right when the spec removes that behavior — except ACCEPTANCE_*, which
 is never justified.
