@@ -19,7 +19,11 @@ from templates/pr-body.md and the run's artifacts) for the verified commit:
  - Output too long for the description goes to one PR comment, edited in place
    on every refresh (never a second one), and is marked superseded once the
    description fits again.
+ - Everything it posts ends with the line `<!-- auto-dev -->`, so the triager
+   knows the pipeline wrote it.
  - Then it reads the PR back and checks it names the verified commit.
+ - A refusal (exit 1) is recorded in state.json as `publish_attempt`, so `next`
+   stops and shows what was wrong instead of asking to publish again.
 
 Exit codes:
     0  published; the PR number and URL are printed
@@ -45,6 +49,9 @@ WRITE_RE = re.compile(r"<!-- WRITE: .*?-->")
 STRICT = ("Acceptance conditions", "Quality gate", "Review")
 COMMENT_HEAD = "Command output for commit"
 ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
+# The last line of every body and comment the pipeline posts: the triager
+# skips a comment that carries it.
+MARKER = "<!-- auto-dev -->"
 
 
 def add_arguments(parser, name):
@@ -163,7 +170,7 @@ def generate(state, ad, sha):
     quality_gate(body, ad, state)
     body.text("")
     body.text("## Review")
-    for line in review_lines(ad):
+    for line in review_lines(ad, state):
         body.text(line)
     body.text("")
     body.text("## Assumptions")
@@ -171,13 +178,15 @@ def generate(state, ad, sha):
               "sanity-check -->")
     body.text("")
     body.text(ATTRIBUTION)
+    body.text(MARKER)
     text, comment = fit(body, sha)
     text, comment = clean(text, wt), clean(comment, wt)
     path = ad / "pr-body.md"
     path.write_text(text, encoding="utf-8")
     comment_path = ad / "pr-output-comment.md"
     if comment:
-        comment_path.write_text(f"{COMMENT_HEAD} {sha[:12]}\n\n{comment}", encoding="utf-8")
+        comment_path.write_text(f"{COMMENT_HEAD} {sha[:12]}\n\n{comment.rstrip()}\n\n"
+                                f"{MARKER}\n", encoding="utf-8")
     elif comment_path.exists():
         comment_path.unlink()
     return path
@@ -364,7 +373,7 @@ def quality_gate(body, ad, state):
             body.block(check["command"], [("Output:", output)])
 
 
-def review_lines(ad):
+def review_lines(ad, state):
     out = []
     for name, label in (("CODE_REVIEW.md", "Code review (3 independent reviewers)"),
                         ("SECURITY_REVIEW.md", "Security review")):
@@ -383,7 +392,51 @@ def review_lines(ad):
                    f"{reason}. {total} problems that had to be fixed: {fixed} fixed, "
                    f"{opened} open")
         out += open_findings(text)
+        if name == "SECURITY_REVIEW.md":
+            out += follow_ups(text, separate_pr(state))
     return out
+
+
+def plain_words(text, fid):
+    """The `In plain words:` line of finding `fid`'s own `### <id>` block, or None.
+
+    The match stops at the next `##`/`###` heading and takes one line, so it
+    never runs into another finding's block."""
+    match = re.search(rf"^### {re.escape(fid)}\b(?:(?!^###? ).)*?^In plain words:[ \t]*"
+                      r"([^\n]+)", text, re.MULTILINE | re.DOTALL)
+    return match.group(1).strip() if match else None
+
+
+def separate_pr(state):
+    """The pre-existing security findings the user sent to a separate PR at the
+    PR gate (`mark triage-<id> --value separate`); `*` stands for the ones the
+    gate grouped under "Others"."""
+    ids = set()
+    for step, mark in (state.get("marks") or {}).items():
+        if step.startswith("triage-") and (mark or {}).get("value") == "separate":
+            fid = step[len("triage-"):]
+            ids.add("*" if fid.lower() == "others" else fid)
+    return ids
+
+
+def follow_ups(text, ids):
+    """One line per pre-existing security finding sent to a separate PR."""
+    from .cmd_review import for_the_user
+    if not ids:
+        return []
+    try:
+        pre = for_the_user(text)
+    except art.ArtifactError:
+        return []
+    asked = pre if len(pre) <= 3 else pre[:2]  # the gate asked these one by one
+    lines = []
+    for row in pre:
+        fid = row.get("ID", "").strip()
+        if fid in ids or ("*" in ids and row not in asked):
+            what = plain_words(text, fid) or row.get("Finding", "").strip()
+            lines.append(f"  - Follow-up for a separate PR: {what} "
+                         f"({row.get('Location', '').strip()}); it predates this change")
+    return lines
 
 
 def open_findings(text):
@@ -394,10 +447,8 @@ def open_findings(text):
             if row.get("Status", "").strip().lower().startswith("open") and (
                     "Verdict" not in row or row["Verdict"].strip().lower() == "must-fix"):
                 fid = row.get("ID", "").strip()
-                plain = re.search(rf"^### {re.escape(fid)}\b.*?^In plain words:\s*(.+)$",
-                                  text, re.MULTILINE | re.DOTALL)
                 where = row.get("Location", "").strip()
-                what = plain.group(1).strip() if plain else row.get("Finding", "").strip()
+                what = plain_words(text, fid) or row.get("Finding", "").strip()
                 lines.append(f"  - Still open: {what} ({where}); shipped at the user's "
                              "call at the PR gate")
     return lines
@@ -464,8 +515,24 @@ def gh(wt, *args):
 
 
 def publish(args):
-    from .cmd_ship import lint_body
     state = load(args)
+    try:
+        return publish_body(args, state)
+    except Fail as exc:
+        if exc.code != CANNOT_RUN:  # could not run is not an attempt
+            note_attempt(args, state, exc.token, [str(exc)])
+        raise
+
+
+def note_attempt(args, state, token, problems):
+    """Record a refused publish, for `next` (it stops on it)."""
+    state.setdefault("phase6", {})["publish_attempt"] = {
+        "result": token.lower(), "problems": problems, "seq": st.seq(state)}
+    st.save(args.dir, state)
+
+
+def publish_body(args, state):
+    from .cmd_ship import lint_body
     p6 = state.setdefault("phase6", {})
     wt, ad = state["worktree"], Path(state["artifact_dir"])
     sha, body = p6.get("verified_sha"), p6.get("body") or {}
@@ -485,6 +552,7 @@ def publish(args):
                    "and Assumptions there first", FAILED, "UNWRITTEN")
     problems = lint_body(text, state)
     if problems:
+        note_attempt(args, state, "PROBLEMS", problems)
         emit(args.json, "PROBLEMS", f"{len(problems)} problem(s); nothing published",
              problem=problems)
         return FAILED
@@ -518,6 +586,7 @@ def publish(args):
     p6.update({"pr": int(pr), "pr_url": live.get("url", ""), "published_sha": sha,
                "output_comment": comment_id})
     p6["body"]["published_seq"] = st.seq(state)
+    p6.pop("publish_attempt", None)
     st.add_note(state, f"PR #{pr} description published for {sha}")
     st.save(args.dir, state)
     emit(args.json, "PUBLISHED", f"PR #{pr}", url=live.get("url", ""), commit=sha)
@@ -555,9 +624,9 @@ def merge_live(live, new):
         if heading and heading[3:].strip() in STRICT and heading not in present:
             out.append((heading, body))
     text = "\n".join((f"{h}\n" if h else "") + b for h, b in out)
-    if ATTRIBUTION not in text:
-        text = text.rstrip() + f"\n\n{ATTRIBUTION}\n"
-    return text
+    # The attribution and the marker close the description, whatever moved.
+    kept = [ln for ln in text.split("\n") if ln.strip() not in (ATTRIBUTION, MARKER)]
+    return "\n".join(kept).rstrip() + f"\n\n{ATTRIBUTION}\n{MARKER}\n"
 
 
 def split_sections(text):
@@ -590,7 +659,8 @@ def output_comment(wt, ad, pr, comment_id, sha):
     if not path.exists() and not comment_id:
         return None
     if not path.exists():
-        body = f"Superseded: the description holds the output for commit {sha[:12]}."
+        body = (f"{COMMENT_HEAD} {sha[:12]}: superseded, the PR description holds "
+                f"this commit's output.\n\n{MARKER}\n")
     else:
         body = path.read_text(encoding="utf-8")
     if not comment_id:

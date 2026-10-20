@@ -49,12 +49,15 @@ gate-summary <post-plan|pr|staging|main> [--pr N]
     no Unjustified integrity finding is open; then the acceptance block and
     the two reviews, and one triage question per pre-existing security finding
     whose Verdict is `for the user`, most severe first (with more than three,
-    the two most severe and one question for the rest).
+    the two most severe and one question for the rest, headed `Others`). Each
+    answer is recorded with `mark triage-<ID or Others> --value separate|ignore`;
+    a finding sent to a separate PR is listed in the PR body as a follow-up.
     main: the PR is open and not a draft, and every result was checked on its
     head commit.
     Exit: 0 printed; 1 a precondition failed (the reason says what to do; do
-    not ask the gate); 2 check-fresh.py, `git submodule foreach` or gh could
-    not run.
+    not ask the gate): `STALE` when a result no longer matches the code,
+    `PRECONDITION` otherwise; 2 check-fresh.py, `git submodule foreach` or gh
+    could not run.
 
 All exit 2 when they could not run — never a pass.
 """
@@ -81,7 +84,10 @@ GATE_OPTIONS = {
     "staging": ["Merge to staging", "Skip staging", "Stop"],
     "main": ["Merge PR to main", "Hold", "Stop"],
 }
-TRIAGE = ["Separate PR (note it as a follow-up)", "Fix it in this PR", "Ignore it"]
+# A pre-existing security finding's triage answers, and the value `mark
+# triage-<id>` records for each.
+TRIAGE_VALUES = {"Separate PR (note it as a follow-up)": "separate", "Ignore it": "ignore"}
+TRIAGE = list(TRIAGE_VALUES)
 
 
 def add_arguments(parser, name):
@@ -559,10 +565,10 @@ def for_the_user(sec):
 
 
 def fresh_or_fail(wt, ad, stale_message, *extra):
-    """Run check-fresh.py: exit 1 is a stale PRECONDITION, exit 2 could not run."""
+    """Run check-fresh.py: exit 1 is a STALE refusal, exit 2 could not run."""
     code, detail = check_fresh(wt, str(ad), *extra)
     if code != 0:
-        raise Fail(f"{stale_message}\n{detail}", FAILED, "PRECONDITION")
+        raise Fail(f"{stale_message}\n{detail}", FAILED, "STALE")
 
 
 def submodule_edits(wt):
@@ -617,9 +623,8 @@ def pr_summary(state, ad, args):
     review_lines, questions = review_block(ad)
     lines += review_lines
     if state["budget"]["remaining"] <= 0:
-        lines.append("Budget exhausted: `Fix it in this PR` is not offered")
-        for q in questions:
-            q["options"] = [o for o in q["options"] if o["label"] != TRIAGE[1]]
+        lines.append("Budget exhausted: no round is left for a fix; an open must-fix "
+                     "finding ships listed in the PR body")
     return lines, questions
 
 

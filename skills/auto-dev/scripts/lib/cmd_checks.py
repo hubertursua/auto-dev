@@ -464,13 +464,22 @@ def spec_overlap(args):
     return 0
 
 
+def security_criteria(ad):
+    """SPEC.md's Security/Compliance criteria (`S<n>.` conditions)."""
+    return [c for c in art.spec_conditions(Path(ad) / "SPEC.md") if c["id"].startswith("S")]
+
+
+def security_agent(ad):
+    """The security reviewer to spawn: the sensitive one when SPEC.md lists any
+    Security/Compliance criterion. `next` and `security-reviewer` both use it."""
+    return ("auto-dev:security-reviewer-sensitive" if security_criteria(ad)
+            else "auto-dev:security-reviewer")
+
+
 @wrap
 def security_reviewer(args):
-    criteria = [c for c in art.spec_conditions(Path(args.dir) / "SPEC.md")
-                if c["id"].startswith("S")]
-    agent = ("auto-dev:security-reviewer-sensitive" if criteria
-             else "auto-dev:security-reviewer")
-    emit(args.json, "AGENT", agent, criteria=len(criteria))
+    emit(args.json, "AGENT", security_agent(args.dir),
+         criteria=len(security_criteria(args.dir)))
     return 0
 
 
