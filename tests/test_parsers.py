@@ -331,6 +331,67 @@ class VotesTest(ArtifactCase):
         self.assertIn("no re-vote recorded", r.stderr)
 
 
+    def votes(self, **files):
+        table = "| Finding | Vote | Reason |\n|---|---|---|\n"
+        for slot, rows in files.items():
+            self.write(f"review/pass-1/VOTES-{slot}.md", table + "".join(
+                f"| {fid} | {vote} | why |\n" for fid, vote in rows))
+
+    def test_apply_refuses_a_missing_planned_votes_file(self):
+        # R3 voted on C6, but R1 (also planned for C6) wrote nothing.
+        self.votes(R2=[("C4", "agree")], R3=[("C4", "disagree"), ("C6", "agree")])
+        before = (self.dir / "CODE_REVIEW.md").read_text()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("C6 (R1: no VOTES-R1.md)", r.stderr)
+        self.assertEqual((self.dir / "CODE_REVIEW.md").read_text(), before)
+
+    def test_a_duplicate_agree_counts_once(self):
+        self.votes(R1=[("C6", "disagree")], R2=[("C4", "agree"), ("C4", "agree")],
+                   R3=[("C4", "disagree"), ("C6", "disagree")])
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("| C4 | empty list indexed | `src/list.ts:42` | correctness | 2/3 "
+                      "(re-vote) | Medium | open |", (self.dir / "CODE_REVIEW.md").read_text())
+
+    def test_the_raisers_own_vote_is_ignored(self):
+        # R1 raised C4; its agree must not count as a second vote.
+        self.votes(R1=[("C4", "agree"), ("C6", "disagree")], R2=[("C4", "disagree")],
+                   R3=[("C4", "disagree"), ("C6", "disagree")])
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("0 must-fix, 2 advisory", r.stdout)
+
+    def test_a_bad_vote_value_is_malformed(self):
+        self.votes(R1=[("C6", "disagree")], R2=[("C4", "maybe")],
+                   R3=[("C4", "disagree"), ("C6", "disagree")])
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("MALFORMED", r.stderr)
+
+    def all_disagree(self):
+        self.votes(R1=[("C6", "disagree")], R2=[("C4", "disagree")],
+                   R3=[("C4", "disagree"), ("C6", "disagree")])
+
+    def test_an_unparseable_confidence_line_is_malformed(self):
+        self.write("CODE_REVIEW.md", CODE_REVIEW.format(tree="0" * 40).replace(
+            "reviewers finished: 3/3; coverage: full", "three reviewers, all files"))
+        self.all_disagree()
+        before = (self.dir / "CODE_REVIEW.md").read_text()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("reviewers finished", r.stderr)
+        self.assertEqual((self.dir / "CODE_REVIEW.md").read_text(), before)
+
+    def test_a_hyphen_in_decided_2_1_keeps_the_earlier_ids(self):
+        self.write("CODE_REVIEW.md", CODE_REVIEW.format(tree="0" * 40).replace(
+            "must-fix decided 2–1: none", "must-fix decided 2-1: C1"))
+        self.all_disagree()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("must-fix decided 2–1: C1", (self.dir / "CODE_REVIEW.md").read_text())
+
+
 class ReviewAndGateTest(RunCase):
     def setUp(self):
         super().setUp()
@@ -401,6 +462,67 @@ class ReviewAndGateTest(RunCase):
         r = self.cmd("gate-summary", "pr")
         self.assertEqual(r.returncode, 1)
         self.assertIn("Unjustified", r.stderr)
+
+    def stub_git(self, **env):
+        """A `git` ahead of the real one on PATH, for this test's autodev runs:
+        STUB_GIT_FAIL fails any call whose arguments include it, and
+        STUB_GIT_SUBMODULE prints its text for `git submodule`."""
+        real = subprocess.run(["sh", "-c", "command -v git"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+        bin_dir = self.tmp / "stub-bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "git"
+        stub.write_text('#!/bin/sh\n'
+                        'if [ -n "$STUB_GIT_FAIL" ]; then\n'
+                        '  for a in "$@"; do [ "$a" = "$STUB_GIT_FAIL" ] && '
+                        '{ echo "stub: git $* failed" >&2; exit 128; }; done\n'
+                        'fi\n'
+                        'if [ "$1" = submodule ] && [ -n "$STUB_GIT_SUBMODULE" ]; then\n'
+                        '  printf "%s\\n" "$STUB_GIT_SUBMODULE"; exit 0\n'
+                        'fi\n'
+                        f'exec "{real}" "$@"\n')
+        stub.chmod(0o755)
+        self.env = {**self.env, **env,
+                    "PATH": f"{bin_dir}:{self.env['PATH']}"}
+
+    def test_pr_gate_cannot_run_when_check_fresh_cannot(self):
+        self.reports()
+        self.stub_git(STUB_GIT_FAIL="-C")  # check-fresh.py runs `git -C <worktree>`
+        r = self.cmd("gate-summary", "pr")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("stale", r.stderr)
+
+    def test_pr_gate_cannot_run_when_submodule_foreach_fails(self):
+        self.reports()
+        self.stub_git(STUB_GIT_FAIL="foreach")
+        r = self.cmd("gate-summary", "pr")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("submodule", r.stderr)
+
+    def test_pr_gate_refuses_edits_inside_a_submodule(self):
+        self.reports()
+        self.stub_git(STUB_GIT_SUBMODULE="Entering 'vendor/lib'\n?? src/generated.ts")
+        r = self.cmd("gate-summary", "pr")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("vendor/lib: ?? src/generated.ts", r.stderr)
+
+    def test_pr_gate_asks_about_the_most_severe_findings_for_the_user(self):
+        self.reports()
+        rows = [("S2", "Medium", "for the user"), ("S3", "Low", "advisory"),
+                ("S4", "High", "for the user"), ("S5", "High", "advisory"),
+                ("S6", "Medium", "for the user"), ("S7", "Low", "for the user")]
+        path = self.dir / "SECURITY_REVIEW.md"
+        text = path.read_text().split("| S2 |")[0] + "".join(
+            f"| {i} | finding {i} | `src/auth.ts:{n}` | pre-existing | {conf} | confirmed "
+            f"| {verdict} | — |\n" for n, (i, conf, verdict) in enumerate(rows))
+        path.write_text(text)
+        r = self.cmd("gate-summary", "pr", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual([q["header"] for q in out["questions"]],
+                         ["Gate", "S4", "S2", "Others"])
+        self.assertIn("(S6, S7)", out["questions"][3]["question"])
+        self.assertIn("Pre-existing, for you: 4", "\n".join(out["summary"]))
 
     def test_main_gate_refuses_a_draft(self):
         self.script_gh([{"args": ["pr", "view"], "stdout": json.dumps(

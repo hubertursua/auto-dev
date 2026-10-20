@@ -84,8 +84,8 @@ Enable for the run when **any** of these holds, and record which one in
   `git status --porcelain --untracked-files=all --no-renames --ignore-submodules=dirty`,
   so a new directory's files are each listed, a rename is its old and new path,
   and a submodule with only uncommitted content inside it is left out, since
-  nothing can stage that; this is the list the commit stages), any submodule the
-  check below names as not committed, quality-gate results (each check pass),
+  nothing can stage that; this is the list the commit stages), quality-gate
+  results (each check pass),
   acceptance status from `SPEC_EVAL.md` (**the acceptance block**, below),
   **the two reviews** (below), and any unresolved assumptions. Read
   the quality-gate results from `lint/*.md`: there must be one report per `gate`
@@ -108,8 +108,10 @@ Enable for the run when **any** of these holds, and record which one in
   parent repo. Everything it shows was made during this run. If a path printed
   under a header, or a coder-reported path under `<sub>/`, is a source file,
   **stop and report** — the pipeline never commits inside a submodule. If it is
-  only generated output (from `setup` or a build), name the submodule in the
-  summary as not committed.
+  only generated output (from `setup` or a build), delete it and run the check
+  again. Never ask this gate while a submodule holds an uncommitted edit, and
+  if the check itself fails, the submodules are unchecked: never read that as
+  clean.
 - **The acceptance block (before asking):** from `SPEC_EVAL.md`. Give the count
   of conditions per verdict and per evidence tier, then name one by one: every
   condition not `met`, every `met` condition resting on Adequate evidence (what
