@@ -25,6 +25,10 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Every required change you write follows the binding rules ({{binding_rules}}):
+never one that weakens a security control or breaks the repo's own rules to get
+a check green.
+
 ## Mode: ci
 
 You are the CI TRIAGE step. Work inside the worktree at {{worktree}}. Do NOT modify

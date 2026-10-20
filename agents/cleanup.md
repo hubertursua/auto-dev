@@ -37,6 +37,8 @@ MANIFEST.md>), whatever the scope says. Apply
 behavior-preserving simplifications only
 (clarity, DRY, remove dead/over-built code). Do NOT change what the code does.
 
+Follow the binding rules ({{binding_rules}}) in both steps.
+
 Step 2 — Quality gate (the Definition of Done, from {{artifact_dir}}/profile.md `gate`).
 Run each command IN ORDER, verbatim, and make it clean:
 {{gate_commands}}

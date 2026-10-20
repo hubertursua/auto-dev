@@ -44,7 +44,8 @@ Read every one. <Pass 2 or later: also read the previous
    - re-vote: the same, raised by 1. The orchestrator collects the votes and
      decides it; put it under "Pending re-vote".
    - advisory Low: an advisory category (scope, performance, design,
-     conventions, style).
+     conventions, style). A finding that breaks a binding rule
+     ({{binding_rules}}) is a correctness finding, not conventions.
    - noise: path refuted, or the code already handles it. Give the reason.
    - dropped: pre-existing and not security. Add it to the count only.
    - Security concerns get no verdict. List them under "Security leads".

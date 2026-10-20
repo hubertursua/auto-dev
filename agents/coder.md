@@ -67,7 +67,10 @@ Return:
 
 ## Mode: build
 
-Do the task above: the whole build sequence.
+Do the task above: the whole build sequence. If the worktree already holds an
+earlier build (you were re-spawned after a BLOCKED step and the planner's
+decision), keep that work: finish only the steps that aren't done yet,
+including the ones you stopped and any the plan revised.
 
 ## Mode: correction
 
