@@ -45,10 +45,11 @@ def fill(text, worktree, main):
 
 
 def unfill(text, worktree, main):
-    """Put the placeholders back: the worktree first, since it starts with main."""
-    for path in {str(worktree), str(Path(worktree).resolve())}:
+    """Put the placeholders back: the worktree first, since it starts with main,
+    and the longer spelling of each path first (/private/var before /var)."""
+    for path in sorted({str(worktree), str(Path(worktree).resolve())}, key=len, reverse=True):
         text = text.replace(path, "<abs-path-to-worktree>")
-    for path in {str(main), str(Path(main).resolve())}:
+    for path in sorted({str(main), str(Path(main).resolve())}, key=len, reverse=True):
         text = text.replace(path, "<abs-path-to-main-checkout>")
     return text
 
