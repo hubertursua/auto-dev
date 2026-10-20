@@ -210,15 +210,16 @@ branches:
   staging: staging            # staging branch for the direct-merge step; omit to skip the 6b staging gate
   prefix: feature             # branch-name prefix
 ci: circleci                  # github-actions | circleci | gitlab | none
-ci_timeout_minutes: 30        # bound on CI watching before it reports and holds
+ci_timeout_minutes: 30        # bound on CI watching; then the gates show CI as not monitored
 iteration_budget: 4           # revise rounds per task
+checkpoint_events: 80         # events one session writes before `next` checkpoints it
 worktree_files: [".env"]      # gitignored files to seed every new worktree with
 symbol_lookup:                # code-index commands instead of grep; <symbol> is the name
   definition: "<index-tool> definition <symbol>"
   references: "<index-tool> references <symbol>"
-security_docs:                # the security directives every worker must obey;
-  - "SECURITY.md"             # first source Phase 1 checks, ahead of repo defaults
-  - "docs/security/authz.md"
+security_docs:                # the security directives every worker must obey, used
+  - "SECURITY.md"             # instead of the repo defaults; [] turns them off, and
+  - "docs/security/authz.md"  # a listed path that doesn't exist is dropped with a warning
 pr_review:
   inline_comments: false      # when the PR opens, post the review findings left open or advisory on it
 gates:
@@ -235,8 +236,8 @@ jira:
 Resolution order (last wins): **saved or researched profile → `.auto-dev.yml`**.
 The fully-resolved values are written to `.auto-dev/profile.md`.
 
-`iteration_budget`, `ci_timeout_minutes`, `security_docs`, `pr_review`,
-`gates.post_plan` and `mutation.max` are not stack settings, but they resolve the
+`iteration_budget`, `ci_timeout_minutes`, `checkpoint_events`, `security_docs`,
+`pr_review`, `gates.post_plan` and `mutation.max` are not stack settings, but they resolve the
 same way and land in the same `profile.md`: the budget is in
 `references/tables.md`; the verifier reads the mutation cap. Turn mutation off
 only for a repo whose suite cannot run a scoped subset in seconds: each mutant

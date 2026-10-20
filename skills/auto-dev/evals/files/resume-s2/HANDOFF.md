@@ -15,11 +15,8 @@ Iteration budget remaining: 4/4
 Phase 4 — Build. Say `auto-dev continue`.
 Pick up at: say `auto-dev continue`; `next` decides the step
 
-## Files that matter
+## Files you may open
 - <abs-path-to-worktree>/.auto-dev/profile.md
-- <abs-path-to-worktree>/.auto-dev/IMPLEMENTATION.md
-- <abs-path-to-worktree>/.auto-dev/SPEC.md
-- <abs-path-to-worktree>/.auto-dev/acceptance/MANIFEST.md
 
 ## Open assumptions
 - none

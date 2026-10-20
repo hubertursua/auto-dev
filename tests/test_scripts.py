@@ -388,6 +388,13 @@ class ValidateConfigTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("iteration_budget", r.stderr)
 
+    def test_checkpoint_events(self):
+        self.assertEqual(self.validate("checkpoint_events: 40\n").returncode, 0)
+        for bad in ("0", "x"):
+            r = self.validate(f"checkpoint_events: {bad}\n")
+            self.assertEqual(r.returncode, 1, bad)
+            self.assertIn("checkpoint_events", r.stderr)
+
     def test_mutation_max_out_of_range(self):
         r = self.validate("mutation:\n  max: 500\n")
         self.assertEqual(r.returncode, 1)

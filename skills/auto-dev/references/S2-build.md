@@ -6,7 +6,8 @@ S2 has no manual steps. `autodev.py next` drives all of it. `autodev.py` means
 ## 1. Enter the worktree
 
 `cd <worktree>` (the tree `resume` printed). Read `.auto-dev/HANDOFF.md`, and
-nothing else in `.auto-dev/`.
+nothing else in `.auto-dev/`: the only other file it lists, `profile.md`, is
+there for a question about the stack, and nothing in S2's loop needs it.
 
 ## 2. Run the loop
 

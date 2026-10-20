@@ -219,6 +219,7 @@
   "schema": 4,
   "session": "S1",
   "settings": {
+    "checkpoint_events": null,
     "ci": "none",
     "ci_timeout": 30,
     "gate": [

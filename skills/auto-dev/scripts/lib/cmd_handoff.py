@@ -7,7 +7,8 @@ Usage:
 
 Writes `<artifact-dir>/HANDOFF.md` for the session that holds the first phase
 not done: the task (a `Task:` line, and an `Ask:` line with the restated ask),
-what is done, the next phase, the files that matter for that session, and the
+what is done, the next phase, the run files that session's orchestrator may
+open (the workers read the rest; `next` names them), and the
 slots only you can fill (`--assumption`, `--do-not`, `--pick-up-at`). Without
 `--pick-up-at`, the pick-up point is `auto-dev continue`: `next` decides the
 step. `--checkpoint` marks a context checkpoint inside a session rather than a
@@ -28,12 +29,12 @@ from pathlib import Path
 from . import state as st
 from .output import Fail, emit
 
-# The files the next session reads first, by session.
+# The run files the next session's orchestrator may open, by session. The
+# workers read the rest; S3 writes the PR's Summary from SPEC.md.
 FILES = {
     "S1": ["profile.md", "WORK_LOG.md"],
-    "S2": ["profile.md", "IMPLEMENTATION.md", "SPEC.md", "acceptance/MANIFEST.md"],
-    "S3": ["profile.md", "SPEC.md", "SPEC_EVAL.md", "CODE_REVIEW.md",
-           "SECURITY_REVIEW.md"],
+    "S2": ["profile.md"],
+    "S3": ["profile.md", "SPEC.md"],
 }
 LABELS = {"S1": "S1 Plan", "S2": "S2 Build", "S3": "S3 Ship"}
 DONE_MESSAGE = {"S1": "Setup", "S2": "Plan", "S3": "Build"}
@@ -84,7 +85,7 @@ def main(args):
         f"Phase {number} — {st.PHASE_NAMES[number]}. Say `auto-dev continue`.",
         f"Pick up at: {pick_up}",
         "",
-        "## Files that matter",
+        "## Files you may open",
         *(files or ["- profile.md"]),
         "",
         "## Open assumptions",
