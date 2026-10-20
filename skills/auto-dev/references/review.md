@@ -157,8 +157,8 @@ hole that only shows up through another file.
    **Step 1**, scoped to the files the fix changed, because a security fix can
    introduce a bug. Then run Step 2 again on the whole change.
 4. **Pre-existing findings** (High or Medium, confirmed) never block and are
-   never fixed without the user's say-so. They go to the PR gate for the user to
-   decide (`references/gates-and-jira.md`, _PR gate_).
+   never fixed in this PR. They go to the PR gate, where the user sends each to a
+   separate PR or ignores it (`references/gates-and-jira.md`, _PR gate_).
 
 ## The review loop
 

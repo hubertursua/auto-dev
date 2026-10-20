@@ -3,9 +3,9 @@
 Three things send work backwards: an unmet spec condition (or an unjustified
 test-integrity finding, which the verifier reports alongside it), a must-fix
 review finding, and a red CI check. A review finding comes from the code review panel
-(`CODE_REVIEW.md`), the security review (`SECURITY_REVIEW.md`), a pre-existing
-security finding the user chose to fix at the PR gate, or a human reviewer's
-blocker on the PR. They are **one loop entered at three points**, and this file
+(`CODE_REVIEW.md`), the security review (`SECURITY_REVIEW.md`), or a human
+reviewer's blocker on the PR. A pre-existing security finding is never fixed in
+this PR: the user sends it to a separate PR or ignores it at the PR gate. They are **one loop entered at three points**, and this file
 is its single statement — `SKILL.md`, `references/subagent-prompts.md`, and
 `references/gates-and-jira.md` point here instead of restating it.
 
@@ -82,7 +82,7 @@ Earlier in the pipeline there is less of it to rewrite.
 |---|---|---|---|
 | **Phase 5 — acceptance** (unmet or partial condition, unjustified integrity finding) | `SPEC_EVAL.md`, `evidence/`; the cleanup agent has not run | `SPEC_EVAL.md` and `evidence/` (the verifier's re-check rewrites both) | not yet run — the single cleanup pass after this loop settles simplifies corrective code with everything else |
 | **Phase 5 — after the quality gate** (the verifier's re-check finds a condition no longer met) | `SPEC_EVAL.md`, `evidence/`, `lint/` | `lint/` (rewritten by the re-spawned cleanup agent), then the verifier's re-check again | **yes, Phase 5 scope** (the branch diff) — no human has read it yet |
-| **Phase 6a — review** (a must-fix finding from the code review panel or the security review, or a pre-existing finding the user chose to fix at the PR gate; **before the commit**) | `SPEC_EVAL.md`, `lint/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | `lint/` (rewritten by the re-spawned cleanup agent), then steps 1–2 of _The Phase 6a refresh_ below (the verifier's re-check of every row), then **review again**: the code review panel on the files the fix changed, then the security review on the whole change (`references/review.md`). Nothing is committed, pushed or published yet, so the refresh stops there | **yes, scoped to the files the correction changed** — see below |
+| **Phase 6a — review** (a must-fix finding from the code review panel or the security review; **before the commit**) | `SPEC_EVAL.md`, `lint/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | `lint/` (rewritten by the re-spawned cleanup agent), then steps 1–2 of _The Phase 6a refresh_ below (the verifier's re-check of every row), then **review again**: the code review panel on the files the fix changed, then the security review on the whole change (`references/review.md`). Nothing is committed, pushed or published yet, so the refresh stops there | **yes, scoped to the files the correction changed** — see below |
 | **Phase 6a — CI red** (pre-merge), or **Phase 6c — a human reviewer's blocker** | `SPEC_EVAL.md`, `lint/`, the review reports, the commit, the push, the PR body | `lint/` (rewritten by the re-spawned cleanup agent), then _The Phase 6a refresh_ below: the verifier's re-check, a review of the correction, commit and re-push (CI re-runs — re-watch it), then the PR body | **yes, scoped to the correction's own diff** — see below |
 
 **The Phase 6a refresh.** Every correction in Phase 6 runs it once the
@@ -223,7 +223,7 @@ Five things spend it, one round each:
 | 1 | Define review — re-review after fixes | 2 |
 | 2 | Plan review — re-review after fixes, and an acceptance-tester re-spawn to fill a gap in its return (coverage, a level, or a base run that failed for the wrong reason; a re-spawn after a post-plan-gate revision spends none, like the revision) | 3 |
 | 3 | Build and acceptance corrections to the coder — an unmet or partial condition (a surviving mutant's test gap included), an unjustified integrity finding, an install conflict, a `BLOCKED` step (with its plan revision) — and an acceptance-check repair in Phase 4–5 | 4–5 |
-| 4 | Review-finding corrections — code review panel, security review, a pre-existing security finding the user chose to fix, or a human reviewer's blocker | 6a, 6c |
+| 4 | Review-finding corrections — code review panel, security review, or a human reviewer's blocker | 6a, 6c |
 | 5 | CI-red corrections, pre-merge | 6a |
 
 **Review and verifier passes never spend it** — not the first code review,

@@ -21,9 +21,11 @@ with a `## Mode: <name>` section for each mode.
    wrote to `returns/<worker>-<n>.json` against the artifact it wrote. `RECORDED`
    prints the `next` token to act on, as each section below says. `MISSING`
    (no result file), `MALFORMED` (a key or token wrong) and `MISMATCH` (the
-   return and the artifact disagree) mean re-spawn that job: brief it again
-   with `--retry <n>`, which carries the printed issues in its
-   `previous_issues` slot. Never guess which side is right.
+   return and the artifact disagree) mean re-spawn that job: run `autodev.py
+   next`, which briefs it again with the printed issues in its
+   `previous_issues` slot (as `brief <worker> --retry <n>` does by hand; either
+   way the refused job is replaced, never spawned twice). Never guess which
+   side is right.
 
 Workers read the templates (`templates/`) and the rubric (`templates/rubric.md`)
 by path, and run `autodev.py check-artifact` on what they write before they

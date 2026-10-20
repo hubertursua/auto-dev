@@ -198,8 +198,9 @@ A **rubric** decides what must be fixed and what is noise:
   change didn't introduce are dropped.
 - **Security findings.** One this change introduced, with a traced path, is
   must-fix. One that was already there is shown to you at the PR gate to triage:
-  fix it in this PR, note it as a follow-up for a separate PR, or ignore it.
-  It is never fixed without asking, because fixing it widens the PR's scope.
+  note it as a follow-up for a separate PR (the PR description lists it), or
+  ignore it. This PR never fixes it, because that would widen the PR's scope.
+  Your answer is recorded in the run's state, not just noted.
 - **Confidence.** Every finding carries a confidence level (High, Medium or
   Low), and so does each report as a whole. A report whose confidence is Low
   (say, a reviewer failed) is flagged at the gate as a warning, never shown as a
@@ -212,7 +213,12 @@ open, a **triager** reads what the orchestrator never sees: a red CI run's logs
 (is it the code, the infrastructure, a flaky test or a missing secret? only the
 code goes to the coder) and human reviewers' comments (blocker, nit, question,
 already addressed, or about a held-out check, which goes to the acceptance
-tester rather than the coder). Comments the pipeline posted itself are skipped.
+tester rather than the coder; when both kinds come back, the tester goes first
+and the coder second, in one revise round). Everything the pipeline posts on
+the PR ends with `<!-- auto-dev -->`, and the triager skips those comments.
+A red CI run the code can't fix (infrastructure, a flaky test, unknown) stops
+the run and is reported before Jira moves or staging is asked; once CI is fixed
+or re-run, resuming watches it again.
 Comment text never reaches the orchestrator, so a comment can't steer the run.
 The coder gets every required change unedited, so `autodev.py record` refuses
 one that copies `SPEC.md`'s wording. Those fixes are reviewed the
@@ -341,7 +347,8 @@ status-transitions-only (In Progress → In Review → Done) and is skipped if n
 ticket is given; the ticket's summary and description are stored at setup
 (`autodev.py init --ticket-text-file`) and given to the Define agent verbatim,
 since it has no Jira access. **CI** is monitored, with a bounded timeout, on the PR before
-merge, and again after the staging and main merges to confirm the merge itself
+merge (and once more after the PR is marked ready, since some workflows skip
+drafts), and again after the staging and main merges to confirm the merge itself
 didn't break the branch.
 
 Three more pauses are **conditional** and fire only when their situation
@@ -471,7 +478,8 @@ and prints its summary and question). For workers: `brief` (writes a worker's
 brief file from state, refusing when a value only the orchestrator can give is
 missing, and prints the one-line prompt to spawn it with), `record` (checks the
 result a worker wrote against the artifact it wrote, and stops on a mismatch,
-saving the issues for that job's re-spawn, `brief --retry <n>`) and
+saving the issues so the next `next` re-spawns that job with them; `brief
+--retry <n>` does the same by hand) and
 `check-artifact` (workers check what they wrote against its template before
 returning). And `next`, the orchestrator's loop: it reads the state, the recorded results and the artifacts,
 and prints the one next action (spawn these agents with these briefs, run this
@@ -479,7 +487,9 @@ command, ask this gate, stop and report, or end the session), with the command
 to run after it. It does the mechanical steps itself: writing briefs, spending
 a round before a correction, applying FIX blocks, checking the manifest,
 reading the verdicts, planning and applying re-votes, taking the review
-snapshot and generating the PR body. `next --explain` names the rule it applied.
+snapshot and generating the PR body. `next --explain` shows the action and the
+rule that chose it without taking it (it writes and saves nothing). A step
+`next` can't take is a stop that says why, never a bare failure.
 Shared code lives in `skills/auto-dev/scripts/lib/`.
 Also optional: a code-index tool a profile names under `symbol_lookup`, which the
 orchestrator uses instead of `grep` to find a symbol's definition and callers.
@@ -556,7 +566,11 @@ and reports
 rather than committing a red build or weakening any security control. It also
 stops if the mutation step may have left a planted bug in the tree, if the
 build edited source inside a submodule, or if a commit holds code that no result
-checked. If Define's size check returns OVERSIZED, it builds nothing and hands
+checked. It stops instead of spending another round when the verifier and the
+acceptance tester disagree about a check, when a correction after the commit
+changes nothing, or when a re-voter fails twice. A stop on a worker (it
+stopped on purpose, failed twice, or never returned) lasts until you resume:
+then that worker is spawned again. If Define's size check returns OVERSIZED, it builds nothing and hands
 the task back to you; Jira is left alone, and the worktree and branch stay in
 place (see *Size check* above). It never asks you at a gate, or writes a PR description, on results
 that were checked on other code. It refuses a
