@@ -382,14 +382,97 @@ class VotesTest(ArtifactCase):
         path = self.dir / "CODE_REVIEW.md"
         path.write_text(path.read_text().replace(
             "Required change: in `src/list.ts`", "Note: in `src/list.ts`"))
-        table = "| Finding | Vote | Reason |\n|---|---|---|\n"
-        self.write("review/pass-1/VOTES-R1.md", table + "| C6 | disagree | fine |\n")
-        self.write("review/pass-1/VOTES-R2.md", table + "| C4 | agree | unguarded |\n")
-        self.write("review/pass-1/VOTES-R3.md", table + "| C4 | agree | yes |\n"
-                                                        "| C6 | disagree | fine |\n")
+        corrections = self.write("review/pass-1/corrections.md",
+                                 "# Required changes\n1. C1: guard the null due date\n")
+        before = path.read_bytes(), corrections.read_bytes()
+        self.promote_c4()
         r = self.cmd("votes", "--apply")
         self.assertEqual(r.returncode, 1)
         self.assertIn("no `Required change:` line", r.stderr)
+        # Nothing is written: neither file changes.
+        self.assertEqual((path.read_bytes(), corrections.read_bytes()), before)
+
+    def test_an_empty_required_change_does_not_take_the_next_line(self):
+        path = self.dir / "CODE_REVIEW.md"
+        path.write_text(path.read_text().replace(
+            "Required change: in `src/list.ts`, return an empty page when there are no "
+            "todos instead of reading the first item", "Required change:"))
+        before = path.read_bytes()
+        self.promote_c4()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no `Required change:` line", r.stderr)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse((self.dir / "review" / "pass-1" / "corrections.md").exists())
+
+    def promote_c4(self):
+        """Votes that make C4 must-fix and leave C6 advisory."""
+        self.votes(R1=[("C6", "disagree")], R2=[("C4", "agree")],
+                   R3=[("C4", "agree"), ("C6", "disagree")])
+
+    def corrections(self):
+        return (self.dir / "review" / "pass-1" / "corrections.md").read_text()
+
+    def test_apply_continues_an_existing_corrections_file(self):
+        for name, existing, number in (
+                ("numbered", ("# Required changes\n1. C1: guard the null due date\n"
+                              "   Where: `src/sort.ts:4`\n"), 2),
+                ("indented numbered", "# Required changes\n  1. C1: guard it\n", 2),
+                ("None.", "# Required changes\nNone.\n", 1),
+                ("indented None.", "# Required changes\n  None.\n", 1)):
+            with self.subTest(name):
+                self.write("CODE_REVIEW.md", CODE_REVIEW.format(tree="0" * 40))
+                self.write("review/pass-1/corrections.md", existing)
+                self.promote_c4()
+                r = self.cmd("votes", "--apply")
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                text = self.corrections()
+                self.assertIn(f"\n{number}. C4: in `src/list.ts`", text)
+                self.assertNotIn("None.", text)
+                self.assertTrue(text.startswith(existing.replace("None.", "").rstrip()))
+
+    def test_entry_copies_where_now_and_test(self):
+        path = self.dir / "CODE_REVIEW.md"
+        path.write_text(path.read_text().replace(
+            "Judge: confirmed; nothing guards the empty list.",
+            "Judge: confirmed; nothing guards the empty list.\n"
+            "Where: `src/list.ts:40-44`\n"
+            "Test: listing with no todos returns an empty page"))
+        self.promote_c4()
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1. C4: in `src/list.ts`, return an empty page when there are no "
+                      "todos instead of reading the first item\n"
+                      "   Where: `src/list.ts:40-44`\n"
+                      "   Now: `GET /todos` with no todos → `src/list.ts:42` reads "
+                      "`items[0].id`\n"
+                      "   Test: listing with no todos returns an empty page\n",
+                      self.corrections())
+
+    def test_entry_falls_back_to_the_rows_location(self):
+        self.promote_c4()
+        self.assertEqual(self.cmd("votes", "--apply").returncode, 0)
+        self.assertIn("   Where: `src/list.ts:42`\n", self.corrections())
+
+    def test_a_promoted_acceptance_check_goes_to_the_tester(self):
+        path = self.dir / "CODE_REVIEW.md"
+        path.write_text(path.read_text().replace(
+            "| C4 | empty list indexed | `src/list.ts:42` | correctness | R1 |",
+            "| C4 | check asserts the wrong status | `src/list.acceptance.test.ts:9` | "
+            "acceptance-check | R1 |"))
+        self.votes(R1=[("C6", "agree")], R2=[("C4", "agree")],
+                   R3=[("C4", "agree"), ("C6", "disagree")])
+        r = self.cmd("votes", "--apply")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("2 must-fix (1 acceptance-check), 0 advisory", r.stdout)
+        self.assertIn("must_fix: C6\n", r.stdout)
+        self.assertIn("acceptance_check: C4\n", r.stdout)
+        text = self.corrections()
+        self.assertIn("1. C6: in `src/save.ts`", text)
+        self.assertNotIn("C4", text)
+        self.assertIn("| C4 | check asserts the wrong status | "
+                      "`src/list.acceptance.test.ts:9` | acceptance-check | 3/3 (re-vote) "
+                      "| Medium | open |", path.read_text())
 
     def test_apply_refuses_a_missing_vote(self):
         r = self.cmd("votes", "--apply")
