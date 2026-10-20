@@ -671,7 +671,7 @@ rules for changing a script are in `CLAUDE.md`.
 
 ## Upgrading from 3.9
 
-4.0 is a breaking release, built in stages; this section grows with each.
+4.0 is a breaking release.
 
 - **One PR per run.** The scope call is gone. The Define agent now returns a size
   check: a task that fits one PR runs every step, and one that doesn't is handed

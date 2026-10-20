@@ -7,9 +7,10 @@ description: >-
   AND shipped hands-off in one pass: "do it autonomously", "by yourself",
   "raise/open the PR", "take it all the way", "from ticket/idea/spec to PR", "run
   the whole dev cycle", "make the calls on anything ambiguous", "don't make me
-  babysit each step", "pick up JIRA-1234 and ship it", or an explicit "auto-dev
-  …". Prefer it over guided feature-development help when the user wants the work
-  run hands-off. Do NOT use for a single slice of that work: fixing one
+  babysit each step", "pick up JIRA-1234 and ship it". ALWAYS use it when the
+  user names auto-dev ("auto-dev: …", "auto-dev this"), however small the task;
+  never do that task directly. Prefer it over guided feature-development help
+  for hands-off work. Do NOT use for a single slice of it: fixing one
   test/lint/type error, critiquing a plan, explaining code, or answering a
   question. Also use to RESUME a run in flight — "auto-dev continue", "pick up
   where the plan session left off" — since the pipeline stops between its plan,
