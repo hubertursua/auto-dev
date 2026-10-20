@@ -76,9 +76,20 @@ Sort each comment or review thread as one of:
 - BLOCKER — names a defect or a change the reviewer requires before merge.
 - NIT — a suggestion the reviewer doesn't require.
 - QUESTION — asks something; no change requested.
-- ADDRESSED — already resolved by the current code, or by a later reply.
+- ADDRESSED — already resolved by the current code, by a later reply, or by an
+  earlier round of this run (below).
 - ACCEPTANCE_CHECK — says a held-out acceptance check (a test added before the
   code) is wrong.
+Earlier rounds: {{earlier}}. When set, each line names an earlier triage of this
+PR, when it ran, the files it wrote, and what the run did with them. Read those
+files before you sort:
+- A comment in an earlier checks file that the acceptance tester ruled stands
+  or repaired is ADDRESSED.
+- A comment in an earlier blockers file is ADDRESSED only when the current code
+  does what its entry required; check the diff. If it doesn't, it is a BLOCKER
+  again.
+Either way, sort it afresh when a reply posted after that triage disputes how it
+was handled, and say so in its line.
 For each BLOCKER, write an entry in {{triage_file}} (for the coder); for each
 ACCEPTANCE_CHECK, an entry in {{checks_file}} (for the acceptance tester's
 repair mode). Both follow `{{skill_dir}}/templates/corrections.md`, each entry
