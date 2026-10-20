@@ -206,5 +206,9 @@
   {
     "query": "my last auto-dev run marked a condition's evidence as Weak in the PR. what does that mean, and should I worry before merging?",
     "should_trigger": false
+  },
+  {
+    "query": "fix the typo in auto-dev's README: \"recieve\" in the install section",
+    "should_trigger": false
   }
 ]

@@ -3,18 +3,18 @@ name: auto-dev
 description: >-
   Autonomously carries one coding task from ticket, idea or spec to a finished,
   reviewed pull request, running a plan → build → verify → ship pipeline with
-  subagents and human gates. Use when the user wants a whole feature or fix built
-  AND shipped hands-off in one pass: "do it autonomously", "by yourself",
-  "raise/open the PR", "take it all the way", "from ticket/idea/spec to PR", "run
-  the whole dev cycle", "make the calls on anything ambiguous", "don't make me
-  babysit each step", "pick up JIRA-1234 and ship it". ALWAYS use it when the
-  user names auto-dev ("auto-dev: …", "auto-dev this"), however small the task;
-  never do that task directly. Prefer it over guided feature-development help
-  for hands-off work. Do NOT use for a single slice of it: fixing one
-  test/lint/type error, critiquing a plan, explaining code, or answering a
-  question. Also use to RESUME a run in flight — "auto-dev continue", "pick up
-  where the plan session left off" — since the pipeline stops between its plan,
-  build and ship sessions.
+  subagents and human gates. Use when the user wants a whole feature or fix
+  built AND shipped hands-off in one pass: "do it autonomously", "by yourself",
+  "raise/open the PR", "take it all the way", "from ticket/idea/spec to PR",
+  "run the whole dev cycle", "don't make me babysit each step", "pick up
+  JIRA-1234 and ship it". ALWAYS use it when the user asks to auto-dev a task
+  ("auto-dev: …", "auto-dev this"), however small. Prefer it over guided
+  feature-development help for hands-off work. Unless asked to auto-dev it, do
+  NOT use for one slice of the work: fixing one test/lint/type error, critiquing
+  a plan, explaining code, or answering a question (about auto-dev too). Also
+  use to RESUME a run in flight — "auto-dev continue", "pick up where the plan
+  session left off" — since the pipeline stops between its plan, build and ship
+  sessions.
 ---
 
 # auto-dev
