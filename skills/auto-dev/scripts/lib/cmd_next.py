@@ -1038,9 +1038,13 @@ def open_correction(c):
     # Even when the budget ran out, the code changed: reviews are free, and the
     # gate needs reports on the code as it is.
     if corr.get("since"):
-        # Committed outside changes: a working-tree pass would see nothing.
-        files = [f for f in git(c.wt, "diff", "--name-only", corr["since"],
-                                "HEAD").splitlines() if f and not f.startswith(".auto-dev/")]
+        # Committed outside changes: a working-tree pass would see nothing. The
+        # working tree against `since` holds the commits and any edit the
+        # correction made on top (cleanup, the coder), new files included.
+        if not c.readonly:
+            cmd_checks.git_add_intent(c.wt)
+        files = [f for f in git(c.wt, "diff", "--name-only", corr["since"]).splitlines()
+                 if f and not f.startswith(".auto-dev/")]
         return start_pass(c, "outside", files, "the outside commits are re-checked: the "
                           "panel reviews what they changed", since=corr["since"])
     if corr["entry"] == "outside":
@@ -1420,18 +1424,28 @@ def pr_gate(c):
         "the reviews have settled: the PR gate")
 
 
-def stale_again(c, detail, since=None):
-    """A result went stale: re-check the outside changes, unless that re-check
-    itself just ran (nobody answered the PR gate or resumed since). `since`: the
-    outside changes are commits on top of that one (see outside_push)."""
+def stale_twice(c, detail, since=None):
+    """The stop for a result stale again right after its own re-run (nobody
+    answered the PR gate or resumed since), or None. Commits brought in on top
+    of a newly verified commit (`since`) are a new push, never a second run."""
     outside = next((k for k in reversed(c.p6["corrections"]) if k["entry"] == "outside"),
                    None)
     gate = c.gate("pr")
     asked = max(gate["seq"] if gate else 0, c.resumed())
-    if outside and outside["seq"] > asked:
-        return stop([("A report is stale again right after its own re-run: something "
-                     "rewrites the code on every run. Tell the user:"), detail],
-                    "stale twice running")
+    if not outside or outside["seq"] <= asked or (since and outside.get("since") != since):
+        return None
+    return stop([("A report is stale again right after its own re-run: something "
+                 "rewrites the code on every run. Tell the user:"), detail],
+                "stale twice running")
+
+
+def stale_again(c, detail, since=None):
+    """A result went stale: re-check the outside changes, unless that re-check
+    itself just ran (stale_twice). `since`: the outside changes are commits on
+    top of that one (see outside_push)."""
+    twice = stale_twice(c, detail, since)
+    if twice:
+        return twice
     return start_correction(c, "outside", 4, None, None,
                             "the code changed outside the pipeline: re-check it",
                             since=since)
@@ -1698,13 +1712,14 @@ def outside_push(c, sha, stale):
     code, remote, _ = git(c.wt, "rev-parse", f"origin/{branch}", check=False)
     add, remove = changed_paths(c.wt)
     if code == 0 and remote.strip() == head and head != sha and not add and not remove:
+        twice = stale_twice(c, stale, since=sha)  # before c.would: --explain shows it
+        if twice:
+            return twice
         c.would("re-check the PR branch's commits brought into the worktree",
                 "the user brought the outside commits in")
-        result = stale_again(c, stale, since=sha)
-        if result["code"] != NEXT_STOP:
-            c.p6["unverified_commit"] = head  # `commit` verifies it, no new commit
-            c.dirty = True
-        return result
+        c.p6["unverified_commit"] = head  # `commit` verifies it, no new commit
+        c.dirty = True
+        return stale_again(c, stale, since=sha)
     return stop([("The PR's branch holds commits the pipeline did not check (someone "
                   "pushed to it). Tell the user: to ship them, they bring them into the "
                   f"worktree with `git -C {q(c.wt)} merge --ff-only "

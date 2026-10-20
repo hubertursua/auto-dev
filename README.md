@@ -370,8 +370,8 @@ result was checked on. If someone pushed to it, the run stops and tells you,
 rather than merging commits nothing checked. To ship those commits, bring them
 into the worktree with the `git merge --ff-only origin/<branch>` command the stop
 names and say `auto-dev continue`: the quality gate and the verifier run again,
-a review pass covers what the commits changed, `commit` verifies the new head
-without committing, and the main gate is asked again. The merge is locked to that commit with
+a review pass covers what the commits (and the re-check) changed, `commit`
+verifies the new head, and the main gate is asked again. The merge is locked to that commit with
 `--match-head-commit`, so a push made after the check makes GitHub refuse the
 merge instead of shipping unchecked code. Staging is a direct
 merge where the project uses that convention. **Jira** integration is

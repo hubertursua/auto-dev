@@ -1490,9 +1490,20 @@ class HumanAndMainGateTest(NextCase):
                          f"{self.dir}/triage/human-1.md")
         self.assertIn("human-1", out["BUDGET"])
 
-    def test_an_outside_push_after_a_held_main_gate_is_re_checked_before_it_is_asked(self):
-        # Eval 16: the main gate is held, someone pushes to the PR branch, and a
-        # fresh session resumes the run.
+    def push_outside(self, text):
+        """Someone pushes a commit changing app.ts to the PR branch."""
+        branch = self.state()["branch"]
+        other = self.tmp / "other"
+        if not other.exists():
+            self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"),
+                    str(other))
+        (other / "app.ts").write_text(text)
+        self.sh("git", "commit", "-q", "-am", "reword", cwd=other)
+        self.sh("git", "push", "-q", "origin", branch, cwd=other)
+        return branch
+
+    def held_then_pushed(self):
+        """Eval 16 up to its stop; returns (old verified sha, PR url, branch)."""
         old, url = self.open_pr()
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
@@ -1503,12 +1514,7 @@ class HumanAndMainGateTest(NextCase):
         self.assertIn("main", out["QUESTION"])
         self.after(out, "Hold")
         self.next(4)
-        branch = self.state()["branch"]
-        other = self.tmp / "other"
-        self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"), str(other))
-        (other / "app.ts").write_text("export const one = 1; // reworded\n")
-        self.sh("git", "commit", "-q", "-am", "reword", cwd=other)
-        self.sh("git", "push", "-q", "origin", branch, cwd=other)
+        branch = self.push_outside("export const one = 1; // reworded\n")
         self.resume()  # un-holds the main gate
         out = self.next(4)
         report = " ".join(out["REPORT"])
@@ -1517,40 +1523,41 @@ class HumanAndMainGateTest(NextCase):
         self.assertNotIn("QUESTION", out)  # the main gate is not asked
         self.assertNotIn("merge-pr", json.dumps(out))
         self.assertIn(f"merge --ff-only origin/{branch}", report)
-        # The user brings the commits in: they are re-checked, and reviewed.
+        return old, url, branch
+
+    def recheck(self, old, branch, edit=None):
+        """The user brings the commits in; the re-check runs up to the commit
+        action. `edit` is a file cleanup writes during it. Returns the new HEAD
+        and the review pass."""
         self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
         head = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
-        self.resume()
-        before = self.state()
-        r = self.autodev("next", "--explain", "--dir", self.dir)
-        self.assertIn("re-check the PR branch's commits", r.stdout)
-        self.assertEqual(self.state(), before)  # --explain writes nothing
         _, jobs = self.expect("cleanup")
         self.assertEqual(self.sets(*jobs[0])["scope"], "outside")
         self.assertEqual(self.state()["phase6"]["unverified_commit"], head)
+        if edit:
+            (self.worktree / edit).write_text("export const tidy = 1;\n")
         self.lint()
         self.answer(*jobs[0], "GREEN")
         self.spec_eval()
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
         self.panel()  # asserts three reviewers
         p = self.state()["phase6"]["passes"][-1]
-        self.assertEqual((p["scope"], p["files"], p["since"]), ("outside", ["app.ts"], old))
+        self.assertEqual((p["scope"], p["since"]), ("outside", old))
         sets = self.sets("code-reviewer", max(n for w, n in (
             (b["worker"], b["n"]) for b in self.state()["briefs"]) if w == "code-reviewer"))
         self.assertEqual((sets["scope"], sets["files"], sets["since"]),
-                         ("outside", "app.ts", old))
+                         ("outside", ", ".join(p["files"]), old))
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
             tree=self.tree()))
         self.expect("security-reviewer-sensitive", "CLEAN", must_fix="0", pre_existing="0")
-        out = self.next(0)
-        self.assertIn("commit: run", out["ACTION"])
-        r = self.autodev("commit", "--message", "unused", "--dir", self.dir)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(f"COMMITTED: {head}", r.stdout)  # verified, no new commit
-        self.assertEqual(self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip(), head)
-        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        return head, p
+
+    def to_main_gate(self, url, head):
+        """From a verified `head` to the main gate asked again."""
         out = self.next(0)
         self.assertIn("push -u origin HEAD", out["ACTION"])
+        self.sh("git", "push", "-q", "-u", "origin", "HEAD", cwd=self.worktree)
         self.after(out)
         self.script_gh(GH_OK + [
             {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": url})},
@@ -1577,6 +1584,52 @@ class HumanAndMainGateTest(NextCase):
         out = self.next(5)
         self.assertIn("main", out["QUESTION"])
         self.assertIn(f"Head {head}", " ".join(out["SUMMARY"]))
+
+    def verify_only(self, head):
+        r = self.autodev("commit", "--message", "unused", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"COMMITTED: {head}", r.stdout)  # verified, no new commit
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip(), head)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+
+    def test_an_outside_push_after_a_held_main_gate_is_re_checked_before_it_is_asked(self):
+        # Eval 16: the main gate is held, someone pushes to the PR branch, and a
+        # fresh session resumes the run.
+        old, url, branch = self.held_then_pushed()
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+        before = self.state()
+        self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertIn("re-check the PR branch's commits", r.stdout)
+        self.assertEqual(self.state(), before)  # --explain writes nothing
+        self.resume()
+        head, p = self.recheck(old, branch)
+        self.assertEqual(p["files"], ["app.ts"])
+        self.verify_only(head)
+        self.to_main_gate(url, head)
+
+    def test_an_edit_made_while_re_checking_an_outside_push_is_reviewed(self):
+        old, url, branch = self.held_then_pushed()
+        head, p = self.recheck(old, branch, edit="other.ts")
+        self.assertEqual(p["files"], ["app.ts", "other.ts"])  # the pass saw cleanup's edit
+        r = self.autodev("commit", "--message", "chore: tidy", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        new = self.state()["phase6"]["verified_sha"]
+        self.assertNotEqual(new, head)  # cleanup's edit is committed on top
+        self.to_main_gate(url, new)
+
+    def test_a_second_outside_push_in_the_same_session_is_re_checked_too(self):
+        old, url, branch = self.held_then_pushed()
+        head, _ = self.recheck(old, branch)
+        self.verify_only(head)
+        self.to_main_gate(url, head)
+        self.push_outside("export const one = 1; // reworded again\n")
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+        report = " ".join(self.next(4)["REPORT"])  # no resume: the same session
+        self.assertIn("someone pushed", report)
+        second, p = self.recheck(head, branch)  # not "stale twice running"
+        self.assertEqual(p["files"], ["app.ts"])
+        self.verify_only(second)
 
 
 class ReVoteTest(NextCase):
