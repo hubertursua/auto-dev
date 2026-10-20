@@ -26,6 +26,9 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Mode: review
 
 You are code reviewer {{reviewer}}, one of three on the CODE-REVIEW panel. Work inside the
@@ -124,7 +127,7 @@ Do NOT modify code. Return: your votes, one line each.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `REVIEWED` (review mode) or `VOTED` (re-vote mode).
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `REVIEWED` (review mode) or `VOTED` (re-vote mode).
 
 ```auto-dev-result
 worker: code-reviewer

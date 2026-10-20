@@ -22,6 +22,9 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
+Previous issues: {{previous_issues}}. When set, your last return for this job
+was refused for these reasons: fix each one this time.
+
 ## Your task
 
 You are the DEFINE phase of an autonomous dev pipeline. Work entirely inside the
@@ -93,6 +96,8 @@ Return a structured summary:
     "Add teams: shared lists, email invites, roles"    → OVERSIZED (three deliverables)
   Borderline? Answer OVERSIZED. The user splits the task and runs each part; one
   giant PR is harder to review than two.
+  Write the same in SPEC.md's Size check section: the orchestrator reports an
+  OVERSIZED task to the user from there.
 - HIGH_RISK: yes or no. Yes when SPEC.md has Security/Compliance criteria, or the
   change touches auth, payments, access control, or a data migration.
 
@@ -122,7 +127,7 @@ Say what you changed.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `FITS` or `OVERSIZED` (the SIZE you returned), or `REVISED` in revise mode; `reading` is `tester` or `other` for an ambiguous condition, else `none`.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `FITS` or `OVERSIZED` (the SIZE you returned), or `REVISED` in revise mode; `reading` is `tester` or `other` for an ambiguous condition, else `none`.
 
 ```auto-dev-result
 worker: define

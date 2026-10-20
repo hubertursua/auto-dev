@@ -1,5 +1,7 @@
 # Handoff — Reject record creation when the requested value isn't in the context's allowed set → S2 Build (next session)
 
+Task: Reject record creation when the requested value isn't in the context's allowed set
+Ask: Creating a record with a value outside its context's allowed set returns a typed, handled error instead of throwing.
 Re-enter with: `cd <abs-path-to-worktree>`
 Branch: feat/allowed-set-guard   Base: origin/main
 Iteration budget remaining: 4/4
@@ -11,7 +13,7 @@ Iteration budget remaining: 4/4
 
 ## Next
 Phase 4 — Build. Say `auto-dev continue`.
-Pick up at: start of Phase 4
+Pick up at: say `auto-dev continue`; `next` decides the step
 
 ## Files that matter
 - <abs-path-to-worktree>/.auto-dev/profile.md

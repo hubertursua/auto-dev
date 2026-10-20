@@ -24,7 +24,7 @@ default 4. `next` spends a round before the action that needs it and prints a
 | 1 | a Define re-review after its FIX blocks applied | stop; report the Define review's open blockers one by one |
 | 2 | a plan re-review, or re-spawning the acceptance tester for gaps | stop; report the plan review's open blockers or the gaps one by one |
 | 3 | a correction after verification, a re-dispatched `BLOCKED` step, an acceptance-check repair | stop; report each unmet condition by name and what was tried; no cleanup, no Phase 6 |
-| 4 | a correction for a review finding or a human reviewer's blocker | before the commit: go to the PR gate with every open must-fix finding named. After it: stop |
+| 4 | a correction for a review finding or a human reviewer's blocker | before the commit: `next` goes on to the PR gate, whose summary names every open must-fix finding. After it: stop; report every open must-fix finding by name |
 | 5 | a correction for red CI caused by the code | stop; report each red check. Never merge over it |
 
 Free (no round): the first review of anything, every verifier re-check, every
@@ -43,8 +43,8 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing | `init` exit 1 |
 | 4 | the run was started on auto-dev 3.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | Define returns `OVERSIZED` |
-| 6 | a worker stopped on purpose, or failed twice running | `record` logs `blocked` or a second `failed` |
-| 7 | a worker was spawned three times and never left a result `record` accepts | `next` |
+| 6 | a worker stopped on purpose, or failed twice running (lifted by `auto-dev continue`) | `record` logs `blocked` or a second `failed` |
+| 7 | a worker was spawned three times and never left a result `record` accepts (lifted by `auto-dev continue`) | `next` |
 | 8 | a reviewer found blockers but wrote no FIX block | `next` |
 | 9 | the planner judged the spec impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
 | 10 | the quality gate can't be made green | cleanup returns `RED` |
@@ -53,7 +53,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 13 | a report is stale again right after its own re-run | `check-fresh`, inside `next` |
 | 14 | no code reviewer wrote a usable report, twice | `next` |
 | 15 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
-| 16 | CI failed on a secret or credential | triager returns `SECRET` |
+| 16 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), infrastructure (`INFRA`), a flaky test (`FLAKY`) or no clear cause (`UNKNOWN`). Reported before Jira moves to In Review or staging is asked. Lifted by `auto-dev continue` once the cause is fixed and CI re-run: CI is watched again | triager's CI mode |
 | 17 | the staging merge conflicted or its push was rejected | `merge-staging` exit 1 or 3, then `next` |
 | 18 | someone pushed commits to the PR branch the pipeline didn't check | `check-fresh --ref`, inside `next` |
 | 19 | CI is red at the main gate | `next` |
@@ -68,7 +68,20 @@ They are different states.
   `auto-dev continue` asks **that gate** again, starting with its checks, since
   the code may have changed meanwhile.
 - **Stop** ends the run. The phase is `stopped`. Nothing resumes it: `resume`
-  reports it as `FINISHED`.
+  reports it as `FINISHED`. This is a gate's `Stop` answer.
+
+Every other stop (exit 4) leaves the phase open, and `next` decides again in
+the next session:
+
+- A stop on a **worker** (#6, #7), a refused `pr publish`, and a red CI run the
+  code can't fix (#16) are lifted when the user fixes the cause and says
+  `auto-dev continue`: the worker is spawned again, the PR published again, or
+  CI watched again. A session that ended at a checkpoint (`handoff
+  --checkpoint`) lifts nothing: it ended at a clean point, with no stop to
+  lift, so a worker that failed once before it and once after still stops.
+- A stop on a **result** stays: a red quality gate (#10), an impossible spec
+  (#9), a mutation that may have left changes (#11), the budget used up (#12).
+  A resumed run stops at the same place.
 
 ## What each gate option does
 
@@ -81,7 +94,7 @@ what they said, then run `next`.
 | Jira (Phase 2, with a ticket, once the size check says FITS) | Move it | `gate jira proceed` | you move the ticket; Jira moves at each later milestone too |
 | | Leave Jira alone | `gate jira leave` | no Jira move for the rest of the run |
 | | Stop | `gate jira stop` | the run stops |
-| Post-plan (Phase 3; on when `HIGH_RISK` or `post_plan_gate: true`) | Approve & build | `gate post-plan proceed` | Phase 3 ends; the session hands off |
+| Post-plan (Phase 3; on when `HIGH_RISK` or `gates.post_plan: true` in `.auto-dev.yml`) | Approve & build | `gate post-plan proceed` | Phase 3 ends; the session hands off |
 | | Revise plan (tell me what to change) | `gate post-plan revise --reason "<the user's words>"` | the planner revises (no round); if its entry points changed the tester repairs the checks; the gate is asked again |
 | | Stop | `gate post-plan stop` | the run stops |
 | PR (Phase 6, once the reviews settle) | Open PR | `gate pr proceed` | commit, push, open the PR |
@@ -95,9 +108,13 @@ what they said, then run `next`.
 | | Stop | `gate main stop --reason "<why>"` | the run stops; the PR stays open |
 | Worktree (after the final report) | Remove it / Keep it | `gate cleanup proceed` / `keep` | the worktree (and `.auto-dev/`) is removed or kept |
 
-The PR gate may add a question per pre-existing security finding: `Separate PR
-(note it as a follow-up)`, `Fix it in this PR`, `Ignore it`. Record each answer
-with the `"each triage answer"` line.
+The PR gate may add a question per pre-existing security finding (the two most
+severe on their own, the rest grouped as `Others`): `Separate PR (note it as a
+follow-up)` · `Ignore it`. This PR never fixes a pre-existing finding. Each
+answer's `AFTER` line is `autodev.py mark triage-<ID> --value separate|ignore`:
+run the one for each answer the user gave. A `separate` finding is listed in
+the PR body and the final report as a follow-up for its own PR; the pipeline
+doesn't open that PR.
 
 The profile confirmation (Phase 1) has its own options: `S1-plan.md`, step 4.
 

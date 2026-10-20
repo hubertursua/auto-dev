@@ -75,12 +75,12 @@ Fields:
   like broken code rather than missing config.
 - **`test_notes`** (optional) — hints passed into the coding/cleanup briefs so
   tests run at the right scope.
-- **`symbol_lookup`** (optional) — commands the orchestrator uses instead of
-  grep to find where a module, function or class is defined (`definition`) and
+- **`symbol_lookup`** (optional) — commands the `lookup` worker uses instead
+  of grep to find where a module, function or class is defined (`definition`) and
   used (`references`). Each must contain `<symbol>`. Phase 1 keeps them only if
   the tool is on PATH; otherwise, or when the profile has none, `profile.md`
   records `grep -n`. A code index answers with less noise than grep, which
-  saves the orchestrator's context.
+  keeps the worker's answers short.
 - **`ci`** (optional) — the CI provider. When absent, Phase 1 reads the repo's CI
   config to find it.
 
