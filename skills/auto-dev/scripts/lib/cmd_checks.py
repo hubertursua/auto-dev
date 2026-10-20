@@ -12,23 +12,35 @@ check-manifest
     checks has base-run/C<n>.txt with a Result for each check that fits its
     kind (pass-to-pass passed, fail-to-pass failed, a repair `not re-run
     (repair)`); every check has its sealed copy under files/ and none is left in
-    the worktree.
-    Exit: 0 no gaps; 1 gaps: `RESPAWN: <conditions>` names what to re-spawn the
-    tester for (Scope "ONLY conditions <...>").
+    the worktree. A check's Result is the base-run line for its exact test
+    name, else the one line whose name contains it.
+    Prints `OK: <n> condition(s) covered`, or `GAPS: <n> condition(s) with
+    gaps` with a `gap: <condition>: <why>` line for each gap and `respawn:
+    <conditions>` naming what to re-spawn the tester for (Scope "ONLY
+    conditions <...>").
+    Exit: 0 no gaps; 1 gaps.
 
 eval-status [--install-conflict] [--mutation-left-changes]
-    Turns SPEC_EVAL.md into one decision (pass the verifier's INSTALL CONFLICT
-    or MUTATION LEFT CHANGES report as a flag):
+    Turns SPEC_EVAL.md into one decision, printed as one token (pass the
+    verifier's INSTALL CONFLICT or MUTATION LEFT CHANGES report as a flag):
       STOP                    mutation left changes: stop and report the paths
       CORRECT                 correct the coder (spend a round, consumer 3):
-                              the conditions and findings are listed; an install
-                              conflict is a correction too
-      REPAIR                  only defective acceptance checks: repair mode
+                              each open condition and Unjustified finding is a
+                              `correct:` line. An install conflict is CORRECT
+                              with that one item, without reading SPEC_EVAL.md
+                              (the verifier stopped before writing it)
+      REPAIR                  only defective acceptance checks are open: repair
+                              mode for the `repair:` conditions
       ALL_MET                 nothing open; manual conditions go to the PR gate
-    CORRECT and REPAIR can both be printed; repair first, then correct. The
-    Mutation rows to pass to the next verifier spawn are printed as SURVIVOR
-    lines. Exit: 0 a decision; 1 SPEC_EVAL.md is malformed or misses a
-    condition (re-spawn the verifier).
+    A condition `unmet` or `partial` is repaired, not corrected, when a check
+    of its (by test name, or by path when no other condition has a check in
+    that file, from MANIFEST.md) is listed under `## Defective acceptance
+    checks`; a listed check whose condition is met changes nothing. CORRECT
+    with a `repair:` line means repair those first, then correct. Also printed:
+    `manual:` (the manual conditions) and a `survivor:` line per Mutation row,
+    to pass to the next verifier spawn.
+    Exit: 0 a decision; 1 SPEC_EVAL.md is malformed or misses a condition
+    (re-spawn the verifier).
 
 apply-fix <file> <fix-file>
     Applies a reviewer's FIX blocks to <file> (SPEC.md or IMPLEMENTATION.md).
@@ -40,9 +52,11 @@ apply-fix <file> <fix-file>
         <new text>
         >>>>>>> NEW
     All or nothing: each old text must occur exactly once (after the blocks
-    before it are applied), or nothing is written.
-    Exit: 0 applied; 1 a block didn't match: spawn the file's author in revise
-    mode with the fix file instead.
+    before it are applied), every `FIX` line must start a well-formed block,
+    and no new text may hold a marker line; otherwise nothing is written.
+    Exit: 0 applied; 1 no FIX block, or a block is malformed or didn't match
+    (`NO-MATCH`): spawn the file's author in revise mode with the fix file
+    instead.
 
 spec-overlap <file> [--spec SPEC.md] [--words N]
     Refuses a correction brief or plan that copies a condition's wording from
@@ -65,6 +79,9 @@ from .output import CANNOT_RUN, FAILED, Fail, emit
 
 FIX_RE = re.compile(r"^FIX[ \t]+(\S+)[ \t]*\n<<<<<<< OLD\n(.*?)\n=======\n(.*?)\n?>>>>>>> NEW",
                     re.DOTALL | re.MULTILINE)
+FIX_HEADER_RE = re.compile(r"^FIX\s", re.MULTILINE)
+# A marker line left in a block's new text: the block was cut or run together.
+CONFLICT_RE = re.compile(r"^(<{7}(?:[ \t].*)?|={7}|>{7}(?:[ \t].*)?)[ \t]*$", re.MULTILINE)
 WORD_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -177,7 +194,7 @@ def gap_base_run(ad, cid, checks, gap):
     for row in checks:
         cell = row["Check (path :: test name)"]
         name = cell.split("::", 1)[-1].strip().strip('"').strip()
-        result = next((v for k, v in results.items() if k == name or name in k), None)
+        result = result_for(results, name)
         kind = row.get("Kind", "").strip().lower()
         if result is None:
             gap(cid, f"base-run/C{cid}.txt has no Result for `{name}`")
@@ -189,18 +206,49 @@ def gap_base_run(ad, cid, checks, gap):
             gap(cid, f"`{name}` is fail-to-pass but did not fail on the old code")
 
 
+def result_for(results, name):
+    """The Result for test `name`: its exact name, else the one name containing it."""
+    if name in results:
+        return results[name]
+    near = [v for k, v in results.items() if name in k]
+    return near[0] if len(near) == 1 else None
+
+
 def sort_key(cid):
     return (cid.startswith("S"), int(re.sub(r"\D", "", cid) or 0))
 
 
 @wrap
 def eval_status(args):
-    ad = Path(args.dir)
-    if args.mutation_left_changes:
-        emit(args.json, "STOP", "the mutation step may have left changes in the "
-             "source: stop and report the paths the verifier gave; build nothing "
-             "more on this tree")
-        return 0
+    token, fields = eval_decision(Path(args.dir), args.install_conflict,
+                                  args.mutation_left_changes)
+    message = {
+        "STOP": "the mutation step may have left changes in the source: stop and "
+                "report the paths the verifier gave; build nothing more on this tree",
+        "CORRECT": f"{len(fields.get('correct', []))} open item(s): spend a round "
+                   "(consumer 3), then brief the coder" + (
+                       "; repair the listed checks first" if fields.get("repair") else ""),
+        "REPAIR": "only defective acceptance checks are open: repair mode for these "
+                  "conditions, then a verifier re-check",
+        "ALL_MET": "nothing open" + ("; the manual conditions go to the PR gate"
+                                     if fields.get("manual") else ""),
+    }[token]
+    emit(args.json, token, message, **fields)
+    return 0
+
+
+INSTALL_CONFLICT = ("install conflict: the coder wrote a file at an acceptance check's "
+                    "path; move it, then re-run the verifier's first pass")
+
+
+def eval_decision(ad, install_conflict=False, mutation_left_changes=False):
+    """SPEC_EVAL.md as one decision: (STOP|CORRECT|REPAIR|ALL_MET, fields)."""
+    if mutation_left_changes:
+        return "STOP", {}
+    if install_conflict:
+        # The verifier stopped before judging: SPEC_EVAL.md is absent or stale.
+        return "CORRECT", {"correct": [INSTALL_CONFLICT], "repair": "", "manual": "",
+                           "survivor": []}
     conditions = art.spec_conditions(ad / "SPEC.md")
     ev = art.spec_eval(ad / "SPEC_EVAL.md")
     verdicts = {r["#"].strip(): r for r in ev["rows"]}
@@ -208,71 +256,100 @@ def eval_status(args):
     if missing:
         raise art.ArtifactError(f"SPEC_EVAL.md has no row for condition(s) "
                                 f"{', '.join(missing)}: re-spawn the verifier")
-    correct, repair, manual = [], [], []
+    correct, repair, manual, open_ = [], [], [], []
     for cond in conditions:
         row = verdicts[cond["id"]]
         verdict = row["Verdict"].strip().lower()
-        evidence = row.get("Evidence", "").lower()
         if verdict == "manual":
             manual.append(cond["id"])
         elif verdict in ("unmet", "partial"):
-            if "defective" in evidence:
-                repair.append(cond["id"])
-            else:
-                correct.append(f"condition {cond['id']} {verdict}: {row.get('Evidence', '')}")
+            open_.append((cond["id"], verdict, row.get("Evidence", "")))
         elif verdict != "met":
             raise art.ArtifactError(f"SPEC_EVAL.md: condition {cond['id']} has verdict "
                                     f"`{row['Verdict']}`, not met/partial/unmet/manual")
+    defective = defective_conditions(ad, ev["defective"]) if open_ else set()
+    for cid, verdict, evidence in open_:
+        if cid in defective:
+            repair.append(cid)
+        else:
+            correct.append(f"condition {cid} {verdict}: {evidence}")
     for finding in ev["integrity"]:
         if finding.get("Judgment", "").strip().lower() == "unjustified":
             correct.append(f"integrity {finding.get('Finding', '')} at "
                            f"{finding.get('Location', '')}: {finding.get('Reason', '')}")
-    if args.install_conflict:
-        correct.insert(0, "install conflict: the coder wrote a file at an acceptance "
-                       "check's path; move it, then re-run the verifier's first pass")
-    if ev["defective"] and not repair:
-        repair.append("see Defective acceptance checks")
     survivors = [" | ".join(r.get(k, "") for k in ("Mutant", "Location", "Change",
                                                     "Condition", "Judgment"))
                  for r in ev["survivors"]]
     fields = {"correct": correct, "repair": ", ".join(repair), "manual": ", ".join(manual),
               "survivor": survivors}
     if correct:
-        emit(args.json, "CORRECT", f"{len(correct)} open item(s): spend a round "
-             "(consumer 3), then brief the coder" + ("; repair the listed checks "
-                                                     "first" if repair else ""), **fields)
-    elif repair:
-        emit(args.json, "REPAIR", "only defective acceptance checks are open: repair "
-             "mode for these conditions, then a verifier re-check", **fields)
-    else:
-        emit(args.json, "ALL_MET", "nothing open" + (
-            "; the manual conditions go to the PR gate" if manual else ""), **fields)
-    return 0
+        return "CORRECT", fields
+    if repair:
+        return "REPAIR", fields
+    return "ALL_MET", fields
+
+
+def defective_conditions(ad, section):
+    """The conditions with a check listed under `## Defective acceptance checks`.
+
+    A check is listed when the section names its test name, or its path when
+    no other condition has a check in that file (MANIFEST.md says which)."""
+    if not section:
+        return set()
+    rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
+    text = section.lower()
+    owners = {}
+    for row in rows:
+        path = art.check_path(row["Check (path :: test name)"])
+        if path:
+            owners.setdefault(path.lower(), set()).add(row["#"].strip())
+    found = set()
+    for row in rows:
+        cid, cell = row["#"].strip(), row["Check (path :: test name)"]
+        name = cell.split("::", 1)[-1].strip().strip('"').strip().lower()
+        path = (art.check_path(cell) or "").lower()
+        if (name and name in text) or (path and path in text and owners[path] == {cid}):
+            found.add(cid)
+    return found
 
 
 @wrap
 def apply_fix(args):
-    target, fixes = Path(args.file), art.read(args.fix_file)
-    text = art.read(target)
-    blocks = FIX_RE.findall(fixes)
-    if not blocks:
+    target = Path(args.file)
+    blocks, failed = apply_fix_file(target, args.fix_file)
+    if not blocks and not failed:
         raise Fail(f"{args.fix_file} holds no FIX block", FAILED, "NO-MATCH")
+    if failed:
+        emit(args.json, "NO-MATCH", f"nothing written to {target}: spawn its author in "
+             f"revise mode with {args.fix_file}", block=failed)
+        return FAILED
+    emit(args.json, "APPLIED", f"{len(blocks)} FIX block(s) to {target}")
+    return 0
+
+
+def apply_fix_file(target, fix_file):
+    """Apply every FIX block, or none: (blocks, [why each failed])."""
+    fixes, text = art.read(fix_file), art.read(target)
+    blocks = FIX_RE.findall(fixes)
+    headers = len(FIX_HEADER_RE.findall(fixes))
     failed = []
+    if headers != len(blocks):
+        failed.append(f"{headers} FIX header(s) but {len(blocks)} well-formed block(s): "
+                      "each needs `<<<<<<< OLD`, `=======` and `>>>>>>> NEW` lines")
     for fix_id, old, new in blocks:
+        if CONFLICT_RE.search(new):
+            failed.append(f"FIX {fix_id}: its new text holds a conflict marker line")
+            continue
         count = text.count(old)
         if count != 1:
             failed.append(f"FIX {fix_id}: old text found {count} times")
             continue
         text = text.replace(old, new, 1)
-    if failed:
-        emit(args.json, "NO-MATCH", f"nothing written to {target}: spawn its author in "
-             f"revise mode with {args.fix_file}", block=failed)
-        return FAILED
-    tmp = target.with_name(f".{target.name}.fix")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(target)
-    emit(args.json, "APPLIED", f"{len(blocks)} FIX block(s) to {target}")
-    return 0
+    if blocks and not failed:
+        tmp = Path(target).with_name(f".{Path(target).name}.fix")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(target)
+    return blocks, failed
 
 
 def words(text):

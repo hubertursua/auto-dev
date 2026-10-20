@@ -116,6 +116,40 @@ class CheckManifestTest(ArtifactCase):
         self.assertEqual(self.cmd("check-manifest").returncode, 2)
 
 
+    def test_a_fail_to_pass_check_that_passed_is_a_gap(self):
+        self.write("acceptance/base-run/C2.txt", "Commit: abc\nCommand: npx vitest run\n"
+                   "Result: sorts earliest first: passed\nOutput:\n x\n")
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("2: `sorts earliest first` is fail-to-pass but did not fail", r.stdout)
+
+    def test_an_exact_result_name_wins_over_a_longer_one(self):
+        self.write("acceptance/base-run/C1.txt", "Commit: abc\nCommand: npx vitest run\n"
+                   "Result: rejects an invalid date twice: passed\n"
+                   "shows the due date: failed: no field\n"
+                   "rejects an invalid date: failed: got 200\nOutput:\n x\n")
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_two_longer_result_names_are_no_result(self):
+        self.write("acceptance/base-run/C1.txt", "Commit: abc\nCommand: npx vitest run\n"
+                   "Result: shows the due date: failed: no field\n"
+                   "rejects an invalid date twice: failed: got 200\n"
+                   "rejects an invalid date again: failed: got 200\nOutput:\n x\n")
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no Result for `rejects an invalid date`", r.stdout)
+
+    def test_the_first_level_named_in_verify_by_counts(self):
+        # Example in TypeScript: the unit check satisfies "unit", although the
+        # Verify by line also names the integration layer it mocks.
+        self.write("SPEC.md", SPEC.replace(
+            "   - Verify by: unit",
+            "   - Verify by: unit — the integration layer is mocked"))
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 class EvalStatusTest(ArtifactCase):
     def test_all_met(self):
         self.spec_eval()
@@ -137,6 +171,50 @@ class EvalStatusTest(ArtifactCase):
         r = self.cmd("eval-status")
         self.assertTrue(r.stdout.startswith("REPAIR"), r.stdout)
         self.assertIn("repair: 2", r.stdout)
+
+    def test_evidence_saying_not_defective_is_a_correction(self):
+        self.spec_eval(v2="unmet", e2="the check is not defective; the list is unsorted")
+        r = self.cmd("eval-status")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
+        self.assertIn("condition 2 unmet", r.stdout)
+        self.assertNotIn("repair:", r.stdout)
+
+    def test_a_partial_condition_whose_check_is_listed_defective_is_a_repair(self):
+        self.spec_eval(v2="partial", e2="Weak: only a run of the list",
+                       defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
+                                 'first" asserts nothing about the order')
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("REPAIR"), r.stdout)
+        self.assertIn("repair: 2", r.stdout)
+
+    def test_a_check_named_in_a_shared_file_is_matched_by_its_name(self):
+        self.spec_eval(v1="partial", defective='- `src/due.acceptance.test.ts` :: '
+                                               '"rejects an invalid date" sends no date')
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("REPAIR"), r.stdout)
+        self.assertIn("repair: 1", r.stdout)
+
+    def test_a_defective_check_of_a_met_condition_is_all_met(self):
+        self.spec_eval(defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
+                                 'first" is too weak')
+        r = self.cmd("eval-status")
+        self.assertTrue(r.stdout.startswith("ALL_MET"), r.stdout)
+
+    def test_an_install_conflict_is_corrected_without_spec_eval(self):
+        r = self.cmd("eval-status", "--install-conflict")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("CORRECT: 1 open item"), r.stdout)
+        self.assertIn("correct: install conflict", r.stdout)
+
+    def test_an_escaped_pipe_in_a_code_span_keeps_the_columns(self):
+        self.spec_eval()
+        path = self.dir / "SPEC_EVAL.md"
+        path.write_text(path.read_text().replace("`a < b` → `a <= b`",
+                                                 "`a \\|\\| b` → `a && b`"))
+        r = self.cmd("eval-status")
+        self.assertIn("survivor: M2 | `src/sort.ts:4` | `a || b` → `a && b` | — | "
+                      "Equivalent", r.stdout)
 
     def test_mutation_left_changes_stops(self):
         r = self.cmd("eval-status", "--mutation-left-changes")
@@ -170,6 +248,29 @@ class ApplyFixTest(ArtifactCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("found 2 times", r.stdout)
         self.assertEqual((self.dir / "SPEC.md").read_text(), SPEC)
+
+
+    def test_a_malformed_block_writes_nothing(self):
+        # The first block lacks its `>>>>>>> NEW` line, so it runs into the second.
+        self.write("fix.md", "FIX 1\n<<<<<<< OLD\n   - Verify by: unit\n=======\n"
+                             "   - Verify by: integration\n"
+                             "FIX 2\n<<<<<<< OLD\nTodos have no due dates.\n=======\n"
+                             "Todos have no dates.\n>>>>>>> NEW\n")
+        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("NO-MATCH", r.stdout)
+        self.assertEqual((self.dir / "SPEC.md").read_text(), SPEC)
+
+    def test_no_fix_block_is_refused(self):
+        self.write("fix.md", "The spec looks fine.\n")
+        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no FIX block", r.stderr)
+
+    def test_a_missing_target_cannot_run(self):
+        self.fix("a", "b")
+        r = self.cmd("apply-fix", self.dir / "NOPE.md", self.dir / "fix.md")
+        self.assertEqual(r.returncode, 2)
 
 
 class SpecOverlapTest(ArtifactCase):

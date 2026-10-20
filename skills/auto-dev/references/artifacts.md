@@ -829,7 +829,8 @@ are rows in this table — never a separate pass.
 
 ## Defective acceptance checks
 <each check that asserts something SPEC.md does not say, or is too weak for
-what MANIFEST.md says it covers, and why — or "None.">
+what MANIFEST.md says it covers, named as MANIFEST.md names it (`path` ::
+"test name"), and why — or "None.">
 
 ## Unresolved
 <every condition still partial or unmet, and every Unjustified finding, as this
