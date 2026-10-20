@@ -745,13 +745,13 @@ class ShipTest(RunCase):
         self.assertEqual(self.git("status", "--porcelain"), "")
 
     # merge-pr
-    def merge(self, merge_response, state="MERGED"):
+    def merge(self, merge_response, state="MERGED", view=None, repo=None):
         self.script_gh([
-            {"args": ["repo", "view"], "stdout": json.dumps(
+            {"args": ["repo", "view"], **(repo or {"stdout": json.dumps(
                 {"squashMergeAllowed": True, "mergeCommitAllowed": True,
-                 "rebaseMergeAllowed": False})},
+                 "rebaseMergeAllowed": False})})},
             {"args": ["pr", "merge"], **merge_response},
-            {"args": ["pr", "view"], "stdout": json.dumps({"state": state})},
+            {"args": ["pr", "view"], **(view or {"stdout": json.dumps({"state": state})})},
         ])
         return self.cmd("merge-pr", "--pr", "7", "--sha", "abc123")
 
@@ -778,6 +778,33 @@ class ShipTest(RunCase):
         r = self.merge({"stdout": "auto-merge enabled"}, state="OPEN")
         self.assertEqual(r.returncode, 3)
         self.assertIn("QUEUED", r.stdout)
+
+    def test_merge_pr_that_could_not_run(self):
+        usage = ("unknown flag: --match-head-commit\n\nUsage:  gh pr merge [<number>] "
+                 "[flags]\n  --match-head-commit SHA  Commit SHA that the pull request "
+                 "head must match to allow merge")
+        for response in ({"stderr": usage, "exit": 1},
+                         {"stderr": "To get started with GitHub CLI, please run:  gh auth "
+                          "login", "exit": 4},
+                         {"stderr": "error connecting to api.github.com", "exit": 1,
+                          "stdout": "dial tcp: lookup api.github.com: no such host"}):
+            with self.subTest(response=response["stderr"][:30]):
+                r = self.merge(response)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn("HEAD-MOVED", r.stderr)
+        (self.tmp / "gh.log").unlink()
+        r = self.merge({"stdout": "merged"}, repo={"stderr": "HTTP 502", "exit": 1})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertFalse(any(c[:2] == ["pr", "merge"] for c in self.gh_calls()))
+        r = self.merge({"stdout": "merged"}, view={"stderr": "HTTP 502", "exit": 1})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("QUEUED", r.stdout + r.stderr)
+        self.assertIn("succeeded", r.stderr)
+        (self.tmp / "no-gh").mkdir()
+        self.env["PATH"] = str(self.tmp / "no-gh")  # merge-pr runs only gh
+        r = self.cmd("merge-pr", "--pr", "7", "--sha", "abc123")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("gh is not installed", r.stderr)
 
     # pr-body --check
     def test_pr_body_lint(self):

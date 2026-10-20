@@ -42,8 +42,11 @@ merge-pr --pr N --sha <checked commit>
     `gh pr merge` with the repo's allowed method (squash first), locked with
     --match-head-commit, never --admin; then confirms the PR state is MERGED.
     Exit: 0 merged; 1 the head moved (re-check the code and ask the main gate
-    again); 3 queued or auto-merge enabled, not merged (report and stop; don't
-    move Jira); 4 refused (report the requirement blocking it and stop).
+    again); 2 could not run: gh missing, signed out, offline or too old, the
+    repo's merge methods unreadable, or the merge succeeded but the PR's state
+    could not be read (it says so: don't merge again); 3 queued or auto-merge
+    enabled, not merged (report and stop; don't move Jira); 4 refused (report
+    the requirement blocking it and stop).
 
 pr-body --check <file>
     Lints a PR description before it is published: the strict sections and the
@@ -92,6 +95,16 @@ SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN
                        r"(?:password|passwd|secret|token)\s*[=:]\s*\S{6,})",
                        re.IGNORECASE)
 CHECKED_RE = re.compile(r"Checked at commit\s+([0-9a-f]{7,64})")
+# gh failing before GitHub answered: misused, signed out, or offline. Checked
+# before HEAD_MOVED_RE, since gh's usage text names --match-head-commit.
+GH_BROKEN_RE = re.compile(
+    r"unknown (flag|command|shorthand flag)|^usage:|\bUsage:|accepts \d+ arg|"
+    r"not logged in|gh auth login|authentication (failed|required)|bad credentials|"
+    r"HTTP 401|could not resolve host|no such host|connection (refused|reset|timed out)|"
+    r"network is unreachable|i/o timeout|TLS handshake timeout|dial tcp",
+    re.IGNORECASE | re.MULTILINE)
+HEAD_MOVED_RE = re.compile(r"head (branch )?(was modified|has moved)|not the expected head|"
+                           r"expected head (sha|oid)", re.IGNORECASE)
 # A stored CI status that ends a watch: watching the same commit again starts anew.
 FINAL_CI = ("green", "red", "unavailable", "timeout")
 GH_MIN_WAIT, GH_MAX_WAIT = 10, 60  # seconds one gh call may take during a watch
@@ -374,19 +387,35 @@ def merge_staging(args):
     return 0
 
 
+def gh_cannot_run(code, text, what):
+    """Raise CANNOT_RUN when gh itself failed (missing, misused, signed out, offline)."""
+    if code == 127:
+        raise Fail("gh is not installed", CANNOT_RUN, "ERROR")
+    if GH_BROKEN_RE.search(text):
+        raise Fail(f"{what} could not run (exit {code}): fix gh (signed in, online, a "
+                   f"version with this flag), and read the PR's state before running "
+                   f"it again:\n{text[-800:]}", CANNOT_RUN, "ERROR")
+
+
 def merge_method(cwd):
-    code, out, _ = gh_json(cwd, "repo", "view", "--json",
-                           "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed")
+    code, out, err = gh_json(cwd, "repo", "view", "--json",
+                             "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed")
+    if code == 127:
+        raise Fail("gh is not installed", CANNOT_RUN, "ERROR")
     try:
-        allowed = json.loads(out) if code == 0 else {}
+        allowed = json.loads(out) if code == 0 else None
     except ValueError:
-        allowed = {}
+        allowed = None
+    if not isinstance(allowed, dict):
+        raise Fail(f"could not read the repo's allowed merge methods with `gh repo view` "
+                   f"(exit {code}): {(err or out).strip()[-500:]}", CANNOT_RUN, "ERROR")
     for key, flag in (("squashMergeAllowed", "--squash"),
                       ("mergeCommitAllowed", "--merge"),
                       ("rebaseMergeAllowed", "--rebase")):
         if allowed.get(key):
             return flag
-    return "--squash"
+    raise Fail("`gh repo view` says the repo allows no merge method: check gh's access "
+               "to the repo", CANNOT_RUN, "ERROR")
 
 
 def merge_pr(args):
@@ -397,8 +426,8 @@ def merge_pr(args):
                              "--match-head-commit", args.sha)
     text = (out + err).strip()
     if code != 0:
-        if re.search(r"head (branch )?(was modified|has moved)|not the expected head|"
-                     r"match-head-commit|head commit", text, re.IGNORECASE):
+        gh_cannot_run(code, text, "gh pr merge")
+        if HEAD_MOVED_RE.search(text):
             raise Fail(f"the PR's head is no longer {args.sha}: re-check the code "
                        f"(check-fresh --ref origin/<branch>) and ask the main gate "
                        f"again.\n{text[-500:]}", FAILED, "HEAD-MOVED")
@@ -407,14 +436,22 @@ def merge_pr(args):
                    EXIT_REFUSED, "REFUSED")
     code, out, err = gh_json(wt, "pr", "view", str(args.pr), "--json", "state")
     try:
-        pr_state = json.loads(out).get("state", "")
-    except ValueError:
+        pr_state = json.loads(out).get("state", "") if code == 0 else ""
+    except (ValueError, AttributeError):
         pr_state = ""
     phase6 = state.setdefault("phase6", {})
+    if not pr_state:
+        st.add_note(state, f"gh pr merge succeeded for PR #{args.pr} at {args.sha}, "
+                    "but its state could not be read")
+        st.save(args.dir, state)
+        raise Fail(f"`gh pr merge` succeeded, but `gh pr view {args.pr}` could not read "
+                   f"the PR's state (exit {code}): {(err or out).strip()[-500:]}\n"
+                   f"Do not merge again: check `gh pr view {args.pr} --json state` and "
+                   "report what it says.", CANNOT_RUN, "ERROR")
     if pr_state != "MERGED":
         st.add_note(state, f"PR #{args.pr} queued or set to auto-merge, not merged")
         st.save(args.dir, state)
-        emit(args.json, "QUEUED", f"PR #{args.pr} is {pr_state or 'not merged'}: "
+        emit(args.json, "QUEUED", f"PR #{args.pr} is {pr_state}: "
              "report it and stop; don't move Jira")
         return EXIT_QUEUED
     phase6["merged"] = args.sha
