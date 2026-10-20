@@ -50,10 +50,12 @@ Exit codes:
 `next` never exits 1: a step it could not take is a stop (4) that says why.
 
 Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
-(80 by default; `settings.checkpoint_events` overrides it), `next` ends the
-session at the next clean point (no brief in flight) with exit 6 and
-`handoff --checkpoint`, so no session's context grows without bound. A new
-session says `auto-dev continue` and picks up where this one stopped.
+(80), `next` ends the session at the next clean point with exit 6 and
+`handoff --checkpoint`, so no session's context grows without bound. A clean
+point is one where the step would be an action (exit 0) and no brief is in
+flight: a stop, a question or a session boundary is always printed first. A new
+session says `auto-dev continue` and picks up where this one stopped; resuming
+after a checkpoint lifts no stop, since nothing was fixed in between.
 
 A brief issued but not yet recorded is re-issued as the same spawn (after a
 cut-off session, say); one `record` refused is re-issued as a new brief that
@@ -64,6 +66,7 @@ the next session spawns that worker again. A stop on a result (a red quality
 gate, an impossible spec, the budget used up) stays.
 """
 
+import copy
 import json
 import re
 import shlex
@@ -172,6 +175,14 @@ class Ctx:
 
     def resumed(self):
         return self.state.get("resumed_seq", 0)
+
+    def probe(self):
+        """A read-only copy, to see what `next` would do without doing it."""
+        other = copy.copy(self)
+        other.state = copy.deepcopy(self.state)
+        other.p6 = other.state.setdefault("phase6", {})
+        other.readonly, other.dirty, other.peeked = True, False, {}
+        return other
 
     # ------------------------------------------------------------ writing
 
@@ -345,14 +356,27 @@ def decide(c):
         return bad
     if st.phase(c.state, 1)["status"] != "done":
         return setup(c)
+    if checkpoint_due(c):
+        # Only at a clean point: a stop, a question or a boundary comes first.
+        probe = c if c.readonly else c.probe()
+        try:
+            would = phases(probe)
+        except Preview:
+            would = {"code": NEXT_ACTION}
+        if would["code"] == NEXT_ACTION:
+            return checkpoint(c)
+        if c.readonly:
+            return would
+    return phases(c)
+
+
+def phases(c):
     for number in (2, 3, 4, 5, 6):
         if st.phase(c.state, number)["status"] in st.COMPLETE:
             continue
         session = st.SESSIONS[number]
         if session != c.state.get("session", "S1"):
             return boundary(c, session)
-        if checkpoint_due(c):
-            return checkpoint(c)
         result = PHASES[number](c)
         if result is not None:
             return result
@@ -371,11 +395,25 @@ def ended(c, how):
                     "re-asks the gate that held it.")
     elif c.state.get("size") == "OVERSIZED":
         rows.append("The task is too big for one PR. Tell the user Define's reasons, the "
-                    f"subsystems it found and its suggested split lines ({c.ad}/SPEC.md). "
-                    f"Jira was not moved. The worktree is kept: {c.wt} (remove it with "
+                    "subsystems it found and its suggested split lines, below. Jira was "
+                    f"not moved. The worktree is kept: {c.wt} (remove it with "
                     f"`git worktree remove {q(c.wt)}`).")
+        rows += size_check(c)
     rows.append(f"State and artifacts: {c.ad}")
     return stop(rows, f"the run is {how}")
+
+
+def size_check(c):
+    """SPEC.md's Size check section, line by line, for the OVERSIZED report."""
+    try:
+        section = art.find_section(art.read(c.ad / "SPEC.md"), "Size check")
+    except art.ArtifactError:
+        section = None
+    lines = [ln.strip() for ln in (section or "").splitlines() if ln.strip()]
+    if not lines:
+        return [("SPEC.md has no Size check section; Define's reply gave the reasons "
+                 f"({c.ad}/SPEC.md).")]
+    return ["Define's size check (SPEC.md):", *lines]
 
 
 def pending_briefs(c):
@@ -466,8 +504,11 @@ def boundary(c, session):
 
 
 def checkpoint_due(c):
-    limit = int(c.state["settings"].get("checkpoint_events") or CHECKPOINT_EVENTS)
-    return c.state.get("events", 0) - c.state.get("resumed_seq", 0) >= limit
+    """Whether this session has written its share of events (counted from the
+    session's start, which `resume` records as session_seq)."""
+    limit = _int(c.state["settings"].get("checkpoint_events")) or CHECKPOINT_EVENTS
+    return c.state.get("events", 0) - c.state.get(
+        "session_seq", c.state.get("resumed_seq", 0)) >= limit
 
 
 def checkpoint(c):
@@ -518,8 +559,8 @@ def jira_step(c, key, step):
     name = c.state["settings"].get("jira_states", {}).get(key, JIRA_DEFAULTS[key])
     return action(f"move Jira ticket {ticket} to `{name}` with the Atlassian MCP tools "
                   "(references/gates-and-jira.md, _Moving a ticket_); never edit the ticket. If it "
-                  "can't be moved, tell the user and run the AFTER command with "
-                  "`--value skipped`",
+                  "can't be moved, tell the user and run "
+                  f"`{c.cmd('mark', step, '--value', 'skipped')}` instead of the AFTER line",
                   f"Jira milestone {step}",
                   AFTER=[c.cmd("mark", step)])
 
@@ -1040,9 +1081,10 @@ def mark_committed(c, why):
     c.dirty = True
 
 
-def start_correction(c, entry, consumer, file, spend_id, rule, checks=None):
+def start_correction(c, entry, consumer, file, spend_id, rule, checks=None, why=""):
     """A Phase 6 correction: the coder gets `file` (when given); `checks` (scope,
-    report) sends acceptance checks to the tester's repair mode first."""
+    report) sends acceptance checks to the tester's repair mode first. `why`
+    goes into the report when no round is left (the red checks, for CI)."""
     c.would(f"start a {entry} correction ({file or (checks or {}).get('report')})", rule)
     after_commit = bool(c.p6.get("verified_sha"))
     budget = None
@@ -1050,7 +1092,7 @@ def start_correction(c, entry, consumer, file, spend_id, rule, checks=None):
         budget = c.spend(consumer, spend_id, f"{entry} correction")
         if budget is None and after_commit:
             return exhausted(c, consumer, "no round left for a correction after the "
-                             "commit", f"What is open: {file}")
+                             "commit", (f"{why} " if why else "") + f"What is open: {file}")
         if budget is None:
             c.p6["exhausted"] = {"consumer": consumer, "seq": c.seq(), "open": [file]}
             c.dirty = True
@@ -1459,16 +1501,19 @@ def ci_step(c, sha):
                          f"triager found ({triage_file(c, triage)}); never merge over it.")],
                         "a CI correction changed nothing")
         return start_correction(c, "ci", 5, triage_file(c, triage), f"ci-{triage['n']}",
-                                "CI is red because of the code (consumer 5)")
+                                "CI is red because of the code (consumer 5)",
+                                why=f"Red checks: {red}.")
     if kind == "SECRET":
-        return stop([("CI failed on a secret or credential problem. Tell the user what "
-                     f"the triager said ({triage_file(c, triage)}); do not re-run it.")],
+        return stop([("CI failed on a secret or credential problem. Tell the user the "
+                     f"red checks ({red}) and what the triager said "
+                     f"({triage_file(c, triage)}). Once the secret is fixed and CI re-run, "
+                     "`auto-dev continue` watches it again.")],
                     "the triager returned SECRET")
-    # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Hold here, before Jira and
+    # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Stop here, before Jira and
     # staging move on a red build; a resume watches CI again.
     return stop([(f"CI is red, and the triager classed it {kind}: not something the code "
                  f"can fix. Tell the user the red checks ({red}) and what the triager "
-                 f"found ({triage_file(c, triage)}). The run holds here: once CI is fixed "
+                 f"found ({triage_file(c, triage)}). The run stops here; once CI is fixed "
                  "or re-run, `auto-dev continue` watches it again.")],
                 f"the triager returned {kind}")
 

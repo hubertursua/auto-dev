@@ -81,8 +81,7 @@ ON_EXHAUSTED = {
        "one by one",
     3: "stop and report each unmet condition by name and what was tried; do not "
        "run cleanup or Phase 6",
-    4: "before the commit, go to the PR gate with every open must-fix finding "
-       "named; after the commit, stop and report them",
+    4: "stop and report every open must-fix finding by name",
     5: "stop and report each red check by name; never merge over it",
 }
 

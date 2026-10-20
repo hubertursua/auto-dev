@@ -12,7 +12,9 @@ decision on the first line:
                      records that a new session holds the run, and un-holds a
                      phase held at a gate, so `next` asks that gate again. A
                      stop on a worker (blocked, failed twice, never returned)
-                     is lifted: `next` spawns that worker again
+                     is lifted: `next` spawns that worker again. A session
+                     that ended at a checkpoint (`handoff --checkpoint`) lifts
+                     nothing: nothing was stopped
     ASK              ask the user: several runs fit, a run only nearly matches
                      the task (NEAR-MISS), or no task was given and no run is open
     FINISHED <tree>  the run the task names already finished or was stopped
@@ -184,8 +186,13 @@ def start_session(tree, state):
     for n, _ in st.PHASES:
         if st.phase(state, n)["status"] == "held":
             st.set_phase(state, n, "in-progress")
-    for brief in state.get("briefs", []):
-        brief.pop("emitted", None)  # a worker that never returned gets new tries
-    state["resumed_seq"] = st.seq(state)
+    # A checkpoint ended the last session at a clean point, with nothing to fix:
+    # the stops' windows (failed twice, stale twice, a refused publish) go on.
+    after_checkpoint = state.get("checkpoint_seq", 0) > state.get("session_seq", 0)
+    if not after_checkpoint:
+        for brief in state.get("briefs", []):
+            brief.pop("emitted", None)  # a worker that never returned gets new tries
+        state["resumed_seq"] = st.seq(state)
+    state["session_seq"] = st.seq(state)
     st.add_note(state, f"resumed in a new session ({st.SESSION_NAMES[state['session']]})")
     st.save(Path(tree) / ".auto-dev", state)

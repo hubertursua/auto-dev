@@ -664,6 +664,8 @@ def main_summary(state, ad, args):
     ci = state.get("phase6", {}).get("ci", {}).get("status", "not watched")
     if state["settings"].get("ci") == "none":
         ci = "none"
+    elif ci in ("unavailable", "timeout"):
+        ci = f"not monitored ({ci}) — never assume green"
     review_lines, _ = review_block(ad)
     comments = len(info.get("comments") or []) + len(info.get("reviews") or [])
     lines = [f"PR {info.get('url', '#' + pr)}, CI: {ci}",

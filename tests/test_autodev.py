@@ -388,7 +388,7 @@ class StateCommandsTest(RunCase):
         r = self.cmd("budget", "spend", "--consumer", "4", "--id", "6a-r1")
         self.assertEqual(r.returncode, 3)
         self.assertIn("EXHAUSTED", r.stdout)
-        self.assertIn("PR gate", r.stdout)  # consumer 4's own instruction
+        self.assertIn("every open must-fix finding by name", r.stdout)  # consumer 4
         self.assertEqual(self.state()["budget"]["remaining"], 0)
         self.assertIn("(0 remaining)", (self.dir / "WORK_LOG.md").read_text())
 
@@ -438,6 +438,9 @@ class StateCommandsTest(RunCase):
         self.assertIn("- dates are UTC", text)
         self.assertIn("auto-dev continue", r.stdout)
         self.assertNotIn("opus", r.stdout + text)  # no model-switch advice
+        self.assertIn("Task: Add due dates to todos", text)
+        self.assertIn("Pick up at: say `auto-dev continue`; `next` decides the step", text)
+        self.assertNotIn("start of Phase", text)
 
     def test_handoff_refuses_a_finished_run(self):
         for n in range(2, 7):

@@ -215,10 +215,17 @@ class PlanTest(NextCase):
         self.assertEqual(state["budget"]["remaining"], state["budget"]["total"])
 
     def test_oversized_stops_and_reports(self):
+        (self.dir / "SPEC.md").write_text(
+            SPEC + "\n## Size check\nOVERSIZED: three deliverables.\n"
+            "- Subsystems: lists (~6 files), invites (~8 files)\n"
+            "- Split: ship shared lists first, then invites\n")
         self.expect("define", "OVERSIZED", high_risk="yes", reading="none")
         out = self.next(4)
         self.assertIn("too big for one PR", " ".join(out["REPORT"]))
         self.assertIn("Jira was not moved", " ".join(out["REPORT"]))
+        # The reasons themselves, so the orchestrator never reads SPEC.md.
+        self.assertIn("- Split: ship shared lists first, then invites", out["REPORT"])
+        self.assertIn("- Subsystems: lists (~6 files), invites (~8 files)", out["REPORT"])
 
     def test_a_ticket_asks_before_moving_jira(self):
         state = self.state()
@@ -230,6 +237,8 @@ class PlanTest(NextCase):
         self.after(out, "Move it")
         out = self.next(0)
         self.assertIn("move Jira ticket TODO-7 to `In Progress`", out["ACTION"])
+        # The can't-move command is printed whole: no AFTER line to edit.
+        self.assertIn("mark jira-in-progress --value skipped", out["ACTION"])
         self.after(out)
         self.expect("define-reviewer")
 
@@ -309,6 +318,23 @@ class PlanTest(NextCase):
         self.assertIn("resume", (self.dir / "HANDOFF.md").read_text())
         self.resume()
         self.expect("planner")
+
+    def test_a_checkpoint_resume_keeps_a_worker_s_first_failure(self):
+        _, jobs = self.expect("define")
+        self.answer(*jobs[0], "", status="failed")
+        state = self.state()
+        state["settings"]["checkpoint_events"] = state["events"]
+        self.write_state(state)
+        out = self.next(6)  # the re-spawn is an action: a clean point
+        self.assertIn("--checkpoint", out["AFTER"][0])
+        self.after(out)
+        self.resume()
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1000
+        self.write_state(state)
+        _, jobs = self.expect("define")
+        self.answer(*jobs[0], "", status="failed")
+        self.assertIn("failed twice", " ".join(self.next(4)["REPORT"]))
 
     def test_a_refused_return_is_respawned_with_its_issues(self):
         self.expect("define")
@@ -766,7 +792,13 @@ class ShipTest(NextCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn(str(body), self.next(0)["ACTION"])  # back to the write step once
         r = self.autodev("pr", "publish", "--dir", self.dir)
-        self.assertIn("unwritten", " ".join(self.next(4)["REPORT"]))
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # a checkpoint is due
+        self.write_state(state)
+        self.assertIn("unwritten", " ".join(self.next(4)["REPORT"]))  # the stop wins
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1000
+        self.write_state(state)
         body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Details in .auto-dev/SPEC.md.",
                                body.read_text()))
         r = self.autodev("pr", "publish", "--dir", self.dir)
@@ -961,6 +993,7 @@ class CiTest(NextCase):
                     triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
         report = " ".join(self.next(4)["REPORT"])
         self.assertIn("stop and report each red check", report)
+        self.assertIn("Red checks: test — https://ci/1", report)
         self.assertNotIn("hold", report)
 
 
@@ -1032,6 +1065,7 @@ class CiTest(NextCase):
         report = " ".join(self.next(4)["REPORT"])
         self.assertIn("INFRA", report)
         self.assertIn("triage/ci-1.md", report)
+        self.assertIn("The run stops here", report)
 
 
 class ReVoteTest(NextCase):
