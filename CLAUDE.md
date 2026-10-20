@@ -22,7 +22,8 @@ python3 -m unittest discover -s tests     # helper-script tests
 `tools/check-repo.py` catches drift a reviewer would miss: the model tables in
 `SKILL.md` and `README.md` against `agents/*.md`, paths the docs name that don't
 exist, an `evals/files/` fixture `evals.json` names that doesn't exist, a script
-the README doesn't mention, a script that isn't executable, and
+the README doesn't mention, a script that isn't executable, a `SKILL.md`
+description over Claude Code's 1024-character limit, and
 `plugin.json` / `marketplace.json` disagreeing. When you add a sync rule below
 that a script can check, add it there.
 
@@ -43,7 +44,8 @@ that a script can check, add it there.
   `tests/test_autodev.py` (`autodev.py`'s other subcommands),
   `tests/test_work.py` (`brief`, `record`, `check-artifact`),
   `tests/test_next.py` (`next`, `pr publish`), `tests/test_parsers.py` (the
-  artifact parsers) or `tests/test_eval_fixtures.py` (the eval fixtures;
+  artifact parsers), `tests/test_check_repo.py` (`tools/check-repo.py`) or
+  `tests/test_eval_fixtures.py` (the eval fixtures;
   regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
   tests.test_eval_fixtures`), and check that it fails without your change. Tests run the script as a subprocess,
   the way the pipeline does, and build throwaway git repos in a temp dir. A

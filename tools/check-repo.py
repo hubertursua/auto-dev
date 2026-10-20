@@ -18,7 +18,8 @@ Checks:
   exists; every worker in briefs.RESULTS has an agent file and vice versa;
 - every template a script parses exists in templates/;
 - every evals/files/ path a string in evals/evals.json names exists (the
-  setup and expectations as well as each eval's `files`).
+  setup and expectations as well as each eval's `files`);
+- SKILL.md's description fits Claude Code's 1024-character limit.
 """
 
 import json
@@ -213,6 +214,63 @@ def check_eval_paths(evals=SKILL_DIR / "evals" / "evals.json"):
             fail(f"{rel}: names {ref}, which does not exist")
 
 
+DESCRIPTION_LIMIT = 1024
+
+
+def skill_description(path):
+    """The frontmatter description as YAML reads it, or None when it is missing
+    or written in a style this check doesn't parse (so the check fails rather
+    than measure the wrong string). Handles a `>-` or `>` folded block and a
+    one-line plain or quoted value."""
+    m = re.match(r"---\n(.*?)\n---\n", path.read_text(encoding="utf-8"), re.DOTALL)
+    lines = m.group(1).splitlines() if m else []
+    for i, line in enumerate(lines):
+        key, _, value = line.partition(":")
+        if key != "description":
+            continue
+        value = value.strip()
+        rest = lines[i + 1:]
+        body = []
+        for more in rest:
+            if more.strip() and not more.startswith(" "):
+                break
+            body.append(more)
+        while body and not body[-1].strip():
+            body.pop()
+        if value in (">", ">-"):
+            # Fold: lines in a paragraph join with a space; each blank line
+            # between paragraphs is one newline.
+            out, blanks = "", 0
+            for more in body:
+                if not more.strip():
+                    blanks += 1
+                    continue
+                if out:
+                    out += "\n" * blanks if blanks else " "
+                out += more.strip()
+                blanks = 0
+            return out + ("\n" if value == ">" else "")
+        if not value or body or value[0] in ">|&*!%@`#":
+            return None
+        if value[0] in "'\"":
+            if len(value) < 2 or value[-1] != value[0]:
+                return None
+            inner = value[1:-1]
+            return inner.replace("''", "'") if value[0] == "'" else inner
+        return value.split(" #")[0].rstrip()
+    return None
+
+
+def check_skill_description(path=SKILL):
+    description = skill_description(path)
+    if not description:
+        fail(f"{path.name} has no description this check can read: write it as "
+             "a `>-` block or a one-line value")
+    elif len(description) > DESCRIPTION_LIMIT:
+        fail(f"{path.name}'s description is {len(description)} characters; "
+             f"the limit is {DESCRIPTION_LIMIT}")
+
+
 def main():
     check_json()
     check_plugin_metadata()
@@ -221,6 +279,7 @@ def main():
     check_paths()
     check_briefs()
     check_eval_paths()
+    check_skill_description()
     for msg in errors:
         print(f"FAIL {msg}")
     if errors:

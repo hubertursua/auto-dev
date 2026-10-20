@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -46,6 +47,52 @@ class CheckRepoTest(unittest.TestCase):
         for ref in ("evals/files/gone/notes.md", "evals/files/resume-s2/missing.json",
                     "evals/files/no-such-dir"):
             self.assertTrue(any(f"names {ref}," in e for e in errors), (ref, errors))
+
+    def check_frontmatter(self, frontmatter):
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "SKILL.md"
+            path.write_text(f"---\nname: x\n{frontmatter}\n---\n\n# x\n",
+                            encoding="utf-8")
+            tool.check_skill_description(path)
+        return tool.errors
+
+    def check_description(self, length):
+        description = ("word " * length)[:length - 1] + "."
+        folded = textwrap.indent(textwrap.fill(description, 76), "  ")
+        return self.check_frontmatter(f"description: >-\n{folded}")
+
+    def test_description_at_the_limit_passes(self):
+        self.assertEqual(self.check_description(1024), [])
+
+    def test_description_over_the_limit_fails(self):
+        errors = self.check_description(1025)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("1025 characters", errors[0])
+
+    def test_description_is_read_as_yaml_reads_it(self):
+        tool = load_tool()
+        cases = {
+            "description: >-\n  one two\n  three\n\n  four": "one two three\nfour",
+            "description: >\n  one\n  two": "one two\n",
+            "description: 'it''s one line'": "it's one line",
+            'description: "one line"': "one line",
+            "description: plain line": "plain line",
+        }
+        for frontmatter, want in cases.items():
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "SKILL.md"
+                path.write_text(f"---\n{frontmatter}\nname: x\n---\n", encoding="utf-8")
+                self.assertEqual(tool.skill_description(path), want, frontmatter)
+
+    def test_unreadable_or_missing_description_fails(self):
+        for frontmatter in ("description: >+\n  kept", "description: |\n  literal",
+                            "description: >2-\n  indented", "description: >-  # note\n  x",
+                            "description: plain\n  continued", "description:\n  next line",
+                            "summary: no description"):
+            errors = self.check_frontmatter(frontmatter)
+            self.assertEqual(len(errors), 1, frontmatter)
+            self.assertIn("no description this check can read", errors[0])
 
 
 if __name__ == "__main__":
