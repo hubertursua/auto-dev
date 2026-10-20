@@ -10,7 +10,9 @@ decision on the first line:
     FRESH            --task names no run here: start a fresh run (init)
     RESUME <tree>    continue this run: session, phase and status follow. It
                      records that a new session holds the run, and un-holds a
-                     phase held at a gate, so `next` asks that gate again
+                     phase held at a gate, so `next` asks that gate again. A
+                     stop on a worker (blocked, failed twice, never returned)
+                     is lifted: `next` spawns that worker again
     ASK              ask the user: several runs fit, a run only nearly matches
                      the task (NEAR-MISS), or no task was given and no run is open
     FINISHED <tree>  the run the task names already finished or was stopped
@@ -182,6 +184,8 @@ def start_session(tree, state):
     for n, _ in st.PHASES:
         if st.phase(state, n)["status"] == "held":
             st.set_phase(state, n, "in-progress")
+    for brief in state.get("briefs", []):
+        brief.pop("emitted", None)  # a worker that never returned gets new tries
     state["resumed_seq"] = st.seq(state)
     st.add_note(state, f"resumed in a new session ({st.SESSION_NAMES[state['session']]})")
     st.save(Path(tree) / ".auto-dev", state)

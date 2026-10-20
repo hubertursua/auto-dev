@@ -12,7 +12,8 @@ brief profiler --out <dir> --set repo=<path> --set base=<branch> --set draft_pat
     (`--set tree=<hash noted before the panel>`). `--retry N` marks the brief
     as a re-spawn of job <worker>-N, which `record` refused: its
     `previous_issues` slot carries the issues saved for that job (--set
-    overrides). Without --retry it is `none`. It refuses when a slot the worker needs has no value.
+    overrides), and job N is marked replaced, so `next` never re-spawns it
+    too. Without --retry it is `none`. It refuses when a slot the worker needs has no value.
     Prints the agent type to spawn and the one-line prompt to give it.
     Exit: 0 written; 1 refused (the missing slots are listed, or --retry names
     a job `record` did not refuse).
@@ -38,9 +39,10 @@ record <worker> <n>
     Exit: 0 recorded; 1 the return is missing or malformed (`MISSING`,
     `MALFORMED`) or disagrees with the artifacts (`MISMATCH`, both sides
     printed). Either way the issues are saved in state.json for job
-    <worker>-<n>: re-spawn it with `brief <worker> --retry <n>`, whose
-    `previous_issues` carries them. A later RECORDED for <worker>-<n> clears
-    them. Don't guess.
+    <worker>-<n>: run `autodev.py next`, which re-spawns it with a brief whose
+    `previous_issues` carries them (as `brief <worker> --retry <n>` writes). A
+    later RECORDED for <worker>-<n> clears them. Recording a job again keeps
+    its place in the log. Don't guess.
 
 check-artifact <file>
     Checks one artifact against its template before a worker returns it:
@@ -293,6 +295,9 @@ def write_brief(state, where, worker, mode, given, retry=None):
         state.setdefault("briefs", []).append(
             {"worker": worker, "n": n, "mode": mode, "sets": given, "at": st.now(),
              "retry": retry, "seq": st.seq(state)})
+        for old in state["briefs"]:
+            if retry is not None and old["worker"] == worker and old["n"] == retry:
+                old["retried_as"] = n  # replaced: `next` never re-issues it
     return path, values
 
 
@@ -539,9 +544,9 @@ def record(args):
         fields = {"issue": issues}
         if data is not None:
             fields["returned"] = json.dumps(data)
-        emit(args.json, token, f"{args.worker}-{args.n}: {message}; re-spawn the worker "
-             f"with `brief {args.worker} --retry {args.n}` (its previous_issues carries "
-             "these issues), don't guess",
+        emit(args.json, token, f"{args.worker}-{args.n}: {message}; run `autodev.py "
+             "next`: it re-spawns the worker with a brief whose previous_issues carries "
+             "these issues. Don't guess",
              **fields)
         return FAILED
     state.get("refused", {}).pop(job(args.worker, args.n), None)
@@ -565,11 +570,16 @@ def record(args):
     issued = next((b for b in state.get("briefs", [])
                    if b["worker"] == args.worker and b["n"] == args.n), {})
     log = state.setdefault("log", [])
-    log[:] = [e for e in log if not (e["worker"] == args.worker and e["n"] == args.n)]
-    log.append({"worker": args.worker, "n": args.n, "mode": issued.get("mode"),
-                "sets": issued.get("sets", {}), "status": data.get("status"),
-                "next": data.get("next", ""), "data": data,
-                "seq": st.seq(state)})
+    entry = {"worker": args.worker, "n": args.n, "mode": issued.get("mode"),
+             "sets": issued.get("sets", {}), "status": data.get("status"),
+             "next": data.get("next", ""), "data": data, "seq": st.seq(state)}
+    again = next((i for i, e in enumerate(log)
+                  if e["worker"] == args.worker and e["n"] == args.n), None)
+    if again is None:
+        log.append(entry)
+    else:  # recorded again: it keeps its place, so `next` reads the same order
+        entry["seq"] = log[again].get("seq", entry["seq"])
+        log[again] = entry
     st.add_note(state, f"{args.worker} #{args.n} returned {data.get('status')} "
                 f"{data.get('next', '')}".rstrip())
     st.save(args.dir, state)
