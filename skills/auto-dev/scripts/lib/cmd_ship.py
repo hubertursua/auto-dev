@@ -371,8 +371,7 @@ def poll_checks(cwd, pr, sha, deadline):
         return "none", [], "no checks"
     buckets = {c.get("bucket", "") for c in checks}
     failed = [f"{c['name']} — {c.get('link', '')}"
-              + (" (cancelled: likely infrastructure)" if c.get("bucket") == "cancel"
-                 else "")
+              + (" (cancelled)" if c.get("bucket") == "cancel" else "")
               for c in checks if c.get("bucket") in ("fail", "cancel")]
     if failed:
         return "red", failed, ""

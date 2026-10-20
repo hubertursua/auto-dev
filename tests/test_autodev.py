@@ -665,7 +665,8 @@ class ShipTest(RunCase):
                       "link": "https://ci/2"}])
         r = self.watch()
         self.assertEqual(r.returncode, 1)
-        self.assertIn("likely infrastructure", r.stdout)
+        self.assertIn("deploy — https://ci/2 (cancelled)", r.stdout)
+        self.assertNotIn("infrastructure", r.stdout)
 
     def test_ci_rewatch_after_a_final_status_restarts_the_clock(self):
         self.set_settings(ci="github-actions", ci_timeout=30)
