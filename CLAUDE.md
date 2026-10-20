@@ -44,7 +44,8 @@ that a script can check, add it there.
   `tests/test_autodev.py` (`autodev.py`'s other subcommands),
   `tests/test_work.py` (`brief`, `record`, `check-artifact`),
   `tests/test_next.py` (`next`, `pr publish`), `tests/test_parsers.py` (the
-  artifact parsers) or `tests/test_eval_fixtures.py` (the eval fixtures;
+  artifact parsers), `tests/test_check_repo.py` (`tools/check-repo.py`) or
+  `tests/test_eval_fixtures.py` (the eval fixtures;
   regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
   tests.test_eval_fixtures`), and check that it fails without your change. Tests run the script as a subprocess,
   the way the pipeline does, and build throwaway git repos in a temp dir. A

@@ -218,28 +218,54 @@ DESCRIPTION_LIMIT = 1024
 
 
 def skill_description(path):
-    """The frontmatter description, folded the way YAML folds `>-`."""
+    """The frontmatter description as YAML reads it, or None when it is missing
+    or written in a style this check doesn't parse (so the check fails rather
+    than measure the wrong string). Handles a `>-` or `>` folded block and a
+    one-line plain or quoted value."""
     m = re.match(r"---\n(.*?)\n---\n", path.read_text(encoding="utf-8"), re.DOTALL)
     lines = m.group(1).splitlines() if m else []
     for i, line in enumerate(lines):
         key, _, value = line.partition(":")
-        if key == "description":
-            value = value.strip()
-            if value not in (">", ">-", "|", "|-"):
-                return value
-            body = []
-            for more in lines[i + 1:]:
-                if more and not more.startswith(" "):
-                    break
-                body.append(more.strip())
-            return " ".join(body).strip()
+        if key != "description":
+            continue
+        value = value.strip()
+        rest = lines[i + 1:]
+        body = []
+        for more in rest:
+            if more.strip() and not more.startswith(" "):
+                break
+            body.append(more)
+        while body and not body[-1].strip():
+            body.pop()
+        if value in (">", ">-"):
+            # Fold: lines in a paragraph join with a space; each blank line
+            # between paragraphs is one newline.
+            out, blanks = "", 0
+            for more in body:
+                if not more.strip():
+                    blanks += 1
+                    continue
+                if out:
+                    out += "\n" * blanks if blanks else " "
+                out += more.strip()
+                blanks = 0
+            return out + ("\n" if value == ">" else "")
+        if not value or body or value[0] in ">|&*!%@`#":
+            return None
+        if value[0] in "'\"":
+            if len(value) < 2 or value[-1] != value[0]:
+                return None
+            inner = value[1:-1]
+            return inner.replace("''", "'") if value[0] == "'" else inner
+        return value.split(" #")[0].rstrip()
     return None
 
 
 def check_skill_description(path=SKILL):
     description = skill_description(path)
     if not description:
-        fail(f"{path.name} has no description in its frontmatter")
+        fail(f"{path.name} has no description this check can read: write it as "
+             "a `>-` block or a one-line value")
     elif len(description) > DESCRIPTION_LIMIT:
         fail(f"{path.name}'s description is {len(description)} characters; "
              f"the limit is {DESCRIPTION_LIMIT}")
