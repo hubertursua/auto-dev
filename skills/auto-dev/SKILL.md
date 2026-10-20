@@ -61,7 +61,7 @@ or worktree you are in — open or run each by its absolute path.
 | `scripts/check-fresh.py` | end of S2, entry to S3, before the PR gate, after every Phase 6 commit, before writing the PR body, before the main gate | run (not read): `python3 <skill-dir>/scripts/check-fresh.py <worktree> <artifact-dir> [--phase 5] [--ref <rev>]` says whether every report still checked the code as it is now; workers stamp reports with its `--print-tree`; when to run it and exit codes in `references/artifacts.md`, _Stamps: which code each result checked_ |
 | `scripts/check-staged.py` | S3, before every Phase 6a commit | run (not read): `python3 <skill-dir>/scripts/check-staged.py <worktree> --expect <path> …`; exit codes in `references/phase-6-ship.md`, step 4 |
 | `references/artifacts.md` | each session's start (its checklist); writing or resuming from any `.auto-dev/` file | layout, `WORK_LOG.md` ledger, resume procedure, session checklists, `HANDOFF.md`, every artifact's contract, template and strictness, the PR body, the final report |
-| `references/subagent-prompts.md` | before spawning any worker (the profiler in Phase 1, then Phases 2–6) | each worker's brief and tools, the size check, acting on the verifier's verdicts |
+| `references/subagent-prompts.md` | before spawning any worker (the profiler in Phase 1, then Phases 2–6) | how to spawn each worker (`autodev.py brief`, `record`), the size check, acting on the verifier's verdicts; the briefs themselves are the agent files |
 | `references/gates-and-jira.md` | before any gate or pause, Jira transition, or CI watch | gate scripts, Jira transition mapping, CI monitoring policy (timeouts, on-red) |
 | `references/correction-loop.md` | on an unmet condition, a must-fix review finding, a human blocker, or red CI | the one correction loop, what each correction invalidates, the iteration budget |
 | `references/phase-6-ship.md` | S3, before Phase 6 | the exact commit, push, staging-merge and main-merge sequences and their failure handling |
@@ -258,9 +258,9 @@ Hand each worker **two** absolute paths — its worktree and its `<artifact-dir>
 `profile.md` and only the inputs its phase needs. The coder gets the **plan only,
 never the spec or the sealed acceptance checks**; the verifier gets the **spec and
 the checks, never the plan or the coder's report**. **Avoid giving a worker a >5-minute blocking command** (the
-cleanup agent's quality gate is the deliberate exception), and every brief says:
-**spill large output to `$TMPDIR` and return a digest, never a corpus**
-(`references/subagent-prompts.md`, _Conventions for every brief_).
+cleanup agent's quality gate is the deliberate exception), and every agent file
+says: **spill large output to `$TMPDIR` and return a digest, never a corpus**
+(`references/subagent-prompts.md`, _What every brief says_).
 
 ## Reading discipline (orchestrator)
 
@@ -320,8 +320,10 @@ All later phases run **inside the worktree directory**.
 
 ## Phase 2 — Define (the testable contract + size check)
 
-Each worker's brief, and the full procedure for Phases 2–5, is in
-`references/subagent-prompts.md`, under the same phase heading.
+How to spawn each worker, and the full procedure for Phases 2–5, is in
+`references/subagent-prompts.md`, under the same phase heading. Each worker's
+brief is its agent file (`agents/<name>.md`): `autodev.py brief` writes its
+slots, and `autodev.py record` checks what it returns.
 
 Spawn **one** Define agent → `.auto-dev/SPEC.md`: research, the acceptance
 conditions **as a testable contract** — each with a concrete **Example**, an

@@ -56,6 +56,9 @@ apply-fix <file> <fix-file>
     All or nothing: each old text must occur exactly once (after the blocks
     before it are applied), every `FIX` line must start a well-formed block,
     and no new text may hold a marker line; otherwise nothing is written.
+    When <file> is SPEC.md and the run's size check said FITS, a Security/
+    Compliance criterion (`S<n>.`) in the result turns the run high-risk and the
+    post-plan gate on (printed as `high_risk: yes`); a fix never turns it off.
     Exit: 0 applied; 1 no FIX block, or a block is malformed or didn't match
     (`NO-MATCH`): spawn the file's author in revise mode with the fix file
     instead.
@@ -63,7 +66,9 @@ apply-fix <file> <fix-file>
 spec-overlap <file> [--spec SPEC.md] [--words N]
     Refuses a correction brief or plan that copies a condition's wording from
     SPEC.md: any run of N consecutive words (default 6, or the whole condition
-    when shorter) of a condition's text found in <file>.
+    when shorter) of a condition's text found in <file>. In a required-changes
+    file (`*corrections.md`, `triage/*.md`) text in backticks or double quotes
+    is left out: it quotes a test name, an assertion or output, not the spec.
     Exit: 0 no overlap; 1 overlap (the copied words are printed): rewrite it as
     concrete behavior.
 
@@ -338,8 +343,39 @@ def apply_fix(args):
         emit(args.json, "NO-MATCH", f"nothing written to {target}: spawn its author in "
              f"revise mode with {args.fix_file}", block=failed)
         return FAILED
-    emit(args.json, "APPLIED", f"{len(blocks)} FIX block(s) to {target}")
+    extra = {}
+    if target.name == "SPEC.md":
+        try:
+            state = st.load(args.dir)
+        except st.StateError:
+            state = None  # apply-fix outside a run: there is no gate to turn on
+        try:
+            changed = state is not None and rederive_risk(state, target)
+        except art.ArtifactError:
+            changed = False  # SPEC.md is written; it is checked when it is used
+        if changed:
+            st.add_note(state, "SPEC.md gained a Security/Compliance criterion: "
+                        "high risk, post-plan gate on")
+            st.save(args.dir, state)
+        if state is not None and state.get("high_risk"):
+            extra["high_risk"] = "yes"
+    emit(args.json, "APPLIED", f"{len(blocks)} FIX block(s) to {target}", **extra)
     return 0
+
+
+def rederive_risk(state, spec):
+    """Turn high_risk and the post-plan gate on when a run that FITS has a
+    Security/Compliance criterion in SPEC.md. Never turns either off.
+    Returns whether anything changed."""
+    if state.get("size") != "FITS":
+        return False
+    if not any(c["id"].startswith("S") for c in art.spec_conditions(spec)):
+        return False
+    settings = state.setdefault("settings", {})
+    changed = not state.get("high_risk") or not settings.get("post_plan_gate")
+    state["high_risk"] = True
+    settings["post_plan_gate"] = True
+    return changed
 
 
 def apply_fix_file(target, fix_file):
@@ -371,15 +407,28 @@ def words(text):
     return WORD_RE.findall(text.lower().replace("'", "").replace("’", ""))
 
 
-@wrap
-def spec_overlap(args):
-    spec = Path(args.spec) if args.spec else Path(args.dir) / "SPEC.md"
-    target = words(art.read(args.file))
-    joined = " " + " ".join(target) + " "
+QUOTED_RE = re.compile(r"`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”")
+
+
+def is_corrections(path):
+    path = Path(path)
+    return path.name.endswith("corrections.md") or path.parent.name == "triage"
+
+
+def overlaps(path, spec, n=6, quoted=None):
+    """Each condition whose wording `path` copies: `condition <id>: "<words>"`.
+    Quoted spans (test names, assertions, output) count only when `quoted` is
+    true; by default, everywhere but in a required-changes file."""
+    text = art.read(path)
+    if quoted is None:
+        quoted = not is_corrections(path)
+    # A phrase may not run across a left-out span: each piece is matched alone.
+    pieces = QUOTED_RE.split(text) if not quoted else [text]
+    joined = " " + " | ".join(" ".join(words(p)) for p in pieces) + " "
     hits = []
     for cond in art.spec_conditions(spec):
         cw = words(cond["text"])
-        size = min(args.words, len(cw))
+        size = min(n, len(cw))
         if size < 4:
             continue
         for i in range(len(cw) - size + 1):
@@ -387,6 +436,13 @@ def spec_overlap(args):
             if f" {phrase} " in joined:
                 hits.append(f"condition {cond['id']}: \"{phrase}\"")
                 break
+    return hits
+
+
+@wrap
+def spec_overlap(args):
+    spec = Path(args.spec) if args.spec else Path(args.dir) / "SPEC.md"
+    hits = overlaps(args.file, spec, args.words)
     if hits:
         emit(args.json, "OVERLAP", f"{args.file} copies SPEC.md's wording: say what the "
              "code must do and where, in your own words", copied=hits)

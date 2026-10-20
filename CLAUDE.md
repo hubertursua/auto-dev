@@ -50,7 +50,10 @@ that a script can check, add it there.
 ## Changing the skill's Markdown
 
 - `SKILL.md` is the spine the orchestrator always holds; keep detail in
-  `references/` and point to it. Say each rule in one place and link to it,
+  `references/` and point to it. A worker's instructions are its agent file
+  (`agents/<name>.md`), never a reference file: the orchestrator doesn't read
+  them, `autodev.py brief` only fills their `{{slots}}`. Artifact templates and
+  the rubric live once, in `skills/auto-dev/templates/`. Say each rule in one place and link to it,
   rather than repeating it (a repeated rule drifts).
 - After editing a rule, grep for other places that state it
   (`grep -rn "<key phrase>" skills/ agents/ README.md`) and make them agree.
@@ -83,7 +86,8 @@ becomes a default for every repo.
   path or code uses TypeScript, a language most readers know, and is labeled
   "example in TypeScript" (or "Filled-in rows are an example in TypeScript." above
   a template). The label goes outside a template block, so an agent filling the
-  template doesn't copy it. Where no example is needed, use a neutral placeholder
+  template doesn't copy it; in a `templates/` file it goes in the first-line
+  comment, which agents are told not to copy. Where no example is needed, use a neutral placeholder
   (`<test command>`, `src/<module>`). No other language is allowed.
 - **Scripts stay language-blind.** A helper script takes paths and commands as
   input and never hardcodes one stack's test runner or syntax. Where it has to
@@ -136,6 +140,11 @@ wrong about something? If yes, fix the README.
   description.
 - **Evals.** When behavior changes, update the expectations in
   `skills/auto-dev/evals/evals.json` that describe it.
+- **Briefs and results.** Each `{{slot}}` in an agent file is listed as AUTO,
+  CALLER or OPTIONAL in `skills/auto-dev/scripts/lib/briefs.py`, and each agent
+  file's `auto-dev-result` block lists exactly the `next` tokens `RESULTS` gives
+  it there. `tools/check-repo.py` checks both, and that every template a script
+  parses or an agent names exists.
 
 ## Branches, commits and PRs
 
