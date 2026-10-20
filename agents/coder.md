@@ -91,7 +91,7 @@ Report what changed, TEST CHANGES and BLOCKED. Do not commit or open a PR.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `BUILT`, or `BLOCKED` when any step is under BLOCKED.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `BUILT`, or `BLOCKED` when any step is under BLOCKED.
 
 ```auto-dev-result
 worker: coder

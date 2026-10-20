@@ -10,9 +10,9 @@ Every slot is one of:
   CALLER    passed with `--set name=value`; the brief refuses without it;
   OPTIONAL  passed with `--set` when it applies; `none` otherwise.
 A slot can be one kind for most workers and another for a few (AUTO_FOR,
-CALLER_FOR). `previous_issues` is OPTIONAL for every worker: when `record`
-refused the worker's last return, the brief fills it from state.json unless
---set gives it.
+CALLER_FOR). `previous_issues` is OPTIONAL for every worker: a brief written
+with `--retry <n>` fills it from the issues `record` saved when it refused job
+<worker>-<n>.
 
 Each worker ends its reply with an `auto-dev-result` block and writes the same
 keys to returns/<worker>-<n>.json. RESULTS lists the `next` tokens each may

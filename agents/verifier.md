@@ -269,7 +269,7 @@ evidence/corrections.md) or MUTATION LEFT CHANGES if either happened.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `INSTALL_CONFLICT` or `MUTATION_LEFT_CHANGES` when either happened; else `CORRECT` when any condition is unmet (even if its check is also defective), partial for a reason other than a defective check, or an integrity finding is Unjustified; `REPAIR` when every open condition is partial only because its check is defective; `ALL_MET` otherwise.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `INSTALL_CONFLICT` or `MUTATION_LEFT_CHANGES` when either happened; else `CORRECT` when any condition is unmet (even if its check is also defective), partial for a reason other than a defective check, or an integrity finding is Unjustified; `REPAIR` when every open condition is partial only because its check is defective; `ALL_MET` otherwise.
 
 ```auto-dev-result
 worker: verifier

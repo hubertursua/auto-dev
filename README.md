@@ -467,7 +467,7 @@ and prints its summary and question). For workers: `brief` (writes a worker's
 brief file from state, refusing when a value only the orchestrator can give is
 missing, and prints the one-line prompt to spawn it with), `record` (checks the
 result a worker wrote against the artifact it wrote, and stops on a mismatch,
-saving the issues for the re-spawned worker's brief)
+saving the issues for that job's re-spawn, `brief --retry <n>`)
 and `check-artifact` (workers check what they wrote against its template before
 returning). Shared code lives in
 `skills/auto-dev/scripts/lib/`.

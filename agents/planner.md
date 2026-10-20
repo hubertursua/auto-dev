@@ -86,7 +86,7 @@ Your result's `next` is the decision. Say what you changed.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `WRITTEN` (write mode), `REVISED` (revise mode), or in blocked mode the decision: `PLAN_REVISED`, `UPDATE_OLD_TEST` or `SPEC_IMPOSSIBLE`.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `WRITTEN` (write mode), `REVISED` (revise mode), or in blocked mode the decision: `PLAN_REVISED`, `UPDATE_OLD_TEST` or `SPEC_IMPOSSIBLE`.
 `entry_points_changed`, in every mode, is `yes` when your plan or revision
 changes an entry point (a name, signature, route or command) that an acceptance
 check in {{artifact_dir}}/acceptance/MANIFEST.md calls, else `no`; in write mode,

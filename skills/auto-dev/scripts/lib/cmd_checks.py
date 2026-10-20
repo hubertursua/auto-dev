@@ -66,7 +66,9 @@ apply-fix <file> <fix-file>
 spec-overlap <file> [--spec SPEC.md] [--words N]
     Refuses a correction brief or plan that copies a condition's wording from
     SPEC.md: any run of N consecutive words (default 6, or the whole condition
-    when shorter) of a condition's text found in <file>.
+    when shorter) of a condition's text found in <file>. In a required-changes
+    file (`*corrections.md`, `triage/*.md`) text in backticks or double quotes
+    is left out: it quotes a test name, an assertion or output, not the spec.
     Exit: 0 no overlap; 1 overlap (the copied words are printed): rewrite it as
     concrete behavior.
 
@@ -347,7 +349,11 @@ def apply_fix(args):
             state = st.load(args.dir)
         except st.StateError:
             state = None  # apply-fix outside a run: there is no gate to turn on
-        if state is not None and rederive_risk(state, target):
+        try:
+            changed = state is not None and rederive_risk(state, target)
+        except art.ArtifactError:
+            changed = False  # SPEC.md is written; it is checked when it is used
+        if changed:
             st.add_note(state, "SPEC.md gained a Security/Compliance criterion: "
                         "high risk, post-plan gate on")
             st.save(args.dir, state)
@@ -401,9 +407,24 @@ def words(text):
     return WORD_RE.findall(text.lower().replace("'", "").replace("’", ""))
 
 
-def overlaps(path, spec, n=6):
-    """Each condition whose wording `path` copies: `condition <id>: "<words>"`."""
-    joined = " " + " ".join(words(art.read(path))) + " "
+QUOTED_RE = re.compile(r"`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”")
+
+
+def is_corrections(path):
+    path = Path(path)
+    return path.name.endswith("corrections.md") or path.parent.name == "triage"
+
+
+def overlaps(path, spec, n=6, quoted=None):
+    """Each condition whose wording `path` copies: `condition <id>: "<words>"`.
+    Quoted spans (test names, assertions, output) count only when `quoted` is
+    true; by default, everywhere but in a required-changes file."""
+    text = art.read(path)
+    if quoted is None:
+        quoted = not is_corrections(path)
+    # A phrase may not run across a left-out span: each piece is matched alone.
+    pieces = QUOTED_RE.split(text) if not quoted else [text]
+    joined = " " + " | ".join(" ".join(words(p)) for p in pieces) + " "
     hits = []
     for cond in art.spec_conditions(spec):
         cw = words(cond["text"])

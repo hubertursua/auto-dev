@@ -67,7 +67,7 @@ If you wrote the FIX file, run `python3 {{skill_dir}}/scripts/autodev.py check-a
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `CLEAN` (no blocker) or `BLOCKERS`.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `CLEAN` (no blocker) or `BLOCKERS`.
 
 ```auto-dev-result
 worker: define-reviewer

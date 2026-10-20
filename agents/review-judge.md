@@ -119,7 +119,7 @@ confirmed or refuted, and the corrected counts.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: in consolidate mode `REVOTE` when any finding is pending a re-vote, else `MUST_FIX` when any must-fix finding is open, else `CLEAN`; `VERIFIED` in security-verify mode.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: in consolidate mode `REVOTE` when any finding is pending a re-vote, else `MUST_FIX` when any must-fix finding is open, else `CLEAN`; `VERIFIED` in security-verify mode.
 
 ```auto-dev-result
 worker: review-judge

@@ -1,6 +1,6 @@
 """autodev.py brief / record / check-artifact — briefing workers and checking what they return.
 
-brief <worker> [--mode M] [--set name=value ...] [--dir <artifact-dir>]
+brief <worker> [--mode M] [--set name=value ...] [--retry N] [--dir <artifact-dir>]
 brief profiler --out <dir> --set repo=<path> --set base=<branch> --set draft_path=<path>
     Writes briefs/<worker>-<n>.md: one `name: value` line for every slot the
     worker's agent file (agents/<worker>.md) uses in that mode. It fills what it
@@ -9,11 +9,13 @@ brief profiler --out <dir> --set repo=<path> --set base=<branch> --set draft_pat
     test command and gate, the acceptance check paths, the last survivors, the
     next review pass, the result file) and takes the rest from --set. The review
     judge's `tree` is the tree the panel reviewed, so the caller passes it
-    (`--set tree=<hash noted before the panel>`). `previous_issues` is filled,
-    once, from the issues `record` saved when it refused the worker's last
-    return, unless --set gives it. It refuses when a slot the worker needs has no value.
+    (`--set tree=<hash noted before the panel>`). `--retry N` marks the brief
+    as a re-spawn of job <worker>-N, which `record` refused: its
+    `previous_issues` slot carries the issues saved for that job (--set
+    overrides). Without --retry it is `none`. It refuses when a slot the worker needs has no value.
     Prints the agent type to spawn and the one-line prompt to give it.
-    Exit: 0 written; 1 refused (the missing slots are listed).
+    Exit: 0 written; 1 refused (the missing slots are listed, or --retry names
+    a job `record` did not refuse).
 
 record <worker> <n>
     Reads returns/<worker>-<n>.json and checks it: `status` is ok, blocked or
@@ -34,15 +36,18 @@ record <worker> <n>
     of what came back) and prints `RECORDED` with the `next` token.
     Exit: 0 recorded; 1 the return is missing or malformed (`MISSING`,
     `MALFORMED`) or disagrees with the artifacts (`MISMATCH`, both sides
-    printed). Either way the issues are saved in state.json: re-spawn the
-    worker, and its next brief's `previous_issues` carries them. Don't guess.
+    printed). Either way the issues are saved in state.json for job
+    <worker>-<n>: re-spawn it with `brief <worker> --retry <n>`, whose
+    `previous_issues` carries them. A later RECORDED for <worker>-<n> clears
+    them. Don't guess.
 
 check-artifact <file>
     Checks one artifact against its template before a worker returns it:
     SPEC.md, IMPLEMENTATION.md, acceptance/MANIFEST.md, SPEC_EVAL.md,
     CODE_REVIEW.md, SECURITY_REVIEW.md, review/pass-<n>/R<k>.md and
     VOTES-R<k>.md, lint/<CHECK>.md, a required-changes file (corrections.md,
-    triage/*.md), a FIX file (fixes/*.md), or a returns/*.json file.
+    triage/*.md; also refused when it copies the run's SPEC.md, as
+    `spec-overlap` checks), a FIX file (fixes/*.md), or a returns/*.json file.
     Exit: 0 it follows the template; 1 problems (each printed).
 
 All exit 2 when they could not run — never a pass.
@@ -79,6 +84,8 @@ def add_arguments(parser, name):
         parser.add_argument("--mode")
         parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE")
         parser.add_argument("--out", help="where to write a profiler brief (no run yet)")
+        parser.add_argument("--retry", type=int, metavar="N",
+                            help="re-spawn job <worker>-N, which record refused")
     elif name == "record":
         parser.add_argument("worker")
         parser.add_argument("n", type=int)
@@ -157,8 +164,8 @@ def auto_values(worker, n, state, ad, mode):
     values = {
         "worktree": state["worktree"], "artifact_dir": str(ad), "skill_dir": str(SKILL_DIR),
         "base": state["repo"]["base"], "branch": state["branch"],
-        "task": (state["task"].get("ticket_text") or state["task"].get("text")
-                 or state["task"].get("ask", "")),
+        "task": (state["task"].get("ticket_text") or state["task"].get("ask")
+                 or state["task"].get("text", "")),
         "ticket": st.ticket_line(state["task"]).split(" — ")[0],
         "binding_rules": BINDING_RULES.format(artifact_dir=ad),
         "test_command": test or "none", "test_notes": s.get("test_notes") or "none",
@@ -176,9 +183,19 @@ def auto_values(worker, n, state, ad, mode):
     return values
 
 
-def saved_issues(state, worker):
-    issues = state.get("refused", {}).get(worker)
-    return issues_text(issues) if issues else None
+def job(worker, n):
+    return f"{worker}-{n}"
+
+
+def saved_issues(state, worker, retry):
+    """The issues record saved for job <worker>-<retry>; None without --retry."""
+    if retry is None:
+        return None
+    issues = state.get("refused", {}).get(job(worker, retry))
+    if not issues:
+        raise Fail(f"--retry {retry}: record refused no return for {job(worker, retry)}",
+                   FAILED, "REFUSED")
+    return issues_text(issues)
 
 
 LAZY = {"acceptance_paths": acceptance_paths, "survivors": survivors,
@@ -207,6 +224,8 @@ def brief(args):
         auto = {"skill_dir": str(SKILL_DIR),
                 "result_file": str(out / f"profiler-{n}.json")}
         ad, previous = None, None
+        if args.retry is not None:
+            raise Fail("a profiler brief takes no --retry", CANNOT_RUN, "ERROR")
     else:
         try:
             state = st.load(args.dir)
@@ -216,7 +235,7 @@ def brief(args):
         directory = ad / "briefs"
         n = next_number(directory, worker)
         auto = auto_values(worker, n, state, ad, args.mode)
-        previous = saved_issues(state, worker)
+        previous = saved_issues(state, worker, args.retry)
     needed = briefs.slots(worker, args.mode)
     values, missing = {}, []
     for slot in sorted(needed):
@@ -248,11 +267,6 @@ def brief(args):
             (ad / sub).mkdir(exist_ok=True)
     path = directory / f"{worker}-{n}.md"
     path.write_text(briefs.render(worker, n, args.mode, values), encoding="utf-8")
-    if previous and "previous_issues" in values and "previous_issues" not in given:
-        # Handed on once: a later brief for the same worker type (another
-        # reviewer slot, the next pass) must not inherit them.
-        state["refused"].pop(worker, None)
-        st.save(args.dir, state)
     emit(args.json, "BRIEF", str(path), agent=f"auto-dev:{worker}", n=n,
          prompt=f"Your brief is at {path}. Read it first.",
          result_file=values.get("result_file", ""))
@@ -383,7 +397,8 @@ def coder_bound(path, ad, what):
         return [f"{what}: {path} does not exist"]
     problems = [f"{what}: {p}" for p in check_corrections(art.read(path))]
     problems += [f"{what} copies SPEC.md's wording ({hit}): say what the code must do "
-                 "and where, in your own words" for hit in overlaps(path, ad / "SPEC.md")]
+                 "and where, in your own words"
+                 for hit in overlaps(path, ad / "SPEC.md", quoted=False)]
     return problems
 
 
@@ -493,17 +508,18 @@ def record(args):
             raise Refused("MISMATCH", "the return and the artifacts disagree", issues)
     except Refused as exc:
         token, message, issues = exc.args
-        state.setdefault("refused", {})[args.worker] = issues
+        state.setdefault("refused", {})[job(args.worker, args.n)] = issues
         st.add_note(state, f"{args.worker} #{args.n} refused ({token})")
         st.save(args.dir, state)
         fields = {"issue": issues}
         if data is not None:
             fields["returned"] = json.dumps(data)
         emit(args.json, token, f"{args.worker}-{args.n}: {message}; re-spawn the worker "
-             "(its next brief's previous_issues carries these issues), don't guess",
+             f"with `brief {args.worker} --retry {args.n}` (its previous_issues carries "
+             "these issues), don't guess",
              **fields)
         return FAILED
-    state.get("refused", {}).pop(args.worker, None)
+    state.get("refused", {}).pop(job(args.worker, args.n), None)
     ok = data.get("status") == "ok"
     if ok and args.worker == "define" and data.get("next") in ("FITS", "OVERSIZED"):
         state["size"] = data["next"]
@@ -577,7 +593,13 @@ def check_file(path):
             art.first_table(text, ("Finding", "Vote", "Reason"), str(path))
             return []
         if name.endswith("corrections.md") or parent == "triage":
-            return check_corrections(text)
+            problems = check_corrections(text)
+            spec = run_spec(path)
+            if spec is not None:
+                problems += [f"copies SPEC.md's wording ({hit}): say what the code must "
+                             "do and where, in your own words"
+                             for hit in overlaps(path, spec, quoted=False)]
+            return problems
         if parent == "fixes":
             blocks = FIX_RE.findall(text)
             declared = len(re.findall(r"^FIX\s+\S+", text, re.MULTILINE))
@@ -593,6 +615,14 @@ def check_file(path):
     except ValueError as exc:
         return [f"not valid JSON: {exc}"]
     return [f"no template is known for {name}"]
+
+
+def run_spec(path):
+    """The run's SPEC.md for a file under .auto-dev/ (up to two levels down)."""
+    for parent in list(Path(path).resolve().parents)[:3]:
+        if (parent / "SPEC.md").is_file():
+            return parent / "SPEC.md"
+    return None
 
 
 def check_spec(path):

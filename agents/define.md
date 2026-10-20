@@ -125,7 +125,7 @@ Say what you changed.
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. `next` is one of: `FITS` or `OVERSIZED` (the SIZE you returned), or `REVISED` in revise mode; `reading` is `tester` or `other` for an ambiguous condition, else `none`.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `FITS` or `OVERSIZED` (the SIZE you returned), or `REVISED` in revise mode; `reading` is `tester` or `other` for an ambiguous condition, else `none`.
 
 ```auto-dev-result
 worker: define

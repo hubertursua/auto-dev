@@ -4,6 +4,7 @@ Run: python3 -m unittest discover -s tests -v   (from the repo root)
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -46,6 +47,11 @@ class WorkCase(RunCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         return path
+
+    def state_size(self, size):
+        state = self.state()
+        state["size"] = size
+        self.write_state(state)
 
     def spec_eval(self, v1="met", defective="None."):
         self.write("SPEC_EVAL.md", SPEC_EVAL.format(
@@ -122,20 +128,47 @@ class BriefTest(WorkCase):
         values = self.brief_values(self.dir / "briefs" / "review-judge-1.md")
         self.assertEqual(values["tree"], "a" * 40)
 
-    def test_refused_issues_reach_the_next_brief(self):
+    def test_refused_issues_reach_only_that_jobs_retry(self):
         self.returned("define", 1, next="FITS", high_risk="no", reading="none")
         self.assertEqual(self.cmd("record", "define", "1").returncode, 1)
-        self.assertEqual(self.cmd("brief", "define", "--mode", "write").returncode, 0)
+        self.assertEqual(self.cmd("brief", "define", "--mode", "write", "--retry", "1")
+                         .returncode, 0)
         text = (self.dir / "briefs" / "define-1.md").read_text()
         self.assertIn("previous_issues: - SPEC.md has Security/Compliance criteria", text)
         self.cmd("brief", "define", "--mode", "write")
         values = self.brief_values(self.dir / "briefs" / "define-2.md")
         self.assertEqual(values["previous_issues"], "none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 1)
         self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
         self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        self.cmd("brief", "define", "--mode", "write")
-        values = self.brief_values(self.dir / "briefs" / "define-3.md")
+        r = self.cmd("brief", "define", "--mode", "write", "--retry", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("refused no return for define-1", r.stderr)
+
+    def test_sibling_jobs_keep_their_own_issues(self):
+        # Three reviewers in parallel: R1 wrote nothing, R2 is fine, R3 left a key out.
+        self.returned("code-reviewer", 2, next="REVIEWED", findings="2", leads="0")
+        self.returned("code-reviewer", 3, next="REVIEWED", findings="1")
+        self.assertEqual(self.cmd("record", "code-reviewer", "1").returncode, 1)
+        self.assertEqual(self.cmd("record", "code-reviewer", "2").returncode, 0)
+        self.assertEqual(self.cmd("record", "code-reviewer", "3").returncode, 1)
+
+        def retry(n, slot):
+            r = self.cmd("brief", "code-reviewer", "--mode", "review", "--retry", str(n),
+                         "--set", f"reviewer={slot}", "--set", "scope=whole change")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            return Path(r.stdout.split("BRIEF: ", 1)[1].splitlines()[0]).read_text()
+        self.assertIn("you wrote no result file", retry(1, "R1"))
+        self.assertNotIn("`leads`", retry(1, "R1"))
+        self.assertIn("`leads`", retry(3, "R3"))
+        self.assertEqual(self.cmd("brief", "code-reviewer", "--mode", "review", "--retry",
+                                  "2", "--set", "reviewer=R2", "--set", "scope=x")
+                         .returncode, 1)
+        # A judge's refused consolidate return never reaches a security-verify brief.
+        self.returned("review-judge", 1, next="CLEAN", must_fix_open="0", revote="0")
+        self.write("CODE_REVIEW.md", CODE_REVIEW.format(tree="0" * 40))
+        self.assertEqual(self.cmd("record", "review-judge", "1").returncode, 1)
+        self.cmd("brief", "review-judge", "--mode", "security-verify")
+        values = self.brief_values(self.dir / "briefs" / "review-judge-1.md")
         self.assertEqual(values["previous_issues"], "none")
 
     def test_profiler_brief_needs_no_run(self):
@@ -329,6 +362,52 @@ class RecordTest(WorkCase):
                       triage_file=str(triage), checks_file=str(checks))
         self.assertEqual(self.cmd("record", "triager", "1").returncode, 1)
 
+    def test_a_quoted_test_name_is_not_a_copy_of_the_spec(self):
+        quoted = ("# Required changes\n1. C1: put todos with a due date before undated ones\n"
+                  "   Where: `src/sort.ts:4` — the comparator\n"
+                  "   Now: `src/sort.acceptance.test.ts` :: \"the list sorts todos by due "
+                  "date with the earliest first\" fails\n")
+        path = self.write("evidence/corrections.md", quoted)
+        r = self.cmd("spec-overlap", path)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.cmd("check-artifact", path).returncode, 0)
+        path.write_text(quoted.replace('"the list', "the list").replace('first" fails',
+                                                                         "first fails"))
+        self.assertEqual(self.cmd("spec-overlap", path).returncode, 1)
+        r = self.cmd("check-artifact", path)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("copies SPEC.md's wording", r.stdout)
+        # A plan is checked quoted text and all.
+        plan = self.write("IMPLEMENTATION.md", "Test: \"the list sorts todos by due date "
+                          "with the earliest first\"\n")
+        self.assertEqual(self.cmd("spec-overlap", plan).returncode, 1)
+
+    def test_apply_fix_reports_applied_when_the_new_spec_is_malformed(self):
+        self.state_size("FITS")
+        fix = self.write("fixes/define-1.md", "FIX B1\n<<<<<<< OLD\n## Conditions\n"
+                         "=======\n## Criteria\n>>>>>>> NEW\n")
+        r = self.cmd("apply-fix", self.dir / "SPEC.md", fix)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("## Criteria", (self.dir / "SPEC.md").read_text())
+
+    def test_each_documented_result_block_is_accepted(self):
+        agents = Path(__file__).resolve().parents[1] / "agents"
+        for agent in sorted(agents.glob("*.md")):
+            block = re.search(r"```auto-dev-result\n(.*?)```", agent.read_text(),
+                              re.DOTALL).group(1)
+            keys = dict(line.split(": ", 1) for line in block.strip().splitlines())
+            for token in keys["next"].split(" | "):
+                data = {k: "none" for k in keys}
+                data.update(worker=keys["worker"], status="ok", next=token)
+                path = self.write(f"returns/{keys['worker']}-1.json", json.dumps(data))
+                r = self.cmd("check-artifact", path)
+                self.assertEqual(r.returncode, 0, f"{agent.name} {token}: {r.stdout}")
+            extra = [k for k in keys if k not in ("worker", "status", "next")]
+            if extra:
+                del data[extra[0]]
+                path.write_text(json.dumps(data))
+                self.assertEqual(self.cmd("check-artifact", path).returncode, 1, agent.name)
+
     def test_lookup_answer_must_be_written(self):
         self.returned("lookup", 1, next="ANSWERED", answer_file="")
         r = self.cmd("record", "lookup", "1")
@@ -350,6 +429,14 @@ class TicketTextTest(InitCase):
         text = (self.dir / "briefs" / "define-1.md").read_text()
         self.assertIn("task: TODO-7 Due dates\n  Users can set a due date.\n"
                       "  AC: overdue todos show in red.\n", text)
+
+    def test_without_ticket_text_define_gets_the_restated_ask(self):
+        r = self.init("--ticket", "TODO-7", "--ask", "Let users set a due date on a todo",
+                      task="TODO-7")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.autodev("brief", "define", "--mode", "write", "--dir", self.dir)
+        text = (self.dir / "briefs" / "define-1.md").read_text()
+        self.assertIn("task: Let users set a due date on a todo\n", text)
 
     def test_an_empty_or_missing_ticket_file_stops_before_the_worktree(self):
         empty = self.tmp / "empty.txt"

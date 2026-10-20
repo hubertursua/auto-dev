@@ -12,7 +12,7 @@ Usage:
 
 `--ticket-text-file` names a file holding the ticket's summary and description
 as read from the tracker; it is stored in state.json and given to the Define
-agent verbatim as its task (without it, Define gets the --task text).
+agent verbatim as its task (without it, Define gets --ask, else --task).
 
 Does, in order, stopping at the first failure:
  1. Preflight: python3 >= 3.9, PyYAML, git, gh installed and signed in, and an

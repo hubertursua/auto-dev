@@ -520,9 +520,9 @@ writer that checks over a while compares the tree before and after, and writes
 `Tree: changed during the run` (read as no stamp, so stale) if they differ. The
 verifier does this itself. The two reviews are checked by other agents before
 their writer runs, so you take the hash: run `--print-tree` just before
-spawning the code review panel, and again before spawning the security
-reviewer: `autodev.py brief` fills it into the judge's and the security
-reviewer's `tree` slot. The writer writes it only if its own `--print-tree`
+spawning the code review panel, and pass it to the judge's brief
+(`--set tree=<hash taken before the panel>`); `autodev.py brief` fills the
+security reviewer's `tree` slot itself, at its spawn. The writer writes it only if its own `--print-tree`
 still matches.
 
 **Why a tree hash.** The checks run before anything is committed, so there is no
