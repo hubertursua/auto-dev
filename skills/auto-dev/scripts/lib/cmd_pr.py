@@ -124,7 +124,7 @@ def generate(state, ad, sha):
     body.text("## Summary")
     body.text("<!-- WRITE: what changed and why, 2–4 sentences, drawn from SPEC.md's "
               "Context -->")
-    ticket = ticket_line(state["task"])
+    ticket = ticket_link(state["task"])
     if ticket:
         body.text("")
         body.text(ticket)
@@ -209,7 +209,7 @@ def generate(state, ad, sha):
     return path
 
 
-def ticket_line(task):
+def ticket_link(task):
     """`Ticket: [KEY](link)` for a run started from a ticket, else ''."""
     key = (task.get("ticket") or "").strip()
     if not key or key == "none":
@@ -221,7 +221,6 @@ def ticket_line(task):
 # Where GitHub looks for a PR template, in its order; matched ignoring case.
 TEMPLATE_PLACES = (".github/pull_request_template.md", "pull_request_template.md",
                    "docs/pull_request_template.md")
-TEMPLATE_DIR = ".github/pull_request_template"
 # Template headings the generated sections already answer.
 OURS = {"summary", "acceptance conditions", "quality gate", "review", "assumptions",
         "description", "what", "why", "what and why", "what changed", "changes",
@@ -233,21 +232,19 @@ TESTING = {"testing", "tests", "test", "test plan", "testing done", "how to test
 HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 BOX_RE = re.compile(r"^\s*[-*] \[[ xX]\]\s+")
 COMMENT_RE = re.compile(r"<!--(.*?)-->", re.DOTALL)
+FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+HINT_LIMIT = 200
 
 
 def find_template(wt):
-    """The repo's PR template (as GitHub picks it), or None. A folder of several
-    templates has no default, so none is used then."""
+    """The repo's default PR template, the one GitHub puts in a new PR, or None.
+    A template in a PULL_REQUEST_TEMPLATE/ folder is used only when a PR asks
+    for it by name, never by default, so none from there is used."""
     root = Path(wt)
     for rel in TEMPLATE_PLACES:
         found = _ci_path(root, rel)
         if found and found.is_file():
             return found
-    folder = _ci_path(root, TEMPLATE_DIR)
-    if folder and folder.is_dir():
-        files = sorted(f for f in folder.iterdir() if f.suffix.lower() == ".md")
-        if len(files) == 1:
-            return files[0]
     return None
 
 
@@ -270,7 +267,9 @@ def template_sections(path):
 
     A section the description already answers is left out; a testing section
     points at the checks; a checklist is copied with every box unticked; any
-    other section gets a WRITE line, so the orchestrator answers it from SPEC.md.
+    other section gets a WRITE line carrying what the template asks there (its
+    comments and plain text), so the orchestrator answers it from SPEC.md.
+    A heading inside an HTML comment or a code fence is not a section.
     """
     if path is None:
         return []
@@ -278,8 +277,16 @@ def template_sections(path):
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []
-    sections, current = [], None
+    # Each comment on one line, so a heading inside one isn't read as a section.
+    text = COMMENT_RE.sub(lambda m: "<!-- " + " ".join(m.group(1).split()) + " -->", text)
+    sections, current, fence = [], None, None
     for line in text.splitlines():
+        mark = FENCE_RE.match(line)
+        if mark and fence in (None, mark.group(1)):
+            fence = None if fence else mark.group(1)
+            continue
+        if fence:  # an example in a code block, not the template's own text
+            continue
         match = HEADING_RE.match(line)
         if match:
             current = [match.group(1).strip(), []]
@@ -292,17 +299,22 @@ def template_sections(path):
         if not key or key in OURS:
             continue
         raw = "\n".join(lines)
-        hint = " ".join(" ".join(m.split()) for m in COMMENT_RE.findall(raw)).strip()
         plain = COMMENT_RE.sub("", raw)
         boxes = [BOX_RE.sub("- [ ] ", ln.rstrip()) for ln in plain.splitlines()
                  if BOX_RE.match(ln)]
+        asks = [" ".join(m.split()) for m in COMMENT_RE.findall(raw)]
+        asks += [" ".join(ln.split()) for ln in plain.splitlines()
+                 if ln.strip() and not BOX_RE.match(ln)]
+        hint = " ".join(a for a in asks if a)
+        if len(hint) > HINT_LIMIT:
+            hint = hint[:HINT_LIMIT - 1].rstrip() + "…"
         out.append(f"## {heading}")
         if key in TESTING:
             out.append("See _Acceptance conditions_ and _Quality gate_ above.")
         elif boxes:
             out += boxes
         else:
-            hint = hint.replace("--", "-")
+            hint = re.sub(r"-{2,}", "-", hint)  # it can't end the WRITE comment
             out.append("<!-- WRITE: the repo's PR template asks for this section"
                        + (f" ({hint})" if hint else "") + ". Answer it in plain words "
                        "from SPEC.md, or write N/A -->")
@@ -737,7 +749,10 @@ def post_findings(state, ad, pr, sha):
     A failure is reported, never fatal: the findings are still on disk.
     """
     wt = state["worktree"]
-    findings = review_findings(ad, state)
+    # Each text is cleaned on its own: the review payload is one JSON line, so
+    # cleaning it whole would blank every comment for one secret-looking line.
+    findings = [dict(f, text=text) for f in review_findings(ad, state)
+                if (text := clean(f["text"], wt).strip())]
     if not findings:
         return {"sha": sha, "inline": 0, "general": 0, "error": ""}
     in_diff = diff_lines(wt, state["repo"]["base"], sha)
@@ -752,7 +767,7 @@ def post_findings(state, ad, pr, sha):
                                  "body": f"{f['text']}\n\n{MARKER}"} for f in inline]}
         code, out, err = gh_with_file(wt, json.dumps(payload), "api", "--method", "POST",
                                       f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews",
-                                      "--input")
+                                      "--input", raw=True)
         if code != 0:
             error = f"inline review comments: {(err or out).strip()[:200]}"
             general, inline = findings, []
@@ -774,10 +789,11 @@ def describe_inline(result):
     return text + (f"; failed: {result['error']}" if result["error"] else "")
 
 
-def gh_with_file(wt, text, *args):
+def gh_with_file(wt, text, *args, raw=False):
+    """Run gh with `text` in a file, its path last; `raw`: text already cleaned."""
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
                                      encoding="utf-8") as fh:
-        fh.write(clean(text, wt))
+        fh.write(text if raw else clean(text, wt))
         name = fh.name
     try:
         return gh(wt, *args, name)
@@ -831,7 +847,11 @@ def diff_lines(wt, base, sha):
     code, merge_base, _ = git(wt, "merge-base", f"origin/{base}", sha, check=False)
     if code != 0:
         return {}
-    code, out, _ = git(wt, "diff", "-U3", merge_base.strip(), sha, check=False)
+    # Fixed prefixes and no colour: the user's git config must not change what
+    # is parsed (diff.noprefix, color.diff=always, an external diff tool).
+    code, out, _ = git(wt, "-c", "core.quotePath=false", "diff", "--no-color",
+                       "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-U3",
+                       merge_base.strip(), sha, check=False)
     lines, path = {}, None
     for line in out.splitlines() if code == 0 else []:
         if line.startswith("+++ "):

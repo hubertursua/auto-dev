@@ -635,10 +635,37 @@ def pr_number(state, args):
     return str(pr)
 
 
+def ci_text(state):
+    """The PR's CI result as a gate shows it: a result never watched to the end
+    is never shown as if it might be green."""
+    if state["settings"].get("ci") == "none":
+        return "none"
+    ci = state.get("phase6", {}).get("ci", {}).get("status", "not watched")
+    if ci in ("unavailable", "timeout"):
+        return f"not monitored ({ci}) — never assume green"
+    return ci
+
+
+def staging_text(state):
+    """What the staging step came to, for the main gate; None without staging."""
+    staging = state["repo"].get("staging")
+    if not staging:
+        return None
+    gate = next((g for g in reversed(state.get("gates") or []) if g["gate"] == "staging"),
+                None)
+    if gate and gate.get("choice") == "skip":
+        return f"Staging ({staging}): skipped at the staging gate"
+    mark = (state.get("marks") or {}).get("staging-ci")
+    value = mark["value"] if mark else "not watched"
+    text = f"Staging ({staging}) CI after the merge: {value}"
+    if value == "red":
+        text += " — say so before asking; it does not block the merge"
+    return text
+
+
 def staging_summary(state, ad, args):
     pr = pr_number(state, args)
-    ci = state.get("phase6", {}).get("ci", {}).get("status", "not watched")
-    return [f"PR #{pr}, CI: {ci}",
+    return [f"PR #{pr}, CI: {ci_text(state)}",
             (f"Direct merge (no PR) of {state['branch']} into "
              f"{state['repo'].get('staging') or 'n/a'}")], []
 
@@ -661,17 +688,17 @@ def main_summary(state, ad, args):
     head = info.get("headRefOid", "")
     fresh_or_fail(wt, ad, f"the PR's head {head[:12]} holds code no result checked: "
                   "bring it in and re-run the stale results first.", "--ref", head)
-    ci = state.get("phase6", {}).get("ci", {}).get("status", "not watched")
-    if state["settings"].get("ci") == "none":
-        ci = "none"
-    elif ci in ("unavailable", "timeout"):
-        ci = f"not monitored ({ci}) — never assume green"
+    from .cmd_pr import MARKER  # the pipeline's own posts are not people's
     review_lines, _ = review_block(ad)
-    comments = len(info.get("comments") or []) + len(info.get("reviews") or [])
-    lines = [f"PR {info.get('url', '#' + pr)}, CI: {ci}",
+    comments = len([x for x in (info.get("comments") or []) + (info.get("reviews") or [])
+                    if MARKER not in (x.get("body") or "")])
+    lines = [f"PR {info.get('url', '#' + pr)}, CI: {ci_text(state)}",
              (f"Review decision: {info.get('reviewDecision') or 'none'}; "
               f"{comments} human review(s)/comment(s): triage them before asking"),
              f"Mergeable: {info.get('mergeable')} / {info.get('mergeStateStatus')}",
              f"Head {head}: every result was checked on it; the merge is locked to it",
              *review_lines]
+    staged = staging_text(state)
+    if staged:
+        lines.insert(1, staged)
     return lines, []

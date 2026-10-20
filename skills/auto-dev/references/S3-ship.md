@@ -79,7 +79,7 @@ line, `autodev.py pr publish`:
 
 | Exit | Do |
 |---|---|
-| 0 | published: run `next`. If its `inline_comments` line says posting failed, say so in the final report |
+| 0 | published: run `next`. A failure to post the review findings (its `inline_comments` line) is saved; `next`'s final-report step names it |
 | 1 | IF it names a WRITE line or a problem in a section you wrote, fix them and run it again. ELSE tell the user what it printed and stop |
 | 2 | tell the user the error and stop |
 
@@ -98,8 +98,8 @@ _Moving a ticket_ says, then run its `AFTER` line.
    only GitHub Actions.
 2. ELSE find the commit the merge made with the command `next`'s `ACTION`
    names: for the base branch, `gh pr view <PR number> --json mergeCommit -q
-   .mergeCommit.oid`; for staging, `git -C <worktree> rev-parse
-   origin/<staging>` (the commit `merge-staging` pushed).
+   .mergeCommit.oid`; for staging, the commit `merge-staging` pushed, which
+   `next` names (saved as `phase6.staging_merge`).
 3. Run `gh run list --commit <sha> --json status,conclusion,url,workflowName`
    every 30 seconds, for up to the CI timeout in `profile.md`:
    - any run `completed` with a conclusion other than `success`, `skipped` or
@@ -151,7 +151,11 @@ Every stop is exit 4 with its reason in `REPORT`
 (`references/tables.md`, _Stop conditions_). The ones that need care:
 
 - **CI red at the main gate (#19):** never merge over it; name each red check.
-- **Someone pushed to the PR branch (#18):** tell the user; the pipeline must
-  re-check those commits before merging.
+- **Someone pushed to the PR branch (#18):** tell the user what the `REPORT`
+  says: to ship those commits, they bring them into the worktree with the
+  `git merge --ff-only` command it names and say `auto-dev continue`. `next`
+  then re-checks them (quality gate, verifier, a review pass on what they
+  changed), `commit` verifies the new head without committing, and the main
+  gate is asked again.
 - **GitHub refused or queued the merge (#20):** say what blocks it; Jira stays
   where it is.

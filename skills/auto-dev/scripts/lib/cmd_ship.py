@@ -13,6 +13,8 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     step before the commit fails. The commit is recorded before it is checked:
     if that check cannot run (exit 2, which names the commit), run `commit`
     again on the clean tree and it checks that commit instead of committing.
+    `next` uses the same path for commits pushed to the PR branch outside the
+    pipeline, once they are brought into the worktree and re-checked.
     Exit: 0 committed and verified (push it); 1 refused: stale results (re-run
     them and ask the PR gate again), nothing to commit, staged-set check or the
     commit failed; 3 committed but NOT verified: do not push, stop and report.

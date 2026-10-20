@@ -55,7 +55,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 15 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
 | 16 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), infrastructure (`INFRA`), a flaky test (`FLAKY`) or no clear cause (`UNKNOWN`). Reported before Jira moves to In Review or staging is asked. Lifted by `auto-dev continue` once the cause is fixed and CI re-run: CI is watched again | triager's CI mode |
 | 17 | the staging merge conflicted or its push was rejected | `merge-staging` exit 1 or 3, then `next` |
-| 18 | someone pushed commits to the PR branch the pipeline didn't check | `check-fresh --ref`, inside `next` |
+| 18 | someone pushed commits to the PR branch the pipeline didn't check. Lifted once the user fast-forwards the worktree to `origin/<branch>` (`git merge --ff-only`, which the report names) and says `auto-dev continue`: the commits are re-checked, then the main gate is asked again | `check-fresh --ref`, inside `next` |
 | 19 | CI is red at the main gate | `next` |
 | 20 | GitHub refused or only queued the merge | `merge-pr` exit 3 or 4, then `next` |
 | 21 | the user chose Stop at a gate or pause | `gate … stop` |
@@ -130,7 +130,7 @@ points; you never run it yourself.
 | Start of Phase 6, nothing committed yet | the code changed outside the pipeline since S2 | the quality gate and the verifier run again, then the full review |
 | The PR gate | the code changed while the gate waited | re-checked as above, then the gate is asked again |
 | `commit` | the code changed after the gate | re-checked as above, then the gate is asked again |
-| Before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#18) |
+| Before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#18); once the user brings the commits into the worktree, the quality gate and the verifier run again, a review pass covers what they changed, `commit` verifies the new head without committing, and the main gate is asked again |
 | The same check, stale twice running | the re-run didn't settle it | stop (#13) |
 
 ## Lookups

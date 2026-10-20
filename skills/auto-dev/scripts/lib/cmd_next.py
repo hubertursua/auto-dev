@@ -50,10 +50,10 @@ Exit codes:
 `next` never exits 1: a step it could not take is a stop (4) that says why.
 
 Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
-(80), `next` ends the session at the next clean point with exit 6 and
-`handoff --checkpoint`, so no session's context grows without bound. A clean
-point is one where the step would be an action (exit 0) and no brief is in
-flight: a stop, a question or a session boundary the step would print comes
+(80, or `checkpoint_events` in .auto-dev.yml), `next` ends the session at the
+next clean point with exit 6 and `handoff --checkpoint`, so no session's context
+grows without bound. A clean point is one where the step would be an action
+(exit 0) and no brief is in flight: a stop, a question or a session boundary the step would print comes
 first. A stop that only a write would reveal (one found after applying FIX
 blocks or starting a review pass) comes in the next session instead. A new
 session says `auto-dev continue` and picks up where this one stopped; resuming
@@ -1036,6 +1036,12 @@ def open_correction(c):
     c.dirty = True
     # Even when the budget ran out, the code changed: reviews are free, and the
     # gate needs reports on the code as it is.
+    if corr.get("since"):
+        # Committed outside changes: a working-tree pass would see nothing.
+        files = [f for f in git(c.wt, "diff", "--name-only", corr["since"],
+                                "HEAD").splitlines() if f and not f.startswith(".auto-dev/")]
+        return start_pass(c, "outside", files, "the outside commits are re-checked: the "
+                          "panel reviews what they changed", since=corr["since"])
     if corr["entry"] == "outside":
         return start_pass(c, "first", None, "the outside changes are re-checked: the "
                           "panel reviews the whole change")
@@ -1085,10 +1091,13 @@ def mark_committed(c, why):
     c.dirty = True
 
 
-def start_correction(c, entry, consumer, file, spend_id, rule, checks=None, why=""):
+def start_correction(c, entry, consumer, file, spend_id, rule, checks=None, why="",
+                     since=None):
     """A Phase 6 correction: the coder gets `file` (when given); `checks` (scope,
     report) sends acceptance checks to the tester's repair mode first. `why`
-    goes into the report when no round is left (the red checks, for CI)."""
+    goes into the report when no round is left (the red checks, for CI).
+    `since` (an outside correction only): the outside changes are the commits
+    after it, so the review pass that follows reviews `git diff <since>`."""
     after_commit = bool(c.p6.get("verified_sha"))
     budget = None
     if spend_id:
@@ -1110,6 +1119,8 @@ def start_correction(c, entry, consumer, file, spend_id, rule, checks=None, why=
     corr = {"entry": entry, "consumer": consumer, "file": file, "checks": checks,
             "seq": c.seq(), "after_commit": after_commit, "snapshot": snapshot,
             "rule": rule, "budget": budget, "spend_id": spend_id}
+    if since:
+        corr["since"] = since
     c.p6["corrections"].append(corr)
     c.dirty = True
     return first_of(c, corr)
@@ -1134,24 +1145,29 @@ def check_fresh(c, *extra):
     return (err or out).strip() if code else ""
 
 
-def start_pass(c, scope, files, rule):
+def start_pass(c, scope, files, rule, since=None):
     n = c.p6.get("review_pass", 0) + 1
     c.would(f"start code-review pass {n} ({scope}) and spawn the panel", rule)
     c.p6["review_pass"] = n
     (c.ad / "review" / f"pass-{n}").mkdir(parents=True, exist_ok=True)
     cmd_checks.git_add_intent(c.wt)
     tree = cmd_review.print_tree(c.wt)
-    c.p6["passes"].append({"n": n, "scope": scope, "files": files or [], "tree": tree,
-                           "seq": c.seq()})
+    p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq()}
+    if since:
+        p["since"] = since
+    c.p6["passes"].append(p)
     c.dirty = True
-    return spawn_many(c, [("code-reviewer", "review", reviewer_sets(scope, files, slot))
+    return spawn_many(c, [("code-reviewer", "review", reviewer_sets(scope, files, slot,
+                                                                    since))
                           for slot in SLOTS], rule)
 
 
-def reviewer_sets(scope, files, slot):
+def reviewer_sets(scope, files, slot, since=None):
     sets = {"reviewer": slot, "scope": scope}
-    if scope == "review-fix":
+    if scope in ("review-fix", "outside"):
         sets["files"] = ", ".join(files or []) or "none"
+    if scope == "outside":
+        sets["since"] = since or "HEAD"
     return sets
 
 
@@ -1168,7 +1184,8 @@ def review_step(c, p):
             respawn.append(slot)
     if respawn:
         return spawn_many(c, [("code-reviewer", "review",
-                               reviewer_sets(p["scope"], p["files"], slot))
+                               reviewer_sets(p["scope"], p["files"], slot,
+                                             p.get("since")))
                               for slot in respawn],
                           "a code reviewer failed: it gets one re-spawn")
     judge = c.last("review-judge", after=p["seq"], mode="consolidate")
@@ -1336,6 +1353,9 @@ def check_scope(c, rows):
 def scope_text(p):
     if p["scope"] == "review-fix":
         return "only the files a correction changed: " + (", ".join(p["files"]) or "none")
+    if p["scope"] == "outside":
+        return (f"the commits pushed to the PR branch outside the pipeline (`git diff "
+                f"{p.get('since', 'HEAD')}`): " + (", ".join(p["files"]) or "none"))
     return {"first": "the whole change (the uncommitted working tree against HEAD)",
             "after-commit": "the uncommitted correction (the working tree against HEAD)",
             }.get(p["scope"], p["scope"])
@@ -1399,19 +1419,21 @@ def pr_gate(c):
         "the reviews have settled: the PR gate")
 
 
-def stale_again(c, detail):
+def stale_again(c, detail, since=None):
     """A result went stale: re-check the outside changes, unless that re-check
-    itself just ran (nobody answered the PR gate or resumed since)."""
+    itself just ran (nobody answered the PR gate or resumed since). `since`: the
+    outside changes are commits on top of that one (see outside_push)."""
     outside = next((k for k in reversed(c.p6["corrections"]) if k["entry"] == "outside"),
                    None)
     gate = c.gate("pr")
-    since = max(gate["seq"] if gate else 0, c.resumed())
-    if outside and outside["seq"] > since:
+    asked = max(gate["seq"] if gate else 0, c.resumed())
+    if outside and outside["seq"] > asked:
         return stop([("A report is stale again right after its own re-run: something "
                      "rewrites the code on every run. Tell the user:"), detail],
                     "stale twice running")
     return start_correction(c, "outside", 4, None, None,
-                            "the code changed outside the pipeline: re-check it")
+                            "the code changed outside the pipeline: re-check it",
+                            since=since)
 
 
 def commit_step(c):
@@ -1556,9 +1578,8 @@ def staging_step(c):
                       "the staging gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("staging-ci"):
         return action(f"watch CI on the staging branch, {c.state['repo']['staging']} "
-                      "(references/S3-ship.md, CI after a merge; the commit merge-staging "
-                      f"pushed: `git -C {q(c.wt)} rev-parse "
-                      f"{q('origin/' + str(c.state['repo']['staging']))}`); report a "
+                      "(references/S3-ship.md, CI after a merge), on the commit "
+                      f"merge-staging pushed, {c.p6['staging_merge']}; report a "
                       "failure to the user, don't gate on it",
                       "staging was merged", AFTER=[c.cmd("mark", "staging-ci", "--value",
                                                          "<green | red | not watched>")])
@@ -1605,9 +1626,7 @@ def main_step(c, sha):
     if not p6.get("merged"):
         stale = fetch_and_check(c)
         if stale:
-            return stop([("The PR's branch holds commits the pipeline did not check "
-                         "(someone pushed to it). Tell the user; bring them in and "
-                         "re-check before merging:"), stale], "the PR head moved")
+            return outside_push(c, sha, stale)
         attempt = p6.get("merge_attempt")
         gate = c.gate("main", after=max(p6.get("commit_seq", 0),
                                         attempt["seq"] if attempt and
@@ -1641,9 +1660,13 @@ def main_step(c, sha):
     if jira:
         return jira
     if not c.mark("final-report"):
+        failed = (p6.get("inline") or {}).get("error")
         return action("write the final report for the user (references/S3-ship.md, "
                       "_The final report_): what shipped, the PR, the checks for a "
-                      "person, the budget used, anything left open",
+                      "person, the budget used, anything left open"
+                      + (f"; and that the review findings could not all be posted on "
+                         f"the PR ({failed}): they are in CODE_REVIEW.md and "
+                         "SECURITY_REVIEW.md" if failed else ""),
                       "the PR is merged", AFTER=[c.cmd("mark", "final-report")])
     gate = c.gate("cleanup")
     if gate is None:
@@ -1662,6 +1685,31 @@ def main_step(c, sha):
                            "complete (its state goes with the worktree)")}
     return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
             "RULE": "the user kept the worktree"}
+
+
+def outside_push(c, sha, stale):
+    """The PR's branch moved past the verified commit. Once the user has brought
+    those commits into the worktree, they are re-checked like any outside
+    change (the quality gate, the verifier, then a review pass on what they
+    changed since `sha`), and `commit` then verifies HEAD without committing."""
+    branch = c.state["branch"]
+    head = git(c.wt, "rev-parse", "HEAD").strip()
+    code, remote, _ = git(c.wt, "rev-parse", f"origin/{branch}", check=False)
+    add, remove = changed_paths(c.wt)
+    if code == 0 and remote.strip() == head and head != sha and not add and not remove:
+        c.would("re-check the PR branch's commits brought into the worktree",
+                "the user brought the outside commits in")
+        result = stale_again(c, stale, since=sha)
+        if result["code"] != NEXT_STOP:
+            c.p6["unverified_commit"] = head  # `commit` verifies it, no new commit
+            c.dirty = True
+        return result
+    return stop([("The PR's branch holds commits the pipeline did not check (someone "
+                  "pushed to it). Tell the user: to ship them, they bring them into the "
+                  f"worktree with `git -C {q(c.wt)} merge --ff-only "
+                  f"{q('origin/' + branch)}` and say `auto-dev continue`; the pipeline "
+                  "then re-checks them (quality gate, verifier, review) and asks the "
+                  "main gate again:"), stale], "the PR head moved")
 
 
 def fetch_and_check(c):

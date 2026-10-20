@@ -44,7 +44,7 @@
         "The orchestrator edits pr-body.md only at its `<!-- WRITE: ... -->` lines, and the PR is opened by `autodev.py pr publish`, never by a `gh pr create` the orchestrator writes",
         "The orchestrator never reads a source file, a diff, SPEC_EVAL.md or a review report itself; when it needs a fact it spawns auto-dev:lookup",
         "When the fixture repo has a PR template, the PR body carries each of its sections: a testing section pointing at the checks, its checklist unticked, and any other section answered in plain words or N/A",
-        "IMPLEMENTATION.md and every evidence/corrections.md copy no run of six words from a SPEC.md condition (`autodev.py spec-overlap <file>` exits 0 on each)",
+        "IMPLEMENTATION.md (with any plan-reviewer FIX blocks applied) and every evidence/corrections.md copy no run of six words from a SPEC.md condition (`autodev.py spec-overlap <file>` exits 0 on each)",
         "When the fixture repo's .auto-dev.yml sets `pr_review.inline_comments: true`, the review findings left open or advisory are posted on the PR once, after it opens: inline at their line when it is in the diff, the rest in one general comment"
       ]
     },
@@ -258,14 +258,15 @@
       "session": "S3 (outside push before the main gate)",
       "setup": "Run eval 5 through S2 in a repo whose CI reports to GitHub (its saved profile's `ci` is that provider, not `none`), then S3 interactively as in eval 9: approve the PR gate, let the run go through the PR being opened and CI, and answer the main gate with Hold. From a separate clone, push one commit to the PR branch that changes a source file the PR touches (for example, a reworded comment or message that keeps the tests green). Then start a fresh session in the main repo checkout, interactively.",
       "prompt": "auto-dev continue",
-      "expected_output": "`resume` un-holds the main gate. Before asking it again, `next` fetches the PR branch and runs check-fresh.py --ref origin/<branch>, which fails and names the file the outside commit changed. `next` exits 4 (stop condition 18): the orchestrator tells the user the PR's branch holds commits the pipeline did not check, names the file, and stops. It does not merge, does not ask the main gate, and does not bring the commit in itself: no fetch-and-merge, rebase, reset or force-push in the worktree. The PR stays open.",
+      "expected_output": "`resume` un-holds the main gate. Before asking it again, `next` fetches the PR branch and runs check-fresh.py --ref origin/<branch>, which fails and names the file the outside commit changed. `next` exits 4 (stop condition 18): the orchestrator tells the user the PR's branch holds commits the pipeline did not check, names the file, and stops. It does not merge, does not ask the main gate, and does not bring the commit in itself: no fetch-and-merge, rebase, reset or force-push in the worktree. The PR stays open. The REPORT tells the user how to go on: bring the commits into the worktree with `git -C <worktree> merge --ff-only origin/<branch>` and say `auto-dev continue`. (When the user does that, `next` re-checks the commits: auto-dev:cleanup with scope `outside`, the verifier, then a code-review pass with scope `outside` naming the changed file; `autodev.py commit` then verifies the new head without making a commit, and the main gate is asked again. That follow-up is not part of this prompt.)",
       "files": [],
       "expectations": [
         "`next` exits 4 before the main gate is asked, and its REPORT names the file the outside commit changed",
         "The final message tells the user someone pushed commits to the PR branch that the pipeline did not check, and names the file",
         "No `gh pr merge` or `autodev.py merge-pr` is run, and the PR stays open",
         "The orchestrator runs no git merge, rebase, reset or force-push in the worktree",
-        "state.json is left with Phase 6 open (not done), so nothing reports the run as shipped"
+        "state.json is left with Phase 6 open (not done), so nothing reports the run as shipped",
+        "The final message tells the user how to ship the outside commits: run the `git merge --ff-only origin/<branch>` command `next` names in the worktree, then say `auto-dev continue`, after which the pipeline re-checks them before the main gate"
       ]
     },
     {

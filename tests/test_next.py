@@ -997,16 +997,97 @@ class TemplateTest(unittest.TestCase):
         self.assertIn("## Checklist\n- [ ] I added tests\n- [ ] Docs updated", text)
         self.assertNotIn("Please check", text)
 
-    def test_a_folder_of_several_templates_has_no_default(self):
+    def test_a_template_folder_is_never_the_default(self):
+        # GitHub applies a template from this folder only when a PR asks for it.
         self.write(".github/PULL_REQUEST_TEMPLATE/bug.md", "## Bug\n")
         self.write(".github/PULL_REQUEST_TEMPLATE/feature.md", "## Feature\n")
         self.assertIsNone(self.cmd_pr.find_template(self.tmp))
         (self.tmp / ".github/PULL_REQUEST_TEMPLATE/feature.md").unlink()
-        self.assertEqual(self.cmd_pr.find_template(self.tmp).name, "bug.md")
+        self.assertIsNone(self.cmd_pr.find_template(self.tmp))
+
+    def test_headings_in_comments_and_code_blocks_are_not_sections(self):
+        found = self.write("pull_request_template.md",
+                           "## Rollout\n<!--\n## Example heading in a comment\n-->\n"
+                           "```md\n# not a heading\n```\n~~~\n## nor this\n~~~\n")
+        lines = self.cmd_pr.template_sections(found)
+        self.assertEqual([ln for ln in lines if ln.startswith("#")], ["## Rollout"])
+        self.assertNotIn("not a heading", "\n".join(lines))
+
+    def test_a_section_s_plain_instructions_reach_its_write_line(self):
+        found = self.write("pull_request_template.md",
+                           "## Risk\nDescribe the risk and the rollout plan.\n")
+        self.assertIn("## Risk\n<!-- WRITE: the repo's PR template asks for this section "
+                      "(Describe the risk and the rollout plan.)",
+                      "\n".join(self.cmd_pr.template_sections(found)))
 
     def test_no_template_adds_nothing(self):
         self.assertEqual(self.cmd_pr.template_sections(self.cmd_pr.find_template(self.tmp)),
                          [])
+
+
+class ReviewFindingsTest(unittest.TestCase):
+    """Which review rows `pr publish` posts, without GitHub."""
+
+    def test_open_and_advisory_rows_are_posted_fixed_ones_are_not(self):
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        code = OPEN_REVIEW.replace(
+            "| open |\n",
+            "| open |\n| C2 | blank title | `src/save.ts:3` | correctness | 3/3 | High "
+            "| fixed |\n", 1)
+        (tmp / "CODE_REVIEW.md").write_text(code.format(tree="0" * 40))
+        sec = SECURITY_MUST_FIX.replace(
+            "| S2 | session token not rotated |",
+            "| S4 | verbose error | `src/err.ts:2` | introduced | Low | confirmed "
+            "| advisory | — |\n| S2 | session token not rotated |")
+        (tmp / "SECURITY_REVIEW.md").write_text(sec.format(tree="0" * 40))
+        found = cmd_pr.review_findings(tmp, {"marks": {}})
+        self.assertEqual(sorted(f["where"] for f in found),
+                         ["src/due.ts:9", "src/err.ts:2", "src/sort.ts:4"])
+
+    def test_a_finding_is_posted_in_its_plain_words(self):
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        review = OPEN_REVIEW.replace("## Pending re-vote", (
+            "### C1 — null due date crashes sort\n"
+            "In plain words: sorting crashed on a todo with no due date.\n\n"
+            "## Pending re-vote"), 1)
+        (tmp / "CODE_REVIEW.md").write_text(review.format(tree="0" * 40))
+        found = cmd_pr.review_findings(tmp, {"marks": {}})
+        self.assertIn("sorting crashed on a todo with no due date", found[0]["text"])
+
+    def test_others_sent_to_a_separate_pr_are_posted(self):
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        rows = "".join(f"| S{i} | old issue {i} | `src/old{i}.ts:{i}` | pre-existing | Medium "
+                       "| confirmed | for the user | — |\n" for i in range(5, 9))
+        sec = SECURITY_REVIEW.replace("| S2 | session token not rotated |",
+                                      rows + "| S2 | session token not rotated |")
+        (tmp / "SECURITY_REVIEW.md").write_text(sec.format(tree="0" * 40))
+        found = cmd_pr.review_findings(tmp, {"marks": {"triage-others": {"value": "separate"}}})
+        self.assertEqual(len(found), 3)  # the gate asked two one by one; three were "Others"
+
+    def test_a_template_hint_cannot_end_the_write_comment(self):
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "pull_request_template.md").write_text("## Rollout\n<!-- flag a--b -->\n")
+        line = cmd_pr.template_sections(cmd_pr.find_template(tmp))[1]
+        self.assertEqual(line.count("--"), 2)  # only the comment's own <!-- and -->
+
+    def test_the_ticket_link(self):
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        self.assertEqual(cmd_pr.ticket_link({"ticket": "none"}), "")
+        self.assertEqual(cmd_pr.ticket_link({}), "")
+        self.assertEqual(cmd_pr.ticket_link({"ticket": "TODO-7"}), "Ticket: TODO-7")
 
 
 class TicketTest(NextCase):
@@ -1018,6 +1099,26 @@ class TicketTest(NextCase):
         state = self.state()
         state["task"].update(ticket="TODO-7", ticket_url="https://acme.atlassian.net/browse/TODO-7")
         self.write_state(state)
+
+    def test_the_repo_s_pr_template_reaches_the_body(self):
+        self.ship_ready()
+        (self.worktree / ".github").mkdir(exist_ok=True)
+        (self.worktree / ".github" / "pull_request_template.md").write_text(
+            "## Screenshots\n<!-- for UI changes -->\n")
+        sha = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        state = self.state()
+        state["phase6"]["verified_sha"] = sha
+        self.write_state(state)
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.spec_eval()
+        self.lint()
+        r = self.autodev("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = (self.dir / "pr-body.md").read_text()
+        self.assertIn("## Screenshots\n<!-- WRITE: the repo's PR template asks for this "
+                      "section (for UI changes)", text)
+        self.assertLess(text.index("## Screenshots"), text.index("## Assumptions"))
 
     def test_the_ticket_is_linked_in_the_summary(self):
         self.open_pr()
@@ -1056,6 +1157,7 @@ class InlineCommentsTest(NextCase):
         self.assertIn("repos/{owner}/{repo}/pulls/12/reviews", review[0]["args"])
         payload = json.loads(next(iter(review[0]["files"].values())))
         self.assertEqual(payload["commit_id"], sha)
+        self.assertEqual(payload["event"], "COMMENT")
         self.assertEqual([(c["path"], c["line"]) for c in payload["comments"]],
                          [("due.ts", 1)])
         self.assertIn("**Advisory** (confidence Low): magic number",
@@ -1065,6 +1167,7 @@ class InlineCommentsTest(NextCase):
         comment = next(iter(general[0]["files"].values()))
         self.assertIn("`app.ts:40`: **Advisory** (confidence Medium): slow loop", comment)
         # everything the pipeline posts ends with the marker the triager skips
+        sys.path.insert(0, str(SCRIPTS))
         from importlib import import_module as load
         marker = load("lib.cmd_pr").MARKER
         self.assertEqual(comment.rstrip("\n").split("\n")[-1], marker)
@@ -1091,6 +1194,64 @@ class InlineCommentsTest(NextCase):
         self.assertEqual((inline["inline"], inline["general"]), (0, 0))
         self.assertIn("Unprocessable", inline["error"])
         self.assertIn("Forbidden", inline["error"])
+
+    def test_a_republish_posts_the_findings_only_once(self):
+        self.open_pr(
+            first=[{"args": ["pr", "view", "12", "--json", "body"], "stdout": '{"body": ""}'}],
+            extra=[{"args": ["api", "--method", "POST"], "stdout": "{}"},
+                   {"args": ["pr", "comment"], "stdout": "https://x/pull/12#issuecomment-5\n"},
+                   {"args": ["pr", "edit"], "stdout": ""}])
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.calls()
+        self.assertEqual(len([c for c in calls if c["args"][:1] == ["api"]]), 1)
+        self.assertEqual(len([c for c in calls if c["args"][:2] == ["pr", "comment"]]), 1)
+
+    def test_a_refused_review_moves_every_finding_to_the_general_comment(self):
+        self.open_pr(extra=[
+            {"args": ["api", "--method", "POST"], "stderr": "Unprocessable", "exit": 1},
+            {"args": ["pr", "comment"], "stdout": "https://x/pull/12#issuecomment-5\n"}])
+        inline = self.state()["phase6"]["inline"]
+        self.assertEqual((inline["inline"], inline["general"]), (0, 2))
+        self.assertIn("Unprocessable", inline["error"])
+        general = [c for c in self.calls() if c["args"][:2] == ["pr", "comment"]]
+        comment = next(iter(general[0]["files"].values()))
+        self.assertIn("`due.ts:1`", comment)
+        self.assertIn("`app.ts:40`", comment)
+
+    def test_the_publish_output_says_how_findings_were_posted(self):
+        _sha, _url, _out, body = self.to_body(extra=[
+            {"args": ["api", "--method", "POST"], "stdout": "{}"},
+            {"args": ["pr", "comment"], "stdout": "https://x/pull/12#issuecomment-5\n"}])
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1 posted inline, 1 in a general comment", r.stdout)
+
+    def test_a_secret_looking_finding_does_not_blank_the_others(self):
+        self.review_text = self.review_text.replace(
+            "| C6 |", "| C7 | token = abcdef1234567890XYZ | `due.ts:1` | security | 1/3 "
+            "| Low | test data |\n| C6 |")
+        self.open_pr(extra=[
+            {"args": ["api", "--method", "POST"], "stdout": "{}"},
+            {"args": ["pr", "comment"], "stdout": "https://x/pull/12#issuecomment-5\n"}])
+        review = [c for c in self.calls() if c["args"][:3] == ["api", "--method", "POST"]]
+        payload = json.loads(next(iter(review[0]["files"].values())))
+        self.assertEqual([c["body"].split("\n")[0] for c in payload["comments"]],
+                         ["**Advisory** (confidence Low): magic number"])
+        inline = self.state()["phase6"]["inline"]
+        self.assertEqual((inline["inline"], inline["general"], inline["error"]), (1, 1, ""))
+
+    def test_the_user_s_diff_settings_do_not_hide_the_diff(self):
+        for key, value in (("diff.noprefix", "true"), ("color.diff", "always"),
+                           ("color.ui", "always")):
+            self.sh("git", "config", key, value, cwd=self.worktree)
+        self.open_pr(extra=[
+            {"args": ["api", "--method", "POST"], "stdout": "{}"},
+            {"args": ["pr", "comment"], "stdout": "https://x/pull/12#issuecomment-5\n"}])
+        inline = self.state()["phase6"]["inline"]
+        self.assertEqual((inline["inline"], inline["general"]), (1, 1))
 
     def test_nothing_is_posted_when_the_key_is_off(self):
         self.inline = False
@@ -1212,6 +1373,63 @@ class CiTest(NextCase):
         out = self.next(0)
         self.assertIn("mark main-ci", out["AFTER"][0])
 
+    def test_a_failed_findings_post_reaches_the_final_report(self):
+        sha = self.ready()
+        self.watch()
+        self.after(self.next(5), "Merge PR to main")
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        state = self.state()
+        state["phase6"]["inline"] = {"sha": sha, "inline": 0, "general": 0,
+                                     "error": "general comment: Forbidden"}
+        self.write_state(state)
+        self.assertIn("mark main-ci", self.next(0)["AFTER"][0])
+        r = self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertIn("final report", out["ACTION"])
+        self.assertIn("could not all be posted on the PR (general comment: Forbidden)",
+                      out["ACTION"])
+
+    def test_the_main_gate_shows_the_staging_ci_and_only_people_s_comments(self):
+        self.ready()
+        self.watch()
+        self.sh("git", "push", "-q", "origin", "origin/main:refs/heads/staging",
+                cwd=self.worktree)
+        state = self.state()
+        state["repo"]["staging"] = "staging"
+        state["phase6"]["ci"]["status"] = "timeout"
+        self.write_state(state)
+        out = self.next(5)
+        self.assertIn("staging", out["QUESTION"])
+        self.assertIn("CI: not monitored (timeout) — never assume green",
+                      " ".join(out["SUMMARY"]))
+        self.after(out, "Merge to staging")
+        self.assertIn("merge-staging", self.next(0)["ACTION"])
+        r = self.autodev("merge-staging", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = self.state()["phase6"]["staging_merge"]
+        out = self.next(0)
+        self.assertIn(merged, out["ACTION"])  # the commit merge-staging pushed
+        self.assertNotIn("rev-parse", out["ACTION"])
+        r = self.autodev("mark", "staging-ci", "--value", "red", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sys.path.insert(0, str(SCRIPTS))
+        marker = import_module("lib.cmd_pr").MARKER
+        responses = json.loads((self.tmp / "gh.json").read_text())
+        sha = self.state()["phase6"]["verified_sha"]
+        responses.insert(0, {"args": ["pr", "view", "12", "--json"], "stdout": json.dumps({
+            "url": "https://github.com/acme/app/pull/12", "isDraft": False,
+            "state": "OPEN", "headRefOid": sha,
+            "comments": [{"body": f"Command output\n\n{marker}"}, {"body": "LGTM"}],
+            "reviews": [{"body": f"Findings\n\n{marker}"}]})})
+        self.script_gh(responses)
+        out = self.next(5)
+        summary = " ".join(out["SUMMARY"])
+        self.assertIn("main", out["QUESTION"])
+        self.assertIn("Staging (staging) CI after the merge: red", summary)
+        self.assertIn("1 human review(s)/comment(s)", summary)
+
     def test_red_ci_the_code_cannot_fix_holds_before_jira_and_staging(self):
         self.github_ci()
         checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
@@ -1272,10 +1490,10 @@ class HumanAndMainGateTest(NextCase):
                          f"{self.dir}/triage/human-1.md")
         self.assertIn("human-1", out["BUDGET"])
 
-    def test_an_outside_push_after_a_held_main_gate_stops_before_it_is_asked_again(self):
+    def test_an_outside_push_after_a_held_main_gate_is_re_checked_before_it_is_asked(self):
         # Eval 16: the main gate is held, someone pushes to the PR branch, and a
         # fresh session resumes the run.
-        self.open_pr()
+        old, url = self.open_pr()
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
         out = self.next(0)
@@ -1298,6 +1516,67 @@ class HumanAndMainGateTest(NextCase):
         self.assertIn("app.ts", report)
         self.assertNotIn("QUESTION", out)  # the main gate is not asked
         self.assertNotIn("merge-pr", json.dumps(out))
+        self.assertIn(f"merge --ff-only origin/{branch}", report)
+        # The user brings the commits in: they are re-checked, and reviewed.
+        self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
+        head = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        self.resume()
+        before = self.state()
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertIn("re-check the PR branch's commits", r.stdout)
+        self.assertEqual(self.state(), before)  # --explain writes nothing
+        _, jobs = self.expect("cleanup")
+        self.assertEqual(self.sets(*jobs[0])["scope"], "outside")
+        self.assertEqual(self.state()["phase6"]["unverified_commit"], head)
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        self.spec_eval()
+        self.expect("verifier", "ALL_MET", tree="x", corrections="0")
+        self.panel()  # asserts three reviewers
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p["files"], p["since"]), ("outside", ["app.ts"], old))
+        sets = self.sets("code-reviewer", max(n for w, n in (
+            (b["worker"], b["n"]) for b in self.state()["briefs"]) if w == "code-reviewer"))
+        self.assertEqual((sets["scope"], sets["files"], sets["since"]),
+                         ("outside", "app.ts", old))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
+            tree=self.tree()))
+        self.expect("security-reviewer-sensitive", "CLEAN", must_fix="0", pre_existing="0")
+        out = self.next(0)
+        self.assertIn("commit: run", out["ACTION"])
+        r = self.autodev("commit", "--message", "unused", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"COMMITTED: {head}", r.stdout)  # verified, no new commit
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip(), head)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        out = self.next(0)
+        self.assertIn("push -u origin HEAD", out["ACTION"])
+        self.after(out)
+        self.script_gh(GH_OK + [
+            {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": url})},
+            {"args": ["pr", "view", "12", "--json", "body"], "stdout": '{"body": ""}'},
+            {"args": ["pr", "edit"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json", "number,url,body"],
+             "stdout": json.dumps({"number": 12, "url": f"{url}/pull/12",
+                                   "body": f"Checked at commit {head}"})},
+            {"args": ["pr", "view", "12", "--json"],
+             "stdout": json.dumps({"url": f"{url}/pull/12", "isDraft": False,
+                                   "state": "OPEN", "headRefOid": head})}])
+        out = self.next(0)
+        body = self.dir / "pr-body.md"
+        self.assertIn(f"Checked at commit {head}", body.read_text())
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        self.after(out)
+        out = self.next(0)
+        self.assertIn("pr publish", out["ACTION"])
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none")
+        out = self.next(5)
+        self.assertIn("main", out["QUESTION"])
+        self.assertIn(f"Head {head}", " ".join(out["SUMMARY"]))
 
 
 class ReVoteTest(NextCase):
