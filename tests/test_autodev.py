@@ -222,6 +222,14 @@ class ResumeTest(RunCase):
         r = self.resume("--task", "Add due dates to todos")
         self.assertTrue(r.stdout.startswith("FINISHED"), r.stdout)
 
+    def test_unreadable_state_is_an_error(self):
+        self.assertEqual(self.init().returncode, 0)
+        (self.dir / "state.json").write_text("{")
+        for extra in ((), ("--task", "Add due dates to todos")):
+            r = self.resume(*extra)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(f"ERROR: the run in {self.worktree} is unreadable", r.stderr)
+
     def test_3x_ledger_is_old_version(self):
         old = self.tmp / "app-old"
         self.sh("git", "worktree", "add", "-q", str(old), "-b", "feat/old", cwd=self.repo)
