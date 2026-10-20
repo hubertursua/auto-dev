@@ -77,7 +77,10 @@ def load(artifact_dir):
         state = json.loads(text)
     except ValueError as exc:
         raise StateError(f"{path} is not valid JSON: {exc}") from None
-    if not isinstance(state, dict) or state.get("schema") != SCHEMA:
+    if not isinstance(state, dict):
+        raise StateError(f"{path} holds a JSON {type(state).__name__}, not a "
+                         "4.x state object")
+    if state.get("schema") != SCHEMA:
         raise StateError(f"{path} has schema {state.get('schema')!r}, "
                          f"expected {SCHEMA}")
     return state

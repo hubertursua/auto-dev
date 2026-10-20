@@ -306,6 +306,13 @@ class StateCommandsTest(RunCase):
             self.cmd("phase", str(n), "done")
         self.assertEqual(self.cmd("handoff").returncode, 1)
 
+    def test_state_that_is_not_an_object_cannot_run(self):
+        for text in ("null", "[]", '"x"'):
+            (self.dir / "state.json").write_text(text)
+            r = self.cmd("show")
+            self.assertEqual(r.returncode, 2, text + r.stdout + r.stderr)
+            self.assertIn("not a 4.x state object", r.stderr)
+
     def test_json_output(self):
         r = self.cmd("show", "--json")
         self.assertEqual(json.loads(r.stdout)["result"], "STATE")
