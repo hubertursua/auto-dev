@@ -237,6 +237,29 @@ class RecordTest(WorkCase):
         (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
         self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
 
+    def test_a_plan_without_its_spec_is_not_passed(self):
+        from test_next import IMPLEMENTATION
+        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
+        (self.dir / "SPEC.md").unlink()
+        self.returned("planner", 1, next="WRITTEN", entry_points_changed="no")
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SPEC.md", r.stdout)
+
+    def test_a_plan_fix_that_copies_the_spec_is_refused(self):
+        fix = self.write("fixes/plan-reviewer-1.md", (
+            "FIX B1\n<<<<<<< OLD\n1. add the field\n=======\n"
+            "1. a todo can carry a due date that the list shows next to its title\n"
+            ">>>>>>> NEW\n"))
+        self.returned("plan-reviewer", 1, next="CLEAN", blockers="0", fix_file=str(fix))
+        r = self.cmd("record", "plan-reviewer", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("plan-reviewer-1.md's new text copies SPEC.md's wording", r.stdout)
+        self.assertIn("condition 1", r.stdout)
+        fix.write_text("FIX B1\n<<<<<<< OLD\na todo can carry a due date that the list "
+                       "shows next to its title\n=======\n1. add the field\n>>>>>>> NEW\n")
+        self.assertEqual(self.cmd("record", "plan-reviewer", "1").returncode, 0)
+
     def test_corrections_that_copy_the_spec_are_refused(self):
         (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
             tree="0" * 40, v1="unmet", v2="met", e2="x", judgment="Justified",
@@ -289,6 +312,87 @@ class RecordTest(WorkCase):
         (self.dir / "triage" / "human-1.md").write_text(
             "# Required changes\n1. c-77: keep the field name when it is empty\n")
         self.assertEqual(self.cmd("record", "triager", "1").returncode, 0)
+
+    def review_brief(self, mode="review", **sets):
+        state = self.state()
+        state["phase6"] = {"review_pass": 1}
+        self.write_state(state)
+        args = [a for k, v in sets.items() for a in ("--set", f"{k}={v}")]
+        r = self.cmd("brief", "code-reviewer", "--mode", mode, *args)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (self.dir / "review" / "pass-1").mkdir(parents=True, exist_ok=True)
+
+    def test_a_missing_review_report_is_refused(self):
+        self.review_brief(reviewer="R2", scope="first")
+        self.returned("code-reviewer", 1, next="REVIEWED", findings="0", leads="0")
+        r = self.cmd("record", "code-reviewer", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("R2.md does not exist", r.stdout)
+
+    def test_a_re_vote_is_checked_in_its_votes_file(self):
+        self.review_brief("re-vote", reviewer="R2", findings="C1")
+        votes = self.dir / "review" / "pass-1" / "VOTES-R2.md"
+        votes.write_text("| Finding | Vote | Reason |\n|---|---|---|\n| C1 | agree | x |\n")
+        self.returned("code-reviewer", 1, next="VOTED", findings="1", leads="0")
+        r = self.cmd("record", "code-reviewer", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        votes.write_text("no table\n")
+        r = self.cmd("record", "code-reviewer", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("VOTES-R2.md", r.stdout)
+
+    def test_a_security_review_must_follow_its_template(self):
+        from test_next import SECURITY_REVIEW
+        broken = SECURITY_REVIEW.format(tree="0" * 40).split("## Coverage")[0]
+        (self.dir / "SECURITY_REVIEW.md").write_text(broken)
+        self.returned("security-reviewer", 1, next="CLEAN", must_fix="0", pre_existing="1")
+        r = self.cmd("record", "security-reviewer", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SECURITY_REVIEW.md: no `## Coverage` section", r.stdout)
+
+    def test_the_judge_s_security_verdict_checks_security_review(self):
+        from test_next import SECURITY_REVIEW
+        broken = SECURITY_REVIEW.format(tree="0" * 40).split("## Coverage")[0]
+        (self.dir / "SECURITY_REVIEW.md").write_text(broken)
+        self.returned("review-judge", 1, next="VERIFIED", must_fix_open="0", revote="0")
+        r = self.cmd("record", "review-judge", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SECURITY_REVIEW.md: no `## Coverage` section", r.stdout)
+
+    def test_spec_eval_must_follow_its_template(self):
+        text = SPEC_EVAL.format(tree="0" * 40, v1="met", v2="met", e2="x",
+                                judgment="Justified", defective="None.")
+        (self.dir / "SPEC_EVAL.md").write_text(
+            "\n".join(ln for ln in text.splitlines() if "Tree:" not in ln) + "\n")
+        self.returned("verifier", 1, next="ALL_MET", tree="x", corrections="0")
+        r = self.cmd("record", "verifier", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SPEC_EVAL.md: no `Tree:` line", r.stdout)
+
+    def test_a_lint_report_needs_its_tree_line(self):
+        (self.dir / "lint").mkdir(exist_ok=True)
+        (self.dir / "lint" / "TEST.md").write_text("# TEST — pass\n")
+        self.returned("cleanup", 1, next="GREEN")
+        r = self.cmd("record", "cleanup", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("TEST.md: no `Tree:` line", r.stdout)
+
+    def test_a_reviewer_fix_file_needs_a_fix_block(self):
+        fix = self.write("fixes/define-reviewer-1.md", "just prose\n")
+        self.returned("define-reviewer", 1, next="BLOCKERS", blockers="1", fix_file=str(fix))
+        r = self.cmd("record", "define-reviewer", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("define-reviewer-1.md: no FIX block", r.stdout)
+
+    def test_a_revised_plan_that_copies_the_spec_is_refused(self):
+        from test_next import IMPLEMENTATION
+        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION.replace(
+            "1. add the field",
+            "1. a todo can carry a due date that the list shows next to its title"))
+        self.returned("planner", 1, next="REVISED", entry_points_changed="no")
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("copies SPEC.md's wording", r.stdout)
 
     def test_cleanup_green_needs_passing_reports(self):
         (self.dir / "lint").mkdir(exist_ok=True)
@@ -546,6 +650,15 @@ class CheckArtifactTest(WorkCase):
         self.assertEqual(self.check("IMPLEMENTATION.md", good).returncode, 0)
         self.assertEqual(self.check("IMPLEMENTATION.md", good.replace("## Design", "## How"))
                          .returncode, 1)
+
+    def test_a_plan_that_copies_the_spec(self):
+        from test_next import IMPLEMENTATION
+        self.assertEqual(self.check("IMPLEMENTATION.md", IMPLEMENTATION).returncode, 0)
+        r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
+            "1. add the field",
+            "1. a todo can carry a due date that the list shows next to its title"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("copies SPEC.md's wording (condition 1", r.stdout)
 
     def test_corrections_and_fixes(self):
         self.assertEqual(self.check("evidence/corrections.md", "# Required changes\nNone.\n")
