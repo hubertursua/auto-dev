@@ -178,6 +178,16 @@ class BriefTest(WorkCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue((out / "profiler-1.md").exists())
 
+    def test_lookup_brief_before_the_run_needs_no_state(self):
+        out = self.tmp / "look"
+        r = self.autodev("brief", "lookup", "--out", out, "--set", f"worktree={self.repo}",
+                         "--set", "question=is eslint adopted?")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(out / "lookup-1.md")
+        self.assertEqual(values["answer_file"], str(out.resolve() / "lookup-1-answer.md"))
+        self.assertEqual(values["result_file"], str(out.resolve() / "lookup-1.json"))
+        self.assertEqual(values["worktree"], str(self.repo))
+
 
 class RecordTest(WorkCase):
     def test_define_size_is_recorded_and_checked_against_the_spec(self):

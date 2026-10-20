@@ -2,6 +2,7 @@
 
 brief <worker> [--mode M] [--set name=value ...] [--retry N] [--dir <artifact-dir>]
 brief profiler --out <dir> --set repo=<path> --set base=<branch> --set draft_path=<path>
+brief lookup --out <dir> --set worktree=<repo> --set question="<question>"
     Writes briefs/<worker>-<n>.md: one `name: value` line for every slot the
     worker's agent file (agents/<worker>.md) uses in that mode. It fills what it
     can from state.json and the artifacts (paths, base, the task (the ticket's
@@ -15,6 +16,10 @@ brief profiler --out <dir> --set repo=<path> --set base=<branch> --set draft_pat
     overrides), and job N is marked replaced, so `next` never re-spawns it
     too. Without --retry it is `none`. It refuses when a slot the worker needs has no value.
     Prints the agent type to spawn and the one-line prompt to give it.
+    With --out (the profiler always; a lookup before the run exists), the
+    brief goes to <dir> with no state.json: a lookup's answer goes to
+    <dir>/lookup-<n>-answer.md and its symbol lookup is `grep -n`, and nothing is
+    recorded (`record` needs a run; read the answer from the worker's reply).
     Exit: 0 written; 1 refused (the missing slots are listed, or --retry names
     a job `record` did not refuse).
 
@@ -86,7 +91,8 @@ def add_arguments(parser, name):
         parser.add_argument("worker")
         parser.add_argument("--mode")
         parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE")
-        parser.add_argument("--out", help="where to write a profiler brief (no run yet)")
+        parser.add_argument("--out", help="where to write a profiler brief, or a lookup "
+                                          "brief before the run exists (no state.json)")
         parser.add_argument("--retry", type=int, metavar="N",
                             help="re-spawn job <worker>-N, which record refused")
     elif name == "record":
@@ -209,12 +215,13 @@ LAZY = {"acceptance_paths": acceptance_paths, "survivors": survivors,
 def brief(args):
     worker = args.worker
     given = parse_sets(args.set)
-    if worker == "profiler":
+    if worker == "profiler" or (worker == "lookup" and args.out):
         if not args.out:
             raise Fail("a profiler brief needs --out <dir> (there is no run yet)",
                        CANNOT_RUN, "ERROR")
         if args.retry is not None:
-            raise Fail("a profiler brief takes no --retry", CANNOT_RUN, "ERROR")
+            raise Fail(f"a {worker} brief with --out takes no --retry", CANNOT_RUN,
+                       "ERROR")
         path, values = write_brief(None, Path(args.out).resolve(), worker, args.mode, given)
     else:
         try:
@@ -237,9 +244,10 @@ def prompt_for(path):
 def write_brief(state, where, worker, mode, given, retry=None):
     """Write briefs/<worker>-<n>.md and log it in `state` (the caller saves).
 
-    `where` is the artifact dir, or for the profiler (state None) the folder
-    to write into. `retry` re-spawns job <worker>-<retry>, which record refused:
-    its saved issues fill previous_issues. Returns (path, the slot values)."""
+    `where` is the artifact dir, or with no run (state None: the profiler, a
+    lookup before init) the folder to write into. `retry` re-spawns job
+    <worker>-<retry>, which record refused: its saved issues fill
+    previous_issues. Returns (path, the slot values)."""
     if worker not in briefs.RESULTS:
         raise Fail(f"unknown worker {worker!r}; one of {', '.join(sorted(briefs.RESULTS))}",
                    CANNOT_RUN, "ERROR")
@@ -253,7 +261,9 @@ def write_brief(state, where, worker, mode, given, retry=None):
         ad, directory, previous = None, where, None
         n = next_number(directory, worker)
         auto = {"skill_dir": str(SKILL_DIR),
-                "result_file": str(where / f"profiler-{n}.json")}
+                "result_file": str(where / f"{worker}-{n}.json"),
+                "answer_file": str(where / f"{worker}-{n}-answer.md"),
+                "symbol_lookup": "`grep -n`"}
     else:
         ad = where
         directory = ad / "briefs"
