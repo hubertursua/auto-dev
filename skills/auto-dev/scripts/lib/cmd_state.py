@@ -41,7 +41,8 @@ stopped (the run ends); `skip` records the staging gate as n/a.
 
 Exit codes:
     0  done (and for `budget spend`, a round was spent or was already spent)
-    1  refused: a bad value, or a choice the gate doesn't offer
+    1  refused: a bad value, a choice the gate doesn't offer, or a `mark` step
+       that is not one of those above (or a triage answer not separate/ignore)
     2  could not run (no state.json, unreadable) — not a pass
     3  `budget spend` only: the budget is exhausted; nothing was spent
 """

@@ -727,8 +727,9 @@ Spawn `auto-dev:triager` with the one-line prompt it prints. When the worker ret
 
 Act on `CLASS`: `CODE` → a CI-red correction (consumer #5,
 `references/correction-loop.md`) with the coder briefed on
-`triage/ci-<n>.md`. Anything else → hold at the gate, saying which class it was
-and the triager's reason; never retry blindly and never spend a round on it.
+`triage/ci-<n>.md`. Anything else → stop and report, saying which class it was
+and the triager's reason, before Jira or staging move; never retry blindly and
+never spend a round on it. Resuming the run watches CI again.
 
 ### Triager: human mode
 _Agent type: `auto-dev:triager`._

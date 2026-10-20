@@ -32,8 +32,11 @@ Output lines (only the ones that apply):
 chose it, but writes no brief, spends no round, applies nothing and saves
 nothing. Run `next` without it to act.
 
-Every path and value in a printed command is shell-quoted; replace a `<...>`
-placeholder inside its quotes.
+Every path and value in a printed command is shell-quoted. A `<...>`
+placeholder (a reason, a commit subject) sits in single quotes: replace it,
+inside them, with text that holds no single quote (rephrase, or use the
+typographic apostrophe U+2019). Nothing else is special inside single quotes,
+so the text needs no other escaping.
 
 Exit codes:
     0  an action to take
@@ -88,6 +91,8 @@ JIRA_DEFAULTS = {"in_progress": "In Progress", "in_review": "In Review", "done":
 LOOP = ("verifier", "coder", "cleanup", "acceptance-tester", "planner")
 NONE = ("none", "", None)
 ONLY_RE = re.compile(r"ONLY conditions ([^:]+):")
+FILL = ("replace each '<...>' placeholder, inside its single quotes, with text that "
+        "holds no single quote (rephrase, or use the typographic apostrophe U+2019)")
 
 
 def add_arguments(parser):
@@ -199,7 +204,8 @@ class Ctx:
         b = self.state["budget"]
         if outcome == "exhausted":
             return None
-        verb = "spent" if outcome == "spent" else "already spent"
+        verb = ("already spent" if outcome != "spent" else
+                "would spend" if self.readonly else "spent")
         return f"{verb} `{spend_id}` ({what}); {b['remaining']} of {b['total']} left"
 
 
@@ -247,7 +253,7 @@ def ask(c, gate, summary, questions, answers, rule):
     """A gate or pause: answers is [(option label, command)]."""
     return {"code": NEXT_ASK,
             "ACTION": f"show the user SUMMARY, then ask QUESTION with AskUserQuestion "
-                      f"({gate}); run the AFTER line for their answer",
+                      f"({gate}); run the AFTER line for their answer ({FILL})",
             "SUMMARY": summary, "QUESTION": json.dumps({"questions": questions}),
             "AFTER": [f'"{label}" → {command}' for label, command in answers],
             "RULE": rule}
@@ -787,8 +793,8 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
     _token, fields = cmd_checks.eval_decision(
         c.ad, install_conflict=nxt == "INSTALL_CONFLICT")
     repair = [x.strip() for x in fields.get("repair", "").split(",") if x.strip()]
-    stood = stood_conditions(c)
-    again = [x for x in repair if x in stood]
+    stood, unnamed = stood_conditions(c, start)
+    again = list(repair) if unnamed else [x for x in repair if x in stood]
     if again:  # never a second round on a check the tester ruled right
         if not fields.get("correct"):
             return stop([(f"The verifier still judges the checks of condition(s) "
@@ -797,7 +803,7 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
                          f"{c.ad}/SPEC_EVAL.md (Defective acceptance checks) and the "
                          "tester's reply. No round is spent on it.")],
                         "the verifier and the acceptance tester disagree about a check")
-        fields["repair"] = ", ".join(x for x in repair if x not in stood)
+        fields["repair"] = ", ".join(x for x in repair if x not in again)
     budget = c.spend(consumer, f"verifier-{n}", "correction after verification")
     if budget is None:
         return exhausted_loop(c, consumer, fields)
@@ -821,15 +827,21 @@ def exhausted_loop(c, consumer, fields):
                      "Unmet: " + "; ".join(fields.get("correct", [])))
 
 
-def stood_conditions(c):
-    """The conditions whose checks the acceptance tester ruled right (STANDS)
-    when sent to repair them by condition."""
-    stood = set()
-    for r in c.recs("acceptance-tester", mode="repair"):
+def stood_conditions(c, start):
+    """(conditions, unnamed) the acceptance tester ruled right (STANDS) in this
+    loop, after `start`. `unnamed` is true when a STANDS answered a scope that
+    names no condition (a PR comment, a review finding): then any repair the
+    verifier asks for in this loop is the same disagreement."""
+    stood, unnamed = set(), False
+    for r in c.recs("acceptance-tester", after=start, mode="repair"):
+        if r["next"] != "STANDS":
+            continue
         match = ONLY_RE.match(r.get("sets", {}).get("scope", ""))
-        if r["next"] == "STANDS" and match:
+        if match:
             stood |= {x.strip() for x in match.group(1).split(",") if x.strip()}
-    return stood
+        else:
+            unnamed = True
+    return stood, unnamed
 
 
 def stands_note(tester):
@@ -1330,12 +1342,6 @@ def stale_again(c, detail):
 
 
 def commit_step(c):
-    if not c.p6.get("verified_sha"):
-        add, remove = changed_paths(c.wt)
-        if not add and not remove:
-            return stop([("There is nothing to commit: the working tree holds no change "
-                         "outside .auto-dev/. Tell the user; nothing was pushed.")],
-                         "an empty change")
     attempt = c.p6.get("commit_attempt")
     since = max([c.gate("pr")["seq"] if c.gate("pr") else 0]
                 + [k["seq"] for k in c.p6["corrections"]])
@@ -1345,8 +1351,16 @@ def commit_step(c):
         return stop([(f"The commit step failed ({attempt['result']}). Tell the user what "
                      "`autodev.py commit` printed; nothing was pushed.")],
                     "the commit failed")
+    # A commit made but not yet checked (`unverified_commit`) leaves a clean tree:
+    # `commit` checks it without committing again, so it is offered as usual.
+    if not c.p6.get("verified_sha") and not c.p6.get("unverified_commit"):
+        add, remove = changed_paths(c.wt)
+        if not add and not remove:
+            return stop([("There is nothing to commit: the working tree holds no change "
+                         "outside .auto-dev/. Tell the user; nothing was pushed.")],
+                        "an empty change")
     return action(f"commit: run `{c.cmd('commit', '--message', '<type>(<scope>): <summary>')}`"
-                  ", with a Conventional Commits subject you write for the change",
+                  f", with a Conventional Commits subject you write for the change ({FILL})",
                   "the PR gate said proceed (or a correction is verified and reviewed)",
                   AFTER=[c.cmd("next")])
 
@@ -1362,14 +1376,16 @@ def body_step(c, sha):
         c.p6["body"] = body
         c.dirty = True
     attempt = c.p6.get("publish_attempt")
-    if attempt and attempt["seq"] > body["seq"]:
+    if attempt and attempt["seq"] > max(body["seq"], c.resumed()):
         # A WRITE line left goes back to the write step once; anything else stops.
         if attempt["result"] != "unwritten" or body.get("rewrite", attempt["seq"]) != \
                 attempt["seq"]:
             return stop([(f"`pr publish` refused the PR description "
                           f"({attempt['result']}). Tell the user what it found:"),
                          *attempt.get("problems", []),
-                         f"The description is {body['path']}."],
+                         (f"The description is {body['path']}. Once the cause is "
+                          "fixed (the description edited, or GitHub working again), "
+                          "`auto-dev continue` publishes it again.")],
                         "pr publish was refused")
         if "rewrite" not in body:
             body["rewrite"] = attempt["seq"]

@@ -695,6 +695,56 @@ class ShipTest(NextCase):
         self.assertIn("main gate", self.next(5)["QUESTION"])
         self.assertNotIn("commit_attempt", self.state()["phase6"])
 
+    def test_a_commit_made_but_not_checked_is_checked_not_refused(self):
+        self.ship_ready()
+        self.review_clean()
+        self.lint()
+        self.spec_eval()
+        self.after(self.next(5), "Open PR")
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        # `commit` committed, then could not check the commit (killed, say).
+        self.sh("git", "add", "-A", "--", ".", ":!.auto-dev", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "feat: x", cwd=self.worktree)
+        head = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        state = self.state()
+        state["phase6"]["unverified_commit"] = head
+        self.write_state(state)
+        self.assertIn("commit: run", self.next(0)["ACTION"])  # not "nothing to commit"
+        r = self.autodev("commit", "--message", "feat: x", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"COMMITTED: {head}", r.stdout)
+        state = self.state()
+        del state["phase6"]["verified_sha"]
+        state["phase6"]["commit_attempt"] = {"result": "not-verified",
+                                             "seq": state["events"] + 1}
+        self.write_state(state)
+        self.assertIn("The commit step failed (not-verified)",
+                      " ".join(self.next(4)["REPORT"]))
+
+    def test_gh_failing_at_publish_is_not_a_refusal(self):
+        _sha, _url, _out, body = self.to_body(first=[
+            {"args": ["pr", "create"], "stderr": "HTTP 502: Bad Gateway", "exit": 1}])
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("publish_attempt", self.state()["phase6"])
+        self.assertIn("pr publish", " ".join(self.next(0)["AFTER"]))
+
+    def test_a_check_the_tester_ruled_right_on_a_pr_comment_gets_no_second_round(self):
+        self.open_pr()
+        _, checks = self.triage_files()
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="1",
+                    triage_file="none", checks_file=str(checks))
+        self.expect("acceptance-tester", "STANDS", checks="0", ambiguous="none")
+        left = self.state()["budget"]["remaining"]  # human-1 is spent
+        _, jobs = self.expect("verifier")
+        self.spec_eval(v1="partial",
+                       defective='`src/due.acceptance.test.ts` :: "shows the due date"')
+        self.answer(*jobs[0], "REPAIR", tree="x", corrections="0")
+        self.assertIn("ruled they stand", " ".join(self.next(4)["REPORT"]))
+        self.assertEqual(self.state()["budget"]["remaining"], left)
+
     def test_a_refused_publish_stops(self):
         _sha, _url, out, body = self.to_body()
         r = self.autodev("pr", "publish", "--dir", self.dir)
@@ -708,6 +758,9 @@ class ShipTest(NextCase):
         self.assertIn("PROBLEMS", r.stdout)
         out = self.next(4)  # never exit 1, never the same publish again
         self.assertIn(".auto-dev/", " ".join(out["REPORT"]))
+        self.assertIn("auto-dev continue", " ".join(out["REPORT"]))
+        self.resume()  # the user fixed it: a resume lifts the stop
+        self.assertIn(str(body), self.next(0)["ACTION"])
 
     def merge_ready(self, first=()):
         sha, _ = self.open_pr(first=first)
@@ -876,8 +929,13 @@ class CiTest(NextCase):
         self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
 
 
-    GREEN = ({"args": ["pr", "checks"], "stdout": json.dumps(
-        [{"name": "test", "state": "SUCCESS", "bucket": "pass", "link": "https://ci/1"}])},)
+    @staticmethod
+    def checks(started, **extra):
+        return {"args": ["pr", "checks"], **extra, "stdout": json.dumps(
+            [{"name": "test", "state": "SUCCESS", "bucket": "pass", "link": "https://ci/1",
+              "startedAt": started}])}
+
+    GREEN = (checks.__func__("2999-01-01T00:00:00Z"),)  # started after any mark
 
     def github_ci(self):
         state = self.state()
@@ -889,9 +947,9 @@ class CiTest(NextCase):
         r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
         self.assertEqual(r.returncode, code, r.stdout + r.stderr)
 
-    def ready(self):
+    def ready(self, extra=None):
         self.github_ci()
-        sha, _ = self.open_pr(extra=self.GREEN)
+        sha, _ = self.open_pr(extra=extra or self.GREEN)
         self.watch()
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
@@ -903,6 +961,13 @@ class CiTest(NextCase):
     def test_ci_is_watched_again_once_the_pr_is_ready(self):
         self.ready()
         self.watch()  # workflows that skip drafts run now
+        self.assertIn("main gate", self.next(5)["QUESTION"])
+
+    def test_the_draft_s_green_checks_do_not_count_once_the_pr_is_ready(self):
+        old = self.checks("2000-01-01T00:00:00Z", times=2)
+        self.ready(extra=[old, *self.GREEN])
+        self.watch(3)  # only the draft's checks so far: still pending
+        self.watch()  # a check started after the mark: green
         self.assertIn("main gate", self.next(5)["QUESTION"])
 
     def test_a_resume_after_the_merge_goes_on_from_the_merge(self):

@@ -350,7 +350,7 @@ regardless of provider on a GitHub repo.
   Resuming the run watches CI again.
   Two things stop the loop before the budget does: a failure the coder cannot fix
   (infrastructure, a flaky external service, a missing secret), and a budget that
-  has run out. In both cases **hold at the gate** and say which it was. Never
+  has run out. In both cases **stop and report** which it was. Never
   retry blindly; never auto-merge over a failure.
 - **On red, post-merge (Phases 6b–6c):** there is no gate left to hold and
   re-pushing the branch cannot fix already-merged code, so the pre-merge loop does
