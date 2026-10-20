@@ -815,6 +815,8 @@ class ShipTest(RunCase):
         body.write_text(GOOD_BODY.format(sha="a" * 40))
         r = self.cmd("pr-body", "--check", body)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (self.dir / "CODE_REVIEW.md").write_text(
+            "# Code review\n\n| # | Finding |\n|---|---|\n| C2 | an empty list |\n")
         body.write_text(GOOD_BODY.format(sha="b" * 40).replace("### Test strength", "")
                         + f"See C2 in .auto-dev/SPEC.md, from {self.worktree}.\n"
                         + "token = ghp_" + "x" * 30 + "\n")
@@ -822,6 +824,33 @@ class ShipTest(RunCase):
         self.assertEqual(r.returncode, 1)
         for text in ("### Test strength", "not the verified commit", ".auto-dev/",
                      "C2", "worktree", "secret"):
+            self.assertIn(text, r.stdout)
+
+    def test_pr_body_lint_passes_ordinary_words(self):
+        state = self.state()
+        state["phase6"]["verified_sha"] = "a" * 40
+        self.write_state(state)
+        (self.dir / "SECURITY_REVIEW.md").write_text(
+            "# Security review\n\n| # | Finding |\n|---|---|\n| S1 | weak hash |\n")
+        body = self.tmp / "body.md"
+        body.write_text(GOOD_BODY.format(sha="a" * 40) + (
+            "Uploads go to S3 and M1 Macs build it. Strong passwords are required.\n"
+            "The JWT verifier rejects a bad signature; a mutant record is skipped.\n"
+            "`interface Login { token: string; password: string }`\n"
+            "Served from /application/data.\n"))
+        env = dict(self.env)
+        self.env["HOME"] = "/app"
+        r = self.cmd("pr-body", "--check", body)
+        self.env = env
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body.write_text(GOOD_BODY.format(sha="a" * 40)
+                        + "Fixes S1; see /app/src/x.ts | met | Strong |\n"
+                        + "GH=ghp_" + "y" * 36 + "\n")
+        self.env["HOME"] = "/app"
+        r = self.cmd("pr-body", "--check", body)
+        self.env = env
+        self.assertEqual(r.returncode, 1)
+        for text in ("S1", "home directory", "evidence tier", "secret"):
             self.assertIn(text, r.stdout)
 
     # cleanup-worktree

@@ -51,9 +51,11 @@ merge-pr --pr N --sha <checked commit>
 pr-body --check <file>
     Lints a PR description before it is published: the strict sections and the
     attribution line are present, `Checked at commit <sha>` names the verified
-    commit, it is under 60,000 characters, and it holds no `.auto-dev/` path, no
-    condition or finding IDs, no pipeline terms, no absolute worktree or home
-    path and nothing that looks like a secret.
+    commit, it is under 60,000 characters, and it holds no `.auto-dev/` path,
+    none of the run's own condition, finding or mutant IDs (those its artifacts
+    define), no "held-out" / "fail-to-pass" / "pass-to-pass", no evidence tier
+    used as one, no absolute worktree or home path and nothing that looks like
+    a secret.
     Exit: 0 clean; 1 problems (each printed).
 
 cleanup-worktree
@@ -86,14 +88,31 @@ STRICT_HEADINGS = ("## Acceptance conditions", "### Checks for a person",
                    "### Changes to tests", "### Test strength", "## Quality gate",
                    "## Review")
 ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
-ID_RE = re.compile(r"\b(?:C|CS|M|S)\d+\b")
-TERMS_RE = re.compile(r"\b(held-out|fail-to-pass|pass-to-pass|verifier|mutants?)\b",
-                      re.IGNORECASE)
-TIER_RE = re.compile(r"\b(Strong|Adequate|Weak)\b")
+# The ID forms the run's artifacts use: condition (C1, CS1), finding (C1, S1)
+# and mutant (M1) numbers. Only the IDs this run's artifacts define are flagged,
+# so "S3" or "M1" in ordinary prose passes unless the run has such an item.
+ID_FORM = r"(?:CS|C|M|S)\d+"
+ID_DEF_RE = re.compile(rf"^\s*\|\s*({ID_FORM})\s*\||^#+\s*({ID_FORM})\b|"
+                       rf"^\s*({ID_FORM})\.\s", re.MULTILINE)
+ID_SOURCES = ("SPEC.md", "acceptance/MANIFEST.md", "SPEC_EVAL.md", "CODE_REVIEW.md",
+              "SECURITY_REVIEW.md")
+ID_USE_RE = re.compile(rf"(?<![\w/.-])({ID_FORM})(?![\w-])")
+# Terms only the pipeline uses; words like "verifier" are ordinary English.
+TERMS_RE = re.compile(r"\b(held-out|fail-to-pass|pass-to-pass)\b", re.IGNORECASE)
+# An evidence tier only where it reads as one: a table cell, bold, or next to
+# "tier" or "evidence". "Strong passwords" is prose.
+TIERS = r"(?:Strong|Adequate|Weak)"
+TIER_RE = re.compile(rf"\|\s*{TIERS}\s*\||\*\*{TIERS}\*\*|"
+                     rf"\b{TIERS}\s+(?i:tier|evidence)\b|"
+                     rf"\b(?i:tier)\s*[:=(]?\s*{TIERS}\b")
+# A credential-looking value: quoted (8+ characters, no spaces) or 16+
+# characters of a token's alphabet with a digit. `token: string` is a type.
+SECRET_VALUE = (r"(?:[\"'][^\"'\s]{8,}[\"']|"
+                r"(?=[A-Za-z_+/=-]*\d)[A-Za-z0-9_+/=-]{16,}(?![\w.(]))")
 SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*"
                        r"PRIVATE KEY|xox[baprs]-[A-Za-z0-9-]{10,}|"
-                       r"(?:password|passwd|secret|token)\s*[=:]\s*\S{6,})",
-                       re.IGNORECASE)
+                       r"(?:password|passwd|secret|token|api[_-]?key)\s*[=:]\s*"
+                       + SECRET_VALUE + ")", re.IGNORECASE)
 CHECKED_RE = re.compile(r"Checked at commit\s+([0-9a-f]{7,64})")
 # gh failing before GitHub answered: misused, signed out, or offline. Checked
 # before HEAD_MOVED_RE, since gh's usage text names --match-head-commit.
@@ -495,20 +514,52 @@ def lint_body(text, state):
                         f"commit {verified}")
     if ARTIFACTS in text:
         problems.append("names a .auto-dev/ path, which nobody else can open")
-    for pattern, what in ((ID_RE, "a condition or finding ID"),
-                          (TERMS_RE, "a pipeline term"),
+    own = run_ids(state.get("artifact_dir"))
+    found = sorted({m.group(1) for m in ID_USE_RE.finditer(text)} & own)
+    if found:
+        problems.append(f"uses a condition or finding ID: {', '.join(found[:5])}")
+    for pattern, what in ((TERMS_RE, "a pipeline term"),
                           (TIER_RE, "an evidence tier")):
         found = sorted({m.group(0) for m in pattern.finditer(text)})
         if found:
             problems.append(f"uses {what}: {', '.join(found[:5])}")
-    for path, what in ((state["worktree"], "the worktree's absolute path"),
-                       (os.path.expanduser("~"), "a home directory")):
-        if path and path != "/" and path in text:
+    for path, what, whole in ((state["worktree"], "the worktree's absolute path", True),
+                              (os.path.expanduser("~"), "a home directory", False)):
+        if path_shown(text, path, whole):
             problems.append(f"shows {what}; replace it with `.` or `~`")
     secrets = SECRET_RE.findall(text)
     if secrets:
         problems.append(f"{len(secrets)} line(s) look like a secret; drop them")
     return problems
+
+
+def run_ids(artifact_dir):
+    """The condition, finding and mutant IDs this run's artifacts define."""
+    ids = set()
+    if not artifact_dir or not Path(artifact_dir).is_dir():
+        return ids
+    root = Path(artifact_dir)
+    for name in ID_SOURCES:
+        try:
+            text = (root / name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        ids.update(next(g for g in m.groups() if g) for m in ID_DEF_RE.finditer(text))
+    for folder in ("acceptance/base-run", "evidence"):  # C1.txt, CS1.txt
+        if (root / folder).is_dir():
+            ids.update(f.stem for f in (root / folder).iterdir()
+                       if f.suffix == ".txt" and re.fullmatch(ID_FORM, f.stem))
+    return ids
+
+
+def path_shown(text, path, whole=False):
+    """Whether `text` holds `path` as a path prefix: at a boundary and followed
+    by `/`, or (`whole`) also ending there, as the worktree's own path can."""
+    path = (path or "").rstrip("/")
+    if not path:
+        return False
+    end = r"(?:/|(?![\w.-])|\.(?!\w))" if whole else "/"
+    return re.search(rf"(?<![\w.~/-]){re.escape(path)}{end}", text) is not None
 
 
 def cleanup_worktree(args):
