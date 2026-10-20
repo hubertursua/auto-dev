@@ -54,11 +54,15 @@ Run `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` in
      the repo never adopted (it was saved before the repo dropped the tool), and
      that check would never go green. You don't read repo files, so ask a
      lookup: `autodev.py brief lookup --out <tmp> --set worktree=<repo> --set
-     question="for each of these quality-gate checks, has the repo adopted its
-     tool (a declared dependency or a config file)? <each check's command>"`,
-     where `<tmp>` is a new folder under `$TMPDIR`; spawn the agent it prints
-     with its prompt, and read the answer from its reply (no run exists yet, so
-     there is nothing to record).
+     question='for each of these quality-gate checks, has the repo adopted its
+     tool (a declared dependency or a config file)? <the command of each check>'`,
+     where `<tmp>` is a new folder under `$TMPDIR`. Keep the question in single
+     quotes, with no single quote inside (rephrase, or use ’). Spawn the agent
+     it prints with its prompt, and read the answer from its reply (no run
+     exists yet, so there is nothing to record).
+     - Its result is anything but `ANSWERED` (it failed, stopped, or called the
+       question out of scope) → keep the profile as saved: go to step 5 with
+       `--profile <path> --profile-source "saved profile <path>"`.
      - Every tool adopted → go to step 5 with `--profile <path>
        --profile-source "saved profile <path>"`.
      - A check whose tool the repo never adopted → copy the profile to

@@ -53,7 +53,9 @@ Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
 (80), `next` ends the session at the next clean point with exit 6 and
 `handoff --checkpoint`, so no session's context grows without bound. A clean
 point is one where the step would be an action (exit 0) and no brief is in
-flight: a stop, a question or a session boundary is always printed first. A new
+flight: a stop, a question or a session boundary the step would print comes
+first. A stop that only a write would reveal (one found after applying FIX
+blocks or starting a review pass) comes in the next session instead. A new
 session says `auto-dev continue` and picks up where this one stopped; resuming
 after a checkpoint lifts no stop, since nothing was fixed in between.
 
@@ -140,6 +142,7 @@ class Ctx:
         self.p6 = self.state.setdefault("phase6", {})
         self.dirty = False
         self.readonly = bool(getattr(args, "explain", False))
+        self.probing = False
         self.peeked = {}
 
     # ------------------------------------------------------------ reading
@@ -182,6 +185,7 @@ class Ctx:
         other.state = copy.deepcopy(self.state)
         other.p6 = other.state.setdefault("phase6", {})
         other.readonly, other.dirty, other.peeked = True, False, {}
+        other.probing = True  # it still fetches, so a new push is seen before a checkpoint
         return other
 
     # ------------------------------------------------------------ writing
@@ -294,8 +298,8 @@ def main(args):
         result = action(f"next would {exc.what}", exc.rule)
     except art.ArtifactError as exc:
         c.save()
-        raise Fail(f"{exc} — re-spawn the worker that wrote it", CANNOT_RUN,
-                   "ERROR") from None
+        raise Fail(f"{exc} — a broken artifact: tell the user and stop (the worker "
+                   "that wrote it may need re-running)", CANNOT_RUN, "ERROR") from None
     except AssertionError as exc:
         raise Fail(f"next has no rule for this state ({exc}); report it as an "
                    "auto-dev bug", CANNOT_RUN, "ERROR") from None
@@ -1085,7 +1089,6 @@ def start_correction(c, entry, consumer, file, spend_id, rule, checks=None, why=
     """A Phase 6 correction: the coder gets `file` (when given); `checks` (scope,
     report) sends acceptance checks to the tester's repair mode first. `why`
     goes into the report when no round is left (the red checks, for CI)."""
-    c.would(f"start a {entry} correction ({file or (checks or {}).get('report')})", rule)
     after_commit = bool(c.p6.get("verified_sha"))
     budget = None
     if spend_id:
@@ -1097,6 +1100,9 @@ def start_correction(c, entry, consumer, file, spend_id, rule, checks=None, why=
             c.p6["exhausted"] = {"consumer": consumer, "seq": c.seq(), "open": [file]}
             c.dirty = True
             return review_step(c, c.p6["passes"][-1]) or ship_step(c)
+    # After the budget check (in memory only under --explain or a probe), so a
+    # budget-exhausted stop is never hidden behind the step that would follow.
+    c.would(f"start a {entry} correction ({file or (checks or {}).get('report')})", rule)
     snapshot = None
     if not after_commit and entry != "outside":
         cmd_checks.git_add_intent(c.wt)
@@ -1548,8 +1554,11 @@ def staging_step(c):
         return action(f"merge into staging: run `{c.cmd('merge-staging')}`",
                       "the staging gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("staging-ci"):
-        return action("watch CI on the staging branch (references/S3-ship.md, CI "
-                      "after a merge); report a failure to the user, don't gate on it",
+        return action(f"watch CI on the staging branch, {c.state['repo']['staging']} "
+                      "(references/S3-ship.md, CI after a merge; the commit merge-staging "
+                      f"pushed: `git -C {q(c.wt)} rev-parse "
+                      f"{q('origin/' + str(c.state['repo']['staging']))}`); report a "
+                      "failure to the user, don't gate on it",
                       "staging was merged", AFTER=[c.cmd("mark", "staging-ci", "--value",
                                                          "<green | red | not watched>")])
     return None
@@ -1620,9 +1629,11 @@ def main_step(c, sha):
         return action(f"merge: run `{c.cmd('merge-pr', '--pr', p6.get('pr'), '--sha', sha)}`",
                       "the main gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("main-ci"):
-        return action(f"check CI on {c.state['repo']['base']} for the merge "
-                      "(references/S3-ship.md, CI after a merge); a failure there is "
-                      "reported, never fixed by re-pushing", "the PR is merged",
+        return action(f"check CI on {c.state['repo']['base']} for the merge of PR "
+                      f"#{p6.get('pr')} (references/S3-ship.md, CI after a merge; its "
+                      f"merge commit: `gh pr view {q(p6.get('pr'))} --json mergeCommit -q "
+                      ".mergeCommit.oid`); a failure there is reported, never fixed by "
+                      "re-pushing", "the PR is merged",
                       AFTER=[c.cmd("mark", "main-ci", "--value",
                                    "<green | red | not watched>")])
     jira = jira_step(c, "done", "jira-done")
@@ -1654,7 +1665,7 @@ def main_step(c, sha):
 
 def fetch_and_check(c):
     branch, base = c.state["branch"], c.state["repo"]["base"]
-    if not c.readonly:
+    if not c.readonly or c.probing:
         git(c.wt, "fetch", "-q", "origin", branch, base, check=False)
     return check_fresh(c, "--ref", f"origin/{branch}")
 

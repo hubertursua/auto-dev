@@ -157,7 +157,7 @@ turn more expensive. So the orchestrator holds the pipeline, not the code — it
 delegates reads and keeps large artifacts in workers — and `next` ends a long
 session at a **checkpoint**: after 80 recorded events in one session (about 35
 workers), at the next point where the step would be an action and no worker is
-in flight (a stop or a question is always shown first), it writes `HANDOFF.md`
+in flight (a stop or a question the step would print comes first), it writes `HANDOFF.md`
 and asks you to continue in a fresh session. Continuing after a checkpoint
 lifts no stop: a worker that failed once before it and once after still stops
 the run. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,

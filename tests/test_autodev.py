@@ -740,6 +740,8 @@ class ShipTest(RunCase):
         r = self.watch("--max-wait", "5")
         self.assertEqual(r.returncode, 3)
         self.assertIn("TIMEOUT", r.stdout)
+        self.assertIn("run `next`; the main gate shows CI as not monitored", r.stdout)
+        self.assertNotIn("hold at the gate", r.stdout)
 
     def test_no_checks_after_grace_is_unavailable(self):
         self.set_settings(ci="github-actions")
@@ -749,6 +751,8 @@ class ShipTest(RunCase):
         r = self.watch("--max-wait", "0", "--grace", "0")
         self.assertEqual(r.returncode, 4)
         self.assertIn("UNAVAILABLE", r.stdout)
+        self.assertIn("run `next`; the main gate shows CI as not monitored", r.stdout)
+        self.assertNotIn("hold at the gate", r.stdout)
 
     # merge-staging
     def staging(self, content=None):

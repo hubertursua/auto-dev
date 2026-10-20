@@ -336,6 +336,20 @@ class PlanTest(NextCase):
         self.answer(*jobs[0], "", status="failed")
         self.assertIn("failed twice", " ".join(self.next(4)["REPORT"]))
 
+    def test_a_checkpoint_count_that_is_not_a_number_falls_back_to_80(self):
+        events = self.state()["events"]
+        for value in ("lots", 0):
+            with self.subTest(value=value):
+                state = self.state()
+                state["settings"]["checkpoint_events"] = value
+                state["events"] = 80
+                self.write_state(state)
+                self.assertEqual(self.next()["exit"], 6)  # a checkpoint, not exit 2
+        state = self.state()
+        state["events"] = events  # far below 80
+        self.write_state(state)
+        self.assertEqual(self.next()["exit"], 0)
+
     def test_a_refused_return_is_respawned_with_its_issues(self):
         self.expect("define")
         (self.dir / "returns" / "define-1.json").write_text(json.dumps(
@@ -655,6 +669,7 @@ class ShipTest(NextCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = self.next(0)
         self.assertIn("mark main-ci", out["AFTER"][0])
+        self.assertIn("gh pr view 12 --json mergeCommit", out["ACTION"])  # names the PR
         self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
         out = self.next(0)
         self.assertIn("final report", out["ACTION"])
@@ -987,6 +1002,7 @@ class CiTest(NextCase):
         _, jobs = self.expect("triager")
         state = self.state()
         state["budget"]["remaining"] = 0
+        state["settings"]["checkpoint_events"] = 1  # the stop still wins
         self.write_state(state)
         (self.dir / "triage" / "ci-1.md").write_text("# Required changes\n1. x\n")
         self.answer(*jobs[0], "CODE", blockers="0", acceptance_checks="0",
@@ -1066,6 +1082,30 @@ class CiTest(NextCase):
         self.assertIn("INFRA", report)
         self.assertIn("triage/ci-1.md", report)
         self.assertIn("The run stops here", report)
+
+    def test_a_secret_ci_failure_stops_and_continue_watches_again(self):
+        self.github_ci()
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.watch(1)
+        self.expect("triager", "SECRET", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("Once the secret is fixed and CI re-run", report)
+        self.assertNotIn("do not re-run", report)
+        self.resume()
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+
+    def test_the_main_gate_shows_ci_that_timed_out_as_not_monitored(self):
+        self.ready()
+        state = self.state()
+        state["phase6"]["ci"]["status"] = "timeout"
+        state["phase6"]["ci"]["seq"] = state["events"] + 1
+        self.write_state(state)
+        out = self.next(5)
+        self.assertIn("CI: not monitored (timeout) — never assume green",
+                      " ".join(out["SUMMARY"]))
 
 
 class ReVoteTest(NextCase):

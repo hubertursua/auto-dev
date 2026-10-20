@@ -93,9 +93,10 @@ _Moving a ticket_ says, then run its `AFTER` line.
 1. IF `profile.md`'s CI line is anything but `github-actions` (`none`,
    `circleci`, `gitlab`, …), the value is `not watched`: `gh run list` sees
    only GitHub Actions.
-2. ELSE find the commit the merge made: for the base branch, `gh pr view <n>
-   --json mergeCommit -q .mergeCommit.oid`; for staging, the commit
-   `merge-staging` pushed (`git -C <worktree> rev-parse origin/<staging>`).
+2. ELSE find the commit the merge made with the command `next`'s `ACTION`
+   names: for the base branch, `gh pr view <PR number> --json mergeCommit -q
+   .mergeCommit.oid`; for staging, `git -C <worktree> rev-parse
+   origin/<staging>` (the commit `merge-staging` pushed).
 3. Run `gh run list --commit <sha> --json status,conclusion,url,workflowName`
    every 30 seconds, for up to the CI timeout in `profile.md`:
    - any run `completed` with a conclusion other than `success`, `skipped` or
