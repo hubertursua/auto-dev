@@ -991,25 +991,19 @@ def install_checks(c):
     installed and the verifier goes first, as before 4.1, to report the
     conflict. Writes acceptance/INSTALLED (the paths, one per line), which
     tells the verifier the checks went in before cleanup."""
-    files = c.ad / "acceptance" / "files"
-    sealed = sorted(files.rglob("*.sealed")) if files.is_dir() else []
-    pairs = [(s, Path(c.state["worktree"]) / s.relative_to(files).with_suffix(""))
-             for s in sealed]
-    conflicts = [str(t.relative_to(c.state["worktree"])) for s, t in pairs
+    marker = c.ad / "acceptance" / "INSTALLED"
+    if marker.exists():  # installed already: a change since is an edit the audit records
+        return []
+    wt = c.state["worktree"]
+    pairs = cmd_checks.sealed_pairs(c.ad, wt)
+    conflicts = [str(t.relative_to(wt)) for s, t in pairs
                  if t.exists() and t.read_bytes() != s.read_bytes()]
     if conflicts:
         return conflicts
-    marker = c.ad / "acceptance" / "INSTALLED"
-    if all(t.exists() for _, t in pairs) and marker.exists():
-        return []
     c.would("install the sealed acceptance checks in the worktree",
             "the code is built: the checks go in before the cleanup agent's gate")
-    for s, t in pairs:
-        if not t.exists():
-            t.parent.mkdir(parents=True, exist_ok=True)
-            t.write_bytes(s.read_bytes())
-    marker.write_text("".join(f"{t.relative_to(c.state['worktree'])}\n" for _, t in pairs),
-                      encoding="utf-8")
+    cmd_checks.install_sealed(c.ad, wt)
+    marker.write_text("".join(f"{t.relative_to(wt)}\n" for _, t in pairs), encoding="utf-8")
     return []
 
 

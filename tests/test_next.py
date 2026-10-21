@@ -179,17 +179,23 @@ class NextCase(RunCase):
         self.resume()
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
         (self.worktree / "due.ts").write_text("export const due = 1;\n")
-        out, jobs = self.expect("verifier")
-        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        out, jobs = self.first_pass()
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        self.lint()
-        self.expect("cleanup", "GREEN")
-        self.assertEqual(self.sets("cleanup", 1)["scope"], "phase5")
-        self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        self.spec_eval()
         out = self.next(6)
         self.after(out)
+
+    def first_pass(self):
+        """Phase 5 after the build: the checks go in, cleanup goes green, then
+        the verifier's first pass is spawned (not answered)."""
+        _, jobs = self.expect("cleanup")
+        self.assertEqual(self.sets(*jobs[0])["scope"], "phase5")
+        self.assertTrue((self.dir / "acceptance" / "INSTALLED").exists())
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        out, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        return out, jobs
 
     def panel(self, review=None, judged="CLEAN", corrections=None):
         """The three reviewers and the judge, who writes `review`."""
@@ -491,13 +497,13 @@ class BuildTest(NextCase):
         self.assertIn("blocked/coder-1.md", self.sets(*jobs[0])["blocked"])
         out, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
         self.assertIn("planner-2", out["BUDGET"])
-        self.expect("verifier")
+        self.first_pass()
 
     def test_an_unmet_condition_is_corrected_and_re_checked(self):
         self.plan_session()
         self.resume()
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
-        out, jobs = self.expect("verifier")
+        out, jobs = self.first_pass()
         self.spec_eval(v1="unmet")
         (self.dir / "evidence").mkdir(exist_ok=True)
         (self.dir / "evidence" / "corrections.md").write_text(
@@ -507,20 +513,53 @@ class BuildTest(NextCase):
         self.assertEqual(self.sets(*jobs[0])["corrections_file"],
                          f"{self.dir}/evidence/corrections.md")
         self.assertIn("verifier-1", out["BUDGET"])
+        self.lint()
+        self.expect("cleanup", "GREEN")  # every pass checks cleaned code
         out, jobs = self.expect("verifier")
         self.assertEqual(self.sets(*jobs[0])["mode"], "re-check")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        self.next(6)  # no second cleanup: it ran after the correction
+
+    def test_phase_5_installs_the_checks_before_cleanup_and_verifies_once(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        out = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertIn("install the sealed acceptance checks", out.stdout)
+        installed = self.worktree / "src" / "due.acceptance.test.ts"
+        self.assertFalse(installed.exists())  # --explain writes nothing
+        _, jobs = self.first_pass()
+        self.assertEqual(installed.read_text(), "test")
+        self.assertEqual((self.dir / "acceptance" / "INSTALLED").read_text(),
+                         "src/due.acceptance.test.ts\nsrc/sort.acceptance.test.ts\n")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        self.next(6)  # one verifier pass, no second cleanup
+        self.assertEqual([b["worker"] for b in self.state()["briefs"]
+                          if b["worker"] in ("cleanup", "verifier")], ["cleanup", "verifier"])
+
+    def test_a_sealed_path_holding_another_file_sends_the_verifier_first(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        theirs = self.worktree / "src" / "due.acceptance.test.ts"
+        theirs.parent.mkdir(parents=True, exist_ok=True)
+        theirs.write_text("someone else's file")
+        _, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        self.assertEqual(theirs.read_text(), "someone else's file")
+        self.assertFalse((self.worktree / "src" / "sort.acceptance.test.ts").exists())
+        self.assertFalse((self.dir / "acceptance" / "INSTALLED").exists())
 
     def test_a_freshness_check_that_could_not_run_exits_2(self):
         self.plan_session()
         self.resume()
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
         (self.worktree / "due.ts").write_text("export const due = 1;\n")
-        _, jobs = self.expect("verifier")
+        _, jobs = self.first_pass()
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        self.lint()
-        self.expect("cleanup", "GREEN")
-        self.expect("verifier", "ALL_MET", tree="x", corrections="0")
         (self.tmp / "no-git").mkdir()
         env = {**self.env, "PATH": str(self.tmp / "no-git")}  # check-fresh can't run git
         r = subprocess.run([sys.executable, str(AUTODEV), "next", "--dir", str(self.dir)],
@@ -534,7 +573,7 @@ class BuildTest(NextCase):
         self.resume()
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
         defective = '`src/due.acceptance.test.ts` :: "shows the due date"'
-        _, jobs = self.expect("verifier")
+        _, jobs = self.first_pass()
         self.spec_eval(v1="partial", defective=defective)
         self.answer(*jobs[0], "REPAIR", tree="x", corrections="0")
         out, jobs = self.expect("acceptance-tester")
@@ -556,7 +595,7 @@ class BuildTest(NextCase):
         self.write_state(state)
         self.resume()
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
-        out, jobs = self.expect("verifier")
+        out, jobs = self.first_pass()
         self.spec_eval(v1="unmet")
         (self.dir / "evidence").mkdir(exist_ok=True)
         (self.dir / "evidence" / "corrections.md").write_text("# Required changes\n1. x\n")
