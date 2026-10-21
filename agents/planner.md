@@ -50,9 +50,11 @@ refuses a plan that does.
 Return: assumptions, key risks.
 
 The headings are in `{{skill_dir}}/templates/IMPLEMENTATION.md` (headings strict).
-You have no shell, so don't look for the checker or redo its checks by hand:
-`autodev.py record` checks IMPLEMENTATION.md (headings, and no run of SPEC.md's wording) against its template when you return, and
-if it finds a problem you are briefed again with it under Previous issues.
+Follow the template as you write; you have no shell, so don't look for the
+checker or re-implement it. `autodev.py record` checks IMPLEMENTATION.md (its
+headings, and that it doesn't copy SPEC.md's wording) when you return. If it
+finds a problem, you are briefed again with it under Previous issues: the file
+you wrote is still there, so fix only what it lists.
 
 ## Mode: write
 

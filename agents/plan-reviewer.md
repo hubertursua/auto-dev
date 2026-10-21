@@ -56,9 +56,11 @@ FIX <finding id, e.g. B1>
 Write no FIX file when you want no change.
 Return the findings.
 
-You have no shell, so don't look for the checker or redo its checks by hand:
-`autodev.py record` checks the FIX file, when you wrote one, against its template when you return, and
-if it finds a problem you are briefed again with it under Previous issues.
+Follow the template as you write; you have no shell, so don't look for the
+checker or re-implement it. `autodev.py record` checks your FIX file, if you
+wrote one, when you return. If it finds a problem, you are briefed again with it
+under Previous issues: the file you wrote is still there, so fix only what it
+lists.
 
 ## Result
 

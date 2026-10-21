@@ -39,7 +39,8 @@ record <worker> <n>
     nor may the planner's IMPLEMENTATION.md, the coder's other brief from a
     SPEC.md reader, nor the new text of the plan reviewer's FIX blocks, which
     `next` applies to IMPLEMENTATION.md. Every other file the return says the
-    worker wrote must pass check-artifact: a reviewer's fix file, SPEC_EVAL.md,
+    worker wrote must pass check-artifact: SPEC.md after Define, a reviewer's
+    fix file, SPEC_EVAL.md,
     the lint reports, a code reviewer's report or votes, CODE_REVIEW.md and
     SECURITY_REVIEW.md. Each must exist, except a lint report, which only
     cleanup's GREEN requires (every report passing).

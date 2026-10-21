@@ -101,9 +101,11 @@ Return a structured summary:
 - HIGH_RISK: yes or no. Yes when SPEC.md has Security/Compliance criteria, or the
   change touches auth, payments, access control, or a data migration.
 
-You have no shell, so don't look for the checker or redo its checks by hand:
-`autodev.py record` checks SPEC.md against its template when you return, and
-if it finds a problem you are briefed again with it under Previous issues.
+Follow the template as you write; you have no shell, so don't look for the
+checker or re-implement it. `autodev.py record` checks SPEC.md (every
+condition's Example, Edge and Verify by lines) when you return. If it finds a
+problem, you are briefed again with it under Previous issues: the file you wrote
+is still there, so fix only what it lists.
 
 ## Mode: write
 
