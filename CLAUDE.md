@@ -44,7 +44,8 @@ that a script can check, add it there.
   `tests/test_autodev.py` (`autodev.py`'s other subcommands),
   `tests/test_work.py` (`brief`, `record`, `check-artifact`),
   `tests/test_next.py` (`next`, `pr publish`), `tests/test_parsers.py` (the
-  artifact parsers), `tests/test_check_repo.py` (`tools/check-repo.py`) or
+  artifact parsers), `tests/test_check_repo.py` (`tools/check-repo.py`),
+  `tests/test_eval_run.py` (`tools/eval-run.py`) or
   `tests/test_eval_fixtures.py` (the eval fixtures;
   regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
   tests.test_eval_fixtures`), and check that it fails without your change. Tests run the script as a subprocess,
@@ -67,7 +68,11 @@ that a script can check, add it there.
   (`grep -rn "<key phrase>" skills/ agents/ README.md`) and make them agree.
 - Behavior changes need matching eval expectations (`skills/auto-dev/evals/`).
   The full eval suite is slow and needs a GitHub-hosted fixture repo, so PRs
-  usually don't run it. Say so in the PR's Testing section.
+  usually don't run it. Say so in the PR's Testing section. When you do run
+  evals, give each one its own branches of the fixture repo with
+  `tools/eval-run.py setup`, and remove them with `tools/eval-run.py cleanup`
+  once the evals are scored. Never create or delete a repo per eval: deleting
+  one needs a token that can delete any repo the user can reach.
 
 ## Keep auto-dev language-agnostic
 
