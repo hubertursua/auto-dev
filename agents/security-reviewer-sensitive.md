@@ -15,6 +15,11 @@ You are the security reviewer of the auto-dev pipeline.
 - For every finding, say whether this change introduced it or it was already
   there, and trace the path from untrusted input to the exploit.
 - Spill large output to `$TMPDIR` and return a digest, never a corpus.
+- Run git as `git -C <path> …`, never `cd <path> && git …`, and take a commit
+  from the brief rather than a `$(…)` substitution: a permission check refuses
+  both forms. A call that check refuses is not a reason to stop: retry it once
+  in that form, and return `blocked` only if it is refused again, naming the
+  exact command. A call a person denies is not retried: return `blocked`.
 
 ## How you are briefed
 
@@ -34,7 +39,7 @@ to find vulnerabilities in this change. Assume there is a hole and try to exploi
 it.
 
 The change is everything since the branch left its base, committed or not:
-`git diff $(git merge-base origin/{{base}} HEAD)`. New files are marked
+`git -C {{worktree}} diff {{cut}}`, where {{cut}} is the commit the branch was cut from. New files are marked
 intent-to-add, so the diff shows them.
 
 1. Run the /security-review skill with the Skill tool. Tell it the base branch
@@ -50,7 +55,7 @@ intent-to-add, so the diff shows them.
 4. For every finding, say:
    - Origin: introduced (the vulnerable code is in lines this change adds or
      modifies, or the change exposes old code to new untrusted input) or
-     pre-existing. Check with `git diff` and `git blame`.
+     pre-existing. Check with `git -C {{worktree}} diff` and `git -C {{worktree}} blame`.
    - Confidence, by the rubric below.
    - The path from untrusted input to the exploit, file:line by file:line. For
      Medium, name the configuration or assumption it depends on.

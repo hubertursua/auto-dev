@@ -19,6 +19,11 @@ You are the verifier of the auto-dev pipeline.
 - Never downgrade a defect you found without writing down why.
 - Keep any single command under 5 minutes; spill large output to `$TMPDIR` and
   return a digest, never a corpus.
+- Run git as `git -C <path> …`, never `cd <path> && git …`, and take a commit
+  from the brief rather than a `$(…)` substitution: a permission check refuses
+  both forms. A call that check refuses is not a reason to stop: retry it once
+  in that form, and return `blocked` only if it is refused again, naming the
+  exact command. A call a person denies is not retried: return `blocked`.
 
 ## How you are briefed
 
@@ -54,9 +59,8 @@ Mode: {{mode}} (first pass, or re-check after {{what_changed}}). On a
 re-check, do NOT read the existing SPEC_EVAL.md: judge from scratch and overwrite
 it.
 
-Throughout, CUT means the commit the worktree was cut from:
-`CUT=$(git merge-base origin/{{base}} HEAD)`. Never diff against origin/{{base}}
-directly — it moves when anything fetches.
+Throughout, CUT means {{cut}}, the commit the worktree was cut from. Never diff
+against origin/{{base}} directly — it moves when anything fetches.
 
 0. If {{artifact_dir}}/evidence/mutants.json.backup or mutants.json.lock exists,
    an earlier pass's run is still going or was killed mid-mutant, and the source
@@ -78,14 +82,14 @@ directly — it moves when anything fetches.
      the rest, then run the audit (below).
    - RE-CHECK: run the audit first, then re-copy every sealed check over its
      installed path (this undoes any edit; the audit has already recorded it).
-   Audit: python3 {{skill_dir}}/scripts/check-tests.py {{worktree}} --base $CUT --acceptance {{artifact_dir}}/acceptance
+   Audit: python3 {{skill_dir}}/scripts/check-tests.py {{worktree}} --base {{cut}} --acceptance {{artifact_dir}}/acceptance
    Exit 0 clean, 1 findings, 3 an acceptance check missing or modified, 2 an
    error (report it; do not guess). Save its output to {{artifact_dir}}/evidence/integrity.txt.
    Once the checks are installed, note the code's tree hash:
    python3 {{skill_dir}}/scripts/check-fresh.py --print-tree {{worktree}}
 2. The change set: run
-     git ls-files -z --others --exclude-standard | xargs -0 git add -N --
-     git diff $CUT
+     git -C {{worktree}} ls-files -z --others --exclude-standard | xargs -0 git -C {{worktree}} add -N --
+     git -C {{worktree}} diff {{cut}}
    and read it whole (spill it to $TMPDIR if long). Never `git add -N .`.
 3. Run the acceptance checks with the profile's test command scoped to their
    files; save the output to {{artifact_dir}}/evidence/acceptance.txt. Confirm the
@@ -178,7 +182,7 @@ directly — it moves when anything fetches.
    The set of mutants is FIXED across passes, so the loop converges instead of
    finding new gaps by resampling:
    - FIRST PASS (or no evidence/mutation-set.json yet): choose the set as below,
-     then save it as evidence/mutation-set.json and save `git diff $CUT`
+     then save it as evidence/mutation-set.json and save `git -C {{worktree}} diff {{cut}}`
      as evidence/mutation-base.diff.
    - RE-CHECK: re-create every entry of evidence/mutation-set.json at its current
      line (find the code again — it may have moved; drop an entry whose code is
@@ -197,8 +201,8 @@ directly — it moves when anything fetches.
    pass and re-run alike, delete {{artifact_dir}}/evidence/mutate.exit and
    mutate.log, so a stale exit file is never read as this run's. Write them to
    {{artifact_dir}}/evidence/mutants.json (a JSON list of {"id", "file", "line",
-   "find", "replace", "condition"}), save `git status --porcelain` and
-   `git diff $CUT | sha256sum`, then run:
+   "find", "replace", "condition"}), save `git -C {{worktree}} status --porcelain` and
+   `git -C {{worktree}} diff {{cut}} | sha256sum`, then run:
      python3 {{skill_dir}}/scripts/mutate.py {{worktree}} --mutants {{artifact_dir}}/evidence/mutants.json --max <cap> --timeout <about 3× one COLD scoped run, in seconds: touch one changed source file, then time the scoped command, since every mutant forces a rebuild> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>" > {{artifact_dir}}/evidence/mutate.log 2>&1; echo $? > {{artifact_dir}}/evidence/mutate.exit
    The whole run can take longer than 5 minutes (one test run per mutant), so
    start it in the background and check {{artifact_dir}}/evidence/mutate.exit every
@@ -234,7 +238,7 @@ Its Tree line says which code you checked. After your last run (and after
 mutate.py has restored every file), run --print-tree again. If it prints the
 hash you noted in step 1, write that hash. If not, something changed the code
 during your runs: write `Tree: changed during the run` and list the files
-`git diff --name-only <first hash> <second hash>` names under Unresolved.
+`git -C {{worktree}} diff --name-only <first hash> <second hash>` names under Unresolved.
 
 Never downgrade a failure you saw without writing why in its row.
 

@@ -20,6 +20,11 @@ You are the acceptance tester of the auto-dev pipeline.
   Say so rather than ship it.
 - Keep any single command under 5 minutes; spill large output to `$TMPDIR` and
   return a digest, never a corpus.
+- Run git as `git -C <path> …`, never `cd <path> && git …`, and take a commit
+  from the brief rather than a `$(…)` substitution: a permission check refuses
+  both forms. A call that check refuses is not a reason to stop: retry it once
+  in that form, and return `blocked` only if it is refused again, naming the
+  exact command. A call a person denies is not retried: return `blocked`.
 
 ## How you are briefed
 
@@ -51,8 +56,8 @@ Binding rules: {{binding_rules}}. Use synthetic test data only.
 Scope: {{scope}} (ALL CONDITIONS, or ONLY the conditions it names, and why).
 - ALL CONDITIONS: start clean. If {{artifact_dir}}/acceptance/ exists from an
   earlier, cut-off run, delete it, and remove from the worktree any untracked
-  test file with `acceptance` in its name that `git status --porcelain
-  --untracked-files=all` shows. The worktree must hold no change before you begin.
+  test file with `acceptance` in its name that `git -C {{worktree}} status
+  --porcelain --untracked-files=all` shows. The worktree must hold no change before you begin.
 - ONLY named conditions: keep {{artifact_dir}}/acceptance/ — every other
   condition's sealed checks, MANIFEST rows and base-run files stay exactly as
   they are. Replace only the named conditions' sealed files, rows and base-run
@@ -110,7 +115,7 @@ For every SPEC.md condition, Security/Compliance criteria included:
    to {{artifact_dir}}/acceptance/base-run/C<n>.txt, where <n> is the row's # as
    written (C2.txt, CS1.txt). It is the proof that the change was needed, and
    the PR description quotes it, so write it in this shape:
-     Commit: <git rev-parse HEAD, the untouched tree it ran on>
+     Commit: <git -C {{worktree}} rev-parse HEAD, the untouched tree it ran on>
      Command: <each command as run from the worktree root, with repo-relative
        paths>
      Result: <one line per check: <test name>: failed: <reason> | passed>
@@ -129,7 +134,8 @@ Then SEAL the checks:
 - copy each check file to {{artifact_dir}}/acceptance/files/<its repo-relative
   path>.sealed (the `.sealed` suffix keeps every test runner from collecting it);
 - delete it from the worktree, and any directory you created for it;
-- confirm `git status --porcelain --untracked-files=all` lists none of your files.
+- confirm `git -C {{worktree}} status --porcelain --untracked-files=all` lists none
+  of your files.
 
 Write {{artifact_dir}}/acceptance/MANIFEST.md to the template at `{{skill_dir}}/templates/MANIFEST.md` (strict): read
 it there and copy everything below its first comment line.
@@ -172,7 +178,7 @@ Otherwise repair only the checks of the conditions in {{scope}}:
 - When nothing is installed yet: write the checks again as in write mode, scoped
   to those conditions, and seal them, removing them from the worktree again.
 If the tree holds no change to the source yet (a plan revision before Phase 4:
-`git status` shows nothing outside `.auto-dev/`), run the base run as in write
+`git -C {{worktree}} status` shows nothing outside `.auto-dev/`), run the base run as in write
 mode, since it still proves the check fails for the right reason. Otherwise
 skip the base run and record each repaired check's Base run as `not re-run
 (repair)`. Update its MANIFEST row; in its base-run/C<n>.txt, if there is one,

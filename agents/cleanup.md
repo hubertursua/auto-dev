@@ -18,6 +18,11 @@ You are the cleanup agent of the auto-dev pipeline.
   third, or the failure traces to a design problem rather than code quality, stop:
   leave that check's `lint/<CHECK>.md` at fail with the reason, and return.
 - Spill large output to `$TMPDIR` and return a digest, never a corpus.
+- Run git as `git -C <path> …`, never `cd <path> && git …`, and take a commit
+  from the brief rather than a `$(…)` substitution: a permission check refuses
+  both forms. A call that check refuses is not a reason to stop: retry it once
+  in that form, and return `blocked` only if it is refused again, naming the
+  exact command. A call a person denies is not retried: return `blocked`.
 
 ## How you are briefed
 
@@ -97,18 +102,19 @@ of an acceptance check file; name the file and the error).
 
 - **phase5** — the code changed on this branch. Nothing is committed yet, so
   the change set is the working tree: run
-  `git ls-files -z --others --exclude-standard | xargs -0 git add -N --` and
-  then `git diff $(git merge-base origin/{{base}} HEAD)` to see it, new files
-  included (`git diff origin/{{base}}...HEAD` shows nothing at this point).
+  `git -C {{worktree}} ls-files -z --others --exclude-standard | xargs -0 git -C {{worktree}} add -N --`
+  and then `git -C {{worktree}} diff {{cut}}` to see it, new files included
+  ({{cut}} is the commit the branch was cut from; `git diff
+  origin/{{base}}...HEAD` shows nothing at this point).
 - **review-fix** — ONLY these files, which a correction to a review finding
   changed: {{files}}. The rest of the change is already reviewed, so leave
-  every other file alone. Nothing is committed yet, so `git diff HEAD` shows the
+  every other file alone. Nothing is committed yet, so `git -C {{worktree}} diff HEAD` shows the
   whole change, not just this correction: work from the file list.
 - **after-commit** — ONLY the files this correction changed. The branch is
   committed and already reviewed, so leave every other file alone. The
   correction is the uncommitted working tree: run
-  `git ls-files -z --others --exclude-standard | xargs -0 git add -N --` and
-  then `git diff HEAD` to see it, new files included.
+  `git -C {{worktree}} ls-files -z --others --exclude-standard | xargs -0 git -C {{worktree}} add -N --`
+  and then `git -C {{worktree}} diff HEAD` to see it, new files included.
 - **outside** — nothing. Skip Step 1: the code changed outside this pipeline,
   by a person, and is not yours to simplify. Fix forward only what Step 2 needs.
 
