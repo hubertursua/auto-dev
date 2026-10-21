@@ -696,7 +696,9 @@ rules for changing a script are in `CLAUDE.md`.
   acceptance checks itself (and lists them in `acceptance/INSTALLED`), the
   cleanup agent simplifies the change and runs the quality gate, and the
   verifier's first pass checks the cleaned code. On the happy path the verifier
-  runs once instead of twice. A correction still runs coder, cleanup, verifier.
+  runs once instead of twice. A correction still runs coder, cleanup, verifier,
+  and a check the acceptance tester repairs goes through cleanup's quality
+  gate before the verifier's re-check.
   If a sealed check's path already holds another file, nothing is installed
   and the verifier goes first, as before, to report the conflict.
 - **A run in flight resumes.** A run that has already started Phase 5 on 4.0

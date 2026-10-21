@@ -29,7 +29,8 @@ see in S2, in order:
 4. While something is open: the `coder` in correction mode with that file
    (each one spends a round; `BUDGET:` shows what's left), then `cleanup`, then
    a `verifier` re-check. Defective checks go to the `acceptance-tester` first, in repair
-   mode: it fixes them, or answers `STANDS` with its reason, and the verifier
+   mode: it fixes them (then `cleanup` runs the gate on the repaired checks
+   before the re-check), or answers `STANDS` with its reason, and the verifier
    then judges those checks as written. A check that stands is never sent back
    on the same condition; if the verifier and the tester still disagree, `next`
    stops and reports both sides.
