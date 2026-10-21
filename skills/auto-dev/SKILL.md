@@ -32,7 +32,7 @@ Phase 1  Setup   → find or research the repo's profile, create the worktree   
 Phase 2  Define  → SPEC.md, the testable contract, and the size check          (S1 Plan)
 Phase 3  Plan    → IMPLEMENTATION.md, then sealed acceptance checks             (S1 Plan)
 Phase 4  Build   → the coder builds from the plan                               (S2 Build)
-Phase 5  Verify  → the verifier runs the checks; cleanup; quality gate          (S2 Build)
+Phase 5  Verify  → cleanup and the quality gate, then the verifier runs checks (S2 Build)
 Phase 6  Ship    → reviews, PR gate, commit, PR, CI, main gate, merge  (S3 Ship)
 ```
 

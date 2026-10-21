@@ -10,7 +10,8 @@ command, then run `next` again. It never needs you to judge a file.
 
 It does the mechanical steps itself rather than asking you to: it writes the
 brief of the worker to spawn, spends a round of the budget before a
-correction, applies a reviewer's FIX blocks, checks the acceptance tester's
+correction, installs the sealed acceptance checks before Phase 5's cleanup,
+applies a reviewer's FIX blocks, checks the acceptance tester's
 manifest, reads the verifier's verdicts, plans and applies the code-review
 re-votes, takes the review snapshot, and generates the PR body.
 
@@ -833,6 +834,9 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
         return verifier_spawn(c, "an acceptance-check repair")
     if worker == "cleanup":
         if nxt == "GREEN":
+            if scope == "phase5" and not c.recs("verifier", after=start, ok=False):
+                return verifier_first(c, "the quality gate is green: the verifier's first "
+                                      "pass checks the code that ships")
             return verifier_spawn(c, "the cleanup pass" if scope == "phase5" else
                                   after_change)
         if nxt == "RED":
@@ -971,11 +975,54 @@ def blocked_step(c, coder, consumer):
 
 # ---------------------------------------------------------------- Phase 5
 
+def verifier_first(c, rule):
+    return spawn(c, "verifier", sets={"mode": "first pass"}, rule=rule)
+
+
+def install_checks(c):
+    """Install every sealed acceptance check at its path in the worktree, so the
+    cleanup agent's quality gate runs on them before the verifier's first pass.
+
+    Returns the paths already there with other content: then nothing is
+    installed and the verifier goes first, as before 4.1, to report the
+    conflict. Writes acceptance/INSTALLED (the paths, one per line), which
+    tells the verifier the checks went in before cleanup."""
+    files = c.ad / "acceptance" / "files"
+    sealed = sorted(files.rglob("*.sealed")) if files.is_dir() else []
+    pairs = [(s, Path(c.state["worktree"]) / s.relative_to(files).with_suffix(""))
+             for s in sealed]
+    conflicts = [str(t.relative_to(c.state["worktree"])) for s, t in pairs
+                 if t.exists() and t.read_bytes() != s.read_bytes()]
+    if conflicts:
+        return conflicts
+    marker = c.ad / "acceptance" / "INSTALLED"
+    if all(t.exists() for _, t in pairs) and marker.exists():
+        return []
+    c.would("install the sealed acceptance checks in the worktree",
+            "the code is built: the checks go in before the cleanup agent's gate")
+    for s, t in pairs:
+        if not t.exists():
+            t.parent.mkdir(parents=True, exist_ok=True)
+            t.write_bytes(s.read_bytes())
+    marker.write_text("".join(f"{t.relative_to(c.state['worktree'])}\n" for _, t in pairs),
+                      encoding="utf-8")
+    return []
+
+
+def phase5_first(c):
+    """Phase 5 runs cleanup before the verifier's first pass, so the happy path
+    verifies once, on the code that ships."""
+    if install_checks(c):
+        return verifier_first(c, "a sealed check's path holds another file: the "
+                              "verifier's first pass goes first and reports it")
+    return cleanup_spawn(c, "phase5", None, "the code is built and the sealed checks are "
+                         "installed: the cleanup agent simplifies it and runs the quality "
+                         "gate before the verifier's first pass (no round)")
+
+
 def phase5(c):
     start = c.start(5)
-    result = loop_step(c, start, 3, "phase5", first=lambda: spawn(
-        c, "verifier", sets={"mode": "first pass"},
-        rule="Phase 5 starts with the verifier's first pass"))
+    result = loop_step(c, start, 3, "phase5", first=lambda: phase5_first(c))
     if result is not DONE_MARK:
         return result
     stale = check_fresh(c, "--phase", "5")  # could not run: exit 2, never "stale"

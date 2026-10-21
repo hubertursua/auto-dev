@@ -72,9 +72,13 @@ against origin/{{base}} directly — it moves when anything fetches.
 1. Integrity, then install. Paths below are absolute.
    Each sealed check {{artifact_dir}}/acceptance/files/<path>.sealed installs at
    {{worktree}}/<path>.
-   - FIRST PASS: check every path before copying any. A file already there and
-     byte-identical to its sealed copy is already installed (a resumed pass):
-     leave it. A file there that differs is not yours: copy NOTHING, write
+   - FIRST PASS, when {{artifact_dir}}/acceptance/INSTALLED exists: the
+     pipeline installed the checks before the cleanup agent ran, so do as
+     RE-CHECK does (a file that differs was edited since, and the audit
+     records it).
+   - FIRST PASS otherwise: check every path before copying any. A file already
+     there and byte-identical to its sealed copy is already installed (a
+     resumed pass): leave it. A file there that differs is not yours: copy NOTHING, write
      {{artifact_dir}}/evidence/corrections.md in the shape of
      `{{skill_dir}}/templates/corrections.md` with one entry per such path
      ("move `<path>`; an acceptance check installs there"), and return INSTALL
