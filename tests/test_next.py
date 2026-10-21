@@ -147,11 +147,13 @@ class NextCase(RunCase):
             tree=self.tree(), v1=v1, v2="met", e2="ran the sort", judgment="Justified",
             defective=defective))
 
+    lint_tail = "all good"
+
     def lint(self, status="pass"):
         (self.dir / "lint").mkdir(exist_ok=True)
         (self.dir / "lint" / "TEST.md").write_text(
             f"# TEST — {status}\n\n- **Command:** `true`\n- **Tree:** {self.tree()}\n\n"
-            "## Output tail (final run)\n```\nall good\n```\n")
+            f"## Output tail (final run)\n```\n{self.lint_tail}\n```\n")
 
     def resume(self):
         r = self.autodev("resume", "--repo", self.repo)
@@ -1376,6 +1378,17 @@ class TicketTest(NextCase):
         text = (self.dir / "pr-body.md").read_text()
         summary = text.split("## Acceptance conditions")[0]
         self.assertIn("Ticket: [TODO-7](https://acme.atlassian.net/browse/TODO-7)", summary)
+
+    def test_gate_output_about_scratch_files_stays_out_of_the_body(self):
+        # A formatter over `.` lists the git-ignored .auto-dev/ files; cleanup
+        # passes the check, and publish must not refuse the body for them.
+        self.lint_tail = ("[warn] .auto-dev/SPEC.md\n[warn] .auto-dev/state.json\n"
+                          "[warn] Code style issues found in 2 files.")
+        self.open_pr()
+        gate = (self.dir / "pr-body.md").read_text().split("## Quality gate")[1]
+        self.assertNotIn(".auto-dev/", gate)
+        self.assertIn("Code style issues found in 2 files.", gate)
+        self.assertIn("(2 line(s) about git-ignored pipeline files left out)", gate)
 
 
 class InlineCommentsTest(NextCase):
