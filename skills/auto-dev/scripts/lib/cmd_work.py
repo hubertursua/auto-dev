@@ -220,12 +220,17 @@ def job(worker, n):
 BLOCKED_ONCE = ("Your last spawn for this job returned `blocked`, and the run spawned "
                 "you again once. If a tool call was refused because of how it was "
                 "written, write it out in full (literal paths, `git -C <path>`, no shell "
-                "variable or `$(…)`) and go on. Return `blocked` again only for a reason "
-                "that a new attempt can't fix, and say what it is.")
+                "variable or `$(…)`) and go on. If a person denied the call, don't ask "
+                "again: return `blocked` at once. Otherwise return `blocked` again only "
+                "for a reason a new attempt can't fix, and say what it is.")
 
 
 def blocked_last(state, worker):
-    """Whether the newest result since the last resume is this worker's, blocked."""
+    """Whether the newest result since the last resume is this worker's, blocked.
+    Never for the code reviewers, who run in parallel: the newest result may be
+    another slot's."""
+    if worker == "code-reviewer":
+        return False
     log = [e for e in state.get("log") or []
            if e.get("seq", 0) > state.get("resumed_seq", 0)]
     return bool(log) and log[-1].get("worker") == worker and \

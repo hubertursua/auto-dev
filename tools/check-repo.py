@@ -132,7 +132,7 @@ def check_agents():
 # worker that copies one from its instructions can stop on the refusal.
 REFUSED_FORMS = [(re.compile(r"\$\((?!…\))"), "a `$(…)` substitution"),
                  (re.compile(r"\bcd (?!<path>)[^`\n]*&&\s*git\b"), "a `cd … && git` prefix"),
-                 (re.compile(r"\$[A-Za-z_?]"), "a shell variable")]
+                 (re.compile(r"\$(?:[A-Za-z_?@#*]|\{|\d)"), "a shell variable")]
 
 
 def check_agent_commands(agents_dir=ROOT / "agents"):

@@ -45,9 +45,12 @@ Output:
     stderr  `ERROR: …`
     --out   (default `<mutants file>.results.json`) the mutants with `status`
             and the tail of the test output for each
-    --exit-file  when given, the exit code (below) is written there as the
-            run ends, whatever ends it, usage errors included, so a caller that
-            runs this in the background needs no `echo $?`
+    --exit-file  when given, the exit code (below) is written there, in one
+            atomic write, as the run ends, whatever ends it (usage errors and
+            crashes included), so a caller that runs this in the background
+            needs no `echo $?`. Only a hard kill (SIGKILL, out of memory)
+            leaves it unwritten; the lock file then remains, and `--restore`
+            says whether the run is still alive (exit 9)
 
 Statuses:
     killed    the test command failed with the mutant in place
@@ -70,6 +73,8 @@ Exit codes:
     9  another run on the same mutants file is still alive (a lock file,
        `<mutants file>.lock`, holds its pid) — wait for it; never restore
        or start a second run over it
+    10 an unexpected error (a bug here; the traceback is on stderr): the tree
+       may hold a mutant — run `--restore`, then stop and report
 """
 
 import argparse
@@ -82,6 +87,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 
 class Interrupted(Exception):
@@ -294,15 +300,19 @@ def exit_file_arg(argv):
 
 def main() -> int:
     path = exit_file_arg(sys.argv[1:])
-    code = 2
+    code = 10
     try:
         code = run_main()
     except SystemExit as exc:  # argparse: --help is 0, a usage error 2
         code = exc.code if isinstance(exc.code, int) else 2
+    except Interrupted:  # outside the mutant loop: no mutant was in place
+        code = 6
+    except Exception:  # a bug: say so, never pass it off as another code
+        traceback.print_exc()
+        code = 10
     finally:
         if path:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(f"{code}\n")
+            write_atomic(os.path.abspath(path), f"{code}\n".encode())
     return code
 
 

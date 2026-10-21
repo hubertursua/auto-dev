@@ -69,8 +69,9 @@ class CheckRepoTest(unittest.TestCase):
         self.assertIn("coder.md:2: gives a `cd … && git` prefix", errors[1])
 
     def test_a_shell_variable_in_an_agent_fails(self):
-        errors = self.check_agent_text("Spill output to `$TMPDIR`.\nThen `echo $? > x`.\n")
-        self.assertEqual(len(errors), 2, errors)
+        errors = self.check_agent_text("Spill output to `$TMPDIR`.\nThen `echo $? > x`.\n"
+                                       "Or `cat ${W}/a`.\nOr `echo $1`.\n")
+        self.assertEqual(len(errors), 4, errors)
         self.assertTrue(all("a shell variable" in e for e in errors), errors)
 
     def check_frontmatter(self, frontmatter):

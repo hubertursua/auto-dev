@@ -451,6 +451,14 @@ class PlanTest(NextCase):
         self.assertNotIn("returned `blocked`",  # after a resume, a fresh brief
                          (self.dir / "briefs" / "define-3.md").read_text())
 
+    def test_failed_then_blocked_stops_too(self):
+        # Mixed non-ok results must not re-spawn a worker forever.
+        _, jobs = self.expect("define")
+        self.answer(*jobs[0], "", status="failed")
+        _, jobs = self.expect("define")
+        self.answer(*jobs[0], "", status="blocked")
+        self.assertIn("did not return ok twice running", " ".join(self.next(4)["REPORT"]))
+
     def test_resume_after_a_worker_never_returned_spawns_it_again(self):
         self.expect("define")
         self.next(0)

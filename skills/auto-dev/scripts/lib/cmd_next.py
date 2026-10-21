@@ -478,10 +478,12 @@ def not_ok(c):
     if latest.get("status") == "ok" or latest["worker"] == "code-reviewer":
         return None
     same = [e for e in log if e["worker"] == latest["worker"]]
-    twice = len(same) >= 2 and same[-2].get("status") == latest["status"]
+    twice = len(same) >= 2 and same[-2].get("status") != "ok"
     if twice:
-        why = ("stopped on purpose twice running" if latest["status"] == "blocked"
-               else "failed twice running")
+        statuses = {latest["status"], same[-2].get("status")}
+        why = ("stopped on purpose twice running" if statuses == {"blocked"} else
+               "failed twice running" if statuses == {"failed"} else
+               "did not return ok twice running")
         return stop([(f"{latest['worker']} #{latest['n']} {why}. Tell the user what it "
                      "said above its result block, and that the run is paused here: "
                      "once the cause is fixed, `auto-dev continue` spawns it again."),

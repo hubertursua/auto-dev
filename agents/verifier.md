@@ -210,6 +210,9 @@ against origin/{{base}} directly — it moves when anything fetches.
    start it in the background and check {{artifact_dir}}/evidence/mutate.exit every
    few minutes until it exists; never block on it, never kill it, and never
    return while it is running — a run still going holds a mutant in the tree.
+   If it still doesn't exist well after the run should have ended (the number
+   of mutants × the timeout), the run may have been killed hard: do as step 0
+   says (`--restore`: exit 9 means it is still running, so keep waiting).
    If most mutants time out, the timeout was too short, not the tests strong:
    raise it and re-run before judging. The
    scoped command must pass as-is and should take seconds; give a mutant its
@@ -224,7 +227,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    it, do not retry; 8 every mutant was invalid (lines moved or `find` text
    wrong) — re-read the lines and re-write them, and if a second run is still
    all invalid, write the mutation check as "not run" with the reason; 4, or
-   9 another run is still alive — do as step 0 says; any other code (a crash),
+   9 another run is still alive — do as step 0 says; 10 or any other code (a crash),
    STOP and return MUTATION LEFT CHANGES. Afterwards both saved values must be unchanged; if they are not (the
    test command itself may have written files), return MUTATION LEFT CHANGES
    with the paths. Never commit, stage or keep a mutant.
