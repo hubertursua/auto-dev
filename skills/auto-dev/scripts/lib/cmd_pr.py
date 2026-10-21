@@ -51,7 +51,7 @@ from pathlib import Path
 
 from . import artifacts as art
 from . import state as st
-from .cmd_ship import SECRET_RE, gh_cannot_run  # shared with the ship steps
+from .cmd_ship import ARTIFACTS, SECRET_RE, gh_cannot_run  # shared with the ship steps
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
 
@@ -560,6 +560,13 @@ def quality_gate(body, ad, state):
             output.pop()
         while output and not output[0].strip():
             output.pop(0)
+        # A check that walks the filesystem lists the git-ignored scratch files;
+        # the body never names them (lint_body refuses a .auto-dev/ path).
+        scratch = [ln for ln in output if ARTIFACTS in ln]
+        if scratch:
+            output = [ln for ln in output if ARTIFACTS not in ln]
+            output.append(f"({len(scratch)} line(s) about git-ignored pipeline files "
+                          "left out)")
         if output:
             body.block(check["command"], [("Output:", output)])
         body.unquote(start)
