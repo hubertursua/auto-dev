@@ -49,8 +49,12 @@ refuses a plan that does.
 
 Return: assumptions, key risks.
 
-Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact {{artifact_dir}}/IMPLEMENTATION.md` and fix anything it reports. The
-headings are in `{{skill_dir}}/templates/IMPLEMENTATION.md` (headings strict).
+The headings are in `{{skill_dir}}/templates/IMPLEMENTATION.md` (headings strict).
+Follow the template as you write; you have no shell, so don't look for the
+checker or re-implement it. `autodev.py record` checks IMPLEMENTATION.md (its
+headings, and that it doesn't copy SPEC.md's wording) when you return. If it
+finds a problem, you are briefed again with it under Previous issues: the file
+you wrote is still there, so fix only what it lists.
 
 ## Mode: write
 

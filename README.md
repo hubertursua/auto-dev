@@ -528,8 +528,8 @@ result a worker wrote against the artifact it wrote, checks every other file it
 wrote against its template and the planner's IMPLEMENTATION.md with
 `spec-overlap`, and stops on a mismatch, saving the issues so the next `next` re-spawns that job with them; `brief
 --retry <n>` does the same by hand) and
-`check-artifact` (workers check what they wrote against its template before
-returning). And `next`, the orchestrator's loop: it reads the state, the recorded results and the artifacts,
+`check-artifact` (the workers with a shell check what they wrote against its
+template before returning; `record` checks the rest). And `next`, the orchestrator's loop: it reads the state, the recorded results and the artifacts,
 and prints the one next action (spawn these agents with these briefs, run this
 command, ask this gate, stop and report, or end the session), with the command
 to run after it. It does the mechanical steps itself: writing briefs, spending
