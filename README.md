@@ -577,7 +577,12 @@ edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
 
 ## The `.auto-dev/` scratch directory
 
-Each run creates `.auto-dev/` holding the artifacts phases hand off:
+Each run creates `.auto-dev/` holding the artifacts phases hand off. Git ignores
+it, but a gate command that walks the filesystem (a formatter run over `.`, say)
+still sees it. When a check fails only on files in `.auto-dev/`, the cleanup
+agent counts it as passing and says so in its report. It never edits the repo's
+ignore files or config to hide them, since that edit would ship in the PR.
+
 
 | Path | Written by | Holds |
 | ---- | ---------- | ----- |
