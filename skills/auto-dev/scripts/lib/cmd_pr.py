@@ -65,7 +65,7 @@ ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 # skips a comment that carries it.
 MARKER = "<!-- auto-dev -->"
 # Around what a description quotes word for word (test names, commands, their
-# output, the verifier's Expected line): those may carry a condition ID, which
+# output, the verifier's Expected line and its reasons): those may carry a condition ID, which
 # the lint skips inside a region generate() wrote (QUOTED_RE is in cmd_ship).
 # The opening marker ends the line before the quote, so it doesn't split the
 # list item's paragraph on GitHub.
