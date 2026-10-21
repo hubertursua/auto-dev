@@ -16,6 +16,8 @@ Checks:
   or OPTIONAL in scripts/lib/briefs.py), its Result block lists exactly the
   `next` tokens briefs.RESULTS allows, and every templates/<file> it names
   exists; every worker in briefs.RESULTS has an agent file and vice versa;
+- no agent file tells a worker to run `cd … && git` or a `$(…)`
+  substitution, which a headless permission check refuses;
 - every template a script parses exists in templates/;
 - every evals/files/ path a string in evals/evals.json names exists (the
   setup and expectations as well as each eval's `files`);
@@ -124,6 +126,21 @@ def check_agents():
                      f"but agents/{agent}.md says {setting[0]} · {setting[1]}")
         for agent in rows.keys() - agents.keys():
             fail(f"{table}: worker table names auto-dev:{agent}, which has no agents/ file")
+
+
+# A headless run refuses these forms even when the command is allowed, and a
+# worker that copies one from its instructions can stop on the refusal.
+REFUSED_FORMS = [(re.compile(r"\$\((?!…\))"), "a `$(…)` substitution"),
+                 (re.compile(r"\bcd (?!<path>)[^`\n]*&&\s*git\b"), "a `cd … && git` prefix")]
+
+
+def check_agent_commands(agents_dir=ROOT / "agents"):
+    for path in sorted(agents_dir.glob("*.md")):
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for pattern, what in REFUSED_FORMS:
+                if pattern.search(line):
+                    fail(f"{path.name}:{n}: gives {what}; write the command plainly "
+                         "(`git -C <path>`, a literal value from the brief)")
 
 
 PATH_REF = re.compile(r"(?:skills/auto-dev/)?((?:references|scripts|templates)/[\w.-]+\.(?:md|py))")
@@ -276,6 +293,7 @@ def main():
     check_plugin_metadata()
     check_scripts()
     check_agents()
+    check_agent_commands()
     check_paths()
     check_briefs()
     check_eval_paths()

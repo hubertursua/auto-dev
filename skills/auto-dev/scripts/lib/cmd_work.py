@@ -167,6 +167,18 @@ def print_tree(worktree):
     return tree
 
 
+def cut_commit(worktree, base):
+    """The commit the worktree was cut from, as a literal sha, so a worker's
+    git commands need no `$(...)` and stay put when origin/<base> moves."""
+    out = subprocess.run(["git", "-C", worktree, "merge-base", f"origin/{base}", "HEAD"],
+                         capture_output=True, text=True, check=False)
+    cut = out.stdout.strip()
+    if out.returncode != 0 or not cut:
+        raise Fail(f"git merge-base origin/{base} HEAD exited {out.returncode}: "
+                   f"{(out.stderr or out.stdout).strip()}", CANNOT_RUN, "ERROR")
+    return cut
+
+
 def issues_text(issues):
     return "\n".join(f"- {i}" for i in issues)
 
@@ -288,6 +300,8 @@ def write_brief(state, where, worker, mode, given, retry=None):
             values[slot] = auto[slot]
         elif kind == "auto" and slot == "tree" and ad is not None:
             values[slot] = print_tree(auto["worktree"])
+        elif kind == "auto" and slot == "cut" and ad is not None:
+            values[slot] = cut_commit(auto["worktree"], auto["base"])
         elif kind == "auto" and slot in LAZY and ad is not None:
             values[slot] = LAZY[slot](ad)
         elif slot == "previous_issues" and previous:
