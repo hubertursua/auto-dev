@@ -75,7 +75,10 @@ pr-body --check <file>
     define), no "held-out" / "fail-to-pass" / "pass-to-pass", no evidence tier
     used as one, no absolute worktree or home path and nothing that looks like
     a secret, and each checklist of the repo's PR template is there with its
-    items unchanged (ticked or not).
+    items unchanged (ticked or not). The ID, term and tier checks skip what the
+    description quotes word for word (test names, commands and their output,
+    between `<!-- auto-dev:quoted -->` markers) as generate wrote it; a quoted
+    region edited since is checked like the rest.
     Exit: 0 clean; 1 problems (each printed).
 
 cleanup-worktree
@@ -87,6 +90,7 @@ All of them exit 2 when they could not run (no state, git or gh missing, an
 unexpected error) — never a pass.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -118,6 +122,12 @@ ID_DEF_RE = re.compile(rf"^\s*\|\s*({ID_FORM})\s*\||^#+\s*({ID_FORM})\b|"
 ID_SOURCES = ("SPEC.md", "acceptance/MANIFEST.md", "SPEC_EVAL.md", "CODE_REVIEW.md",
               "SECURITY_REVIEW.md")
 ID_USE_RE = re.compile(rf"(?<![\w/.-])({ID_FORM})(?![\w-])")
+# A region the PR description quotes word for word (cmd_pr.QUOTED). Its test
+# names, commands and output may carry an ID the lint would refuse, and nobody
+# may edit them, so the ID, term and tier checks skip a region generate()
+# recorded (phase6.quoted holds each one's digest). The other checks still run.
+QUOTED_RE = re.compile(r"<!-- auto-dev:quoted -->\n.*?^ *<!-- /auto-dev:quoted -->$",
+                       re.MULTILINE | re.DOTALL)
 # Terms only the pipeline uses; words like "verifier" are ordinary English.
 TERMS_RE = re.compile(r"\b(held-out|fail-to-pass|pass-to-pass)\b", re.IGNORECASE)
 # An evidence tier only where it reads as one: a table cell, bold, or next to
@@ -574,13 +584,14 @@ def lint_body(text, state, checklist=True):
                         f"commit {verified}")
     if ARTIFACTS in text:
         problems.append("names a .auto-dev/ path, which nobody else can open")
+    prose = unquoted(text, state.get("phase6", {}).get("quoted", []))
     own = run_ids(state.get("artifact_dir"))
-    found = sorted({m.group(1) for m in ID_USE_RE.finditer(text)} & own)
+    found = sorted({m.group(1) for m in ID_USE_RE.finditer(prose)} & own)
     if found:
         problems.append(f"uses a condition or finding ID: {', '.join(found[:5])}")
     for pattern, what in ((TERMS_RE, "a pipeline term"),
                           (TIER_RE, "an evidence tier")):
-        found = sorted({m.group(0) for m in pattern.finditer(text)})
+        found = sorted({m.group(0) for m in pattern.finditer(prose)})
         if found:
             problems.append(f"uses {what}: {', '.join(found[:5])}")
     for path, what, whole in ((state["worktree"], "the worktree's absolute path", True),
@@ -594,6 +605,20 @@ def lint_body(text, state, checklist=True):
         from .cmd_pr import checklist_problems
         problems += checklist_problems(text, state["worktree"])
     return problems
+
+
+def quoted_digests(text):
+    """The digest of each quoted region in a description generate() wrote."""
+    return {hashlib.sha256(m.group(0).encode()).hexdigest()
+            for m in QUOTED_RE.finditer(text)}
+
+
+def unquoted(text, digests):
+    """`text` without the quoted regions generate() wrote; a region edited since,
+    or one it did not write, stays and is linted like the rest."""
+    known = set(digests)
+    return QUOTED_RE.sub(lambda m: "" if hashlib.sha256(m.group(0).encode()).hexdigest()
+                         in known else m.group(0), text)
 
 
 def run_ids(artifact_dir):

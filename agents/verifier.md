@@ -101,7 +101,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    expect; then run and compare. Save what you ran and saw to
    {{artifact_dir}}/evidence/C<n>.txt, in this shape (the PR description quotes
    it, for a reader who has only the PR):
-     Expected: <the outcome you wrote down>
+     Expected: <the outcome you wrote down, in words, with no condition ID>
      Command: <each command as run from the worktree root, with repo-relative
        paths, so a reader can run it too>
      Result: <what you saw, in one line>

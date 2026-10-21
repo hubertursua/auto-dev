@@ -889,6 +889,22 @@ class ShipTest(NextCase):
         self.resume()  # the user fixed it: a resume lifts the stop
         self.assertIn(str(body), self.next(0)["ACTION"])
 
+    def test_a_body_written_before_quoted_regions_is_written_again(self):
+        # A run stopped on 4.0.1, whose description had no quoted regions, gets
+        # a fresh one on resume instead of the same refusal.
+        _sha, _url, _out, body = self.to_body()
+        state = self.state()
+        del state["phase6"]["quoted"]
+        self.write_state(state)
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()).replace(" <!-- auto-dev:quoted -->", "")
+                        .replace("  <!-- /auto-dev:quoted -->\n", ""))
+        self.resume()
+        self.assertIn(str(body), self.next(0)["ACTION"])
+        self.assertIn("auto-dev:quoted", body.read_text())
+        self.assertIn("<!-- WRITE:", body.read_text())
+        self.assertIn("quoted", self.state()["phase6"])
+
     def merge_ready(self, first=()):
         sha, _ = self.open_pr(first=first)
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
@@ -1004,6 +1020,57 @@ class PublishTest(NextCase):
         cmd_pr.output_comment(".", self.dir, 12, "55", "a" * 40)  # the output moved back
         self.assertTrue(posted[0].startswith(f"{cmd_pr.COMMENT_HEAD} aaaaaaaaaaaa"))
         self.assertEqual(posted[0].rstrip("\n").split("\n")[-1], cmd_pr.MARKER)
+
+    def test_an_id_the_body_quotes_passes_but_one_written_in_is_refused(self):
+        # The tester named a test after S1 and the verifier wrote S1 in its
+        # Expected line: generate quotes both word for word, and nobody may
+        # edit them, so the lint skips them. An ID in the Summary still fails.
+        sha = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        state = self.state()
+        state["phase6"]["verified_sha"] = sha
+        self.write_state(state)
+        manifest = self.dir / "acceptance" / "MANIFEST.md"
+        manifest.write_text(manifest.read_text().replace('"owner only"',
+                                                         '"criterion S1: owner only"'))
+        (self.dir / "acceptance" / "base-run").mkdir(parents=True, exist_ok=True)
+        (self.dir / "acceptance" / "base-run" / "CS1.txt").write_text(
+            f"Commit: {sha}\nCommand: npx vitest run -t \"criterion S1:\"\n"
+            "Result: failed\nOutput (last lines):\n  FAIL criterion S1: owner only\n")
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "CS1.txt").write_text(
+            "Expected: the S1 check passes\nCommand: npx vitest run -t \"criterion S1:\"\n"
+            "Result: passed\nOutput (last lines):\n  PASS criterion S1: owner only\n")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
+            tree=self.tree()))
+        self.spec_eval()
+        self.lint()
+        lint = self.dir / "lint" / "TEST.md"  # a verbose reporter names the tests
+        lint.write_text(lint.read_text().replace("all good", "PASS criterion S1: owner only"))
+        r = self.autodev("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body = self.dir / "pr-body.md"
+        text = body.read_text()
+        self.assertIn("criterion S1: owner only", text)
+        self.assertIn("- `true`: passed <!-- auto-dev:quoted -->", text)
+        self.assertIn("- [x] **Only the owner can set a todo's due date** "
+                      "<!-- auto-dev:quoted -->", text)
+        self.assertIn("expecting the S1 check passes", text)
+        written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
+        body.write_text(written)
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body.write_text(written.replace("Todos can carry a due date.",
+                                        "Todos can carry a due date (S1).", 1))
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("uses a condition or finding ID: S1", r.stdout)
+        # A quoted region edited after generate is linted like any other text.
+        body.write_text(written.replace("expecting the S1 check passes",
+                                        "expecting the S1 check to pass"))
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("uses a condition or finding ID: S1", r.stdout)
 
     def test_a_finding_s_plain_words_stay_in_its_own_block(self):
         review = OPEN_REVIEW.replace("## Pending re-vote", (

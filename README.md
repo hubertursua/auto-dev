@@ -503,7 +503,8 @@ output cut to fit, the ticket linked and the repo's own PR template's
 sections added, leaving the Summary, the Assumptions, any template section
 it can't fill and the template checklist's boxes to write; with
 `--check`, lints one: strict sections, the checked commit, size, no internal
-IDs, paths or secrets, the template checklist's items unchanged), `pr publish` (opens the one PR, or refreshes the
+IDs, paths or secrets, the template checklist's items unchanged; the ID, term
+and tier checks skip the test names, commands and output it quotes word for word), `pr publish` (opens the one PR, or refreshes the
 sections the pipeline writes in the live description, keeps overflowing output
 in one comment edited in place, and reads the PR back) and `cleanup-worktree`. Parsers that turn a worker's artifact into a decision:
 `check-manifest` (the acceptance tester's `MANIFEST.md` against `SPEC.md`: which
