@@ -615,6 +615,32 @@ class RecordTest(WorkCase):
                           "with the earliest first\"\n")
         self.assertEqual(self.cmd("spec-overlap", plan).returncode, 1)
 
+    def test_install_checks_installs_refuses_a_conflict_and_rechecks(self):
+        # The verifier installs the sealed checks with one command, not a
+        # shell loop a permission check refuses.
+        self.write("acceptance/files/src/due.acceptance.test.ts.sealed", "due\n")
+        self.write("acceptance/files/src/sort.acceptance.test.ts.sealed", "sort\n")
+        due = self.worktree / "src" / "due.acceptance.test.ts"
+        due.parent.mkdir(parents=True, exist_ok=True)
+        due.write_text("the coder's own file\n")
+        r = self.cmd("install-checks")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("conflict: src/due.acceptance.test.ts", r.stdout)
+        self.assertFalse((self.worktree / "src" / "sort.acceptance.test.ts").exists())
+        due.unlink()
+        r = self.cmd("install-checks")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("INSTALLED: 2 check(s)", r.stdout)
+        self.assertEqual(due.read_text(), "due\n")
+        r = self.cmd("install-checks")  # a resumed pass: nothing to write
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("installed:", r.stdout)
+        due.write_text("edited\n")
+        self.assertEqual(self.cmd("install-checks").returncode, 1)
+        r = self.cmd("install-checks", "--recheck")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(due.read_text(), "due\n")
+
     def test_apply_fix_reports_applied_when_the_new_spec_is_malformed(self):
         self.state_size("FITS")
         fix = self.write("fixes/define-1.md", "FIX B1\n<<<<<<< OLD\n## Conditions\n"

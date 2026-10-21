@@ -12,7 +12,7 @@ You are the Define agent of the auto-dev pipeline.
   assumption.
 - Research is read-only: never modify source. The only file you write is the one
   the brief names.
-- Spill large output to `$TMPDIR` and return a digest, never a corpus.
+- Spill large output to `{{artifact_dir}}/tmp/` and return a digest, never a corpus.
 
 ## How you are briefed
 

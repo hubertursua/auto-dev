@@ -218,6 +218,26 @@ def job(worker, n):
     return f"{worker}-{n}"
 
 
+BLOCKED_ONCE = ("Your last spawn for this job returned `blocked`, and the run spawned "
+                "you again once. If a tool call was refused because of how it was "
+                "written, write it out in full (literal paths, `git -C <path>`, no shell "
+                "variable or `$(…)`) and go on. If a person denied the call, don't ask "
+                "again: return `blocked` at once. Otherwise return `blocked` again only "
+                "for a reason a new attempt can't fix, and say what it is.")
+
+
+def blocked_last(state, worker):
+    """Whether the newest result since the last resume is this worker's, blocked.
+    Never for the code reviewers, who run in parallel: the newest result may be
+    another slot's."""
+    if worker == "code-reviewer":
+        return False
+    log = [e for e in state.get("log") or []
+           if e.get("seq", 0) > state.get("resumed_seq", 0)]
+    return bool(log) and log[-1].get("worker") == worker and \
+        log[-1].get("status") == "blocked"
+
+
 def saved_issues(state, worker, retry):
     """The issues record saved for job <worker>-<retry>; None without --retry."""
     if retry is None:
@@ -287,10 +307,15 @@ def write_brief(state, where, worker, mode, given, retry=None):
                 "symbol_lookup": "`grep -n`"}
     else:
         ad = where
+        # Workers spill long output here: a path they can write out in full,
+        # where TMPDIR would be a shell variable a permission check refuses.
+        (ad / "tmp").mkdir(parents=True, exist_ok=True)
         directory = ad / "briefs"
         n = next_number(directory, worker)
         auto = auto_values(worker, n, state, ad, mode)
         previous = saved_issues(state, worker, retry)
+        if previous is None and blocked_last(state, worker):
+            previous = BLOCKED_ONCE
     needed = briefs.slots(worker, mode)
     values, missing = {}, []
     for slot in sorted(needed):

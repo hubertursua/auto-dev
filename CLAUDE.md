@@ -24,7 +24,7 @@ python3 -m unittest discover -s tests     # helper-script tests
 exist, an `evals/files/` fixture `evals.json` names that doesn't exist, a script
 the README doesn't mention, a script that isn't executable, a `SKILL.md`
 description over Claude Code's 1024-character limit, an agent file that tells a
-worker to run `cd … && git` or a `$(…)` substitution, and
+worker to run `cd … && git`, a `$(…)` substitution or a shell variable, and
 `plugin.json` / `marketplace.json` disagreeing. When you add a sync rule below
 that a script can check, add it there.
 

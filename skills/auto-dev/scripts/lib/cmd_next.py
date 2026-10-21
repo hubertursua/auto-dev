@@ -465,7 +465,9 @@ def pending_briefs(c):
 
 
 def not_ok(c):
-    """A worker that stopped on purpose, or failed twice running, stops the run.
+    """A worker that stopped on purpose twice running, or failed twice running,
+    stops the run; the first time, the step spawns it again (a blocked one is
+    told why in its brief's previous_issues).
 
     Only results since the last `resume` count: once the user has fixed the
     cause and resumed, the step spawns the worker again."""
@@ -476,16 +478,18 @@ def not_ok(c):
     if latest.get("status") == "ok" or latest["worker"] == "code-reviewer":
         return None
     same = [e for e in log if e["worker"] == latest["worker"]]
-    twice = len(same) >= 2 and same[-2].get("status") == "failed"
-    if latest["status"] == "blocked" or twice:
-        why = ("stopped on purpose" if latest["status"] == "blocked"
-               else "failed twice running")
+    twice = len(same) >= 2 and same[-2].get("status") != "ok"
+    if twice:
+        statuses = {latest["status"], same[-2].get("status")}
+        why = ("stopped on purpose twice running" if statuses == {"blocked"} else
+               "failed twice running" if statuses == {"failed"} else
+               "did not return ok twice running")
         return stop([(f"{latest['worker']} #{latest['n']} {why}. Tell the user what it "
                      "said above its result block, and that the run is paused here: "
                      "once the cause is fixed, `auto-dev continue` spawns it again."),
                      f"State and artifacts: {c.ad}"],
                     f"a worker returned status {latest['status']}")
-    return None  # failed once: the step re-spawns it
+    return None  # failed or blocked once: the step re-spawns it
 
 
 def setup(c):

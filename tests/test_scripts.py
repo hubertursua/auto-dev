@@ -408,6 +408,19 @@ class MutateTest(GitRepoCase):
         r, _ = self.mutate({"not": "a list"}, "--cmd", self.CMD)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_exit_file_holds_the_exit_code_whatever_ends_the_run(self):
+        # A caller running it in the background needs no `echo $?`, which a
+        # permission check refuses as a shell variable.
+        exit_file = self.tmp / "mutate.exit"
+        r, _ = self.mutate([{"id": "M1", "file": "src/app.py", "line": 2, "find": "a + b",
+                             "replace": "b + a"}], "--cmd", self.CMD, "--timeout", "60",
+                           "--exit-file", exit_file)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)  # it survives
+        self.assertEqual(exit_file.read_text(), "1\n")
+        r, _ = self.mutate([], "--timeout", "nope", "--exit-file", exit_file)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # a usage error
+        self.assertEqual(exit_file.read_text(), "2\n")
+
 
 @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
 class ValidateConfigTest(unittest.TestCase):
