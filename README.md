@@ -512,6 +512,8 @@ conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
 `CORRECT`, `REPAIR` or `STOP`, with the survivors to carry forward), `apply-fix`
 (applies a reviewer's exact old → new FIX blocks, all or nothing),
 `spec-overlap` (refuses a brief or plan that copies `SPEC.md`'s wording),
+`install-checks` (the verifier installs the sealed acceptance checks with it,
+or copies them back over an edit with `--recheck`),
 `votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`,
 adding each new must-fix finding to the pass's `corrections.md` for the coder,
 except one about an acceptance check, which it names for the acceptance tester),

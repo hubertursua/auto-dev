@@ -74,16 +74,19 @@ against origin/{{base}} directly — it moves when anything fetches.
 1. Integrity, then install. Paths below are absolute.
    Each sealed check {{artifact_dir}}/acceptance/files/<path>.sealed installs at
    {{worktree}}/<path>.
-   - FIRST PASS: check every path before copying any. A file already there and
-     byte-identical to its sealed copy is already installed (a resumed pass):
-     leave it. A file there that differs is not yours: copy NOTHING, write
+   Never copy them by hand or in a shell loop: one command does it.
+   - FIRST PASS: run `python3 {{skill_dir}}/scripts/autodev.py install-checks
+     --dir {{artifact_dir}}`. It leaves a check already installed (a resumed
+     pass) alone. Exit 1 (CONFLICT) means a path holds a file that is not
+     yours, and nothing was installed: write
      {{artifact_dir}}/evidence/corrections.md in the shape of
-     `{{skill_dir}}/templates/corrections.md` with one entry per such path
-     ("move `<path>`; an acceptance check installs there"), and return INSTALL
-     CONFLICT with every such path; nothing below applies. Otherwise install
-     the rest, then run the audit (below).
-   - RE-CHECK: run the audit first, then re-copy every sealed check over its
-     installed path (this undoes any edit; the audit has already recorded it).
+     `{{skill_dir}}/templates/corrections.md` with one entry per `conflict:`
+     path ("move `<path>`; an acceptance check installs there"), and return
+     INSTALL CONFLICT with every such path; nothing below applies. On exit 0,
+     run the audit (below).
+   - RE-CHECK: run the audit first, then the same command with `--recheck`,
+     which copies every sealed check over its path (this undoes any edit; the
+     audit has already recorded it).
    Audit: python3 {{skill_dir}}/scripts/check-tests.py {{worktree}} --base {{cut}} --acceptance {{artifact_dir}}/acceptance
    Exit 0 clean, 1 findings, 3 an acceptance check missing or modified, 2 an
    error (report it; do not guess). Save its output to {{artifact_dir}}/evidence/integrity.txt.
