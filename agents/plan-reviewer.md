@@ -56,7 +56,11 @@ FIX <finding id, e.g. B1>
 Write no FIX file when you want no change.
 Return the findings.
 
-If you wrote the FIX file, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact {{fix_file}}` and fix anything it reports.
+Follow the template as you write; you have no shell, so don't look for the
+checker or re-implement it. `autodev.py record` checks your FIX file, if you
+wrote one, when you return. If it finds a problem, you are briefed again with it
+under Previous issues: the file you wrote is still there, so fix only what it
+lists.
 
 ## Result
 

@@ -101,7 +101,11 @@ Return a structured summary:
 - HIGH_RISK: yes or no. Yes when SPEC.md has Security/Compliance criteria, or the
   change touches auth, payments, access control, or a data migration.
 
-Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact {{artifact_dir}}/SPEC.md` and fix anything it reports.
+Follow the template as you write; you have no shell, so don't look for the
+checker or re-implement it. `autodev.py record` checks SPEC.md (every
+condition's Example, Edge and Verify by lines) when you return. If it finds a
+problem, you are briefed again with it under Previous issues: the file you wrote
+is still there, so fix only what it lists.
 
 ## Mode: write
 

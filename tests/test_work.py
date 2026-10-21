@@ -235,6 +235,25 @@ class RecordTest(WorkCase):
         self.assertEqual(state["size"], "FITS")
         self.assertTrue(state["settings"]["post_plan_gate"])
 
+    def test_define_spec_is_checked_against_its_template(self):
+        # Define has no shell to run check-artifact: record does it.
+        (self.dir / "SPEC.md").write_text(SPEC.replace(
+            "   - Edge: an invalid date is rejected → 400\n", "", 1))
+        self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
+        r = self.cmd("record", "define", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("SPEC.md: condition 1 has no `Edge:` line", r.stdout)
+        (self.dir / "SPEC.md").write_text(SPEC)
+        r = self.cmd("record", "define", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for nxt in ("REVISED", "OVERSIZED"):  # every ok return is checked
+            (self.dir / "SPEC.md").write_text(SPEC.replace(
+                "   - Verify by: unit\n", "", 1))
+            self.returned("define", 2, next=nxt, high_risk="yes", reading="none")
+            r = self.cmd("record", "define", "2")
+            self.assertEqual(r.returncode, 1, nxt + r.stdout + r.stderr)
+            self.assertIn("condition 2 has no `Verify by:` line", r.stdout)
+
     def test_oversized_stops_the_run(self):
         self.returned("define", 1, next="OVERSIZED", high_risk="yes", reading="none")
         self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
