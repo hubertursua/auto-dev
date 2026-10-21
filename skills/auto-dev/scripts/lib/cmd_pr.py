@@ -65,7 +65,7 @@ ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 # skips a comment that carries it.
 MARKER = "<!-- auto-dev -->"
 # Around what a description quotes word for word (test names, commands, their
-# output, the verifier's Expected line): those may carry a condition ID, which
+# output, the verifier's Expected line and its reasons): those may carry a condition ID, which
 # the lint skips inside a region generate() wrote (QUOTED_RE is in cmd_ship).
 # The opening marker ends the line before the quote, so it doesn't split the
 # list item's paragraph on GitHub.
@@ -191,12 +191,10 @@ def generate(state, ad, sha):
         body.text("None: every requirement was checked automatically.")
     body.text("")
     body.text("### Changes to tests")
-    for line in test_changes(ev, url, sha, cut, wt):
-        body.text(line)
+    quoted_lines(body, test_changes(ev, url, sha, cut, wt))
     body.text("")
     body.text("### Test strength")
-    for line in test_strength(ev, state):
-        body.text(line)
+    quoted_lines(body, test_strength(ev, state))
     body.text("")
     body.text("## Quality gate")
     body.text(f"The repo's own checks, run on commit {sha[:12]}:")
@@ -499,6 +497,18 @@ def person_checks(manual, na_rows, ev, conditions):
                           f"`{proxy}`" if proxy and proxy.lower() != "none" else
                           "nothing could be, because no test can drive it"), ""]
     return lines
+
+
+def quoted_lines(body, lines):
+    """Lines that carry the verifier's own words (its reasons, which may name a
+    condition or finding ID), inside a quoted region. The marker gets its own
+    line: on the heading above, it would hide the heading from the lint."""
+    if not lines:
+        return
+    body.text(QUOTE_OPEN)
+    for line in lines:
+        body.text(line)
+    body.text(QUOTE_CLOSE)
 
 
 def test_changes(ev, url, sha, cut, wt):

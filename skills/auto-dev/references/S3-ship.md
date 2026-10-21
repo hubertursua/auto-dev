@@ -80,8 +80,8 @@ heard of auto-dev:
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
 "verifier" or "pipeline". What the description quotes word for word (test
-names, commands and their output, between the `<!-- auto-dev:quoted -->`
-markers) is exempt from the ID, term and tier checks, and is not yours to
+names, commands and their output, the verifier's reasons under Changes to
+tests and Test strength, between the `<!-- auto-dev:quoted -->` markers) is exempt from the ID, term and tier checks, and is not yours to
 edit. Change nothing else in the file: the follow-ups the user sent to a
 separate PR at the PR gate are already listed in it.
 `pr publish` ends everything it posts with `<!-- auto-dev -->`, which tells
