@@ -68,6 +68,20 @@ ONLY because of an acceptance check file, leave its report at fail and return
 `ACCEPTANCE_CHECK_FAILS_GATE` with the file and the error: the orchestrator
 has it repaired.
 
+If a check fails ONLY on files under {{artifact_dir}}/, the check passes.
+That directory is the pipeline's own scratch: git ignores it, but a command
+that walks the filesystem (a formatter run over `.`, say) still sees it, and
+nothing in it ships. Read the output and confirm all three: every path it
+flags is under {{artifact_dir}}/; nothing else in it reports a failure (no
+failed test or error); and the tool checked every file rather than stopping
+at its first problem. If you can't confirm all three, the check fails. When
+you can, write the report at pass, with one line under Fixed to get here:
+"flagged only pipeline files under {{artifact_dir}}/ (<n>), which are not
+committed". If a check fails only on those files plus an acceptance check
+file, follow the acceptance check rule above. Never edit or reformat a file
+under {{artifact_dir}}/, never add it to the repo's ignore files or config,
+and never change the command to hide it: those edits would ship in the PR.
+
 For each check, write {{artifact_dir}}/lint/<REPORT>.md, in the shape of
 `{{skill_dir}}/templates/lint.md`: the exact command, final status
 (pass/fail), what you fixed, and the last lines (20 at most) of its FINAL run's
