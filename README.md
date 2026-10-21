@@ -328,9 +328,14 @@ main checkout's `.claude/settings.local.json`. Example in TypeScript:
 ```
 
 A rule matches the command's text, so copy the commands exactly as the profile
-lists them. At the profile confirmation the orchestrator prints these snippets
-filled in with your real paths and commands. It never edits your settings
-itself; you choose what to allow.
+lists them. Workers write their git commands as `git -C <worktree> …` with the
+cut commit as a literal sha, never `cd … && git` or `$(…)`, which a headless
+run refuses even when the command is allowed. A worker whose call the
+permission check refuses retries it once in that form, and stops only if it is
+refused again; a call you deny stops it straight away. At the profile
+confirmation the orchestrator prints these snippets filled in with your real
+paths and commands. It never edits your settings itself; you choose what to
+allow.
 
 ### `.auto-dev.yml`
 

@@ -48,6 +48,26 @@ class CheckRepoTest(unittest.TestCase):
                     "evals/files/no-such-dir"):
             self.assertTrue(any(f"names {ref}," in e for e in errors), (ref, errors))
 
+    def check_agent_text(self, text):
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "coder.md").write_text(text, encoding="utf-8")
+            tool.check_agent_commands(Path(tmp))
+        return tool.errors
+
+    def test_plain_agent_commands_pass(self):
+        text = ("Run `git -C {{worktree}} diff {{cut}}`, never `cd <path> && git …`\n"
+                "and no `$(…)`. Then `cd {{worktree}} && npm test; echo $? > exit`.\n")
+        self.assertEqual(self.check_agent_text(text), [])
+
+    def test_subshell_and_cd_prefix_in_an_agent_fail(self):
+        errors = self.check_agent_text(
+            "Run `git diff $(git merge-base origin/main HEAD)`.\n"
+            "Or `cd {{worktree}} && git diff HEAD`.\n")
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("coder.md:1: gives a `$(…)` substitution", errors[0])
+        self.assertIn("coder.md:2: gives a `cd … && git` prefix", errors[1])
+
     def check_frontmatter(self, frontmatter):
         tool = load_tool()
         with tempfile.TemporaryDirectory() as tmp:

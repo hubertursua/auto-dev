@@ -117,6 +117,39 @@ class BriefTest(WorkCase):
         modes = [ln for ln in text.splitlines() if ln.startswith("mode:")]
         self.assertEqual(modes, ["mode: re-check"])
 
+    def test_cut_is_the_literal_merge_base(self):
+        # A worker's git commands use the sha itself: a headless run refuses
+        # `$(git merge-base …)`, and the brief must stay put when origin moves.
+        cut = self.sh("git", "-C", str(self.worktree), "merge-base", "origin/main",
+                      "HEAD").strip()
+        (self.worktree / "late.txt").write_text("x\n")
+        self.sh("git", "-C", str(self.worktree), "add", "late.txt")
+        self.sh("git", "-C", str(self.worktree), "commit", "-q", "-m", "late")
+        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "cleanup-1.md")
+        self.assertEqual(values["cut"], cut)
+        # origin/main moving on after a fetch leaves the cut where it was.
+        seed = self.tmp / "seed"
+        self.sh("git", "-C", str(seed), "pull", "-q", "origin", "main")
+        (seed / "upstream.txt").write_text("y\n")
+        self.sh("git", "-C", str(seed), "add", "upstream.txt")
+        self.sh("git", "-C", str(seed), "commit", "-q", "-m", "upstream")
+        self.sh("git", "-C", str(seed), "push", "-q", "origin", "main")
+        self.sh("git", "-C", str(self.worktree), "fetch", "-q", "origin")
+        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "cleanup-2.md")
+        self.assertEqual(values["cut"], cut)
+
+    def test_cut_without_the_base_cannot_run(self):
+        self.sh("git", "-C", str(self.worktree), "update-ref", "-d",
+                "refs/remotes/origin/main")
+        r = self.cmd("brief", "verifier", "--set", "mode=first",
+                     "--set", "what_changed=none")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("merge-base origin/main HEAD", r.stdout + r.stderr)
+
     def test_judge_tree_comes_from_the_caller(self):
         args = ("brief", "review-judge", "--mode", "consolidate",
                 "--set", "reviewers=R1, R2, R3", "--set", "scope=whole change")
