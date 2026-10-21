@@ -1377,6 +1377,21 @@ class TicketTest(NextCase):
         summary = text.split("## Acceptance conditions")[0]
         self.assertIn("Ticket: [TODO-7](https://acme.atlassian.net/browse/TODO-7)", summary)
 
+    def test_the_verifier_s_reasons_may_name_an_id(self):
+        # A survivor's judgment quotes the verifier, who names conditions by ID.
+        write = self.spec_eval
+
+        def spec_eval(**kw):
+            write(**kw)
+            path = self.dir / "SPEC_EVAL.md"
+            path.write_text(path.read_text().replace(
+                "Equivalent — no two todos share a date",
+                "Test gap — the C1 checks still pass with the mutant in place"))
+        self.spec_eval = spec_eval
+        self.open_pr()
+        text = (self.dir / "pr-body.md").read_text()
+        self.assertIn("not caught: the C1 checks still pass", text)
+
 
 class InlineCommentsTest(NextCase):
     to_body = ShipTest.to_body
