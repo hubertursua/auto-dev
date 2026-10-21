@@ -552,6 +552,42 @@ class BuildTest(NextCase):
         self.assertFalse((self.worktree / "src" / "sort.acceptance.test.ts").exists())
         self.assertFalse((self.dir / "acceptance" / "INSTALLED").exists())
 
+    def test_a_check_repaired_after_the_first_pass_goes_through_the_gate(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.first_pass()
+        self.spec_eval(v1="partial",
+                       defective='`src/due.acceptance.test.ts` :: "shows the due date"')
+        self.answer(*jobs[0], "REPAIR", tree="x", corrections="0")
+        self.expect("acceptance-tester", "REPAIRED", checks="1", ambiguous="none")
+        self.lint()
+        self.expect("cleanup", "GREEN")  # the repaired check is linted, then re-checked
+        _, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "re-check")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        self.next(6)
+
+    def test_a_failed_first_pass_is_spawned_again_as_a_first_pass(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.first_pass()
+        self.answer(*jobs[0], None, status="failed")
+        _, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+
+    def test_the_checks_are_installed_once(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.expect("cleanup")
+        installed = self.worktree / "src" / "due.acceptance.test.ts"
+        installed.write_text("edited by cleanup")  # the verifier's audit records it
+        self.expect("cleanup")  # re-issued, not recorded yet; no re-install, no conflict
+        self.assertEqual(installed.read_text(), "edited by cleanup")
+
     def test_a_freshness_check_that_could_not_run_exits_2(self):
         self.plan_session()
         self.resume()

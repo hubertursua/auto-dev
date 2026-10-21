@@ -76,9 +76,10 @@ against origin/{{base}} directly — it moves when anything fetches.
    {{worktree}}/<path>.
    Never copy them by hand or in a shell loop: one command does it.
    - FIRST PASS, when {{artifact_dir}}/acceptance/INSTALLED exists: the
-     pipeline installed the checks before the cleanup agent ran, so do as
-     RE-CHECK does (a file that differs was edited since, and the audit
-     records it).
+     pipeline installed the checks before the cleanup agent ran, so for this
+     step do as RE-CHECK does: the audit, then `install-checks --recheck` (a
+     file that differs was edited since, and the audit records it). Every
+     other step still runs as a first pass.
    - FIRST PASS otherwise: run `python3 {{skill_dir}}/scripts/autodev.py install-checks
      --dir {{artifact_dir}}`. It leaves a check already installed (a resumed
      pass) alone. Exit 1 (CONFLICT) means a path holds a file that is not
