@@ -434,14 +434,22 @@ class PlanTest(NextCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.expect("planner")  # the review stands: define-1 is no newer than it
 
-    def test_resume_after_a_blocked_worker_spawns_it_again(self):
+    def test_a_worker_blocked_once_is_spawned_again_and_twice_stops(self):
         _, jobs = self.expect("define")
         self.answer(*jobs[0], "", status="blocked")
-        self.assertIn("stopped on purpose", " ".join(self.next(4)["REPORT"]))
+        _, jobs = self.expect("define")  # once: spawned again, told why
+        self.assertEqual(jobs, [("define", 2)])
+        brief = (self.dir / "briefs" / "define-2.md").read_text()
+        self.assertIn("returned `blocked`", brief)
+        self.answer(*jobs[0], "", status="blocked")
+        self.assertIn("stopped on purpose twice running",
+                      " ".join(self.next(4)["REPORT"]))
         self.assertEqual(self.next(4)["exit"], 4)
         self.resume()
         _, jobs = self.expect("define")
-        self.assertEqual(jobs, [("define", 2)])
+        self.assertEqual(jobs, [("define", 3)])
+        self.assertNotIn("returned `blocked`",  # after a resume, a fresh brief
+                         (self.dir / "briefs" / "define-3.md").read_text())
 
     def test_resume_after_a_worker_never_returned_spawns_it_again(self):
         self.expect("define")

@@ -11,6 +11,7 @@ do not catch ("survived") is a behavior no test pins down.
 Usage:
     python3 <skill-dir>/scripts/mutate.py <worktree> --mutants <file.json> --cmd "<test command>"
                                           [--max <n>] [--timeout <sec>] [--out <results.json>]
+                                          [--exit-file <path>]
     python3 <skill-dir>/scripts/mutate.py <worktree> --restore --mutants <file.json>
     python3 <skill-dir>/scripts/mutate.py --help
 
@@ -44,6 +45,9 @@ Output:
     stderr  `ERROR: …`
     --out   (default `<mutants file>.results.json`) the mutants with `status`
             and the tail of the test output for each
+    --exit-file  when given, the exit code (below) is written there as the
+            run ends, whatever ends it, usage errors included, so a caller that
+            runs this in the background needs no `echo $?`
 
 Statuses:
     killed    the test command failed with the mutant in place
@@ -278,7 +282,31 @@ def validate(mutants):
     return None
 
 
+def exit_file_arg(argv):
+    """--exit-file's value, read before argparse so a usage error is written too."""
+    for i, a in enumerate(argv):
+        if a == "--exit-file" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--exit-file="):
+            return a.split("=", 1)[1]
+    return None
+
+
 def main() -> int:
+    path = exit_file_arg(sys.argv[1:])
+    code = 2
+    try:
+        code = run_main()
+    except SystemExit as exc:  # argparse: --help is 0, a usage error 2
+        code = exc.code if isinstance(exc.code, int) else 2
+    finally:
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"{code}\n")
+    return code
+
+
+def run_main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -289,6 +317,7 @@ def main() -> int:
     parser.add_argument("--max", type=int, default=50)
     parser.add_argument("--out")
     parser.add_argument("--restore", action="store_true")
+    parser.add_argument("--exit-file")
     args = parser.parse_args()  # bad arguments exit 2 via argparse
 
     signal.signal(signal.SIGTERM, on_signal)

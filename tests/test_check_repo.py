@@ -57,7 +57,7 @@ class CheckRepoTest(unittest.TestCase):
 
     def test_plain_agent_commands_pass(self):
         text = ("Run `git -C {{worktree}} diff {{cut}}`, never `cd <path> && git …`\n"
-                "and no `$(…)`. Then `cd {{worktree}} && npm test; echo $? > exit`.\n")
+                "and no `$(…)`. Then `cd {{worktree}} && npm test > {{artifact_dir}}/tmp/t`.\n")
         self.assertEqual(self.check_agent_text(text), [])
 
     def test_subshell_and_cd_prefix_in_an_agent_fail(self):
@@ -67,6 +67,11 @@ class CheckRepoTest(unittest.TestCase):
         self.assertEqual(len(errors), 2, errors)
         self.assertIn("coder.md:1: gives a `$(…)` substitution", errors[0])
         self.assertIn("coder.md:2: gives a `cd … && git` prefix", errors[1])
+
+    def test_a_shell_variable_in_an_agent_fails(self):
+        errors = self.check_agent_text("Spill output to `$TMPDIR`.\nThen `echo $? > x`.\n")
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(all("a shell variable" in e for e in errors), errors)
 
     def check_frontmatter(self, frontmatter):
         tool = load_tool()

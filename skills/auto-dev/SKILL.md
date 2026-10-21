@@ -120,7 +120,7 @@ stdout with the issues), run `next`: it briefs that job again with those
 issues in its `previous_issues` slot. Never write the retry brief yourself
 (`brief --retry`) and never fix the worker's file yourself.
 
-**A stop on a worker** (it stopped on purpose, failed twice, or never left a
+**A stop on a worker** (it stopped on purpose twice, failed twice, or never left a
 result `record` accepts) and a stop at `pr publish` last until the user fixes
 the cause and says `auto-dev continue`: the new session spawns that worker, or
 publishes, again. A stop on a result (a red quality gate, an impossible spec, a

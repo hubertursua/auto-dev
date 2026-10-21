@@ -584,6 +584,7 @@ Each run creates `.auto-dev/` holding the artifacts phases hand off:
 | `WORK_LOG.md` | generated from `state.json` | the ledger for people to read: phase status, size check, high-risk flag, gate decisions, budget |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `briefs/`, `returns/` | `autodev.py brief` and `next`, each worker | each worker's brief file, and the result it returned |
+| `tmp/` | `autodev.py brief` | where workers spill long command output, a literal path in place of `$TMPDIR` |
 | `blocked/` | Phases 4–6, coder | the build steps the coder stopped, for the planner |
 | `pr-body.md`, `pr-output-comment.md` | Phase 6, `autodev.py next` | the generated PR description, and the command output moved out of it when it would be too long |
 | `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session: the task, what is done, what comes next, the run files its orchestrator may open |
@@ -614,8 +615,10 @@ stops if the mutation step may have left a planted bug in the tree, if the
 build edited source inside a submodule, or if a commit holds code that no result
 checked. It stops instead of spending another round when the verifier and the
 acceptance tester disagree about a check, when a correction after the commit
-changes nothing, or when a re-voter fails twice. A stop on a worker (it
-stopped on purpose, failed twice, or never returned) lasts until you resume:
+changes nothing, or when a re-voter fails twice. A worker that stops on
+purpose (`blocked`) is spawned once more, told to write any refused command out
+in full; a stop on a worker (it stopped on purpose twice, failed twice, or
+never returned) lasts until you resume:
 then that worker is spawned again, and a refused `pr publish` is run
 again the same way. A stop on a result (a red quality gate, an
 impossible spec, a possibly planted bug, the budget used up) stays. A stop

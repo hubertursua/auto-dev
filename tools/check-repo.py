@@ -16,8 +16,8 @@ Checks:
   or OPTIONAL in scripts/lib/briefs.py), its Result block lists exactly the
   `next` tokens briefs.RESULTS allows, and every templates/<file> it names
   exists; every worker in briefs.RESULTS has an agent file and vice versa;
-- no agent file tells a worker to run `cd … && git` or a `$(…)`
-  substitution, which a headless permission check refuses;
+- no agent file tells a worker to run `cd … && git`, a `$(…)`
+  substitution or a shell variable, which a headless permission check refuses;
 - every template a script parses exists in templates/;
 - every evals/files/ path a string in evals/evals.json names exists (the
   setup and expectations as well as each eval's `files`);
@@ -131,7 +131,8 @@ def check_agents():
 # A headless run refuses these forms even when the command is allowed, and a
 # worker that copies one from its instructions can stop on the refusal.
 REFUSED_FORMS = [(re.compile(r"\$\((?!…\))"), "a `$(…)` substitution"),
-                 (re.compile(r"\bcd (?!<path>)[^`\n]*&&\s*git\b"), "a `cd … && git` prefix")]
+                 (re.compile(r"\bcd (?!<path>)[^`\n]*&&\s*git\b"), "a `cd … && git` prefix"),
+                 (re.compile(r"\$[A-Za-z_?]"), "a shell variable")]
 
 
 def check_agent_commands(agents_dir=ROOT / "agents"):
