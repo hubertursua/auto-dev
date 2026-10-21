@@ -28,7 +28,7 @@
         "The acceptance checks are in the commit, byte-identical to their sealed copies under acceptance/files/",
         "lint/ holds one <CHECK>.md per gate command in profile.md, and every one reports green",
         "The PR is opened as a draft against the base branch, and its body has an Acceptance conditions section (with Checks for a person, Changes to tests and Test strength subsections), a Quality gate section and a Review section",
-        "The PR body contains no condition, finding or mutant IDs (such as C1, M3, S1), no .auto-dev/ path, and no evidence tier (Strong, Adequate, Weak) used as a label for a result",
+        "The PR body contains no condition, finding or mutant IDs (such as C1, M3, S1), no .auto-dev/ path, and no evidence tier (Strong, Adequate, Weak) used as a label for a result, outside the test names, commands and output it quotes between `<!-- auto-dev:quoted -->` lines; no acceptance test name and no evidence/C<n>.txt Expected line names a condition ID",
         "Each ticked condition with a test written before the code names that test as `<path> › <test name>`, linked to the file at the checked commit, with its result on the old code and now, and a collapsed <details> block holding the old code's run (from acceptance/base-run/, except for a corrected test) and the current command and the end of its output",
         "The PR body's Changes to tests section lists each finding in SPEC_EVAL.md's Test integrity section with its reason, or, only when that section is None, says no existing test was deleted, skipped or weakened",
         "Each evidence/C<n>.txt has Expected, Command and Result parts, and an Output part unless its Command is `none` with a reason",

@@ -1005,6 +1005,52 @@ class PublishTest(NextCase):
         self.assertTrue(posted[0].startswith(f"{cmd_pr.COMMENT_HEAD} aaaaaaaaaaaa"))
         self.assertEqual(posted[0].rstrip("\n").split("\n")[-1], cmd_pr.MARKER)
 
+    def test_an_id_the_body_quotes_passes_but_one_written_in_is_refused(self):
+        # The tester named a test after S1 and the verifier wrote S1 in its
+        # Expected line: generate quotes both word for word, and nobody may
+        # edit them, so the lint skips them. An ID in the Summary still fails.
+        sha = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        state = self.state()
+        state["phase6"]["verified_sha"] = sha
+        self.write_state(state)
+        manifest = self.dir / "acceptance" / "MANIFEST.md"
+        manifest.write_text(manifest.read_text().replace('"owner only"',
+                                                         '"criterion S1: owner only"'))
+        (self.dir / "acceptance" / "base-run").mkdir(parents=True, exist_ok=True)
+        (self.dir / "acceptance" / "base-run" / "CS1.txt").write_text(
+            f"Commit: {sha}\nCommand: npx vitest run -t \"criterion S1:\"\n"
+            "Result: failed\nOutput (last lines):\n  FAIL criterion S1: owner only\n")
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "CS1.txt").write_text(
+            "Expected: the S1 check passes\nCommand: npx vitest run -t \"criterion S1:\"\n"
+            "Result: passed\nOutput (last lines):\n  PASS criterion S1: owner only\n")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
+            tree=self.tree()))
+        self.spec_eval()
+        self.lint()
+        r = self.autodev("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body = self.dir / "pr-body.md"
+        text = body.read_text()
+        self.assertIn("criterion S1: owner only", text)
+        self.assertIn("expecting the S1 check passes", text)
+        written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
+        body.write_text(written)
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body.write_text(written.replace("Todos can carry a due date.",
+                                        "Todos can carry a due date (S1).", 1))
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("uses a condition or finding ID: S1", r.stdout)
+        # A quoted region edited after generate is linted like any other text.
+        body.write_text(written.replace("expecting the S1 check passes",
+                                        "expecting the S1 check to pass"))
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("uses a condition or finding ID: S1", r.stdout)
+
     def test_a_finding_s_plain_words_stay_in_its_own_block(self):
         review = OPEN_REVIEW.replace("## Pending re-vote", (
             "### C1 — null due date crashes sort\nTrigger path: sorting a todo with no date\n"

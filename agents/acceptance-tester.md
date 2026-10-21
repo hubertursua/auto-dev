@@ -90,7 +90,9 @@ For every SPEC.md condition, Security/Compliance criteria included:
    Put the checks in NEW files in the repo's test tree, following its naming
    conventions, with `acceptance` in each file name (e.g.
    `src/<module>/<slug>.acceptance.test.ts`; example in TypeScript). Never edit an existing
-   test file. Name each test after the behavior it checks.
+   test file. Name each test after the behavior it checks, in words: no
+   condition number or ID (`C1`, `S1`) in a test name, since the PR
+   description quotes the names for a reader who can't see SPEC.md.
 2. Classify each check: `fail-to-pass` (new or changed behavior — must FAIL on
    this untouched tree) or `pass-to-pass` (behavior the change must preserve —
    must PASS on it).

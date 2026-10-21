@@ -64,6 +64,10 @@ ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 # The last line of every body and comment the pipeline posts: the triager
 # skips a comment that carries it.
 MARKER = "<!-- auto-dev -->"
+# Around what a description quotes word for word (test names, commands, their
+# output, the verifier's Expected line): those may carry a condition ID, which
+# the lint skips inside a region generate() wrote (QUOTED_RE is in cmd_ship).
+QUOTED = ("  <!-- auto-dev:quoted -->", "  <!-- /auto-dev:quoted -->")
 
 
 def add_arguments(parser, name):
@@ -199,6 +203,8 @@ def generate(state, ad, sha):
     body.text(MARKER)
     text, comment = fit(body, sha)
     text, comment = clean(text, wt), clean(comment, wt)
+    from .cmd_ship import quoted_digests
+    state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
     path = ad / "pr-body.md"
     path.write_text(text, encoding="utf-8")
     comment_path = ad / "pr-output-comment.md"
@@ -391,6 +397,9 @@ def condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha):
         what = "partly met" if verdict == "partial" else "not met"
         body.text(f"- [ ] **{cond['text']}** — {what}: {plain or 'see the output below'}")
     base_run = parse_runs(ad / "acceptance" / "base-run" / f"C{cond['id']}.txt")
+    if verdict == "met" and plain and not checks:
+        body.text(f"  Checked by running {plain}.")
+    body.text(QUOTED[0])
     for check in checks:
         cell = check["Check (path :: test name)"]
         path = art.check_path(cell) or ""
@@ -406,8 +415,6 @@ def condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha):
         now = "passes" if verdict == "met" else "see below"
         body.text(f"  Test written before the code: [`{path}` › {name}]"
                   f"({link(url, sha, path, line)}) — {old} · now: {now}")
-    if verdict == "met" and plain and not checks:
-        body.text(f"  Checked by running {plain}.")
     runs = []
     if base_run and base_run[0].get("Command") and not base_run[0]["Command"].startswith(
             "none"):
@@ -424,6 +431,10 @@ def condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha):
                      evidence.get("Output", [])))
     if runs:
         body.block(cond["text"], runs)
+    if body.parts[-1] == QUOTED[0]:
+        body.parts.pop()  # nothing was quoted
+    else:
+        body.text(QUOTED[1])
 
 
 def parse_runs(path):
