@@ -505,7 +505,7 @@ sections added, leaving the Summary, the Assumptions, any template section
 it can't fill and the template checklist's boxes to write; with
 `--check`, lints one: strict sections, the checked commit, size, no internal
 IDs, paths or secrets, the template checklist's items unchanged; the ID, term
-and tier checks skip the test names, commands and output it quotes word for word), `pr publish` (opens the one PR, or refreshes the
+and tier checks skip the test names, commands, output and verifier reasons it quotes word for word), `pr publish` (opens the one PR, or refreshes the
 sections the pipeline writes in the live description, keeps overflowing output
 in one comment edited in place, and reads the PR back) and `cleanup-worktree`. Parsers that turn a worker's artifact into a decision:
 `check-manifest` (the acceptance tester's `MANIFEST.md` against `SPEC.md`: which
@@ -578,7 +578,12 @@ edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
 
 ## The `.auto-dev/` scratch directory
 
-Each run creates `.auto-dev/` holding the artifacts phases hand off:
+Each run creates `.auto-dev/` holding the artifacts phases hand off. Git ignores
+it, but a gate command that walks the filesystem (a formatter run over `.`, say)
+still sees it. When a check fails only on files in `.auto-dev/`, the cleanup
+agent counts it as passing and says so in its report. It never edits the repo's
+ignore files or config to hide them, since that edit would ship in the PR.
+The PR body's quality-gate output leaves those lines out and says how many.
 
 | Path | Written by | Holds |
 | ---- | ---------- | ----- |
