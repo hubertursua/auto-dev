@@ -2,8 +2,8 @@
 """Check a worktree's staged set before a commit: nothing under .auto-dev/, and
 optionally exactly the expected paths.
 
-The last check before every Phase 6a commit (references/phase-6-ship.md, step 4)
-and every correction-loop commit (references/correction-loop.md). Read-only: it
+The last check before every Phase 6 commit (`autodev.py commit` runs it).
+Read-only: it
 never stages or unstages anything; it prints the commands that would fix it.
 
 Usage:
@@ -38,8 +38,11 @@ Exit codes:
     0  clean — nothing under .auto-dev/ staged (and, with --expect, the staged
        set is exactly the expected set and no other change is left unstaged)
     1  not clean — the offending paths are printed; fix and re-run
-    2  could not run (git missing, not a git work tree, bad arguments) — NOT a
-       pass
+    2  could not run (git missing, not a git work tree, bad arguments, or an
+       unexpected error) — NOT a pass
+
+A staged file name that isn't valid UTF-8 is checked like any other and
+printed with each byte that isn't UTF-8 as `\\xNN` (`caf\\xe9.txt`).
 """
 
 import argparse
@@ -63,14 +66,27 @@ class CannotRun(Exception):
 
 def git(worktree, *args):
     try:
+        # surrogateescape: a file name that isn't valid UTF-8 must not crash
+        # the check, and it round-trips when passed back to git.
         result = subprocess.run(["git", "-C", str(worktree), *args],
-                                capture_output=True, text=True, check=False)
+                                capture_output=True, text=True,
+                                errors="surrogateescape", check=False)
     except OSError as exc:
         raise CannotRun(f"could not run git: {exc}") from None
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit {result.returncode}"
         raise CannotRun(f"`git {' '.join(args)}` failed in {worktree}: {detail}")
     return result.stdout
+
+
+def printable(path):
+    """`path` with each byte that isn't UTF-8 shown as `\\xNN`, so it prints and
+    two such names stay distinct."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+
+
+def quoted(paths):
+    return " ".join(shlex.quote(printable(p)) for p in paths)
 
 
 def never_existed(top, path):
@@ -108,6 +124,15 @@ def normalize(path, top):
 
 
 def main() -> int:
+    try:
+        return check()
+    except Exception as exc:  # a crash must never read as clean or not clean
+        print(f"ERROR: {type(exc).__name__}: {printable(str(exc))}. Nothing was "
+              f"checked — this is not a pass.", file=sys.stderr)
+        return EXIT_CANNOT_RUN
+
+
+def check() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
         usage="python3 %(prog)s <worktree> [--expect PATH ...]")
@@ -146,7 +171,8 @@ def main() -> int:
                               if len(e) > 3 and e[1] != " "
                               and not e[3:].startswith(ARTIFACTS_PREFIX))
     except CannotRun as exc:
-        print(f"ERROR: {exc}. Nothing was checked — this is not a pass.",
+        print(f"ERROR: {printable(str(exc))}. Nothing was checked — this is "
+              f"not a pass.",
               file=sys.stderr)
         return EXIT_CANNOT_RUN
 
@@ -158,9 +184,9 @@ def main() -> int:
               f"{ARTIFACTS_PREFIX} are staged and must never be committed:",
               file=sys.stderr)
         for path in artifacts:
-            print(f"  {path}", file=sys.stderr)
+            print(f"  {printable(path)}", file=sys.stderr)
         print(f"  Unstage them:\n    git -C {shlex.quote(str(top))} restore "
-              f"--staged -- {' '.join(shlex.quote(p) for p in artifacts)}",
+              f"--staged -- {quoted(artifacts)}",
               file=sys.stderr)
 
     if expected is not None:
@@ -173,7 +199,7 @@ def main() -> int:
             print(f"IGNORED: {len(vanished)} expected path(s) are neither on "
                   f"disk nor in HEAD — nothing to commit for them:")
             for path in vanished:
-                print(f"  {path}")
+                print(f"  {printable(path)}")
         # .auto-dev/ paths are already reported above; don't list them twice.
         extra = [p for p in staged if p not in expected and p not in artifacts]
         if missing:
@@ -181,16 +207,16 @@ def main() -> int:
             print(f"MISSING: {len(missing)} expected path(s) not staged:",
                   file=sys.stderr)
             for path in missing:
-                print(f"  {path}", file=sys.stderr)
+                print(f"  {printable(path)}", file=sys.stderr)
         if extra:
             failed = True
             print(f"EXTRA: {len(extra)} staged path(s) not in the expected set:",
                   file=sys.stderr)
             for path in extra:
-                print(f"  {path}", file=sys.stderr)
+                print(f"  {printable(path)}", file=sys.stderr)
             print(f"  If they should not ride into the commit, unstage them:\n"
                   f"    git -C {shlex.quote(str(top))} restore --staged -- "
-                  f"{' '.join(shlex.quote(p) for p in extra)}", file=sys.stderr)
+                  f"{quoted(extra)}", file=sys.stderr)
         # The summary listed every changed path, so anything still changed
         # but unstaged means the --expect list was wrong (a typo, or a path
         # copied in git's quoted form). Without this, a mistyped deleted path
@@ -200,7 +226,7 @@ def main() -> int:
             print(f"UNSTAGED: {len(unstaged)} path(s) still have changes "
                   f"that are not staged:", file=sys.stderr)
             for path in unstaged:
-                print(f"  {path}", file=sys.stderr)
+                print(f"  {printable(path)}", file=sys.stderr)
             print("  Stage each one the PR gate summary listed (deleted paths "
                   "with `git rm --cached`), and fix the --expect list to "
                   "match.", file=sys.stderr)
@@ -217,7 +243,7 @@ def main() -> int:
     if not staged:
         print("  Note: nothing is staged, so a commit would be empty.")
     for path in staged:
-        print(f"  {path}")
+        print(f"  {printable(path)}")
     return EXIT_CLEAN
 
 

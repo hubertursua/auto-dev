@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Make a worktree's .auto-dev/ exclude itself from git, then prove it.
 
-Does exactly the Phase 1 step (references/phase-1-setup.md, step 6, and
-references/artifacts.md, _Never commit `.auto-dev/`_): creates
+Does exactly the Phase 1 step (`autodev.py init` runs it): creates
 <worktree>/.auto-dev/lint/ if missing and writes .auto-dev/.gitignore containing
 `*` if it is absent or holds anything else. Never touches .git/info/exclude.
 Then verifies with git that nothing under .auto-dev/ is visible. Running it
@@ -13,7 +12,7 @@ Usage:
     python3 <skill-dir>/scripts/exclude-artifacts.py --help
 
 <skill-dir> is the auto-dev skill's own directory, not the target repo.
-<worktree> is the root of the control worktree (the one Phase 1 created).
+<worktree> is the root of the run's worktree (the one Phase 1 created).
 
 Verification (all must hold):
     git -C <worktree> status --porcelain --untracked-files=all -- .auto-dev/
@@ -143,7 +142,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
         usage="python3 %(prog)s <worktree>")
-    parser.add_argument("worktree", help="root of the control worktree")
+    parser.add_argument("worktree", help="root of the run's worktree")
     args = parser.parse_args()  # bad arguments exit 2 via argparse
     worktree = Path(args.worktree)
 

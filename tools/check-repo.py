@@ -10,8 +10,16 @@ Checks:
 - every helper script is executable and starts with a python3 shebang;
 - every agent file has name, model, effort and tools in its frontmatter, and its
   model and effort match the worker tables in SKILL.md and README.md;
-- every file path SKILL.md and README.md name under references/ or scripts/
-  exists, and README.md names every helper script.
+- every file path SKILL.md and README.md name under references/, scripts/ or
+  templates/ exists, and README.md names every helper script;
+- every agent file's {{slots}} are slots `autodev.py brief` knows (AUTO, CALLER
+  or OPTIONAL in scripts/lib/briefs.py), its Result block lists exactly the
+  `next` tokens briefs.RESULTS allows, and every templates/<file> it names
+  exists; every worker in briefs.RESULTS has an agent file and vice versa;
+- every template a script parses exists in templates/;
+- every evals/files/ path a string in evals/evals.json names exists (the
+  setup and expectations as well as each eval's `files`);
+- SKILL.md's description fits Claude Code's 1024-character limit.
 """
 
 import json
@@ -118,7 +126,7 @@ def check_agents():
             fail(f"{table}: worker table names auto-dev:{agent}, which has no agents/ file")
 
 
-PATH_REF = re.compile(r"(?:skills/auto-dev/)?((?:references|scripts)/[\w.-]+\.(?:md|py))")
+PATH_REF = re.compile(r"(?:skills/auto-dev/)?((?:references|scripts|templates)/[\w.-]+\.(?:md|py))")
 
 
 def check_paths():
@@ -133,12 +141,145 @@ def check_paths():
             fail(f"README.md: does not mention scripts/{path.name} (see Dependencies)")
 
 
+# Templates a script reads by name (scripts/lib/artifacts.py and cmd_*.py).
+PARSED_TEMPLATES = ("SPEC.md", "IMPLEMENTATION.md", "MANIFEST.md", "SPEC_EVAL.md",
+                    "R.md", "VOTES.md", "CODE_REVIEW.md", "SECURITY_REVIEW.md", "lint.md",
+                    "corrections.md", "fix.md", "pr-body.md", "rubric.md")
+TEMPLATE_REF = re.compile(r"templates/([\w.-]+\.md)")
+NEXT_LINE = re.compile(r"^next: (.+)$", re.MULTILINE)
+
+
+def load_briefs():
+    sys.path.insert(0, str(SKILL_DIR / "scripts"))
+    from lib import briefs  # the scripts dir is only on sys.path from here
+    return briefs
+
+
+def check_briefs():
+    briefs = load_briefs()
+    agents = {p.stem: p.read_text(encoding="utf-8") for p in (ROOT / "agents").glob("*.md")}
+    for worker in sorted(set(briefs.RESULTS) - set(agents)):
+        fail(f"scripts/lib/briefs.py: RESULTS names {worker}, which has no agents/ file")
+    for worker, text in sorted(agents.items()):
+        rel = f"agents/{worker}.md"
+        if worker not in briefs.RESULTS:
+            fail(f"{rel}: no entry in scripts/lib/briefs.py RESULTS")
+            continue
+        for slot in sorted(set(briefs.SLOT_RE.findall(text))):
+            if briefs.kind(worker, slot) is None:
+                fail(f"{rel}: slot {{{{{slot}}}}} is not AUTO, CALLER or OPTIONAL in "
+                     "scripts/lib/briefs.py")
+        block = re.search(r"```auto-dev-result\n(.*?)```", text, re.DOTALL)
+        if not block:
+            fail(f"{rel}: no ```auto-dev-result block in its Result section")
+        else:
+            line = NEXT_LINE.search(block.group(1))
+            tokens = {t.strip() for t in line.group(1).split("|")} if line else set()
+            if tokens != briefs.RESULTS[worker]:
+                fail(f"{rel}: Result block's next tokens {sorted(tokens)} differ from "
+                     f"briefs.RESULTS {sorted(briefs.RESULTS[worker])}")
+        for name in sorted(set(TEMPLATE_REF.findall(text))):
+            if not (SKILL_DIR / "templates" / name).exists():
+                fail(f"{rel}: names templates/{name}, which does not exist")
+    for name in PARSED_TEMPLATES:
+        if not (SKILL_DIR / "templates" / name).exists():
+            fail(f"templates/{name} is missing: a script parses it")
+
+
+# An eval fixture path, wherever it appears in evals.json. It ends on a name
+# character, so a sentence's closing period isn't part of it. A path with a
+# placeholder or glob (`<slug>`, `*`) is checked only up to that character.
+EVAL_PATH = re.compile(r"(?<![\w./-])(?:skills/auto-dev/)?(evals/files/[\w./-]*[\w-])")
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+
+
+def check_eval_paths(evals=SKILL_DIR / "evals" / "evals.json"):
+    try:
+        data = json.loads(evals.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return  # check_json reports it
+    rel = evals.relative_to(ROOT) if evals.is_relative_to(ROOT) else evals
+    for ref in sorted({r for text in strings(data) for r in EVAL_PATH.findall(text)}):
+        if not (SKILL_DIR / ref).exists():
+            fail(f"{rel}: names {ref}, which does not exist")
+
+
+DESCRIPTION_LIMIT = 1024
+
+
+def skill_description(path):
+    """The frontmatter description as YAML reads it, or None when it is missing
+    or written in a style this check doesn't parse (so the check fails rather
+    than measure the wrong string). Handles a `>-` or `>` folded block and a
+    one-line plain or quoted value."""
+    m = re.match(r"---\n(.*?)\n---\n", path.read_text(encoding="utf-8"), re.DOTALL)
+    lines = m.group(1).splitlines() if m else []
+    for i, line in enumerate(lines):
+        key, _, value = line.partition(":")
+        if key != "description":
+            continue
+        value = value.strip()
+        rest = lines[i + 1:]
+        body = []
+        for more in rest:
+            if more.strip() and not more.startswith(" "):
+                break
+            body.append(more)
+        while body and not body[-1].strip():
+            body.pop()
+        if value in (">", ">-"):
+            # Fold: lines in a paragraph join with a space; each blank line
+            # between paragraphs is one newline.
+            out, blanks = "", 0
+            for more in body:
+                if not more.strip():
+                    blanks += 1
+                    continue
+                if out:
+                    out += "\n" * blanks if blanks else " "
+                out += more.strip()
+                blanks = 0
+            return out + ("\n" if value == ">" else "")
+        if not value or body or value[0] in ">|&*!%@`#":
+            return None
+        if value[0] in "'\"":
+            if len(value) < 2 or value[-1] != value[0]:
+                return None
+            inner = value[1:-1]
+            return inner.replace("''", "'") if value[0] == "'" else inner
+        return value.split(" #")[0].rstrip()
+    return None
+
+
+def check_skill_description(path=SKILL):
+    description = skill_description(path)
+    if not description:
+        fail(f"{path.name} has no description this check can read: write it as "
+             "a `>-` block or a one-line value")
+    elif len(description) > DESCRIPTION_LIMIT:
+        fail(f"{path.name}'s description is {len(description)} characters; "
+             f"the limit is {DESCRIPTION_LIMIT}")
+
+
 def main():
     check_json()
     check_plugin_metadata()
     check_scripts()
     check_agents()
     check_paths()
+    check_briefs()
+    check_eval_paths()
+    check_skill_description()
     for msg in errors:
         print(f"FAIL {msg}")
     if errors:

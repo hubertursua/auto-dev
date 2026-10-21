@@ -3,8 +3,8 @@
 changed source line, run the tests, record whether they caught it, and put the
 file back exactly as it was.
 
-Run by the Phase 5 verifier (references/subagent-prompts.md, _Verifier_, the
-mutation step). The verifier chooses the mutants; this script only applies,
+Run by the Phase 5 verifier (agents/verifier.md, the mutation step). The
+verifier chooses the mutants; this script only applies,
 runs and restores them, so the source is never left changed. A mutant the tests
 do not catch ("survived") is a behavior no test pins down.
 
@@ -15,9 +15,9 @@ Usage:
     python3 <skill-dir>/scripts/mutate.py --help
 
 <skill-dir> is the auto-dev skill's own directory, not the target repo.
---mutants is a JSON list; each entry:
-    {"id": "M1", "file": "lib/app/todos.ex", "line": 42,
-     "find": "user_id == owner_id", "replace": "user_id != owner_id",
+--mutants is a JSON list; each entry (example in TypeScript):
+    {"id": "M1", "file": "src/todos.ts", "line": 42,
+     "find": "userId === ownerId", "replace": "userId !== ownerId",
      "condition": "3", "cmd": "<optional per-mutant test command>"}
 `file` is relative to <worktree> and must stay inside it. `line` is 1-based and
 counts `\\n` only, as `grep -n` does. `find` must occur exactly once on that line;

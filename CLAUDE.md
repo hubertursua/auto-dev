@@ -2,7 +2,9 @@
 
 This repo is the auto-dev plugin: an orchestration skill (`skills/auto-dev/`) and
 its worker agent types (`agents/`). Most of it is Markdown that another agent
-follows; the rest is eight helper scripts (`skills/auto-dev/scripts/`). `README.md`
+follows; the rest is helper scripts (`skills/auto-dev/scripts/`): `autodev.py`, the one
+entry point, with its shared code in `scripts/lib/`, and the single-purpose
+scripts it and the workers call. `README.md`
 is the user-facing description of the pipeline, and it is the file most often
 left stale.
 
@@ -19,21 +21,36 @@ python3 -m unittest discover -s tests     # helper-script tests
 
 `tools/check-repo.py` catches drift a reviewer would miss: the model tables in
 `SKILL.md` and `README.md` against `agents/*.md`, paths the docs name that don't
-exist, a script the README doesn't mention, a script that isn't executable, and
+exist, an `evals/files/` fixture `evals.json` names that doesn't exist, a script
+the README doesn't mention, a script that isn't executable, a `SKILL.md`
+description over Claude Code's 1024-character limit, and
 `plugin.json` / `marketplace.json` disagreeing. When you add a sync rule below
 that a script can check, add it there.
 
 ## Changing a helper script
 
-- **Standard library only**, Python 3.9+ (`validate-config.py` alone may use
-  PyYAML). Users run these with whatever `python3` they have.
+- **Standard library only**, Python 3.9+ (`validate-config.py`, and
+  `autodev.py init`, which reads YAML, may use PyYAML). Users run these with
+  whatever `python3` they have.
+- **Shared code goes in `scripts/lib/`**, imported by `autodev.py`. Modules
+  there aren't run directly, so they need no shebang, no executable bit and no
+  README mention. A new subcommand's docstring is its `--help`, as for a script.
 - **Keep the CLI contract.** Each script's docstring is its `--help` and lists
   its exit codes; the skill's docs tell the orchestrator what each code means.
   If you change an exit code or an output line, update the docstring and every
   reference file that quotes it (`grep -rn "<script>.py" skills/`).
-- **Add a test** in `tests/test_scripts.py` for every fix or new behavior, and
-  check that it fails without your change. Tests run the script as a subprocess,
-  the way the pipeline does, and build throwaway git repos in a temp dir.
+- **Add a test** for every fix or new behavior, in the file for what you
+  changed: `tests/test_scripts.py` (the single-purpose scripts),
+  `tests/test_autodev.py` (`autodev.py`'s other subcommands),
+  `tests/test_work.py` (`brief`, `record`, `check-artifact`),
+  `tests/test_next.py` (`next`, `pr publish`), `tests/test_parsers.py` (the
+  artifact parsers), `tests/test_check_repo.py` (`tools/check-repo.py`) or
+  `tests/test_eval_fixtures.py` (the eval fixtures;
+  regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
+  tests.test_eval_fixtures`), and check that it fails without your change. Tests run the script as a subprocess,
+  the way the pipeline does, and build throwaway git repos in a temp dir. A
+  command that calls `gh` is tested against `tests/fake_gh/gh`, which plays
+  back the responses the test scripts; never call the real GitHub from a test.
 - **Fail safe.** "Could not run" is exit 2, never a pass. Never leave the user's
   tree changed (see how `mutate.py` backs up and restores).
 - Keep the file executable and its `#!/usr/bin/env python3` line.
@@ -41,7 +58,10 @@ that a script can check, add it there.
 ## Changing the skill's Markdown
 
 - `SKILL.md` is the spine the orchestrator always holds; keep detail in
-  `references/` and point to it. Say each rule in one place and link to it,
+  `references/` and point to it. A worker's instructions are its agent file
+  (`agents/<name>.md`), never a reference file: the orchestrator doesn't read
+  them, `autodev.py brief` only fills their `{{slots}}`. Artifact templates and
+  the rubric live once, in `skills/auto-dev/templates/`. Say each rule in one place and link to it,
   rather than repeating it (a repeated rule drifts).
 - After editing a rule, grep for other places that state it
   (`grep -rn "<key phrase>" skills/ agents/ README.md`) and make them agree.
@@ -66,15 +86,17 @@ becomes a default for every repo.
   profile back; teach the profiler's brief what to look for instead.
 - **A rule for one stack goes through the profile.** If a step needs a tool
   only one ecosystem has, add an optional profile key the step reads, with a
-  stack-neutral fallback when it's absent. `symbol_lookup` is the model:
-  `SKILL.md` says "use `profile.md`'s symbol lookup", which falls back to
-  `grep -n`, and the profiler fills it in only when the repo's ecosystem has a
-  code-index tool on PATH.
+  stack-neutral fallback when it's absent. `symbol_lookup` is the model: the
+  `lookup` worker's agent file uses `{{symbol_lookup}}`, which `brief` fills
+  from `profile.md`'s Symbol lookup line and which falls back to `grep -n`, and
+  the profiler fills it in only when the repo's ecosystem has a code-index tool
+  on PATH.
 - **Examples are in TypeScript, and say so.** An example that names a command,
   path or code uses TypeScript, a language most readers know, and is labeled
   "example in TypeScript" (or "Filled-in rows are an example in TypeScript." above
   a template). The label goes outside a template block, so an agent filling the
-  template doesn't copy it. Where no example is needed, use a neutral placeholder
+  template doesn't copy it; in a `templates/` file it goes in the first-line
+  comment, which agents are told not to copy. Where no example is needed, use a neutral placeholder
   (`<test command>`, `src/<module>`). No other language is allowed.
 - **Scripts stay language-blind.** A helper script takes paths and commands as
   input and never hardcodes one stack's test runner or syntax. Where it has to
@@ -99,7 +121,7 @@ against this list and edit each README section it touches:
 | ---------------------------------------------------------- | ------------------- |
 | a phase, its order, or which worker runs it                | *Agent hierarchy* diagram, *What it does* table |
 | how the build is verified (spec format, acceptance checks, verifier, audit, mutation) | *How the build is verified* |
-| the scope call or the number of worker roles per scope     | *Scope call* |
+| the size check or the number of worker roles               | *Size check* |
 | session boundaries or the context budget                   | *Three sessions, not one* |
 | the code review panel, security review or rubric           | *Review before the PR* |
 | a gate, a conditional pause, Jira, CI, or the merge method | *Human gates & integrations* |
@@ -126,7 +148,19 @@ wrong about something? If yes, fix the README.
 - **Descriptions.** `plugin.json` and `marketplace.json` carry the same plugin
   description.
 - **Evals.** When behavior changes, update the expectations in
-  `skills/auto-dev/evals/evals.json` that describe it.
+  `skills/auto-dev/evals/evals.json` that describe it. A `state.json` fixture in
+  `evals/files/` sits beside the `WORK_LOG.md` generated from it.
+  `tests/test_eval_fixtures.py` checks that each pair agrees, replays S1 to
+  check that the resume-s2 fixtures (with its `HANDOFF.md`) are what S1 writes
+  now, and runs `resume` on the resume-s2 and old-version fixtures (and `next`
+  on resume-s2). When the state or the handoff changes, regenerate the resume-s2
+  fixtures with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
+  tests.test_eval_fixtures`, never by hand.
+- **Briefs and results.** Each `{{slot}}` in an agent file is listed as AUTO,
+  CALLER or OPTIONAL in `skills/auto-dev/scripts/lib/briefs.py`, and each agent
+  file's `auto-dev-result` block lists exactly the `next` tokens `RESULTS` gives
+  it there. `tools/check-repo.py` checks both, and that every template a script
+  parses or an agent names exists.
 
 ## Branches, commits and PRs
 

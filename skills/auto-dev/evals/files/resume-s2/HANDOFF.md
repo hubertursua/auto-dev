@@ -1,29 +1,25 @@
-# Handoff — allowed-set guard → S2 Build (next session)
+# Handoff — Reject record creation when the requested value isn't in the context's allowed set → S2 Build (next session)
 
+Task: Reject record creation when the requested value isn't in the context's allowed set
+Ask: Creating a record with a value outside its context's allowed set returns a typed, handled error instead of throwing.
 Re-enter with: `cd <abs-path-to-worktree>`
-Branch: feat/allowed-set-guard   Base: origin/main   Sub-task: n/a
+Branch: feat/allowed-set-guard   Base: origin/main
 Iteration budget remaining: 4/4
 
 ## Done
-- Phase 1: worktree created, <profile> profile loaded, .auto-dev/ excluded.
-- Phase 2: SPEC.md written; scope call STANDARD; define review clean.
-- Phase 3: IMPLEMENTATION.md written; plan review clean; acceptance checks sealed
-  (acceptance/MANIFEST.md: every condition covered).
+- Phase 1 Setup: done
+- Phase 2 Define: FITS, high risk: yes
+- Phase 3 Plan: done
 
 ## Next
-Phase 4 — Build. Spawn the coder (`auto-dev:coder`) with IMPLEMENTATION.md only.
-Pick up at: start of Phase 4
+Phase 4 — Build. Say `auto-dev continue`.
+Pick up at: say `auto-dev continue`; `next` decides the step
 
-## Files that matter
-- <abs-path-to-worktree>/.auto-dev/WORK_LOG.md — ledger and budget
-- <abs-path-to-worktree>/.auto-dev/profile.md — gate commands and CI provider
-- <abs-path-to-worktree>/.auto-dev/IMPLEMENTATION.md — the coder's only input
-- <abs-path-to-worktree>/.auto-dev/SPEC.md — yours for the Phase 5 correction briefs
-- <abs-path-to-worktree>/.auto-dev/acceptance/ — the verifier's input; never the coder's
+## Files you may open
+- <abs-path-to-worktree>/.auto-dev/profile.md
 
 ## Open assumptions
-- An out-of-set value is rejected outright; no default is substituted.
+- none
 
 ## Do not
-- Re-run Phase 1, re-detect the stack, or re-review the spec or plan.
-- Give the coder SPEC.md or acceptance/; give the verifier IMPLEMENTATION.md.
+- re-run Phase 1 or re-resolve the profile

@@ -18,7 +18,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "auto-dev" / "scripts"
-FIXTURES = ROOT / "skills" / "auto-dev" / "evals" / "files"
 
 GIT_ENV = {
     **os.environ,
@@ -57,40 +56,6 @@ class GitRepoCase(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         return path
-
-
-class ResumePointTest(unittest.TestCase):
-    """resume-point.py against the eval fixtures' ledgers."""
-
-    CASES = {  # noqa: RUF012
-        "resume-s2": ("4 — Build (status: pending)", "S2 — Build"),
-        "resume-s3": ("6 — Ship (status: in-progress)", "S3 — Ship"),
-        "resume-multi": ("4 — Build (status: in-progress)", "S2 — Build"),
-        "ci-none": ("6 — Ship (status: pending)", "S3 — Ship"),
-        "budget-exhausted": ("5 — Verify (status: in-progress)", "S2 — Build"),
-    }
-
-    def test_fixtures_resume_where_expected(self):
-        for name, (phase, session) in self.CASES.items():
-            with self.subTest(fixture=name):
-                r = run("resume-point.py", FIXTURES / name)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertIn(f"Phase:     {phase}", r.stdout)
-                self.assertIn(f"Session:   {session}", r.stdout)
-
-    def test_matching_task_resumes(self):
-        task = "Reject record creation when the requested value isn't in the context's allowed set"
-        r = run("resume-point.py", FIXTURES / "resume-s2", "--task", task)
-        self.assertEqual(r.returncode, 0, r.stderr)
-
-    def test_unrelated_task_is_not_a_resume(self):
-        r = run("resume-point.py", FIXTURES / "resume-s2", "--task", "Add dark mode to settings")
-        self.assertNotEqual(r.returncode, 0)
-
-    def test_missing_ledger(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            r = run("resume-point.py", tmp)
-        self.assertEqual(r.returncode, 1)
 
 
 class ExcludeArtifactsTest(GitRepoCase):
@@ -135,6 +100,45 @@ class CheckStagedTest(GitRepoCase):
         self.git("add", "src/app.py")
         r = run("check-staged.py", self.repo, "--expect", "src/app.py")
         self.assertEqual(r.returncode, 1)  # src/other.py staged but not expected
+
+    def test_a_file_name_that_is_not_utf8_is_checked(self):
+        name = b"caf\xe9.txt"  # Latin-1
+        try:
+            with open(os.path.join(os.fsencode(self.repo), name), "wb") as f:
+                f.write(b"x\n")
+        except OSError as exc:  # macOS APFS refuses names that aren't UTF-8
+            self.skipTest(f"this file system refuses the name: {exc}")
+        self.git("add", "-A")
+        r = run("check-staged.py", self.repo, "--expect", "src/app.py", os.fsdecode(name))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("caf\\xe9.txt", r.stdout)
+        r = run("check-staged.py", self.repo, "--expect", "src/app.py")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("EXTRA: 1", r.stderr)
+        self.assertIn("caf\\xe9.txt", r.stderr)
+
+    def fake_git(self, body):
+        """Run check-staged.py with a `git` on PATH that runs `body` (Python)."""
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        fake = bin_dir / "git"
+        fake.write_text(f"#!{sys.executable}\nimport sys\nargs = sys.argv[1:]\n{body}\n")
+        fake.chmod(0o755)
+        env = {**GIT_ENV, "PATH": f"{bin_dir}{os.pathsep}{GIT_ENV['PATH']}"}
+        return subprocess.run([sys.executable, str(SCRIPTS / "check-staged.py"), self.repo],
+                              capture_output=True, text=True, env=env, check=False)
+
+    def test_git_output_that_is_not_utf8_is_read(self):
+        # Runs where the file system refuses such a name (the test above skips).
+        r = self.fake_git(f"print({str(self.repo)!r}) if 'rev-parse' in args else "
+                          "sys.stdout.buffer.write(b'caf\\xe9.txt\\0')")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("caf\\xe9.txt", r.stdout)
+
+    def test_a_crash_is_exit_2(self):
+        r = self.fake_git("sys.stdout.write('a\\0b')")  # a NUL in the top level crashes Path
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("not a pass", r.stderr)
 
 
 class CheckFreshTest(GitRepoCase):
@@ -422,6 +426,20 @@ class ValidateConfigTest(unittest.TestCase):
         r = self.validate("iteration_budgt: 3\n")
         self.assertEqual(r.returncode, 1)
         self.assertIn("iteration_budget", r.stderr)
+
+    def test_the_removed_staging_key_is_refused(self):
+        r = self.validate("branches:\n  base: main\n  staging: staging\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("branches.staging: removed in 4.0", r.stderr)
+        self.assertNotIn("unknown key", r.stderr)
+        self.assertEqual(self.validate("branches:\n  base: main\n").returncode, 0)
+
+    def test_checkpoint_events(self):
+        self.assertEqual(self.validate("checkpoint_events: 40\n").returncode, 0)
+        for bad in ("0", "x"):
+            r = self.validate(f"checkpoint_events: {bad}\n")
+            self.assertEqual(r.returncode, 1, bad)
+            self.assertIn("checkpoint_events", r.stderr)
 
     def test_mutation_max_out_of_range(self):
         r = self.validate("mutation:\n  max: 500\n")

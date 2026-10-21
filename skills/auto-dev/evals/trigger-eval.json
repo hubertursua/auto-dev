@@ -48,6 +48,14 @@
     "should_trigger": true
   },
   {
+    "query": "auto-dev: the error message on the expiry validation says 'invalid date' — make it say which field was invalid. Ship it.",
+    "should_trigger": true
+  },
+  {
+    "query": "auto-dev this one: the retry limit in config.go is 2 but the docs say 3. tiny fix, just change the constant",
+    "should_trigger": true
+  },
+  {
     "query": "can you take this from spec to PR for me? the state machine shouldn't allow the illegal transition. i want acceptance criteria, the implementation, tests passing, lint + type checks green, and a pull request at the end",
     "should_trigger": true
   },
@@ -172,11 +180,11 @@
     "should_trigger": true
   },
   {
-    "query": "new session, switched to opus on high like you said. continue the auto-dev run for PROJ-4821, the plan session already wrote .auto-dev/HANDOFF.md so the build is next",
+    "query": "new session like you said. continue the auto-dev run for PROJ-4821, the plan session already wrote .auto-dev/HANDOFF.md so the build is next",
     "should_trigger": true
   },
   {
-    "query": "ok the build session finished and told me to start fresh on sonnet for shipping. pick up where it left off — the worktree is ../acme-settlement-void-fix",
+    "query": "ok the build session finished and told me to start a fresh session for shipping. pick up where it left off — the worktree is ../acme-settlement-void-fix",
     "should_trigger": true
   },
   {
@@ -189,6 +197,18 @@
   },
   {
     "query": "CI is finally green on PR #412, squash-merge it to main and move PROJ-4821 to Done",
+    "should_trigger": false
+  },
+  {
+    "query": "how does auto-dev decide a task is too big for one PR? just explain it, don't start a run",
+    "should_trigger": false
+  },
+  {
+    "query": "my last auto-dev run marked a condition's evidence as Weak in the PR. what does that mean, and should I worry before merging?",
+    "should_trigger": false
+  },
+  {
+    "query": "fix the typo in auto-dev's README: \"recieve\" in the install section",
     "should_trigger": false
   }
 ]
