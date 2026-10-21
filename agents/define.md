@@ -101,7 +101,9 @@ Return a structured summary:
 - HIGH_RISK: yes or no. Yes when SPEC.md has Security/Compliance criteria, or the
   change touches auth, payments, access control, or a data migration.
 
-Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact {{artifact_dir}}/SPEC.md` and fix anything it reports.
+You have no shell, so don't look for the checker or redo its checks by hand:
+`autodev.py record` checks SPEC.md against its template when you return, and
+if it finds a problem you are briefed again with it under Previous issues.
 
 ## Mode: write
 

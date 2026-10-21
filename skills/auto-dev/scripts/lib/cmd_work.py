@@ -421,7 +421,9 @@ def written_files(worker, data, ad, state, n):
     mode, sets = issued.get("mode"), issued.get("sets", {})
     review = ad / "review" / f"pass-{state.get('phase6', {}).get('review_pass') or 1}"
     files = []
-    if worker in ("define-reviewer", "plan-reviewer"):
+    if worker == "define":  # it has no shell to run check-artifact itself
+        files.append((ad / "SPEC.md", True))
+    elif worker in ("define-reviewer", "plan-reviewer"):
         fix = str(data.get("fix_file", "none")).strip()
         if fix not in ("none", ""):
             files.append((Path(fix), False))  # result_issues reports a missing one
