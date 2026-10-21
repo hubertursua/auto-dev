@@ -216,6 +216,21 @@ class EvalRunTest(unittest.TestCase):
         self.assertFalse((self.work / "r1").exists())
         self.assertTrue(res.stdout.endswith("DONE\n"))
 
+    def test_cleanup_works_from_outside_any_git_repo(self):
+        self.prepare_cleanup()
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        # Stop git's repo search at the temp dir, in case it sits in a repo.
+        env = dict(self.env, GIT_CEILING_DIRECTORIES=str(self.tmp))
+        res = subprocess.run([sys.executable, str(TOOL), "cleanup", "--repo", REPO,
+                              "--run", "r1", "--workdir", str(self.work)],
+                             cwd=outside, env=env, capture_output=True, text=True,
+                             check=False)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(self.branches(),
+                         ["eval/other/e1/base", "eval/r10/e1/base", "main"])
+        self.assertEqual(list(outside.iterdir()), [])
+
     def test_cleanup_dry_run_changes_nothing(self):
         self.prepare_cleanup()
         before = self.branches()
