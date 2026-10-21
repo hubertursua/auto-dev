@@ -18,18 +18,23 @@ see in S2, in order:
    - It may return `BLOCKED`: `next` sends the `planner` in blocked mode, then
      the coder again (a round), or the acceptance tester first when the plan's
      entry points changed.
-2. `verifier`, first pass: it runs the sealed checks against the spec and
-   writes its verdicts and, if anything is open, `evidence/corrections.md`.
-3. While something is open: the `coder` in correction mode with that file
-   (each one spends a round; `BUDGET:` shows what's left), then a `verifier`
-   re-check. Defective checks go to the `acceptance-tester` first, in repair
-   mode: it fixes them, or answers `STANDS` with its reason, and the verifier
+2. `next` installs the sealed checks in the worktree itself, then `cleanup`
+   simplifies the change and runs the quality gate to green. A check that
+   fails the gate goes to the `acceptance-tester` in repair mode, then cleanup
+   again.
+3. `verifier`, first pass, on the cleaned code: it runs the sealed checks
+   against the spec and writes its verdicts and, if anything is open,
+   `evidence/corrections.md`. (If a sealed check's path already holds another
+   file, `next` installs nothing and the verifier goes first, to report it.)
+4. While something is open: the `coder` in correction mode with that file
+   (each one spends a round; `BUDGET:` shows what's left), then `cleanup`, then
+   a `verifier` re-check. Defective checks go to the `acceptance-tester` first, in repair
+   mode: it fixes them (then `cleanup` runs the gate on the repaired checks
+   before the re-check), or answers `STANDS` with its reason, and the verifier
    then judges those checks as written. A check that stands is never sent back
    on the same condition; if the verifier and the tester still disagree, `next`
    stops and reports both sides.
-4. `cleanup` simplifies the change and runs the quality gate to green.
-5. A last `verifier` re-check on the cleaned code.
-6. Exit 6: run its `AFTER` command exactly as printed (`handoff` at the end of the
+5. Exit 6: run its `AFTER` command exactly as printed (`handoff` at the end of the
    session, `handoff --checkpoint` at a checkpoint), give the user its message,
    stop.
 

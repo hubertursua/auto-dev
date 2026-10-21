@@ -30,7 +30,7 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
 ├─ Phase 3  Planner ....... IMPLEMENTATION.md — the technical how  (→ reviewer)
 │           Acceptance tester  held-out checks from the spec, proven to fail, sealed [optional gate]
 ├─ Phase 4  Coder ......... code + tests (given only the plan)
-├─ Phase 5  Verifier + cleanup  RUN the checks vs. the withheld spec → /simplify → quality gate → re-check
+├─ Phase 5  Cleanup + verifier  /simplify → quality gate → RUN the checks vs. the withheld spec
 └─ Phase 6  orch + reviewers  code review panel → security review → [GATE] PR + CI → [GATE] main
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
 ```
@@ -98,9 +98,10 @@ make tests pass by weakening them. Verification is built around that:
   failure it saw and the test to add, in its own words, never the spec's. The
   coder gets that file unedited. A script refuses one that copies the spec's
   wording, which would let the coder echo it back in a test name.
-- **Re-checked after every change.** The verifier runs again after `/simplify`
-  and after every later fix, so the PR description always reflects the final
-  code.
+- **Re-checked after every change.** The cleanup agent's `/simplify` and
+  quality gate run before the verifier's first pass, so the verifier checks the
+  code that ships, and it runs again after every later fix, so the PR
+  description always reflects the final code.
 - **Every result names the code it checked.** `SPEC_EVAL.md`, each quality-gate
   report and both review reports carry a `Tree:` line: the git tree hash of the
   code when it was checked. `scripts/check-fresh.py` compares those stamps with
@@ -136,7 +137,7 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 | 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
-| 5 Verify | verifier, then cleanup agent | the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4), then `/simplify` + the profile's quality gate to green, then a verifier re-check |
+| 5 Verify | cleanup agent, then verifier | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
 | 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate |
 
 ## Three sessions, not one
@@ -597,7 +598,7 @@ The PR body's quality-gate output leaves those lines out and says how many.
 | `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session: the task, what is done, what comes next, the run files its orchestrator may open |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
-| `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code; `AMBIGUOUS.md` lists a condition that reads two ways, for the Define agent |
+| `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code; `INSTALLED` lists the checks `next` installed before Phase 5's cleanup; `AMBIGUOUS.md` lists a condition that reads two ways, for the Define agent |
 | `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and evidence tiers, and what it ran |
 | `lint/` | Phase 5 | one report per quality-gate check |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes |
@@ -692,6 +693,22 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 4.0
+
+- **Cleanup runs before the verifier.** Phase 5 used to run the verifier, then
+  the cleanup agent, then the verifier again. Now `next` installs the sealed
+  acceptance checks itself (and lists them in `acceptance/INSTALLED`), the
+  cleanup agent simplifies the change and runs the quality gate, and the
+  verifier's first pass checks the cleaned code. On the happy path the verifier
+  runs once instead of twice. A correction still runs coder, cleanup, verifier,
+  and a check the acceptance tester repairs goes through cleanup's quality
+  gate before the verifier's re-check.
+  If a sealed check's path already holds another file, nothing is installed
+  and the verifier goes first, as before, to report the conflict.
+- **A run in flight resumes.** A run that has already started Phase 5 on 4.0
+  finishes it in the old order. One that hasn't reached Phase 5 uses the new
+  one.
 
 ## Upgrading from 3.9
 
