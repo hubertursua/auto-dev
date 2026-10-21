@@ -870,7 +870,9 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
     if nxt == "ALL_MET":
         coder = c.last("coder", after=start)
         changed = coder
-        if scope == "phase5":  # a repaired check changed the tree too
+        # A repaired check changed the tree too. The tester's branch above already
+        # sends it to cleanup; this covers a re-check briefed before 4.1.
+        if scope == "phase5":
             repaired = c.last("acceptance-tester", after=start, mode="repair")
             if repaired and repaired["next"] != "STANDS" and (
                     not changed or repaired["seq"] > changed["seq"]):
