@@ -235,6 +235,25 @@ class RecordTest(WorkCase):
         self.assertEqual(state["size"], "FITS")
         self.assertTrue(state["settings"]["post_plan_gate"])
 
+    def test_define_spec_is_checked_against_its_template(self):
+        # Define has no shell to run check-artifact: record does it.
+        (self.dir / "SPEC.md").write_text(SPEC.replace(
+            "   - Edge: an invalid date is rejected → 400\n", "", 1))
+        self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
+        r = self.cmd("record", "define", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("SPEC.md: condition 1 has no `Edge:` line", r.stdout)
+        (self.dir / "SPEC.md").write_text(SPEC)
+        r = self.cmd("record", "define", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for nxt in ("REVISED", "OVERSIZED"):  # every ok return is checked
+            (self.dir / "SPEC.md").write_text(SPEC.replace(
+                "   - Verify by: unit\n", "", 1))
+            self.returned("define", 2, next=nxt, high_risk="yes", reading="none")
+            r = self.cmd("record", "define", "2")
+            self.assertEqual(r.returncode, 1, nxt + r.stdout + r.stderr)
+            self.assertIn("condition 2 has no `Verify by:` line", r.stdout)
+
     def test_oversized_stops_the_run(self):
         self.returned("define", 1, next="OVERSIZED", high_risk="yes", reading="none")
         self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
@@ -595,6 +614,32 @@ class RecordTest(WorkCase):
         plan = self.write("IMPLEMENTATION.md", "Test: \"the list sorts todos by due date "
                           "with the earliest first\"\n")
         self.assertEqual(self.cmd("spec-overlap", plan).returncode, 1)
+
+    def test_install_checks_installs_refuses_a_conflict_and_rechecks(self):
+        # The verifier installs the sealed checks with one command, not a
+        # shell loop a permission check refuses.
+        self.write("acceptance/files/src/due.acceptance.test.ts.sealed", "due\n")
+        self.write("acceptance/files/src/sort.acceptance.test.ts.sealed", "sort\n")
+        due = self.worktree / "src" / "due.acceptance.test.ts"
+        due.parent.mkdir(parents=True, exist_ok=True)
+        due.write_text("the coder's own file\n")
+        r = self.cmd("install-checks")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("conflict: src/due.acceptance.test.ts", r.stdout)
+        self.assertFalse((self.worktree / "src" / "sort.acceptance.test.ts").exists())
+        due.unlink()
+        r = self.cmd("install-checks")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("INSTALLED: 2 check(s)", r.stdout)
+        self.assertEqual(due.read_text(), "due\n")
+        r = self.cmd("install-checks")  # a resumed pass: nothing to write
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("installed:", r.stdout)
+        due.write_text("edited\n")
+        self.assertEqual(self.cmd("install-checks").returncode, 1)
+        r = self.cmd("install-checks", "--recheck")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(due.read_text(), "due\n")
 
     def test_apply_fix_reports_applied_when_the_new_spec_is_malformed(self):
         self.state_size("FITS")

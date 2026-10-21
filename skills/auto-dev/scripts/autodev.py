@@ -29,6 +29,7 @@ Subcommands:
     eval-status        turn SPEC_EVAL.md into ALL_MET, CORRECT, REPAIR or STOP
     apply-fix          apply a reviewer's FIX blocks to SPEC.md or IMPLEMENTATION.md
     spec-overlap       refuse a brief or plan that copies SPEC.md's wording
+    install-checks     install the sealed acceptance checks in the worktree
     security-reviewer  name the security reviewer to spawn for this SPEC.md
     votes              plan the code-review re-votes, or apply them
     review-scope       snapshot the tree before a correction; list what it changed
@@ -88,6 +89,7 @@ COMMANDS = {
     "eval-status": (cmd_checks, cmd_checks.eval_status),
     "apply-fix": (cmd_checks, cmd_checks.apply_fix),
     "spec-overlap": (cmd_checks, cmd_checks.spec_overlap),
+    "install-checks": (cmd_checks, cmd_checks.install_checks),
     "security-reviewer": (cmd_checks, cmd_checks.security_reviewer),
     "votes": (cmd_review, cmd_review.votes),
     "review-scope": (cmd_review, cmd_review.review_scope),

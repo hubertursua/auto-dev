@@ -1,4 +1,5 @@
-"""autodev.py check-manifest / eval-status / apply-fix / spec-overlap.
+"""autodev.py check-manifest / eval-status / apply-fix / spec-overlap /
+security-reviewer / install-checks.
 
 Mechanical reads of the workers' artifacts, so the orchestrator acts on a
 printed decision instead of judging the files itself. Each takes `--dir
@@ -82,6 +83,18 @@ security-reviewer
     Exit: 0 printed; 1 SPEC.md is malformed (no `## Conditions` section or no
     numbered condition); 2 SPEC.md is missing or unreadable.
 
+install-checks [--recheck]
+    Installs each sealed acceptance check, acceptance/files/<path>.sealed, at
+    <worktree>/<path>, so the verifier needs no shell loop to do it. A file
+    already there and byte-identical is left alone. Without --recheck (a first
+    pass), a file there with other content is not the pipeline's: nothing is
+    installed, and each such path is printed as a `conflict:` line. With
+    --recheck, every sealed check is copied over its path, undoing any edit
+    (run the audit first, so it records the edit).
+    Prints `INSTALLED: <n> check(s)` (or `CONFLICT: <n> path(s)`) and the
+    paths it wrote as `installed:` lines.
+    Exit: 0 installed; 1 a conflict (first pass only); 2 no sealed checks dir.
+
 All exit 2 when they could not run (a file missing, unreadable) — never a pass.
 """
 
@@ -110,6 +123,8 @@ def add_arguments(parser, name):
     elif name == "apply-fix":
         parser.add_argument("file")
         parser.add_argument("fix_file")
+    elif name == "install-checks":
+        parser.add_argument("--recheck", action="store_true")
     elif name == "spec-overlap":
         parser.add_argument("file")
         parser.add_argument("--spec", help="default: <dir>/SPEC.md")
@@ -133,6 +148,47 @@ def wrap(fn):
             raise Fail(str(exc), CANNOT_RUN if missing else FAILED,
                        "ERROR" if missing else "MALFORMED") from None
     return run
+
+
+def sealed_pairs(ad, wt):
+    """[(sealed copy, install path)] for every sealed acceptance check."""
+    files = Path(ad) / "acceptance" / "files"
+    if not files.is_dir():
+        raise Fail(f"{files} does not exist: no sealed checks to install", CANNOT_RUN,
+                   "ERROR")
+    return [(s, Path(wt) / s.relative_to(files).with_suffix(""))
+            for s in sorted(files.rglob("*.sealed"))]
+
+
+def install_sealed(ad, wt, recheck=False):
+    """Install the sealed checks; returns (installed paths, conflict paths)."""
+    pairs = sealed_pairs(ad, wt)
+    rel = [str(t.relative_to(wt)) for _, t in pairs]
+    conflicts = [r for (s, t), r in zip(pairs, rel)
+                 if not recheck and t.exists() and t.read_bytes() != s.read_bytes()]
+    if conflicts:
+        return [], conflicts
+    written = []
+    for (s, t), r in zip(pairs, rel):
+        data = s.read_bytes()
+        if t.exists() and t.read_bytes() == data:
+            continue
+        t.parent.mkdir(parents=True, exist_ok=True)
+        t.write_bytes(data)
+        written.append(r)
+    return written, []
+
+
+def install_checks(args):
+    wt = worktree_of(args)
+    written, conflicts = install_sealed(args.dir, wt, args.recheck)
+    if conflicts:
+        emit(args.json, "CONFLICT", f"{len(conflicts)} path(s) hold another file; "
+             "nothing installed", conflict=conflicts)
+        return FAILED
+    emit(args.json, "INSTALLED", f"{len(sealed_pairs(args.dir, wt))} check(s)",
+         installed=written)
+    return 0
 
 
 def edge_is_real(edge):
