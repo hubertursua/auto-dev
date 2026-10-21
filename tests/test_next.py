@@ -1559,29 +1559,12 @@ class CiTest(NextCase):
         self.assertIn("could not all be posted on the PR (general comment: Forbidden)",
                       out["ACTION"])
 
-    def test_the_main_gate_shows_the_staging_ci_and_only_people_s_comments(self):
+    def test_the_main_gate_comes_next_and_shows_only_people_s_comments(self):
         self.ready()
         self.watch()
+        # A staging branch on origin is ignored: the next gate is the main gate.
         self.sh("git", "push", "-q", "origin", "origin/main:refs/heads/staging",
                 cwd=self.worktree)
-        state = self.state()
-        state["repo"]["staging"] = "staging"
-        state["phase6"]["ci"]["status"] = "timeout"
-        self.write_state(state)
-        out = self.next(5)
-        self.assertIn("staging", out["QUESTION"])
-        self.assertIn("CI: not monitored (timeout) — never assume green",
-                      " ".join(out["SUMMARY"]))
-        self.after(out, "Merge to staging")
-        self.assertIn("merge-staging", self.next(0)["ACTION"])
-        r = self.autodev("merge-staging", "--dir", self.dir)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        merged = self.state()["phase6"]["staging_merge"]
-        out = self.next(0)
-        self.assertIn(merged, out["ACTION"])  # the commit merge-staging pushed
-        self.assertNotIn("rev-parse", out["ACTION"])
-        r = self.autodev("mark", "staging-ci", "--value", "red", "--dir", self.dir)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         sys.path.insert(0, str(SCRIPTS))
         marker = import_module("lib.cmd_pr").MARKER
         responses = json.loads((self.tmp / "gh.json").read_text())
@@ -1595,18 +1578,15 @@ class CiTest(NextCase):
         out = self.next(5)
         summary = " ".join(out["SUMMARY"])
         self.assertIn("main", out["QUESTION"])
-        self.assertIn("Staging (staging) CI after the merge: red", summary)
+        self.assertNotIn("staging", (out["QUESTION"] + summary).lower())
         self.assertIn("1 human review(s)/comment(s)", summary)
 
-    def test_red_ci_the_code_cannot_fix_holds_before_jira_and_staging(self):
+    def test_red_ci_the_code_cannot_fix_holds_before_jira(self):
         self.github_ci()
         checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
                    "link": "https://ci/1"}]
         self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
         self.watch(1)
-        state = self.state()
-        state["repo"]["staging"] = "staging"
-        self.write_state(state)
         self.expect("triager", "INFRA", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
         report = " ".join(self.next(4)["REPORT"])

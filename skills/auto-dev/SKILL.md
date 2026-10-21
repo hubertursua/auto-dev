@@ -33,7 +33,7 @@ Phase 2  Define  → SPEC.md, the testable contract, and the size check         
 Phase 3  Plan    → IMPLEMENTATION.md, then sealed acceptance checks             (S1 Plan)
 Phase 4  Build   → the coder builds from the plan                               (S2 Build)
 Phase 5  Verify  → the verifier runs the checks; cleanup; quality gate          (S2 Build)
-Phase 6  Ship    → reviews, PR gate, commit, PR, CI, staging, main gate, merge  (S3 Ship)
+Phase 6  Ship    → reviews, PR gate, commit, PR, CI, main gate, merge  (S3 Ship)
 ```
 
 It runs in three sessions: **S1 Plan**, **S2 Build**, **S3 Ship**. Each ends

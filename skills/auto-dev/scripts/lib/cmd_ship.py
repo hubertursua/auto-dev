@@ -1,4 +1,4 @@
-"""autodev.py commit / ci-watch / merge-staging / merge-pr / pr-body --check / cleanup-worktree.
+"""autodev.py commit / ci-watch / merge-pr / pr-body --check / cleanup-worktree.
 
 Phase 6's git and gh steps. Each takes `--dir <artifact-dir>` (default
 `./.auto-dev`) and `--json`, re-reads git and gh rather than trusting the stored
@@ -42,13 +42,6 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     it exits, run `next`: it asks for `ci-watch` again only while CI is
     PENDING, and after TIMEOUT or UNAVAILABLE the main gate shows CI as not
     monitored. Never assume green.
-
-merge-staging
-    Merges the branch into the staging branch directly (fetch, detach at
-    origin/<staging>, merge, push without --force) and always switches back to
-    the branch. Exit: 0 merged and pushed; 1 conflict (merge aborted) or no
-    staging branch; 3 push rejected; 2 git could not run (not recorded as an
-    attempt).
 
 merge-pr --pr N --sha <checked commit>
     `gh pr merge` with the repo's allowed method (squash first), locked with
@@ -104,12 +97,12 @@ from pathlib import Path
 
 from . import state as st
 from .output import CANNOT_RUN, FAILED, Fail, emit
-from .proc import CommandError, git, run
+from .proc import git, run
 
 SCRIPTS = Path(__file__).resolve().parent.parent
 ARTIFACTS = ".auto-dev/"
 TRAILER = "Co-Authored-By: Claude Code <noreply@anthropic.com>"
-EXIT_NOT_VERIFIED = EXIT_PENDING = EXIT_QUEUED = EXIT_PUSH_REJECTED = 3
+EXIT_NOT_VERIFIED = EXIT_PENDING = EXIT_QUEUED = 3
 EXIT_UNAVAILABLE = EXIT_REFUSED = 4
 BODY_LIMIT = 60000
 STRICT_HEADINGS = ("## Acceptance conditions", "### Checks for a person",
@@ -448,50 +441,6 @@ def poll_checks(cwd, pr, sha, deadline, ready=None):
             return "stale-green", [], ""
         return "green", [], ""
     return "pending", [c["name"] for c in checks], ""
-
-
-def merge_staging(args):
-    state = load(args)
-    wt, branch, staging = state["worktree"], state["branch"], state["repo"].get("staging")
-    if not staging:
-        raise Fail("no staging branch: the staging gate is n/a", FAILED, "NO-STAGING")
-    try:
-        try:
-            git(wt, "fetch", "origin", staging)
-            merged = staging_merge(wt, branch, staging)
-        except CommandError as exc:
-            raise Fail(f"git could not run: {exc}", CANNOT_RUN, "ERROR") from None
-    except Fail as exc:
-        if exc.code != CANNOT_RUN:  # could not run is not an attempt
-            state.setdefault("phase6", {})["staging_attempt"] = {
-                "result": exc.token.lower(), "seq": st.seq(state)}
-            st.save(args.dir, state)
-        raise
-    state.setdefault("phase6", {})["staging_merge"] = merged
-    st.add_note(state, f"merged into {staging} at {merged}")
-    st.save(args.dir, state)
-    emit(args.json, "MERGED", f"{branch} into {staging} at {merged}",
-         next="watch CI on staging; report a failure, don't gate on it")
-    return 0
-
-
-def staging_merge(wt, branch, staging):
-    try:
-        git(wt, "switch", "-q", "--detach", f"origin/{staging}")
-        code, out, err = git(wt, "merge", "--no-edit", branch, check=False)
-        if code != 0:
-            git(wt, "merge", "--abort", check=False)
-            raise Fail(f"merging {branch} into {staging} conflicts; aborted. Never "
-                       f"resolve conflicts on staging unasked: report it.\n"
-                       f"{(out + err).strip()[-800:]}", FAILED, "CONFLICT")
-        merged = git(wt, "rev-parse", "HEAD").strip()
-        code, out, err = git(wt, "push", "origin", f"HEAD:{staging}", check=False)
-        if code != 0:
-            raise Fail(f"push to {staging} rejected; never force it unasked:\n"
-                       f"{(out + err).strip()[-800:]}", EXIT_PUSH_REJECTED, "REJECTED")
-    finally:
-        git(wt, "switch", "-q", branch, check=False)
-    return merged
 
 
 def gh_cannot_run(code, text, what):

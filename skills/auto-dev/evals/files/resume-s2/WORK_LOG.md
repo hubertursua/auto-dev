@@ -17,7 +17,7 @@
 | 3 | Plan | done |  |
 | 4 | Build | pending |  |
 | 5 | Verify | pending |  |
-| 6 | Ship | pending | staging gate: n/a (no staging branch) |
+| 6 | Ship | pending |  |
 
 ## Decisions & assumptions
 - 2026-10-20T02:04:34+00:00 gate `post-plan`: proceed

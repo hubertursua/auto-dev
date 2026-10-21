@@ -8,8 +8,7 @@ structured artifacts between them through a `.auto-dev/` scratch directory. It i
 **stack-agnostic**: it ships no stack profile, and instead researches each repo's
 setup and quality-gate commands on the first run, confirms them with you and can
 save them for later runs. It integrates
-optionally with Jira, CI, and a staging branch — each auto-detected and skipped
-when absent.
+optionally with Jira and CI — each auto-detected and skipped when absent.
 
 ## Agent hierarchy
 
@@ -32,7 +31,7 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
 │           Acceptance tester  held-out checks from the spec, proven to fail, sealed [optional gate]
 ├─ Phase 4  Coder ......... code + tests (given only the plan)
 ├─ Phase 5  Verifier + cleanup  RUN the checks vs. the withheld spec → /simplify → quality gate → re-check
-└─ Phase 6  orch + reviewers  code review panel → security review → [GATE] PR + CI → [GATE] staging → [GATE] main
+└─ Phase 6  orch + reviewers  code review panel → security review → [GATE] PR + CI → [GATE] main
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
 ```
 
@@ -138,7 +137,7 @@ PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
 | 5 Verify | verifier, then cleanup agent | the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4), then `/simplify` + the profile's quality gate to green, then a verifier re-check |
-| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then staging, then main + Jira Done — pausing at each gate |
+| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate |
 
 ## Three sessions, not one
 
@@ -232,7 +231,7 @@ so a comment about a check the tester ruled right, or a blocker the code now
 fixes, is sorted as addressed and doesn't spend another round. Everything the pipeline posts on
 the PR ends with `<!-- auto-dev -->`, and the triager skips those comments.
 A red CI run the code can't fix (a secret, infrastructure, a flaky test,
-unknown) stops the run and is reported before Jira moves or staging is asked;
+unknown) stops the run and is reported before Jira moves;
 once the cause is fixed and CI re-run, resuming watches it again. CI that times
 out or can't be watched is shown at the main gate as not monitored, never as
 green.
@@ -337,7 +336,7 @@ itself; you choose what to allow.
 
 The keys most runs touch in `.auto-dev.yml`: `iteration_budget` (revise rounds,
 default 4), `mutation.max` (mutants per verifier pass, default 20, `0` = off),
-`gates.post_plan` (turn the post-plan gate on), `branches` (`base`, `staging`,
+`gates.post_plan` (turn the post-plan gate on), `branches` (`base`,
 `prefix`), `ci` and `ci_timeout_minutes`, `worktree_files`, `security_docs`,
 `symbol_lookup` (a code-index tool to use instead of grep),
 `pr_review.inline_comments` (post the open and advisory review findings on the
@@ -354,7 +353,7 @@ off, and a listed path the worktree doesn't have is dropped with a warning. See
 ## Human gates & integrations
 
 Planning and build run unattended; the pipeline pauses for approval before
-**opening the PR**, before the **staging merge**, and before the **main merge**
+**opening the PR** and before the **main merge**
 (plus an optional post-plan gate you can enable per run). The PR opens as a
 **draft** unless you ask for it ready for review, and is marked ready before the
 main gate. Its description follows the repo's default PR template when there is
@@ -366,9 +365,8 @@ rest for a person. With
 `pr_review.inline_comments: true`, the review findings left open or advisory are
 posted on the PR once it opens: inline at their line when it is in the diff, the
 rest in one comment. The main gate doesn't count those posts as people's
-comments, and its summary shows the staging branch's CI result after the
-staging merge (CI that timed out or couldn't be watched shows as not monitored,
-never as green). Main is merged only via `gh pr merge` (respecting branch protection,
+comments, and CI that timed out or couldn't be watched shows there as not
+monitored, never as green. Main is merged only via `gh pr merge` (respecting branch protection,
 never `--admin`), with `--squash` by default — `--merge` if the repo disallows
 squash, `--rebase` only when it is the one method allowed. Before the main gate
 the pipeline fetches the PR branch and checks it still holds the code every
@@ -379,15 +377,16 @@ names and say `auto-dev continue`: the quality gate and the verifier run again,
 a review pass covers what the commits (and the re-check) changed, `commit`
 verifies the new head, and the main gate is asked again. The merge is locked to that commit with
 `--match-head-commit`, so a push made after the check makes GitHub refuse the
-merge instead of shipping unchecked code. Staging is a direct
-merge where the project uses that convention. **Jira** integration is
+merge instead of shipping unchecked code. The PR targets the base branch, and the
+main merge is the only merge: auto-dev has no staging step, and ignores a
+`staging` branch on origin. **Jira** integration is
 status-transitions-only (In Progress → In Review → Done) and is skipped if no
 ticket is given; the ticket's summary and description are stored at setup
 (`autodev.py init --ticket-text-file`) and given to the Define agent verbatim,
 since it has no Jira access. **CI** is monitored, with a bounded timeout, on the PR before
 merge (and once more after the PR is marked ready, since some workflows skip
-drafts), and again after the staging and main merges to confirm the merge itself
-didn't break the branch.
+drafts), and again after the main merge to confirm the merge itself didn't
+break the branch.
 
 Three more pauses are **conditional** and fire only when their situation
 arises: the **profile confirmation** (Phase 1, only on a repo with no saved
@@ -492,8 +491,7 @@ Phase 6: `commit` (re-checks freshness, stages every changed path by name, runs
 `check-staged.py`, commits, and verifies the commit carries the checked code,
 unstaging if anything fails), `ci-watch` (polls `gh pr checks` with a bound and
 says green, red with links, pending, timed out or unwatchable; never assumes
-green), `merge-staging` (direct merge, never forced, always back on the
-branch), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
+green), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
 `--admin`, then confirms it merged), `pr-body` (generates the PR description
 from the run's artifacts, with links at the checked commit, paths hidden and
 output cut to fit, the ticket linked and the repo's own PR template's
@@ -719,6 +717,11 @@ rules for changing a script are in `CLAUDE.md`.
   worker says it wrote against its template, and refuses a plan, or a plan
   reviewer's FIX, that copies `SPEC.md`'s wording. A push to the PR branch can
   now be brought in and re-checked instead of ending the run.
+- **No staging branch.** The staging gate, the direct merge into staging and
+  `autodev.py merge-staging` are gone: the PR targets the base branch and the
+  main gate is the only merge gate. A `staging` branch on origin is ignored, and
+  `validate-config.py` refuses `branches.staging` in `.auto-dev.yml`: delete
+  the key.
 
 A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
 and start again.

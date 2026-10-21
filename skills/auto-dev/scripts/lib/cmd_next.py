@@ -740,7 +740,7 @@ def post_plan_gate(c, after):
 
 def gate_question(c, gate, answers, rule):
     builder = {"post-plan": cmd_review.post_plan_summary, "pr": cmd_review.pr_summary,
-               "staging": cmd_review.staging_summary, "main": cmd_review.main_summary}[gate]
+               "main": cmd_review.main_summary}[gate]
     ns = type("Args", (), {"pr": None, "dir": c.dir, "json": False})()
     try:
         lines, extra = builder(c.state, c.ad, ns)
@@ -1397,9 +1397,6 @@ def ship_step(c):
     jira = jira_step(c, "in_review", "jira-in-review")
     if jira:
         return jira
-    staging = staging_step(c)
-    if staging:
-        return staging
     human = human_step(c)
     if human:
         return human
@@ -1553,8 +1550,8 @@ def ci_step(c, sha):
                      f"({triage_file(c, triage)}). Once the secret is fixed and CI re-run, "
                      "`auto-dev continue` watches it again.")],
                     "the triager returned SECRET")
-    # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Stop here, before Jira and
-    # staging move on a red build; a resume watches CI again.
+    # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Stop here, before Jira
+    # moves on a red build; a resume watches CI again.
     return stop([(f"CI is red, and the triager classed it {kind}: not something the code "
                  f"can fix. Tell the user the red checks ({red}) and what the triager "
                  f"found ({triage_file(c, triage)}). The run stops here; once CI is fixed "
@@ -1569,36 +1566,6 @@ def triage_file(c, triage, key="triage_file"):
         return given
     suffix = "-checks" if key == "checks_file" else ""
     return str(c.ad / "triage" / f"{triage.get('mode') or 'triage'}-{triage['n']}{suffix}.md")
-
-
-def staging_step(c):
-    if not c.state["repo"].get("staging"):
-        return None
-    gate = c.gate("staging")
-    if gate is None or gate["choice"] == "hold":
-        return gate_question(c, "staging", {
-            "Merge to staging": c.cmd("gate", "staging", "proceed"),
-            "Skip staging": c.cmd("gate", "staging", "skip"),
-            "Stop": c.cmd("gate", "staging", "stop", "--reason", "<why>")},
-            "the repo has a staging branch: the staging gate")
-    if gate["choice"] != "proceed":
-        return None
-    attempt = c.p6.get("staging_attempt")
-    if not c.p6.get("staging_merge"):
-        if attempt and attempt["seq"] > gate["seq"]:
-            return stop([(f"The staging merge failed ({attempt['result']}). Tell the user; "
-                         "never resolve conflicts on staging or force the push unasked.")],
-                        "merge-staging failed")
-        return action(f"merge into staging: run `{c.cmd('merge-staging')}`",
-                      "the staging gate said proceed", AFTER=[c.cmd("next")])
-    if not c.mark("staging-ci"):
-        return action(f"watch CI on the staging branch, {c.state['repo']['staging']} "
-                      "(references/S3-ship.md, CI after a merge), on the commit "
-                      f"merge-staging pushed, {c.p6['staging_merge']}; report a "
-                      "failure to the user, don't gate on it",
-                      "staging was merged", AFTER=[c.cmd("mark", "staging-ci", "--value",
-                                                         "<green | red | not watched>")])
-    return None
 
 
 def human_step(c):
@@ -1693,7 +1660,7 @@ def main_step(c, sha):
                       "the main gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("main-ci"):
         return action(f"check CI on {c.state['repo']['base']} for the merge of PR "
-                      f"#{p6.get('pr')} (references/S3-ship.md, CI after a merge; its "
+                      f"#{p6.get('pr')} (references/S3-ship.md, CI after the merge; its "
                       f"merge commit: `gh pr view {q(p6.get('pr'))} --json mergeCommit -q "
                       ".mergeCommit.oid`); a failure there is reported, never fixed by "
                       "re-pushing", "the PR is merged",

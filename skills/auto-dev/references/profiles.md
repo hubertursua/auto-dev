@@ -207,7 +207,6 @@ gate:
   - { kind: test, command: "npm test",                      report: "TEST.md" }
 branches:
   base: develop               # base branch to cut from and target with the PR
-  staging: staging            # staging branch for the direct-merge step; omit to skip the 6b staging gate
   prefix: feature             # branch-name prefix
 ci: circleci                  # github-actions | circleci | gitlab | none
 ci_timeout_minutes: 30        # bound on CI watching; then the gates show CI as not monitored
