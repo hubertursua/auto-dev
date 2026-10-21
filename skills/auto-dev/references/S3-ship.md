@@ -79,10 +79,11 @@ heard of auto-dev:
   checklist stands, as a person may have ticked or edited it on GitHub.
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
-"verifier" or "pipeline". What the description quotes word for word (test names, commands and their
-output, between `<!-- auto-dev:quoted -->` lines) is exempt from the ID check, and is
-not yours to edit. Change nothing else in the file: the follow-ups the
-user sent to a separate PR at the PR gate are already listed in it.
+"verifier" or "pipeline". What the description quotes word for word (test
+names, commands and their output, between the `<!-- auto-dev:quoted -->`
+markers) is exempt from the ID, term and tier checks, and is not yours to
+edit. Change nothing else in the file: the follow-ups the user sent to a
+separate PR at the PR gate are already listed in it.
 `pr publish` ends everything it posts with `<!-- auto-dev -->`, which tells
 the triager to skip it; never post on the PR yourself. Then run the `AFTER`
 line, `autodev.py pr publish`:

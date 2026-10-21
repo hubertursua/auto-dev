@@ -19,7 +19,7 @@ change must do: [`<path>`](<link>), [`<path>`](<link>)
 with: "No requirement here could be checked by an automated test, so each one
 is under _Checks for a person_. Checked at commit <sha>.">
 
-- [x] **<condition, in the spec's own words>**
+- [x] **<condition, in the spec's own words>** <!-- auto-dev:quoted -->
   Test written before the code: [`<path>` › <test name>](<link to its line>) —
   old code: <failed: <the one-line reason> | passed: it guards behavior that must not change> · now: passes
   <details><summary>Command and output</summary>
@@ -35,6 +35,9 @@ is under _Checks for a person_. Checked at commit <sha>.">
   <for each further run in evidence/C<n>.txt: Also ran `<command>`, expecting
   <the expectation>, and the same kind of block>
   </details>
+  <!-- /auto-dev:quoted -->
+<Every condition's test lines and output block sit between the two
+auto-dev:quoted markers, as above; they are left out below.>
 - [x] **<condition no test written before the code checks in full>**
   <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
   <it covers only part of this | it was wrong and was corrected, so it never ran on the old code |
@@ -80,13 +83,14 @@ They caught <n>. <"Every one was caught." — or, per bug they missed:>
 
 ## Quality gate
 The repo's own checks, run on commit <short sha>:
-- `<command>`: <passed | failed: <one line>>
+- `<command>`: <passed | failed: <one line>> <!-- auto-dev:quoted -->
   <details><summary>Output</summary>
 
   ```
   <the last lines of output>
   ```
   </details>
+  <!-- /auto-dev:quoted -->
 
 ## Review
 - Code review (<n> independent reviewers) — confidence <High | Medium | Low>:

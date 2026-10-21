@@ -889,6 +889,22 @@ class ShipTest(NextCase):
         self.resume()  # the user fixed it: a resume lifts the stop
         self.assertIn(str(body), self.next(0)["ACTION"])
 
+    def test_a_body_written_before_quoted_regions_is_written_again(self):
+        # A run stopped on 4.0.1, whose description had no quoted regions, gets
+        # a fresh one on resume instead of the same refusal.
+        _sha, _url, _out, body = self.to_body()
+        state = self.state()
+        del state["phase6"]["quoted"]
+        self.write_state(state)
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()).replace(" <!-- auto-dev:quoted -->", "")
+                        .replace("  <!-- /auto-dev:quoted -->\n", ""))
+        self.resume()
+        self.assertIn(str(body), self.next(0)["ACTION"])
+        self.assertIn("auto-dev:quoted", body.read_text())
+        self.assertIn("<!-- WRITE:", body.read_text())
+        self.assertIn("quoted", self.state()["phase6"])
+
     def merge_ready(self, first=()):
         sha, _ = self.open_pr(first=first)
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
@@ -1029,11 +1045,16 @@ class PublishTest(NextCase):
             tree=self.tree()))
         self.spec_eval()
         self.lint()
+        lint = self.dir / "lint" / "TEST.md"  # a verbose reporter names the tests
+        lint.write_text(lint.read_text().replace("all good", "PASS criterion S1: owner only"))
         r = self.autodev("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         body = self.dir / "pr-body.md"
         text = body.read_text()
         self.assertIn("criterion S1: owner only", text)
+        self.assertIn("- `true`: passed <!-- auto-dev:quoted -->", text)
+        self.assertIn("- [x] **Only the owner can set a todo's due date** "
+                      "<!-- auto-dev:quoted -->", text)
         self.assertIn("expecting the S1 check passes", text)
         written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
         body.write_text(written)

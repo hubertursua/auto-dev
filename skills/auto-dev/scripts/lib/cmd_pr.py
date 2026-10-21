@@ -67,7 +67,9 @@ MARKER = "<!-- auto-dev -->"
 # Around what a description quotes word for word (test names, commands, their
 # output, the verifier's Expected line): those may carry a condition ID, which
 # the lint skips inside a region generate() wrote (QUOTED_RE is in cmd_ship).
-QUOTED = ("  <!-- auto-dev:quoted -->", "  <!-- /auto-dev:quoted -->")
+# The opening marker ends the line before the quote, so it doesn't split the
+# list item's paragraph on GitHub.
+QUOTE_OPEN, QUOTE_CLOSE = "<!-- auto-dev:quoted -->", "  <!-- /auto-dev:quoted -->"
 
 
 def add_arguments(parser, name):
@@ -91,6 +93,17 @@ class Body:
         """runs: [(the line introducing a run, [its output lines])]."""
         self.parts.append(len(self.blocks))
         self.blocks.append((label, runs))
+
+    def quote(self):
+        """Mark what follows, up to unquote(), as quoted word for word."""
+        self.parts[-1] += " " + QUOTE_OPEN
+        return len(self.parts)
+
+    def unquote(self, start):
+        if len(self.parts) == start:  # nothing was quoted
+            self.parts[-1] = self.parts[-1][:-len(" " + QUOTE_OPEN)]
+        else:
+            self.text(QUOTE_CLOSE)
 
     def render(self, tail=None, moved=False):
         out, comment = [], []
@@ -399,7 +412,7 @@ def condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha):
     base_run = parse_runs(ad / "acceptance" / "base-run" / f"C{cond['id']}.txt")
     if verdict == "met" and plain and not checks:
         body.text(f"  Checked by running {plain}.")
-    body.text(QUOTED[0])
+    start = body.quote()
     for check in checks:
         cell = check["Check (path :: test name)"]
         path = art.check_path(cell) or ""
@@ -431,10 +444,7 @@ def condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha):
                      evidence.get("Output", [])))
     if runs:
         body.block(cond["text"], runs)
-    if body.parts[-1] == QUOTED[0]:
-        body.parts.pop()  # nothing was quoted
-    else:
-        body.text(QUOTED[1])
+    body.unquote(start)
 
 
 def parse_runs(path):
@@ -542,6 +552,7 @@ def quality_gate(body, ad, state):
         first = text.splitlines()[0] if text else ""
         status = "passed" if first.rstrip().endswith("pass") else "failed"
         body.text(f"- `{check['command']}`: {status}")
+        start = body.quote()
         tail = art.find_section(text, "Output tail") or ""
         output = [ln for ln in tail.splitlines() if not ln.startswith("```")
                   and not ln.startswith("**Suppressions")]
@@ -551,6 +562,7 @@ def quality_gate(body, ad, state):
             output.pop(0)
         if output:
             body.block(check["command"], [("Output:", output)])
+        body.unquote(start)
 
 
 def review_lines(ad, state):

@@ -77,7 +77,7 @@ pr-body --check <file>
     a secret, and each checklist of the repo's PR template is there with its
     items unchanged (ticked or not). The ID, term and tier checks skip what the
     description quotes word for word (test names, commands and their output,
-    between `<!-- auto-dev:quoted -->` lines) as generate wrote it; a quoted
+    between `<!-- auto-dev:quoted -->` markers) as generate wrote it; a quoted
     region edited since is checked like the rest.
     Exit: 0 clean; 1 problems (each printed).
 
@@ -126,7 +126,7 @@ ID_USE_RE = re.compile(rf"(?<![\w/.-])({ID_FORM})(?![\w-])")
 # names, commands and output may carry an ID the lint would refuse, and nobody
 # may edit them, so the ID, term and tier checks skip a region generate()
 # recorded (phase6.quoted holds each one's digest). The other checks still run.
-QUOTED_RE = re.compile(r"^ *<!-- auto-dev:quoted -->\n.*?^ *<!-- /auto-dev:quoted -->$",
+QUOTED_RE = re.compile(r"<!-- auto-dev:quoted -->\n.*?^ *<!-- /auto-dev:quoted -->$",
                        re.MULTILINE | re.DOTALL)
 # Terms only the pipeline uses; words like "verifier" are ordinary English.
 TERMS_RE = re.compile(r"\b(held-out|fail-to-pass|pass-to-pass)\b", re.IGNORECASE)
