@@ -233,15 +233,22 @@ def cleanup(args):
                 print(f"FAILED to close PR #{pr['number']}: {res.stderr.strip()}")
                 continue
         print(f"{verb}close PR #{pr['number']} ({pr['headRefName']})")
-    # Work branches first, so no PR is left pointing at a deleted base.
-    for branch in sorted(branches, key=lambda b: b.endswith("/base")):
-        if not args.dry_run:
-            res = run(["git", "push", "-q", url, "--delete", branch], check=False)
-            if res.returncode != 0:
-                failed = True
-                print(f"FAILED to delete {branch}: {res.stderr.strip()}")
-                continue
-        print(f"{verb}delete branch {branch}")
+    # `git push` needs a repository to run in, even to a URL. Push from an
+    # empty one, so cleanup works from any directory and never runs the hooks
+    # or config of whatever repo it was started in.
+    with tempfile.TemporaryDirectory() as scratch:
+        if branches and not args.dry_run:
+            run(["git", "init", "-q", scratch])
+        # Work branches first, so no PR is left pointing at a deleted base.
+        for branch in sorted(branches, key=lambda b: b.endswith("/base")):
+            if not args.dry_run:
+                res = run(["git", "push", "-q", url, "--delete", branch],
+                          cwd=scratch, check=False)
+                if res.returncode != 0:
+                    failed = True
+                    print(f"FAILED to delete {branch}: {res.stderr.strip()}")
+                    continue
+            print(f"{verb}delete branch {branch}")
     for name in sorted(n for n in secrets if secret_re.fullmatch(n)):
         if not args.dry_run:
             res = run(["gh", "secret", "delete", name, "-R", args.repo], check=False)
