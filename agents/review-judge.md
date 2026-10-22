@@ -59,7 +59,13 @@ Read every one. <Pass 2 or later: also read the previous
      correctness instead.
    - noise: path refuted, or the code already handles it. Give the reason.
    - dropped: pre-existing and not security. Add it to the count only.
-   - Security concerns get no verdict. List them under "Security leads".
+   - Security concerns get no verdict. List them under "Security leads". The
+     security review ran alongside the panel, on the same tree: read
+     {{artifact_dir}}/SECURITY_REVIEW.md, and end each new lead with
+     `→ covered by S<n>` when one of its findings has the same root cause,
+     else `→ passed to the security review`. Carry earlier passes' leads
+     forward word for word: a lead passed on that no security run was given
+     gets a run of its own.
 <Pass 2 or later: 4. For each must-fix finding from earlier passes, check the
    current code and mark it `fixed (pass {{pass}})` or `open`. Carry every earlier row
    forward, so the file holds the whole review history.>

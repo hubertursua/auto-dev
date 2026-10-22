@@ -229,11 +229,13 @@ BLOCKED_ONCE = ("Your last spawn for this job returned `blocked`, and the run sp
 def blocked_last(state, worker):
     """Whether the newest result since the last resume is this worker's, blocked.
     Never for the code reviewers, who run in parallel: the newest result may be
-    another slot's."""
+    another slot's. Their results are skipped for the others too, so the
+    security reviewer spawned beside them is told."""
     if worker == "code-reviewer":
         return False
     log = [e for e in state.get("log") or []
-           if e.get("seq", 0) > state.get("resumed_seq", 0)]
+           if e.get("seq", 0) > state.get("resumed_seq", 0)
+           and e.get("worker") != "code-reviewer"]
     return bool(log) and log[-1].get("worker") == worker and \
         log[-1].get("status") == "blocked"
 

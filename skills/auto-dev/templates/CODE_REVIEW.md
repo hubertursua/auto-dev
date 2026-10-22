@@ -42,7 +42,7 @@ In plain words: <one sentence for the PR's reader>
 |----|---------|-----------|---------------|
 
 ## Security leads
-- `path:line` — <lead> (raised by R<k>) → passed to the security review
+- `path:line` — <lead> (raised by R<k>) → <passed to the security review | covered by S<n>>
 
 ## Passes
 | Pass | Scope | Reviewers finished | Must-fix found | Re-votes |

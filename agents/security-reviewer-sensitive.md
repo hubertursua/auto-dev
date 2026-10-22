@@ -53,7 +53,8 @@ intent-to-add, so the diff shows them.
    injection, missing authz or authn, secret or PII exposure, unsafe
    deserialization, weakened TLS or crypto, path traversal, SSRF, mass
    assignment, anything the directives name.
-3. Check each lead from the code review panel: {{leads}}.
+3. Check each lead from the code review panel: {{leads}}. The panel runs
+   alongside you, so its leads from this pass reach a later run.
 4. For every finding, say:
    - Origin: introduced (the vulnerable code is in lines this change adds or
      modifies, or the change exposes old code to new untrusted input) or

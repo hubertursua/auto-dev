@@ -101,6 +101,7 @@ AUTODEV = SCRIPTS / "autodev.py"
 MAX_EMITS = 3
 CHECKPOINT_EVENTS = 80  # about 35 workers; tune on the fixture repo
 SLOTS = ("R1", "R2", "R3")
+SECURITY = ("security-reviewer", "security-reviewer-sensitive")
 JIRA_DEFAULTS = {"in_progress": "In Progress", "in_review": "In Review", "done": "Done"}
 # Workers whose results drive the build-verify loop (Phases 4-6).
 LOOP = ("verifier", "coder", "cleanup", "acceptance-tester", "planner")
@@ -250,8 +251,11 @@ def spawn(c, worker, mode=None, sets=None, rule="", budget=None, agent=None):
 
 
 def spawn_many(c, jobs, rule, budget=None, agent=None):
+    """Spawn each (worker, mode, sets[, agent]) job in one message."""
     agents, briefs_, prompts, after = [], [], [], []
-    for worker, mode, sets in jobs:
+    for job in jobs:
+        worker, mode, sets = job[:3]
+        job_agent = job[3] if len(job) > 3 else agent
         if c.readonly:
             n = c.peek(worker)
             path = c.ad / "briefs" / f"{worker}-{n}.md"
@@ -259,7 +263,7 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
             path, _ = cmd_work.write_brief(c.state, c.ad, worker, mode, dict(sets))
             c.dirty = True
             n = int(path.stem.rsplit("-", 1)[1])
-        agents.append(agent or f"auto-dev:{worker}")
+        agents.append(job_agent or f"auto-dev:{worker}")
         briefs_.append(str(path))
         prompts.append(cmd_work.prompt_for(path))
         after.append(c.cmd("record", worker, n))
@@ -472,11 +476,15 @@ def not_ok(c):
 
     Only results since the last `resume` count: once the user has fixed the
     cause and resumed, the step spawns the worker again."""
-    log = [e for e in c.log if e.get("seq", 0) > c.resumed()]
+    # The code reviewers run in parallel with each other and with the security
+    # reviewer: review_step re-spawns a failed slot, and their results would hide
+    # the security reviewer's.
+    log = [e for e in c.log if e.get("seq", 0) > c.resumed()
+           and e["worker"] != "code-reviewer"]
     if not log:
         return None
     latest = log[-1]
-    if latest.get("status") == "ok" or latest["worker"] == "code-reviewer":
+    if latest.get("status") == "ok":
         return None
     same = [e for e in log if e["worker"] == latest["worker"]]
     twice = len(same) >= 2 and same[-2].get("status") != "ok"
@@ -1222,9 +1230,10 @@ def start_pass(c, scope, files, rule, since=None):
         p["since"] = since
     c.p6["passes"].append(p)
     c.dirty = True
-    return spawn_many(c, [("code-reviewer", "review", reviewer_sets(scope, files, slot,
-                                                                    since))
-                          for slot in SLOTS], rule)
+    jobs = [("code-reviewer", "review", reviewer_sets(scope, files, slot, since))
+            for slot in SLOTS]
+    return spawn_security(c, jobs, panel_leads(c), rule + "; the security review runs "
+                          "alongside the panel, on the same tree")
 
 
 def reviewer_sets(scope, files, slot, since=None):
@@ -1237,7 +1246,9 @@ def reviewer_sets(scope, files, slot, since=None):
 
 
 def review_step(c, p):
-    """The panel, the judge, the re-votes, then the security review, for pass p."""
+    """Pass p: the panel and the security review (spawned together), the judge
+    (with its check of the security findings), the re-votes, then one correction
+    for whatever both left open, or a security run on leads it has not seen."""
     reviews = c.recs("code-reviewer", after=p["seq"], mode="review", ok=False)
     respawn, usable = [], []
     for slot in SLOTS:
@@ -1247,53 +1258,105 @@ def review_step(c, p):
                 usable.append(slot)
         elif len(mine) == 1:
             respawn.append(slot)
-    if respawn:
-        return spawn_many(c, [("code-reviewer", "review",
-                               reviewer_sets(p["scope"], p["files"], slot,
-                                             p.get("since")))
-                              for slot in respawn],
-                          "a code reviewer failed: it gets one re-spawn")
+    jobs = [("code-reviewer", "review", reviewer_sets(p["scope"], p["files"], slot,
+                                                      p.get("since")))
+            for slot in respawn]
+    secs = c.recs(SECURITY, after=p["seq"], ok=False)
+    if not secs or secs[-1]["status"] != "ok":
+        # None yet (a pass started before 4.4.0), or it failed once: not_ok
+        # stops the run when it fails twice running.
+        leads = secs[-1].get("sets", {}).get("leads") if secs else panel_leads(c)
+        return spawn_security(c, jobs, leads or "none",
+                              "a code reviewer or the security reviewer failed: it gets "
+                              "one re-spawn" if secs or jobs else
+                              "the security review covers the whole change")
+    if jobs:
+        return spawn_many(c, jobs, "a code reviewer failed: it gets one re-spawn")
+    sec = secs[-1]
+    data = sec["data"]
+    verify = _int(data.get("must_fix")) or _int(data.get("pre_existing"))
+    verified = c.last("review-judge", after=sec["seq"], mode="security-verify")
     judge = c.last("review-judge", after=p["seq"], mode="consolidate")
     if judge is None:
         if not usable:
             return stop([("No code reviewer wrote a usable report, twice. Tell the user; "
                          f"see {c.ad}/review/pass-{p['n']}/.")], "the panel produced nothing")
-        return spawn(c, "review-judge", "consolidate", {
-            "reviewers": ", ".join(usable), "scope": scope_text(p), "tree": p["tree"]},
-            rule="the panel is done: the judge consolidates its reports")
-    after = judge["seq"]
+        jobs = [("review-judge", "consolidate", {
+            "reviewers": ", ".join(usable), "scope": scope_text(p), "tree": p["tree"]})]
+        if verify and verified is None:
+            jobs.append(("review-judge", "security-verify", {}))
+        return spawn_many(c, jobs, "the panel and the security review are done: the "
+                          "judge consolidates the panel's reports" +
+                          (", and in parallel verifies every High or Medium security "
+                           "finding" if len(jobs) > 1 else ""))
     if judge["next"] == "REVOTE":
         result = revotes(c, p, judge)
         if result is not None:
             return result
-        after = c.p6["votes"][str(p["n"])]
+    if verify and verified is None:
+        return spawn(c, "review-judge", "security-verify",
+                     rule="the judge verifies every High or Medium security finding")
     spent_out = bool(c.p6.get("exhausted"))  # open findings go to the PR gate
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
-    if rows and not spent_out:
-        checks = [r for r in rows if _category(r) == "acceptance-check"]
-        spec = None
-        if checks:  # a finding about a check goes to the tester, never the coder
-            ids = ", ".join(r["ID"].strip() for r in checks)
-            spec = {"scope": check_scope(c, checks),
-                    "report": (f"{c.ad}/CODE_REVIEW.md, must-fix finding(s) {ids}: each "
-                               "one's `### <id>` block says what is wrong with the check")}
-        return must_fix(c, f"{c.ad}/review/pass-{p['n']}/corrections.md", f"pass-{p['n']}",
-                        f"pass {p['n']} left {len(rows)} must-fix finding(s) open",
-                        checks=spec, coder=len(checks) < len(rows))
-    sec = c.last(("security-reviewer", "security-reviewer-sensitive"), after=after)
-    if sec is None:
-        return security_spawn(c)
-    data = sec["data"]
-    if _int(data.get("must_fix")) or _int(data.get("pre_existing")):
-        verify = c.last("review-judge", after=sec["seq"], mode="security-verify")
-        if verify is None:
-            return spawn(c, "review-judge", "security-verify",
-                         rule="the judge verifies every High or Medium security finding")
-        if confirmed_security(c) and not spent_out:
-            return must_fix(c, f"{c.ad}/review/security-corrections.md",
-                            f"security-{sec['n']}", "the security review found a "
-                            "confirmed must-fix finding")
+    security_open = bool(verify) and bool(confirmed_security(c))
+    if (rows or security_open) and not spent_out:
+        return review_correction(c, p, rows, sec if security_open else None)
+    leads = unreviewed_leads(c, p)
+    if leads:
+        return spawn_security(c, [], leads, "the panel passed the security review leads "
+                              "it had not seen: it checks them")
     return None
+
+
+def review_correction(c, p, rows, sec):
+    """One correction for pass p's open must-fix rows and, when `sec` is given,
+    the security review's confirmed must-fix findings: one round for both."""
+    checks = [r for r in rows if _category(r) == "acceptance-check"]
+    spec = None
+    if checks:  # a finding about a check goes to the tester, never the coder
+        ids = ", ".join(r["ID"].strip() for r in checks)
+        spec = {"scope": check_scope(c, checks),
+                "report": (f"{c.ad}/CODE_REVIEW.md, must-fix finding(s) {ids}: each "
+                           "one's `### <id>` block says what is wrong with the check")}
+    files, why = [], []
+    if len(checks) < len(rows):
+        files.append(f"{c.ad}/review/pass-{p['n']}/corrections.md")
+    if rows:
+        why.append(f"pass {p['n']} left {len(rows)} must-fix finding(s) open")
+    if sec:
+        files.append(f"{c.ad}/review/security-corrections.md")
+        why.append("the security review found a confirmed must-fix finding")
+    tag = f"pass-{p['n']}" if rows else f"security-{sec['n']}"
+    return must_fix(c, " and ".join(files) or f"{c.ad}/CODE_REVIEW.md", tag,
+                    " and ".join(why), checks=spec, coder=bool(files))
+
+
+def panel_leads(c):
+    """CODE_REVIEW.md's security leads, for the security reviewer's brief."""
+    return (art.find_section(_read(c.ad / "CODE_REVIEW.md"), "Security leads")
+            or "").strip() or "none"
+
+
+PASSED_LEAD = "passed to the security review"
+
+
+def unreviewed_leads(c, p):
+    """The leads CODE_REVIEW.md passes to the security review that no security
+    run of pass p was given, as one text; "" when there are none."""
+    given = " ".join(" ".join(str(r.get("sets", {}).get("leads", "")).split())
+                     for r in c.recs(SECURITY, after=p["seq"], ok=False))
+    lines = [ln.strip() for ln in panel_leads(c).splitlines()
+             if PASSED_LEAD in ln and " ".join(ln.split()) not in given]
+    return "\n".join(lines)
+
+
+def spawn_security(c, jobs, leads, rule):
+    """Spawn `jobs` and the security reviewer, given `leads`, in one message."""
+    agent = cmd_checks.security_agent(c.ad)
+    jobs = jobs + [(agent.split(":", 1)[1], None, {"leads": leads}, agent)]
+    result = spawn_many(c, jobs, rule)
+    c.p6["security_run"] = c.p6.get("security_run", 0) + 1
+    return result
 
 
 def revotes(c, p, judge):
@@ -1348,18 +1411,6 @@ def unvoted(pass_dir, slot, ids):
     except art.ArtifactError:
         return list(ids)  # a malformed votes file counts as no vote
     return [m.split()[0] for m in missing]
-
-
-def security_spawn(c):
-    agent = cmd_checks.security_agent(c.ad)
-    worker = agent.split(":", 1)[1]
-    leads = (art.find_section(art.read(c.ad / "CODE_REVIEW.md"), "Security leads")
-             or "").strip() or "none"
-    result = spawn(c, worker, sets={"leads": leads}, agent=agent,
-                   rule="the panel left nothing open: the security review covers the "
-                        "whole change")
-    c.p6["security_run"] = c.p6.get("security_run", 0) + 1
-    return result
 
 
 def confirmed_security(c):
