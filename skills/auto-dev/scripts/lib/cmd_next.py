@@ -102,6 +102,10 @@ MAX_EMITS = 3
 CHECKPOINT_EVENTS = 80  # about 35 workers; tune on the fixture repo
 SLOTS = ("R1", "R2", "R3")
 SECURITY = ("security-reviewer", "security-reviewer-sensitive")
+# A correction this small is re-reviewed by one code reviewer (R1); the other
+# two re-vote on its lone findings (cmd_review.vote_plan).
+SMALL_FIX_LINES = 40
+SMALL_FIX_FILES = 3
 JIRA_DEFAULTS = {"in_progress": "In Progress", "in_review": "In Review", "done": "Done"}
 # Workers whose results drive the build-verify loop (Phases 4-6).
 LOOP = ("verifier", "coder", "cleanup", "acceptance-tester", "planner")
@@ -1124,9 +1128,34 @@ def open_correction(c):
             mark_committed(c, "the correction after the commit changed nothing")
             return None
         return start_pass(c, "after-commit", None, "the correction is verified: the "
-                          "panel reviews it before it is committed")
+                          "panel reviews it before it is committed",
+                          slots=re_review_slots(c, "HEAD"))
     return start_pass(c, "review-fix", snapshot_files(c, corr),
-                      "the correction is verified: the panel reviews the files it changed")
+                      "the correction is verified: the panel reviews the files it changed",
+                      slots=re_review_slots(c, corr.get("snapshot")))
+
+
+def re_review_slots(c, since):
+    """The code reviewers for a correction's re-review: R1 alone when the
+    working tree differs from `since` (a tree or a commit) in at most
+    SMALL_FIX_FILES files and SMALL_FIX_LINES changed lines, else all three."""
+    if not since:
+        return SLOTS
+    if not c.readonly:
+        cmd_checks.git_add_intent(c.wt)
+    to = cmd_review.print_tree(c.wt) if since != "HEAD" else None
+    out = git(c.wt, "diff", "--numstat", since, *([to] if to else []))
+    files, lines = 0, 0
+    for row in out.splitlines():
+        added, removed, path = (row.split("\t", 2) + ["", "", ""])[:3]
+        if not path or path.startswith(".auto-dev/"):
+            continue
+        files += 1
+        if not added.isdigit() or not removed.isdigit():  # a binary file
+            return SLOTS
+        lines += int(added) + int(removed)
+    small = files <= SMALL_FIX_FILES and lines <= SMALL_FIX_LINES
+    return SLOTS[:1] if small else SLOTS
 
 
 def first_of(c, corr):
@@ -1218,22 +1247,37 @@ def check_fresh(c, *extra):
     return (err or out).strip() if code else ""
 
 
-def start_pass(c, scope, files, rule, since=None):
+def start_pass(c, scope, files, rule, since=None, slots=SLOTS):
     n = c.p6.get("review_pass", 0) + 1
     c.would(f"start code-review pass {n} ({scope}) and spawn the panel", rule)
     c.p6["review_pass"] = n
-    (c.ad / "review" / f"pass-{n}").mkdir(parents=True, exist_ok=True)
+    pass_dir = c.ad / "review" / f"pass-{n}"
+    pass_dir.mkdir(parents=True, exist_ok=True)
+    cmd_review.write_panel(pass_dir, slots)
     cmd_checks.git_add_intent(c.wt)
     tree = cmd_review.print_tree(c.wt)
-    p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq()}
+    p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq(),
+         "panel": list(slots)}
     if since:
         p["since"] = since
     c.p6["passes"].append(p)
     c.dirty = True
     jobs = [("code-reviewer", "review", reviewer_sets(scope, files, slot, since))
-            for slot in SLOTS]
+            for slot in slots]
+    if len(slots) < len(SLOTS):
+        rule += f" (a small correction: reviewer {', '.join(slots)} alone)"
     return spawn_security(c, jobs, panel_leads(c), rule + "; the security review runs "
-                          "alongside the panel, on the same tree")
+                          "alongside the panel, on the same tree", focus=focus_text(p))
+
+
+def focus_text(p):
+    """The security reviewer's focus: what a re-review pass's correction changed,
+    or `none` (the whole change, with /security-review) on a first or outside pass."""
+    if p["scope"] == "review-fix":
+        return "the files a correction changed: " + (", ".join(p["files"]) or "none")
+    if p["scope"] == "after-commit":
+        return "the uncommitted correction (the working tree against HEAD)"
+    return "none"
 
 
 def reviewer_sets(scope, files, slot, since=None):
@@ -1251,7 +1295,7 @@ def review_step(c, p):
     for whatever both left open, or a security run on leads it has not seen."""
     reviews = c.recs("code-reviewer", after=p["seq"], mode="review", ok=False)
     respawn, usable = [], []
-    for slot in SLOTS:
+    for slot in p.get("panel", SLOTS):
         mine = [r for r in reviews if r.get("sets", {}).get("reviewer") == slot]
         if any(r["status"] == "ok" for r in mine):
             if "## Findings" in _read(c.ad / "review" / f"pass-{p['n']}" / f"{slot}.md"):
@@ -1269,7 +1313,8 @@ def review_step(c, p):
         return spawn_security(c, jobs, leads or "none",
                               "a code reviewer or the security reviewer failed: it gets "
                               "one re-spawn" if secs or jobs else
-                              "the security review covers the whole change")
+                              "the security review covers the whole change",
+                              focus=focus_text(p))
     if jobs:
         return spawn_many(c, jobs, "a code reviewer failed: it gets one re-spawn")
     sec = secs[-1]
@@ -1304,7 +1349,7 @@ def review_step(c, p):
     leads = unreviewed_leads(c, p)
     if leads:
         return spawn_security(c, [], leads, "the panel passed the security review leads "
-                              "it had not seen: it checks them")
+                              "it had not seen: it checks them", focus=focus_text(p))
     return None
 
 
@@ -1350,10 +1395,12 @@ def unreviewed_leads(c, p):
     return "\n".join(lines)
 
 
-def spawn_security(c, jobs, leads, rule):
-    """Spawn `jobs` and the security reviewer, given `leads`, in one message."""
+def spawn_security(c, jobs, leads, rule, focus="none"):
+    """Spawn `jobs` and the security reviewer, given `leads` and `focus`, in one
+    message."""
     agent = cmd_checks.security_agent(c.ad)
-    jobs = jobs + [(agent.split(":", 1)[1], None, {"leads": leads}, agent)]
+    jobs = jobs + [(agent.split(":", 1)[1], None, {"leads": leads, "focus": focus},
+                    agent)]
     result = spawn_many(c, jobs, rule)
     c.p6["security_run"] = c.p6.get("security_run", 0) + 1
     return result
@@ -1467,6 +1514,14 @@ def check_scope(c, rows):
 
 
 def scope_text(p):
+    panel = p.get("panel", SLOTS)
+    if len(panel) < len(SLOTS):
+        return (_scope_text(p) + f"; a small correction, so {', '.join(panel)} reviewed "
+                "it alone, and the others re-vote on its lone findings")
+    return _scope_text(p)
+
+
+def _scope_text(p):
     if p["scope"] == "review-fix":
         return "only the files a correction changed: " + (", ".join(p["files"]) or "none")
     if p["scope"] == "outside":

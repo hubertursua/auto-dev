@@ -199,15 +199,18 @@ class NextCase(RunCase):
         self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
         return out, jobs
 
-    def reviewers(self, security=None):
-        """The panel and the security reviewer, spawned in one message: answer
-        the security reviewer with `security` (text, next, must_fix,
-        pre_existing; clean by default) and return the panel's jobs."""
+    def reviewers(self, security=None, count=3):
+        """The panel (`count` code reviewers) and the security reviewer, spawned
+        in one message: answer the security reviewer with `security` (text,
+        next, must_fix, pre_existing; clean by default) and return the panel's
+        jobs."""
         out = self.next(0)
         jobs = self.spawned(out)
         sec = [j for j in jobs if j[0].startswith("security-reviewer")]
         panel = [j for j in jobs if j[0] == "code-reviewer"]
-        self.assertEqual((len(panel), len(sec), len(jobs)), (3, 1, 4), json.dumps(out))
+        self.assertEqual((len(panel), len(sec), len(jobs)), (count, 1, count + 1),
+                         json.dumps(out))
+        self.security_job = sec[0]
         text, nxt, must_fix, pre = security or (SECURITY_REVIEW, "CLEAN", "0", "0")
         (self.dir / "SECURITY_REVIEW.md").write_text(text.format(tree=self.tree()))
         self.answer(*sec[0], nxt, must_fix=must_fix, pre_existing=pre)
@@ -217,10 +220,11 @@ class NextCase(RunCase):
         return next(b for b in self.state()["briefs"]
                     if b["worker"] == worker and b["n"] == n).get("mode")
 
-    def panel(self, review=None, judged="CLEAN", corrections=None, security=None):
+    def panel(self, review=None, judged="CLEAN", corrections=None, security=None,
+              count=3):
         """The three reviewers and the security reviewer, then the judge, who
         writes `review`. Returns the judge's security-verify job, if spawned."""
-        _, jobs = self.reviewers(security)
+        _, jobs = self.reviewers(security, count)
         pass_dir = self.dir / "review" / f"pass-{self.state()['phase6']['review_pass']}"
         for w, n in jobs:
             slot = self.sets(w, n)["reviewer"]
@@ -237,8 +241,8 @@ class NextCase(RunCase):
         self.answer(*consolidate[0], judged, must_fix_open=str(int(is_open)), revote="0")
         return [j for j in jobs if j not in consolidate]
 
-    def review_clean(self):
-        self.assertEqual(self.panel(), [])
+    def review_clean(self, count=3):
+        self.assertEqual(self.panel(count=count), [])
 
     def write_return(self, worker, n, data):
         (self.dir / "returns" / f"{worker}-{n}.json").write_text(json.dumps(
@@ -668,6 +672,11 @@ class ShipTest(NextCase):
         self.resume()
 
     def test_review_must_fix_runs_a_correction_then_reviews_its_files(self):
+        self.correction_re_review()
+
+    def correction_re_review(self):
+        """Pass 1's must-fix C1, its one-line correction, then pass 2 spawned
+        (R1 alone): returns pass 2's reviewer jobs."""
         self.ship_ready()
         out, jobs = self.reviewers()
         for w, n in jobs:
@@ -690,10 +699,62 @@ class ShipTest(NextCase):
         out, jobs = self.expect("cleanup", "GREEN")
         self.assertEqual(self.sets(*jobs[0]), {"scope": "review-fix", "files": "sort.ts"})
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        out, jobs = self.reviewers()
+        out, jobs = self.reviewers(count=1)  # a one-line correction: R1 alone
+        self.assertEqual(self.sets(*jobs[0])["reviewer"], "R1")
         self.assertEqual(self.sets(*jobs[0])["scope"], "review-fix")
         self.assertEqual(self.sets(*jobs[0])["files"], "sort.ts")
+        self.assertEqual(self.sets(*self.security_job)["focus"],
+                         "the files a correction changed: sort.ts")
         self.assertEqual(self.state()["phase6"]["review_pass"], 2)
+        self.assertEqual((self.dir / "review" / "pass-2" / "PANEL").read_text(), "R1\n")
+        return jobs
+
+    def test_a_larger_correction_gets_the_whole_panel(self):
+        self.ship_ready()
+        _, jobs = self.reviewers()
+        self.assertEqual(self.sets(*self.security_job)["focus"], "none")
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
+             ).write_text(r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
+            "missing due date\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text(
+            "".join(f"export const s{i} = {i};\n" for i in range(41)))
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.expect("cleanup", "GREEN")
+        self.expect("verifier", "ALL_MET", tree="x", corrections="0")
+        self.reviewers()  # 41 changed lines: three reviewers
+        self.assertFalse((self.dir / "review" / "pass-2" / "PANEL").exists())
+
+    def test_a_lone_finding_of_a_one_reviewer_pass_is_re_voted_by_the_others(self):
+        jobs = self.correction_re_review()
+        pass_dir = self.dir / "review" / "pass-2"
+        (pass_dir / "R1.md").write_text(r_report("- empty list indexed"))
+        self.answer(*jobs[0], "REVIEWED", findings="1", leads="0")
+        review = CODE_REVIEW.replace("reviewers finished: 3/3", "reviewers finished: 1/1"
+                                     ).replace("Latest pass: 1", "Latest pass: 2").replace(
+            "| open |\n\n## Pending", "| fixed (pass 2) |\n\n## Pending").replace(
+            "1 open · 0 fixed", "0 open · 1 fixed").replace(
+            "| C6 | blank title saved | `src/save.ts:18` | tests | R2 | R1, R3 | |\n", "")
+        (self.dir / "CODE_REVIEW.md").write_text(review.format(tree=self.tree()))
+        self.expect("review-judge", "REVOTE", must_fix_open="0", revote="1")
+        _, jobs = self.expect("code-reviewer")
+        self.assertEqual(sorted(self.sets(*j)["reviewer"] for j in jobs), ["R2", "R3"])
+        for w, n in jobs:
+            (pass_dir / f"VOTES-{self.sets(w, n)['reviewer']}.md").write_text(
+                "| Finding | Vote | Reason |\n|---|---|---|\n| C4 | agree | reachable |\n")
+            self.answer(w, n, "VOTED", findings="1", leads="0")
+        out, jobs = self.expect("coder")
+        self.assertIn("pass-2-c4", out["BUDGET"])
+        text = (self.dir / "CODE_REVIEW.md").read_text()
+        self.assertIn("| C4 | empty list indexed | `src/list.ts:42` | correctness | 3/3 "
+                      "(re-vote) | Medium | open |", text)
+        self.assertIn("**Overall confidence: High** — reviewers finished: 1/1", text)
 
     def to_body(self, extra=(), first=(), answers=("Open PR",)):
         """Run S3 from the review to the PR body; returns (sha, url, out, body)."""
@@ -1014,7 +1075,7 @@ class ShipTest(NextCase):
         self.expect("cleanup", "GREEN")
         self.spec_eval()
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        self.review_clean()
+        self.review_clean(count=1)  # a one-line correction
         self.assertIn("commit: run", self.next(0)["ACTION"])
         r = self.autodev("commit", "--message", "fix: x", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1775,8 +1836,10 @@ class CiTest(NextCase):
         out, jobs = self.expect("cleanup", "GREEN")
         self.assertEqual(self.sets(*jobs[0]), {"scope": "after-commit"})
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        out, jobs = self.reviewers()
+        out, jobs = self.reviewers(count=1)
         self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
+        self.assertEqual(self.sets(*self.security_job)["focus"],
+                         "the uncommitted correction (the working tree against HEAD)")
 
     def test_red_ci_with_no_round_left_stops_and_names_the_check(self):
         state = self.state()

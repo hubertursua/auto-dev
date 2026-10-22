@@ -205,7 +205,15 @@ uncommitted working tree, and you have seen the results:
    security run of its own.
 
 When both reviews leave must-fix findings open, one correction fixes them all,
-for one round of the budget, and the next pass reviews it.
+for one round of the budget, and the next pass reviews it. That re-review is
+sized to the correction. A small one (at most 40 changed lines in at most 3
+files) gets one code reviewer, and the other two re-vote on its lone findings,
+so a must-fix finding still needs 2 of 3 votes. A larger one gets the full
+panel. Either way, the code reviewers skip `/code-review` on a re-review, and the
+security reviewer skips `/security-review` and re-checks only what the
+correction changed, carrying its earlier findings forward. The first pass, and
+a pass over changes made outside the pipeline, still run both skills on the
+whole change.
 
 A **rubric** decides what must be fixed and what is noise:
 
@@ -701,6 +709,20 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 4.4
+
+- **Re-reviews are sized to the correction.** A pass that reviews a correction
+  used to run the full panel and both nested skills (`/code-review` three
+  times, `/security-review` once) whatever the correction's size. Now a
+  correction of at most 40 changed lines in at most 3 files gets one code
+  reviewer (R1), and R2 and R3 re-vote on its lone findings. Re-review passes
+  skip `/code-review`, and the security reviewer gets a `focus` and re-checks
+  only the correction. `CODE_REVIEW.md`'s header says `reviewers finished:
+  1/1` for a one-reviewer pass, and `review/pass-<n>/PANEL` names its reviewer.
+- **A run in flight resumes.** A pass started on 4.4 or earlier has no `panel`
+  in state and no `PANEL` file, so it is treated as a three-reviewer pass, as
+  before. Every pass started on 4.5 is sized.
 
 ## Upgrading from 4.3
 

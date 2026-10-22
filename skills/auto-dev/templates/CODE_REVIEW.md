@@ -1,7 +1,7 @@
 <!-- auto-dev template: CODE_REVIEW.md (strict). Copy everything below this comment, filling in every <...>. -->
 # Code review — <branch>
 
-**Overall confidence: <High | Medium | Low | provisional (re-votes pending)>** — <reviewers finished: n/3; coverage: full | partial; must-fix decided 2–1: <IDs | none>>
+**Overall confidence: <High | Medium | Low | provisional (re-votes pending)>** — <reviewers finished: n/3 (n/1 when the pass called one reviewer); coverage: full | partial; must-fix decided 2–1: <IDs | none>>
 Latest pass: <n> — scope: <scope>
 Tree: <hash from check-fresh.py --print-tree for this pass>
 Must-fix: <open> open · <fixed> fixed   ·   Advisory: <n>   ·   Noise: <n>   ·   Dropped (pre-existing): <n>

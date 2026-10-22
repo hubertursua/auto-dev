@@ -41,7 +41,11 @@ You are the REVIEW JUDGE for code-review pass {{pass}}. Work inside the worktree
 {{worktree}}. Reviewers {{reviewers}} reviewed this scope independently: {{scope}}. Their
 reports are in {{artifact_dir}}/review/pass-{{pass}}/.
 Read every one. <Pass 2 or later: also read the previous
-{{artifact_dir}}/CODE_REVIEW.md.>
+{{artifact_dir}}/CODE_REVIEW.md.> When the scope says one reviewer reviewed a
+small correction alone, the header's count is `reviewers finished: <n>/1`, and
+each of its findings that is correctness, tests or acceptance-check is a lone
+finding: put it under "Pending re-vote", with the other two slots as its
+re-voters.
 
 1. Merge duplicates. The same root cause at the same place is one finding,
    however each reviewer worded it. List which reviewers raised it.

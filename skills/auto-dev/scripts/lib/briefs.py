@@ -34,7 +34,7 @@ AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "tick
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
           "report", "blocked", "failing", "question", "corrections_file", "leads"}
 OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
-            "previous_issues", "earlier"}
+            "previous_issues", "earlier", "focus"}
 # fix_file is AUTO for the reviewers, who write it; OPTIONAL for the authors.
 AUTO_FOR = {"fix_file": {"define-reviewer", "plan-reviewer"}}
 # tree is AUTO (the tree at spawn time) for the security reviewers; the judge

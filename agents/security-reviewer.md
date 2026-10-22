@@ -44,6 +44,11 @@ The change is everything since the branch left its base, committed or not:
 `git -C {{worktree}} diff {{cut}}`, where {{cut}} is the commit the branch was cut from. New files are marked
 intent-to-add, so the diff shows them.
 
+Focus: {{focus}}. When it is not `none`, this run re-checks a correction
+that the previous runs reviewed the rest of: skip step 1, review what the focus
+names and how the change's untrusted input reaches it, and carry every earlier
+row forward (step 5).
+
 1. Run the /security-review skill with the Skill tool. Tell it the base branch
    is {{base}}, and that uncommitted changes are part of the change. Its findings
    are your starting point, not your answer.

@@ -46,9 +46,12 @@ Assume there ARE bugs and go looking for them.
 
 Scope: the scope `{{scope}}` names (Scopes, below).
 
-1. Run the /code-review skill with the Skill tool at effort xhigh on that scope:
-   args `xhigh` for the uncommitted working tree, or `xhigh <path> …` for a list
-   of files. Its findings are your starting point, not your answer.
+1. In scope `first` or `outside`, run the /code-review skill with the Skill
+   tool at effort xhigh on that scope: args `xhigh` for the uncommitted working
+   tree, or `xhigh <path> …` for a list of files. Its findings are your
+   starting point, not your answer. In scope `review-fix` or `after-commit`
+   (a correction's re-review), skip the skill: the correction is small, and
+   step 2 covers it.
 2. Then go further yourself. Read the changed files and their tests,
    {{artifact_dir}}/SPEC.md, {{artifact_dir}}/IMPLEMENTATION.md, and the binding rules
    ({{binding_rules}}). Try to break the change:
