@@ -490,7 +490,9 @@ def not_ok(c):
     latest = log[-1]
     if latest.get("status") == "ok":
         return None
-    same = [e for e in log if e["worker"] == latest["worker"]]
+    # By mode too: the judge's consolidate and security-verify run in parallel.
+    same = [e for e in log if e["worker"] == latest["worker"]
+            and e.get("mode") == latest.get("mode")]
     twice = len(same) >= 2 and same[-2].get("status") != "ok"
     if twice:
         statuses = {latest["status"], same[-2].get("status")}
@@ -1249,7 +1251,8 @@ def check_fresh(c, *extra):
 
 def start_pass(c, scope, files, rule, since=None, slots=SLOTS):
     n = c.p6.get("review_pass", 0) + 1
-    c.would(f"start code-review pass {n} ({scope}) and spawn the panel", rule)
+    c.would(f"start code-review pass {n} ({scope}) and spawn the panel and the "
+            "security reviewer", rule)
     c.p6["review_pass"] = n
     pass_dir = c.ad / "review" / f"pass-{n}"
     pass_dir.mkdir(parents=True, exist_ok=True)
@@ -1344,8 +1347,10 @@ def review_step(c, p):
     spent_out = bool(c.p6.get("exhausted"))  # open findings go to the PR gate
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(verify) and bool(confirmed_security(c))
-    if (rows or security_open) and not spent_out:
-        return review_correction(c, p, rows, sec if security_open else None)
+    if rows or security_open:  # with no round left, they go to the PR gate
+        if not spent_out:
+            return review_correction(c, p, rows, sec if security_open else None)
+        return None
     leads = unreviewed_leads(c, p)
     if leads:
         return spawn_security(c, [], leads, "the panel passed the security review leads "
@@ -1387,12 +1392,43 @@ PASSED_LEAD = "passed to the security review"
 
 def unreviewed_leads(c, p):
     """The leads CODE_REVIEW.md passes to the security review that no security
-    run of pass p was given, as one text; "" when there are none."""
+    run of pass p was given, as one text; "" when there are none. A lead marked
+    covered by a finding the judge refuted counts as passed on."""
     given = " ".join(" ".join(str(r.get("sets", {}).get("leads", "")).split())
                      for r in c.recs(SECURITY, after=p["seq"], ok=False))
-    lines = [ln.strip() for ln in panel_leads(c).splitlines()
-             if PASSED_LEAD in ln and " ".join(ln.split()) not in given]
-    return "\n".join(lines)
+    refuted = refuted_security(c)
+    items = []
+    for item in lead_items(panel_leads(c)):
+        covered = re.search(r"covered by (S\d+)", item)
+        if PASSED_LEAD not in item and not (covered and covered.group(1) in refuted):
+            continue
+        if "<lead>" in item or " ".join(item.split()) in given:
+            continue  # the template's placeholder, or seen already
+        items.append(item)
+    return "\n".join(items)
+
+
+def lead_items(text):
+    """The `- ` list items of a Security leads section, each with its
+    continuation lines."""
+    items = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("- "):
+            items.append(line.strip())
+        elif line.strip() and items:
+            items[-1] += "\n" + line.strip()
+    return items
+
+
+def refuted_security(c):
+    """The IDs of SECURITY_REVIEW.md's findings the judge refuted."""
+    try:
+        _, rows = art.first_table(art.find_section(_read(c.ad / "SECURITY_REVIEW.md"),
+                                                   "Findings") or "",
+                                  ("ID", "Verified"), "SECURITY_REVIEW.md")
+    except art.ArtifactError:
+        return set()
+    return {r["ID"].strip() for r in rows if r["Verified"].strip().lower() == "refuted"}
 
 
 def spawn_security(c, jobs, leads, rule, focus="none"):

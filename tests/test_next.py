@@ -913,7 +913,7 @@ class ShipTest(NextCase):
         self.spec_eval()
         self.assertIn("pr gate", self.next(5)["QUESTION"])  # seen now: no third run
 
-    def test_a_pass_started_without_the_security_review_runs_it_after_the_judge(self):
+    def test_a_pass_started_without_the_security_review_runs_it_before_the_judge(self):
         self.ship_ready()  # as a run started before 4.4.0 left it
         _, jobs = self.reviewers()
         state = self.state()
@@ -929,6 +929,94 @@ class ShipTest(NextCase):
         (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
         _, jobs = self.expect("security-reviewer-sensitive")
         self.assertEqual(self.sets(*jobs[0])["leads"], "none")
+
+    def old_pass_judged(self, review):
+        """A pass started before 4.4.0, with the panel and the judge done and
+        no security review yet."""
+        self.ship_ready()
+        self.panel(review)
+        state = self.state()  # as if the security reviewer had not run yet
+        state["log"] = [e for e in state["log"]
+                        if not e["worker"].startswith("security-reviewer")]
+        state["briefs"] = [b for b in state["briefs"]
+                           if not b["worker"].startswith("security-reviewer")]
+        state["phase6"]["security_run"] = 0
+        self.write_state(state)
+        (self.dir / "SECURITY_REVIEW.md").unlink()
+
+    def test_a_pass_judged_before_4_4_gets_its_security_review_with_the_leads(self):
+        lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
+                "the security review")
+        self.old_pass_judged(CLEAN_REVIEW.replace("## Security leads\nnone",
+                                                  f"## Security leads\n{lead}"))
+        _, jobs = self.expect("security-reviewer-sensitive")
+        self.assertEqual(self.sets(*jobs[0])["leads"], lead)
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
+            tree=self.tree()))
+        self.answer(*jobs[0], "CLEAN", must_fix="0", pre_existing="0")
+        self.lint()
+        self.spec_eval()
+        self.assertIn("pr gate", self.next(5)["QUESTION"])  # the lead was given: no rerun
+
+    def test_with_no_round_left_open_findings_go_to_the_gate_not_to_a_leads_run(self):
+        self.ship_ready()
+        state = self.state()
+        state["budget"]["remaining"] = 0
+        self.write_state(state)
+        lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
+                "the security review")
+        review = OPEN_REVIEW.replace("## Security leads\nnone", f"## Security leads\n{lead}")
+        jobs = self.panel(review, "MUST_FIX",
+                          corrections="# Required changes\n1. C1: guard the sort in "
+                                      "src/sort.ts against a missing due date\n",
+                          security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
+        (self.dir / "review" / "security-corrections.md").write_text(
+            "# Required changes\n1. S3: in src/due.ts, check that the caller owns the todo "
+            "before its date is stored\n")
+        self.answer(*jobs[0], "VERIFIED", must_fix_open="1", revote="0")
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
+
+    def test_a_wrapped_lead_is_sent_whole_and_a_placeholder_is_not_a_lead(self):
+        self.ship_ready()
+        leads = ("- `src/due.ts:9` — the owner is not checked when a todo's date\n"
+                 "  is moved (raised by R2) → passed to the security review\n"
+                 "- `path:line` — <lead> (raised by R<k>) → passed to the security review\n"
+                 "- `src/due.ts:3` — dates are not escaped (raised by R1) → covered by S2")
+        refuted = SECURITY_REVIEW.replace("| Medium | confirmed |", "| Medium | refuted |")
+        self.panel(CLEAN_REVIEW.replace("## Security leads\nnone",
+                                        f"## Security leads\n{leads}"),
+                   security=(refuted, "CLEAN", "0", "0"))
+        _, jobs = self.expect("security-reviewer-sensitive")
+        sent = self.sets(*jobs[0])["leads"]
+        self.assertIn("`src/due.ts:9` — the owner is not checked when a todo's date", sent)
+        self.assertIn("is moved (raised by R2)", sent)
+        self.assertIn("covered by S2", sent)  # S2 was refuted: the lead stands
+        self.assertNotIn("<lead>", sent)
+
+    def test_the_judge_s_two_modes_fail_apart(self):
+        self.ship_ready()
+        _, jobs = self.reviewers(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
+             ).write_text(r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        _, jobs = self.expect("review-judge")
+        verify = next(j for j in jobs if self.mode(*j) == "security-verify")
+        consolidate = next(j for j in jobs if j != verify)
+        self.answer(*verify, "", status="blocked")
+        self.answer(*consolidate, "CLEAN", must_fix_open="0", revote="0")
+        _, jobs = self.expect("review-judge")
+        brief = (self.dir / "briefs" / f"review-judge-{jobs[0][1]}.md").read_text()
+        self.assertIn("mode: security-verify", brief)
+        self.assertIn("returned `blocked`, and the run spawned you again once", brief)
+        self.answer(*jobs[0], "", status="blocked")
+        out = self.next(4)
+        self.assertIn("stopped on purpose twice running", " ".join(out["REPORT"]))
 
     def test_a_security_reviewer_that_fails_beside_the_panel_is_respawned_once(self):
         self.ship_ready()

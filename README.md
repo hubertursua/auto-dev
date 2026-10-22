@@ -736,8 +736,9 @@ rules for changing a script are in `CLAUDE.md`.
   review hasn't seen goes to the next pass's security review, or to a security
   run of its own when nothing else is open.
 - **A run in flight resumes.** A review pass started on 4.3 or earlier, whose
-  panel ran without the security reviewer, gets its security review after the
-  judge, as before. Every new pass uses the new order.
+  panel ran without the security reviewer, gets its security review as soon as
+  `next` sees it missing: before the judge if the panel was still running,
+  after it otherwise. Every new pass uses the new order.
 
 ## Upgrading from 4.0
 
