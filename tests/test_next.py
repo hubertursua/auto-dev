@@ -1165,6 +1165,40 @@ class PublishTest(NextCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("uses a condition or finding ID: S1", r.stdout)
 
+    def test_a_scratch_path_the_body_quotes_passes_but_one_written_in_is_refused(self):
+        # The verifier's evidence ran a formatter over `.` and named a .auto-dev/
+        # file in its command: generate quotes both word for word, and nobody may
+        # edit them, so the lint skips them. A .auto-dev/ path in the Summary
+        # still fails.
+        sha = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        state = self.state()
+        state["phase6"]["verified_sha"] = sha
+        self.write_state(state)
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "CS1.txt").write_text(
+            "Expected: the format check passes\n"
+            "Command: git check-ignore -v .auto-dev/SPEC.md; npx prettier --check .\n"
+            "Result: passed\nOutput (last lines):\n  [warn] .auto-dev/SPEC.md\n")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
+            tree=self.tree()))
+        self.spec_eval()
+        self.lint()
+        r = self.autodev("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body = self.dir / "pr-body.md"
+        text = body.read_text()
+        self.assertIn("[warn] .auto-dev/SPEC.md", text)
+        written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
+        body.write_text(written)
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body.write_text(written.replace("Todos can carry a due date.",
+                                        "See .auto-dev/SPEC.md.", 1))
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("names a .auto-dev/ path", r.stdout)
+
     def test_a_finding_s_plain_words_stay_in_its_own_block(self):
         review = OPEN_REVIEW.replace("## Pending re-vote", (
             "### C1 — null due date crashes sort\nTrigger path: sorting a todo with no date\n"

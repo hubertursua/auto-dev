@@ -123,9 +123,10 @@ ID_SOURCES = ("SPEC.md", "acceptance/MANIFEST.md", "SPEC_EVAL.md", "CODE_REVIEW.
               "SECURITY_REVIEW.md")
 ID_USE_RE = re.compile(rf"(?<![\w/.-])({ID_FORM})(?![\w-])")
 # A region the PR description quotes word for word (cmd_pr.QUOTED). Its test
-# names, commands and output may carry an ID the lint would refuse, and nobody
-# may edit them, so the ID, term and tier checks skip a region generate()
-# recorded (phase6.quoted holds each one's digest). The other checks still run.
+# names, commands and output may carry an ID or a .auto-dev/ path the lint would
+# refuse, and nobody may edit them, so the ID, .auto-dev/ path, term and tier
+# checks skip a region generate() recorded (phase6.quoted holds each one's
+# digest). The other checks still run.
 QUOTED_RE = re.compile(r"<!-- auto-dev:quoted -->\n.*?^ *<!-- /auto-dev:quoted -->$",
                        re.MULTILINE | re.DOTALL)
 # Terms only the pipeline uses; words like "verifier" are ordinary English.
@@ -582,9 +583,9 @@ def lint_body(text, state, checklist=True):
     elif verified and not verified.startswith(checked.group(1)):
         problems.append(f"`Checked at commit {checked.group(1)}` is not the verified "
                         f"commit {verified}")
-    if ARTIFACTS in text:
-        problems.append("names a .auto-dev/ path, which nobody else can open")
     prose = unquoted(text, state.get("phase6", {}).get("quoted", []))
+    if ARTIFACTS in prose:
+        problems.append("names a .auto-dev/ path, which nobody else can open")
     own = run_ids(state.get("artifact_dir"))
     found = sorted({m.group(1) for m in ID_USE_RE.finditer(prose)} & own)
     if found:
