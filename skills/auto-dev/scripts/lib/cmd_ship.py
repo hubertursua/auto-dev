@@ -582,9 +582,9 @@ def lint_body(text, state, checklist=True):
     elif verified and not verified.startswith(checked.group(1)):
         problems.append(f"`Checked at commit {checked.group(1)}` is not the verified "
                         f"commit {verified}")
-    if ARTIFACTS in text:
-        problems.append("names a .auto-dev/ path, which nobody else can open")
     prose = unquoted(text, state.get("phase6", {}).get("quoted", []))
+    if ARTIFACTS in prose:
+        problems.append("names a .auto-dev/ path, which nobody else can open")
     own = run_ids(state.get("artifact_dir"))
     found = sorted({m.group(1) for m in ID_USE_RE.finditer(prose)} & own)
     if found:

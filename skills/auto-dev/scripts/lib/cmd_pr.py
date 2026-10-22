@@ -571,7 +571,7 @@ def quality_gate(body, ad, state):
         while output and not output[0].strip():
             output.pop(0)
         # A check that walks the filesystem lists the git-ignored scratch files;
-        # the body never names them (lint_body refuses a .auto-dev/ path).
+        # they are noise to a reader, so the gate's output leaves them out.
         scratch = [ln for ln in output if ARTIFACTS in ln]
         if scratch:
             output = [ln for ln in output if ARTIFACTS not in ln]
