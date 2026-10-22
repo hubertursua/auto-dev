@@ -121,7 +121,8 @@ vote:
 - agree: the path is real and the failure happens. It must be fixed.
 - disagree: the path does not hold, the code already handles it, or it is not a
   correctness or test problem.
-Give one or two sentences of reason, citing file:line.
+Give one or two sentences of reason, citing file:line. A tests finding that
+lists several cases is voted as a whole, as the rubric's Votes paragraph says.
 
 Findings:
 {{findings}}

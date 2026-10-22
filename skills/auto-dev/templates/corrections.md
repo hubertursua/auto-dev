@@ -3,4 +3,4 @@
 1. <what the code must do and where, in your own words: never SPEC.md's wording>
    Where: `<path:line>` — the code that has to change
    Now: <what fails today: the failing assertion, the observed output, or the trigger path>
-   Test: <the test to add or restore, and what it asserts; one per case when it names several>
+   Test: <the test to add or restore, and what it asserts>

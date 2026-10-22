@@ -72,7 +72,9 @@ Read every one. <Pass 2 or later: also read the previous
    `Required change: <what the code must do and where, as a fix for the coder>`
    and `In plain words: <one sentence a reader of the PR understands>`. For a
    tests finding, the `Test:` and `Required change:` lines ask for a test of
-   every case it lists, so one correction closes the whole gap. A finding about a held-out
+   every case it lists, so one correction closes the whole gap. Keep each of
+   these lines on one line, cases separated by `;`: `autodev.py votes --apply`
+   copies only that line into corrections.md. A finding about a held-out
    acceptance check itself (it asserts the wrong thing, or can't fail when its
    condition is unmet) gets the category `acceptance-check` (the rubric): it
    goes to the acceptance tester's repair mode, never the coder.

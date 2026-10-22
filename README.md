@@ -211,7 +211,7 @@ A **rubric** decides what must be fixed and what is noise:
 - **Test gaps, whole.** A finding that a changed behavior is under-tested lists
   every case of it no test reaches (each config value no test varies, each
   boundary, each error path and message, each value the spec says must fail
-  closed), and the judge merges test findings about the same behavior into
+  closed), and the judge merges tests findings about the same behavior into
   one. The coder closes the whole gap in one correction, instead of one case
   per review pass. Only cases a real caller can reach count
   (`skills/auto-dev/templates/rubric.md`).
@@ -705,7 +705,7 @@ rules for changing a script are in `CLAUDE.md`.
 
 - **A test-gap finding asks for the whole gap.** A code reviewer who finds a
   changed behavior under-tested now lists every reachable case no test covers
-  in one finding, the judge merges test findings about the same behavior, and
+  in one finding, the judge merges tests findings about the same behavior, and
   the required change asks the coder for a test of each case. Before, each
   review pass tended to find the next missing case, and each one cost a full
   correction round and re-review. The rule is in
