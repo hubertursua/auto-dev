@@ -709,7 +709,9 @@ class ShipTest(NextCase):
         self.assertEqual((self.dir / "review" / "pass-2" / "PANEL").read_text(), "R1\n")
         return jobs
 
-    def test_a_larger_correction_gets_the_whole_panel(self):
+    def re_review_size(self, edits):
+        """Pass 1's must-fix C1, a correction that writes `edits` ({path: text}),
+        then pass 2: returns how many code reviewers it spawned."""
         self.ship_ready()
         _, jobs = self.reviewers()
         self.assertEqual(self.sets(*self.security_job)["focus"], "none")
@@ -723,20 +725,46 @@ class ShipTest(NextCase):
             "missing due date\n")
         self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
         _, jobs = self.expect("coder")
-        (self.worktree / "sort.ts").write_text(
-            "".join(f"export const s{i} = {i};\n" for i in range(41)))
+        for path, text in edits.items():
+            (self.worktree / path).write_text(text)
         self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
         self.expect("cleanup", "GREEN")
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        self.reviewers()  # 41 changed lines: three reviewers
+        jobs = [j for j in self.spawned(self.next(0)) if j[0] == "code-reviewer"]
+        self.assertEqual((self.dir / "review" / "pass-2" / "PANEL").exists(), len(jobs) == 1)
+        return len(jobs)
+
+    @staticmethod
+    def lines(n):
+        return "".join(f"export const s{i} = {i};\n" for i in range(n))
+
+    def test_a_correction_of_40_lines_gets_one_reviewer(self):
+        self.assertEqual(self.re_review_size({"sort.ts": self.lines(40)}), 1)
+
+    def test_a_correction_of_41_lines_gets_the_whole_panel(self):
+        self.assertEqual(self.re_review_size({"sort.ts": self.lines(41)}), 3)
+
+    def test_a_correction_in_4_files_gets_the_whole_panel(self):
+        self.assertEqual(self.re_review_size({f"f{i}.ts": self.lines(1)
+                                              for i in range(4)}), 3)
+
+    def test_a_small_correction_s_reviewer_failing_twice_widens_the_pass(self):
+        jobs = self.correction_re_review()
+        self.answer(*jobs[0], "", status="failed")
+        _, jobs = self.expect("code-reviewer", "", status="failed")  # its one re-spawn
+        self.assertEqual([self.sets(*j)["reviewer"] for j in jobs], ["R1"])
+        _, jobs = self.expect("code-reviewer")
+        self.assertEqual(sorted(self.sets(*j)["reviewer"] for j in jobs), ["R2", "R3"])
         self.assertFalse((self.dir / "review" / "pass-2" / "PANEL").exists())
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["panel"], ["R1", "R2", "R3"])
 
     def test_a_lone_finding_of_a_one_reviewer_pass_is_re_voted_by_the_others(self):
         jobs = self.correction_re_review()
         pass_dir = self.dir / "review" / "pass-2"
         (pass_dir / "R1.md").write_text(r_report("- empty list indexed"))
         self.answer(*jobs[0], "REVIEWED", findings="1", leads="0")
-        review = CODE_REVIEW.replace("reviewers finished: 3/3", "reviewers finished: 1/1"
+        # The judge miscounts the panel as 1/3: the PANEL file says 1/1.
+        review = CODE_REVIEW.replace("reviewers finished: 3/3", "reviewers finished: 1/3"
                                      ).replace("Latest pass: 1", "Latest pass: 2").replace(
             "| open |\n\n## Pending", "| fixed (pass 2) |\n\n## Pending").replace(
             "1 open · 0 fixed", "0 open · 1 fixed").replace(

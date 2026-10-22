@@ -584,7 +584,7 @@ def quality_gate(body, ad, state):
 
 def review_lines(ad, state):
     out = []
-    for name, label in (("CODE_REVIEW.md", "Code review (3 independent reviewers)"),
+    for name, label in (("CODE_REVIEW.md", "Code review (independent reviewers)"),
                         ("SECURITY_REVIEW.md", "Security review")):
         try:
             text = art.read(ad / name)

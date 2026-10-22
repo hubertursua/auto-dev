@@ -1305,6 +1305,14 @@ def review_step(c, p):
                 usable.append(slot)
         elif len(mine) == 1:
             respawn.append(slot)
+    if not usable and not respawn and len(p.get("panel", SLOTS)) < len(SLOTS):
+        # The one reviewer of a small correction failed twice: the others review it.
+        c.would(f"widen pass {p['n']} to the whole panel", "the one reviewer of a "
+                "small correction gave no usable report, twice")
+        respawn = [slot for slot in SLOTS if slot not in p["panel"]]
+        p["panel"] = list(SLOTS)
+        cmd_review.write_panel(c.ad / "review" / f"pass-{p['n']}", SLOTS)
+        c.dirty = True
     jobs = [("code-reviewer", "review", reviewer_sets(p["scope"], p["files"], slot,
                                                       p.get("since")))
             for slot in respawn]

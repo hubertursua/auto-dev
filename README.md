@@ -617,7 +617,7 @@ The PR body's quality-gate output leaves those lines out and says how many.
 | `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code; `INSTALLED` lists the checks `next` installed before Phase 5's cleanup; `AMBIGUOUS.md` lists a condition that reads two ways, for the Define agent |
 | `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and evidence tiers, and what it ran |
 | `lint/` | Phase 5 | one report per quality-gate check |
-| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes |
+| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes; `review/pass-<n>/PANEL` names the one reviewer of a small correction's re-review |
 | `fixes/` | Phases 2–3 | the Define and plan reviewers' FIX blocks |
 | `evidence/corrections.md` | Phase 5 | the verifier's required changes for the coder |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human blockers (`<ci\|human>-<n>.md`, for the coder), and the comments about a held-out check (`human-<n>-checks.md`, for the acceptance tester) |

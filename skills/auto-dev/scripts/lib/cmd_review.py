@@ -293,7 +293,7 @@ def apply_vote_files(path, text, pass_dir, pending, votes_expected=True):
     text = add_rows(text, "Must-fix", must)
     text = add_rows(text, "Advisory", advisory)
     text = clear_pending(text)
-    text = recount(text, decided_2_1)
+    text = recount(text, decided_2_1, len(called(pass_dir)))
     # Corrections first: it raises before writing if a Required change is missing,
     # so a failure leaves both files as they were.
     add_corrections(text, pass_dir / "corrections.md", coder, where)
@@ -388,7 +388,9 @@ def count_rows(text, name, status=None):
     return 0
 
 
-def recount(text, decided_2_1):
+def recount(text, decided_2_1, total=None):
+    """The header's counts and overall confidence, recomputed. `total` is how
+    many reviewers the pass called (its PANEL file); without it, the header's."""
     open_, fixed = count_rows(text, "Must-fix", "open"), count_rows(text, "Must-fix", "fixed")
     advisory, noise = count_rows(text, "Advisory"), count_rows(text, "Noise")
     head = art.header_line(text, "**Overall confidence")
@@ -398,7 +400,9 @@ def recount(text, decided_2_1):
         raise art.ArtifactError("CODE_REVIEW.md: the `**Overall confidence` line does "
                                 "not say `reviewers finished: <n>/<3 or 1>` and `coverage: "
                                 "full|partial`; re-spawn the judge")
-    finished, total = int(reviewers.group(1)), int(reviewers.group(2))
+    finished = int(reviewers.group(1))
+    total = total or int(reviewers.group(2))
+    finished = min(finished, total)
     full = coverage.group(1) == "full"
     prior = re.search(r"must-fix decided 2[–-]1:\s*([^>*\n]*)", head)
     earlier = [x.strip() for x in (prior.group(1) if prior else "").split(",")
