@@ -18,12 +18,16 @@ re-votes, takes the review snapshot, and generates the PR body.
 Output lines (only the ones that apply):
     ACTION:   what to do, in one line
     AGENT:    an agent to spawn (several AGENT lines: spawn them all in one
-              message, in parallel); its BRIEF and PROMPT follow it
+              message, in parallel); its BRIEF, PROMPT and (for a code
+              reviewer) EFFORT follow it
     BRIEF:    the brief file written for it
     PROMPT:   the one-line prompt to give the Agent tool (no `model` parameter)
     EFFORT:   for a code reviewer only, after its PROMPT: the Agent tool's
-              `effort` parameter to spawn it with (`high` or `xhigh`, from the
-              plan's `Review effort:` line; xhigh when the plan has none)
+              `effort` parameter to spawn it with, `high` or `xhigh`: the
+              effort its review pass started at, which is the plan's
+              `Review effort:` line (xhigh when the plan has none). In --json,
+              EFFORT is a list parallel to AGENT, "" for an agent with none,
+              and left out when no agent has one
     BUDGET:   the round this action spent, and what is left
     SUMMARY:  lines to show the user before asking (exit 5)
     QUESTION: the AskUserQuestion JSON (exit 5)

@@ -193,7 +193,8 @@ Nothing is committed or pushed until the change has been reviewed twice, on the
 uncommitted working tree, and you have seen the results:
 
 1. **Code review panel.** Three reviewers run `/code-review xhigh` on the change
-   independently, at the effort the plan recommends (see *Models and effort*).
+   independently; the agents run at the effort the plan recommends (see
+   *Models and effort*).
    A judge merges their findings and checks each trigger path in the code. A
    correctness or test finding that only one reviewer raised goes to
    the other two for a re-vote.
@@ -579,10 +580,8 @@ edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
 
 The code reviewers are the costliest workers, and most of their time is
 thinking, so their effort is set per run. The planner writes a `Review effort:`
-line in `IMPLEMENTATION.md`: `xhigh` when the change has logic that is easy to
-get subtly wrong (state transitions, concurrency, money or data integrity,
-parsing, error handling across modules, many files), `high` for a small, local,
-straightforward change, and `xhigh` when unsure. `next` prints it as an `EFFORT`
+line in `IMPLEMENTATION.md`: `high` for a small, local, straightforward change,
+otherwise `xhigh` (`agents/planner.md` says how it chooses). `next` prints it as an `EFFORT`
 line after each code reviewer's `PROMPT`, and the orchestrator passes it as the
 Agent tool's `effort` parameter, which overrides the agent file's `xhigh`. A
 plan with no such line means `xhigh`. Each review pass keeps the effort it

@@ -734,11 +734,13 @@ class CheckArtifactTest(WorkCase):
         title = "# Plan\n"
         for line in ("Review effort: high — one local function",
                      "Review effort: xhigh — a state machine spans three modules",
-                     "**Review effort:** `xhigh` — parsing"):
+                     "**Review effort:** `xhigh` — parsing",
+                     "- Review effort: high—one rename"):
             r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
                 title, f"{title}\n{line}\n", 1))
             self.assertEqual(r.returncode, 0, line + "\n" + r.stdout)
         for line, found in (("Review effort: max — be thorough", "max"),
+                            ("- Review effort: max", "max"),
                             ("Review effort: <high | xhigh> — <reason>", "<high"),
                             ("Review effort:", "nothing")):
             r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(

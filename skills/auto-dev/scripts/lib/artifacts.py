@@ -248,7 +248,8 @@ def header_line(text, prefix):
 # the Phase 6 code reviewers. A plan without one (written before 4.3) means xhigh.
 REVIEW_EFFORTS = ("high", "xhigh")
 DEFAULT_REVIEW_EFFORT = "xhigh"
-REVIEW_EFFORT_RE = re.compile(r"^[*_\s]*review effort[*_\s]*:[*_\s]*(\S*)", re.IGNORECASE)
+REVIEW_EFFORT_RE = re.compile(r"^[-*_\s]*review effort[*_\s]*:[*_\s]*([^\s—–]*)",
+                              re.IGNORECASE)
 
 
 def review_effort(text):

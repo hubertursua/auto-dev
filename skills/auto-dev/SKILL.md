@@ -98,7 +98,7 @@ Its exit code says what kind of step it is:
 
 | Exit | Meaning | Do |
 |---|---|---|
-| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, when printed, as the Agent tool's `effort`); several `AGENT` lines go in **one message**, in parallel. A command in backticks: run it. Then the `AFTER` lines |
+| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel. A command in backticks: run it. Then the `AFTER` lines |
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed, and stop. Do nothing more |
@@ -159,9 +159,8 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Your read-and-answer lookups | `auto-dev:lookup` | `sonnet` · medium |
 
 To change a worker's model, edit its `agents/<name>.md` frontmatter and this
-table together. The one per-run override: the planner's `Review effort:` line
-in IMPLEMENTATION.md sets the code reviewers' effort to `high` or `xhigh`
-(xhigh when it has none), and `next` prints it as each reviewer's `EFFORT`.
+table together. The one per-run override is the code reviewers'
+effort, which the plan sets (the `EFFORT` line of rule 3).
 
 ## Reading discipline
 

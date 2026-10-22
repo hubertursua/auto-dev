@@ -53,7 +53,8 @@ reviewers should run at, with a one-line reason:
   transitions, concurrency, money or data integrity, parsing, error handling
   that spans modules, or many files.
 - `high` for a small, local, straightforward change.
-When unsure, write `xhigh`. In revise or blocked mode, change the line only if
+Always `xhigh` when SPEC.md has Security/Compliance criteria. When unsure,
+write `xhigh`. In revise or blocked mode, change the line only if
 your revision changes that judgment.
 
 Return: assumptions, key risks.
