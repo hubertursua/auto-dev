@@ -47,12 +47,22 @@ number (`C3`) and describe it in the plan's own words; never copy its wording,
 since the coder must not be able to echo the spec back in a test name. A script
 refuses a plan that does.
 
+Set the plan's `Review effort:` line to the effort the three Phase 6 code
+reviewers should run at, with a one-line reason:
+- `xhigh` when the change has logic that is easy to get subtly wrong: state
+  transitions, concurrency, money or data integrity, parsing, error handling
+  that spans modules, or many files.
+- `high` for a small, local, straightforward change.
+When unsure, write `xhigh`. In revise or blocked mode, change the line only if
+your revision changes that judgment.
+
 Return: assumptions, key risks.
 
 The headings are in `{{skill_dir}}/templates/IMPLEMENTATION.md` (headings strict).
 Follow the template as you write; you have no shell, so don't look for the
 checker or re-implement it. `autodev.py record` checks IMPLEMENTATION.md (its
-headings, and that it doesn't copy SPEC.md's wording) when you return. If it
+headings, its `Review effort:` value, and that it doesn't copy SPEC.md's
+wording) when you return. If it
 finds a problem, you are briefed again with it under Previous issues: the file
 you wrote is still there, so fix only what it lists.
 

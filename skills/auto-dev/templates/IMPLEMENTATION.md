@@ -1,6 +1,8 @@
 <!-- auto-dev template: IMPLEMENTATION.md (headings strict, content flexible). Copy everything below this comment, filling in every <...>. -->
 # Implementation plan — <task>
 
+Review effort: <high | xhigh> — <one line: why the code reviewers need that depth>
+
 ## Files
 - `<path>` — <create | modify>: <what changes there>
 

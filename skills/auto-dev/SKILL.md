@@ -55,7 +55,9 @@ repo. Below, `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 2. **Never judge the build or edit an artifact.** Workers write the reports and
    the required changes; scripts check them. You pass files on unedited.
 3. **Spawn exactly the agent type `next` names**, with exactly its `PROMPT`.
-   Never pass the Agent tool's `model` parameter. Never substitute
+   Never pass the Agent tool's `model` parameter. Pass its `effort`
+   parameter only when `next` prints an `EFFORT` line for that agent, set to
+   that value; never otherwise. Never substitute
    `general-purpose` or another type.
 4. **Only `autodev.py` writes `state.json`.** Never edit it or `WORK_LOG.md`.
 5. **Never commit `.auto-dev/`, never push with `--force`, never merge with
@@ -96,7 +98,7 @@ Its exit code says what kind of step it is:
 
 | Exit | Meaning | Do |
 |---|---|---|
-| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT`; several `AGENT` lines go in **one message**, in parallel. A command in backticks: run it. Then the `AFTER` lines |
+| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, when printed, as the Agent tool's `effort`); several `AGENT` lines go in **one message**, in parallel. A command in backticks: run it. Then the `AFTER` lines |
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed, and stop. Do nothing more |
@@ -157,7 +159,9 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Your read-and-answer lookups | `auto-dev:lookup` | `sonnet` · medium |
 
 To change a worker's model, edit its `agents/<name>.md` frontmatter and this
-table together.
+table together. The one per-run override: the planner's `Review effort:` line
+in IMPLEMENTATION.md sets the code reviewers' effort to `high` or `xhigh`
+(xhigh when it has none), and `next` prints it as each reviewer's `EFFORT`.
 
 ## Reading discipline
 

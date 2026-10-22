@@ -242,3 +242,20 @@ def header_line(text, prefix):
         if line.strip().startswith(prefix):
             return line.strip()
     return ""
+
+
+# IMPLEMENTATION.md's `Review effort:` line: the effort the planner recommends for
+# the Phase 6 code reviewers. A plan without one (written before 4.3) means xhigh.
+REVIEW_EFFORTS = ("high", "xhigh")
+DEFAULT_REVIEW_EFFORT = "xhigh"
+REVIEW_EFFORT_RE = re.compile(r"^[*_\s]*review effort[*_\s]*:[*_\s]*(\S*)", re.IGNORECASE)
+
+
+def review_effort(text):
+    """The first word of the plan's `Review effort:` line, lowercased, or None
+    when it has no such line. The caller checks it is one of REVIEW_EFFORTS."""
+    for line in text.splitlines():
+        m = REVIEW_EFFORT_RE.match(line)
+        if m:
+            return m.group(1).strip("*_`.,;").lower()
+    return None

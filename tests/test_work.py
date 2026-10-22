@@ -729,6 +729,24 @@ class CheckArtifactTest(WorkCase):
         self.assertEqual(self.check("IMPLEMENTATION.md", good.replace("## Design", "## How"))
                          .returncode, 1)
 
+    def test_a_plan_review_effort_is_high_or_xhigh_or_absent(self):
+        from test_next import IMPLEMENTATION
+        title = "# Plan\n"
+        for line in ("Review effort: high — one local function",
+                     "Review effort: xhigh — a state machine spans three modules",
+                     "**Review effort:** `xhigh` — parsing"):
+            r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
+                title, f"{title}\n{line}\n", 1))
+            self.assertEqual(r.returncode, 0, line + "\n" + r.stdout)
+        for line, found in (("Review effort: max — be thorough", "max"),
+                            ("Review effort: <high | xhigh> — <reason>", "<high"),
+                            ("Review effort:", "nothing")):
+            r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
+                title, f"{title}\n{line}\n", 1))
+            self.assertEqual(r.returncode, 1, line)
+            self.assertIn(f"`Review effort:` must be high or xhigh (found: {found})",
+                          r.stdout)
+
     def test_a_plan_that_copies_the_spec(self):
         from test_next import IMPLEMENTATION
         self.assertEqual(self.check("IMPLEMENTATION.md", IMPLEMENTATION).returncode, 0)
