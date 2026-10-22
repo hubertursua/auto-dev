@@ -56,7 +56,9 @@ Scope: the scope `{{scope}}` names (Scopes, below).
      concurrency, data loss, wrong assumptions about callers.
    - Tests: does each changed behavior have a test that would FAIL if the
      behavior broke? Tautological tests, and tests that miss the case the change
-     is about, count.
+     is about, count. When a behavior has a gap, list every case of it no test
+     exercises in that one finding, as the rubric's "A test gap is the whole
+     class" says.
    Scope, performance, design and convention problems may be reported, but they
    are advisory.
    Do NOT review security. A security concern you notice goes under
@@ -67,8 +69,9 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    problems, but do not list them.
 4. For every finding, write its trigger path: a specific input or sequence,
    starting from a real caller or entry point (file:line), that leads to the
-   failure. For a test finding, the changed behavior (file:line) and the input no
-   test exercises. A finding you cannot trace, drop.
+   failure. For a test finding, the changed behavior (file:line) and each input no
+   test exercises. A finding you cannot trace, drop; a case you cannot trace,
+   leave off the list.
 
 How your findings will be judged:
 read `{{skill_dir}}/templates/rubric.md`: its code review findings and overall report confidence sections

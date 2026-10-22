@@ -44,7 +44,9 @@ Read every one. <Pass 2 or later: also read the previous
 {{artifact_dir}}/CODE_REVIEW.md.>
 
 1. Merge duplicates. The same root cause at the same place is one finding,
-   however each reviewer worded it. List which reviewers raised it.
+   however each reviewer worded it, and so are tests findings about the same
+   changed behavior (the rubric's "A test gap is the whole class"). List which
+   reviewers raised it.
 2. Trace every finding's trigger path in the code yourself. Record whether you
    confirmed or refuted it, and why. Be as ready to refute as to confirm: noise
    that reaches the coder costs a revise round.
@@ -68,7 +70,9 @@ Read every one. <Pass 2 or later: also read the previous
    For every must-fix and pending re-vote finding, write its detail block as
    the template shows: `Trigger path:`, `Judge:`, `Where:`, `Test:`,
    `Required change: <what the code must do and where, as a fix for the coder>`
-   and `In plain words: <one sentence a reader of the PR understands>`. A finding about a held-out
+   and `In plain words: <one sentence a reader of the PR understands>`. For a
+   tests finding, the `Test:` and `Required change:` lines ask for a test of
+   every case it lists, so one correction closes the whole gap. A finding about a held-out
    acceptance check itself (it asserts the wrong thing, or can't fail when its
    condition is unmet) gets the category `acceptance-check` (the rubric): it
    goes to the acceptance tester's repair mode, never the coder.

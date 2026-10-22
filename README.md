@@ -208,6 +208,13 @@ A **rubric** decides what must be fixed and what is noise:
   about an acceptance check goes to the acceptance tester's repair mode, never
   the coder. Scope, performance and design findings are advisory. Problems the
   change didn't introduce are dropped.
+- **Test gaps, whole.** A finding that a changed behavior is under-tested lists
+  every case of it no test reaches (each config value no test varies, each
+  boundary, each error path and message, each value the spec says must fail
+  closed), and the judge merges test findings about the same behavior into
+  one. The coder closes the whole gap in one correction, instead of one case
+  per review pass. Only cases a real caller can reach count
+  (`skills/auto-dev/templates/rubric.md`).
 - **Security findings.** One this change introduced, with a traced path, is
   must-fix. One that was already there is shown to you at the PR gate to triage:
   note it as a follow-up for a separate PR (the PR description lists it), or
@@ -693,6 +700,18 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 4.1
+
+- **A test-gap finding asks for the whole gap.** A code reviewer who finds a
+  changed behavior under-tested now lists every reachable case no test covers
+  in one finding, the judge merges test findings about the same behavior, and
+  the required change asks the coder for a test of each case. Before, each
+  review pass tended to find the next missing case, and each one cost a full
+  correction round and re-review. The rule is in
+  `skills/auto-dev/templates/rubric.md`.
+- **A run in flight resumes.** Only agent files and templates changed; the
+  next review pass uses the new rule.
 
 ## Upgrading from 4.0
 

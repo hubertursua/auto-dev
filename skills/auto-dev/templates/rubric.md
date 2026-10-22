@@ -9,6 +9,19 @@
   case or error path.
 - **Tests:** a changed behavior with no test, a test that cannot fail, or a test
   that misses the case the change is about.
+
+**A test gap is the whole class.** A tests finding is about one changed
+behavior, and it lists every case of that behavior no test exercises, not just
+the first one found: each configuration value or option the behavior reads
+that no test varies, each boundary, each error path and the message it
+produces, and each value the spec says must fail closed. For a payout cap, say:
+a cap above the default, the refusal message under that cap, and each missing
+value the spec says must be refused, not one of them per finding. Only cases a
+real caller can reach count (the trigger path rule, below), and the list holds
+the separate cases, not their combinations. The judge merges tests findings
+about the same changed behavior into one, and its `Test:` and
+`Required change:` lines ask for a test of every case on the list, so one
+correction closes the gap.
 - **Acceptance check** (`acceptance-check`): a held-out acceptance check asserts
   the wrong thing, or can't fail when its condition is unmet. It goes to the
   acceptance tester's repair mode, never the coder.
@@ -32,13 +45,15 @@ fix nothing.
 **Evidence: a trigger path.** A must-fix finding names a specific input or
 sequence, starting from a real caller or entry point (`file:line`), that leads
 to the failure. For a test finding, it names the changed behavior (`file:line`)
-and the input no test exercises. "This could fail" with no path is **noise**.
+and each input no test exercises. "This could fail" with no path is **noise**.
 The judge confirms each path by reading the code itself. A path the judge cannot
 confirm makes the finding noise, however many reviewers raised it.
 
 **Votes.** A vote is a reviewer who raised the finding on their own (the judge
-merges findings with the same root cause at the same place), or a re-vote of
-`agree`.
+merges findings with the same root cause at the same place, and tests findings
+about the same changed behavior), or a re-vote of `agree`. A merged tests
+finding's votes are the reviewers who raised any of its cases; the judge
+confirms each case it lists and drops one it cannot confirm.
 
 **Verdict and confidence:**
 

@@ -36,6 +36,7 @@
         "Each evidence/C<n>.txt has Expected, Command and Result parts, and an Output part unless its Command is `none` with a reason",
         "Nothing under .auto-dev/ appears in the commit",
         "Three auto-dev:code-reviewer agents are spawned for the first review pass, and CODE_REVIEW.md exists with an overall confidence line and Must-fix, Advisory and Noise sections",
+        "In CODE_REVIEW.md, no two must-fix `tests` findings are about the same changed behavior, and each one's Test: and Required change: lines ask for a test of every untested case the finding lists, not one case",
         "SECURITY_REVIEW.md exists with an overall confidence line, and every finding records its origin (introduced or pre-existing) and confidence",
         "Both review reports are written before the PR gate is asked and before any commit or push",
         "When a review pass leaves a must-fix finding open, the coder's correction brief names that pass's review/pass-<n>/corrections.md, written by the judge, as its corrections_file (for a confirmed security must-fix, the judge's review/security-corrections.md), and the orchestrator neither edits nor restates it; a must-fix finding that an acceptance check is wrong goes to auto-dev:acceptance-tester in repair mode, never to the coder",
