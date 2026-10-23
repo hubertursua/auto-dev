@@ -16,7 +16,7 @@ Must-fix: <open> open · <fixed> fixed   ·   Advisory: <n>   ·   Noise: <n>   
 Trigger path: <entry point `file:line` → … → failure, as the judge confirmed it>
 Judge: <why it holds>
 Where: `<path:line>` — <the code that has to change>
-Test: <the test to add or restore, and what it asserts>
+Test: <the test to add or restore, and what it asserts; for a tests finding, one per case it lists>
 Required change: <what the code must do and where, for the coder>
 In plain words: <one sentence for the PR's reader>
 
@@ -29,7 +29,7 @@ In plain words: <one sentence for the PR's reader>
 Trigger path: <entry point `file:line` → … → failure, as the judge confirmed it>
 Judge: <why it holds>
 Where: `<path:line>` — <the code, or the acceptance check, that has to change>
-Test: <the test to add or restore, and what it asserts>
+Test: <the test to add or restore, and what it asserts; for a tests finding, one per case it lists>
 Required change: <what must change and where: for the coder, or for the acceptance tester when the category is acceptance-check>
 In plain words: <one sentence for the PR's reader>
 
