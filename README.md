@@ -193,8 +193,10 @@ Nothing is committed or pushed until the change has been reviewed twice, on the
 uncommitted working tree, and you have seen the results:
 
 1. **Code review panel.** Three reviewers run `/code-review xhigh` on the change
-   independently. A judge merges their findings and checks each trigger path in
-   the code. A correctness or test finding that only one reviewer raised goes to
+   independently; the agents run at the effort the plan recommends (see
+   *Models and effort*).
+   A judge merges their findings and checks each trigger path in the code. A
+   correctness or test finding that only one reviewer raised goes to
    the other two for a re-vote.
 2. **Security review.** One security reviewer runs `/security-review` over the
    whole change, alongside the panel and on the same tree, and the judge
@@ -223,6 +225,13 @@ A **rubric** decides what must be fixed and what is noise:
   about an acceptance check goes to the acceptance tester's repair mode, never
   the coder. Scope, performance and design findings are advisory. Problems the
   change didn't introduce are dropped.
+- **Test gaps, whole.** A finding that a changed behavior is under-tested lists
+  every case of it no test reaches (each config value no test varies, each
+  boundary, each error path and message, each value the spec says must fail
+  closed), and the judge merges tests findings about the same behavior into
+  one. The coder closes the whole gap in one correction, instead of one case
+  per review pass. Only cases a real caller can reach count
+  (`skills/auto-dev/templates/rubric.md`).
 - **Security findings.** One this change introduced, with a traced path, is
   must-fix. One that was already there is shown to you at the PR gate to triage:
   note it as a follow-up for a separate PR (the PR description lists it), or
@@ -591,6 +600,15 @@ the workers above do the judging. To retune a worker,
 edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
 `SKILL.md`.
 
+The code reviewers are the costliest workers, and most of their time is
+thinking, so their effort is set per run. The planner writes a `Review effort:`
+line in `IMPLEMENTATION.md`: `high` for a small, local, straightforward change,
+otherwise `xhigh` (`agents/planner.md` says how it chooses). `next` prints it as an `EFFORT`
+line after each code reviewer's `PROMPT`, and the orchestrator passes it as the
+Agent tool's `effort` parameter, which overrides the agent file's `xhigh`. A
+plan with no such line means `xhigh`. Each review pass keeps the effort it
+started with, and `WORK_LOG.md` notes it.
+
 ## The `.auto-dev/` scratch directory
 
 Each run creates `.auto-dev/` holding the artifacts phases hand off. Git ignores
@@ -736,6 +754,29 @@ rules for changing a script are in `CLAUDE.md`.
   panel ran without the security reviewer, gets its security review as soon as
   `next` sees it missing: before the judge if the panel was still running,
   after it otherwise. Every new pass uses the new order.
+
+## Upgrading from 4.2
+
+- **The plan sets the code reviewers' effort.** `IMPLEMENTATION.md` has a new
+  `Review effort: high | xhigh — <reason>` line, which `check-artifact` checks
+  when present. `next` prints an `EFFORT` line after each code reviewer's
+  `PROMPT` (only for code reviewers), and `SKILL.md` tells the orchestrator to
+  pass it as the Agent tool's `effort` parameter. The state's review passes
+  record the effort they ran at.
+- **A run in flight resumes.** A plan written before 4.3 has no `Review
+  effort:` line, which means `xhigh`, the effort the reviewers ran at before.
+
+## Upgrading from 4.1
+
+- **A test-gap finding asks for the whole gap.** A code reviewer who finds a
+  changed behavior under-tested now lists every reachable case no test covers
+  in one finding, the judge merges tests findings about the same behavior, and
+  the required change asks the coder for a test of each case. Before, each
+  review pass tended to find the next missing case, and each one cost a full
+  correction round and re-review. The rule is in
+  `skills/auto-dev/templates/rubric.md`.
+- **A run in flight resumes.** Only agent files and templates changed; the
+  next review pass uses the new rule.
 
 ## Upgrading from 4.0
 

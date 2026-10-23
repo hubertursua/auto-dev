@@ -89,7 +89,8 @@ The build is done. Instead of working through the build sequence, make only
 the changes below; everything else in the task above still applies.
 
 You are applying a correction. Work inside the worktree at {{worktree}}. The changes the code needs are in {{corrections_file}}.
-Make each one, with the test it names, and run the relevant tests green.
+Make each one, with the test it names, and run the relevant tests green. An
+entry's `Test:` line can list several cases: add a test for each one.
 
 These files are held-out acceptance checks: {{acceptance_paths}}.
 Do NOT modify them; make the code satisfy them. The rules on keeping tests honest

@@ -60,7 +60,8 @@ record <worker> <n>
 check-artifact <file>
     Checks one artifact against its template before a worker returns it:
     SPEC.md, IMPLEMENTATION.md (also refused when it copies the run's SPEC.md,
-    as `spec-overlap` checks), acceptance/MANIFEST.md, SPEC_EVAL.md,
+    as `spec-overlap` checks, or its `Review effort:` line, when it has one, is
+    not high or xhigh), acceptance/MANIFEST.md, SPEC_EVAL.md,
     CODE_REVIEW.md, SECURITY_REVIEW.md, review/pass-<n>/R<k>.md and
     VOTES-R<k>.md, lint/<CHECK>.md, a required-changes file (corrections.md,
     triage/*.md; also refused when it copies the run's SPEC.md, as
@@ -732,6 +733,10 @@ def check_file(path):
             want = list(IMPLEMENTATION_HEADINGS)
             problems = [] if [h for h in heads if h in want] == want else [
                 f"headings must be, in order: {', '.join(want)} (found: {', '.join(heads)})"]
+            effort = art.review_effort(text)  # no line (a plan before 4.3): xhigh
+            if effort is not None and effort not in art.REVIEW_EFFORTS:
+                problems.append(f"`Review effort:` must be {' or '.join(art.REVIEW_EFFORTS)}"
+                                f" (found: {effort or 'nothing'})")
             # The coder never sees SPEC.md: a plan that echoes it lets a test name
             # echo it too. In a run (state.json beside it), a missing SPEC.md is
             # reported, not skipped.

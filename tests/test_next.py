@@ -148,6 +148,7 @@ class NextCase(RunCase):
             defective=defective))
 
     lint_tail = "all good"
+    plan_text = IMPLEMENTATION
 
     def lint(self, status="pass"):
         (self.dir / "lint").mkdir(exist_ok=True)
@@ -166,7 +167,7 @@ class NextCase(RunCase):
         self.expect("define", "FITS", high_risk="yes", reading="none")
         self.expect("define-reviewer", "CLEAN", blockers="0", fix_file="none")
         self.expect("planner")
-        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
+        (self.dir / "IMPLEMENTATION.md").write_text(self.plan_text)
         for w, n in self.spawned(self.next(0)):  # re-issued: not recorded yet
             self.answer(w, n, "WRITTEN", entry_points_changed="no")
         self.expect("plan-reviewer", "CLEAN", blockers="0", fix_file="none")
@@ -2246,6 +2247,65 @@ class ReVoteTest(NextCase):
         self.assertEqual([self.sets(*j)["reviewer"] for j in jobs], ["R3"])
         out = self.next(4)
         self.assertIn("R3 (failed twice)", " ".join(out["REPORT"]))
+
+
+class ReviewEffortTest(NextCase):
+    plan_text = IMPLEMENTATION.replace(
+        "# Plan\n", "# Plan\n\nReview effort: high — one local function, no shared state\n", 1)
+
+    def to_panel(self):
+        self.plan_session()
+        self.build_session()
+        self.resume()
+
+    def test_the_plan_s_high_effort_reaches_every_code_reviewer_spawn(self):
+        self.to_panel()
+        out, jobs = self.reviewers()  # the security reviewer spawns at its own effort
+        self.assertEqual(out["EFFORT"], ["high"] * 3 + [""])
+        self.assertIn("passing its EFFORT as the Agent tool's `effort`", out["ACTION"])
+        self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "high")
+        self.assertIn("code-review pass 1: the reviewers run at effort high",
+                      (self.dir / "WORK_LOG.md").read_text())
+        # Re-issued (not recorded yet), in text: each PROMPT is followed by its EFFORT.
+        r = self.autodev("next", "--dir", self.dir)
+        lines = r.stdout.splitlines()
+        prompts = [i for i, ln in enumerate(lines) if ln.startswith("PROMPT: ")]
+        self.assertEqual(len(prompts), 3, r.stdout)
+        for i in prompts:
+            self.assertEqual(lines[i + 1], "EFFORT: high", r.stdout)
+        # The plan changing mid-pass does not change the pass's effort.
+        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            if slot == "R3":
+                self.answer(w, n, "", status="failed")
+                continue
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        out, jobs = self.expect("code-reviewer")  # the failed one's one re-spawn
+        self.assertEqual(out["EFFORT"], ["high"])
+        (self.dir / "review" / "pass-1" / "R3.md").write_text(r_report("x"))
+        self.answer(*jobs[0], "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(CODE_REVIEW.format(tree=self.tree()))
+        out, _ = self.expect("review-judge", "REVOTE", must_fix_open="1", revote="2")
+        self.assertNotIn("EFFORT", out)  # only code reviewers get one
+        out, _ = self.expect("code-reviewer")  # the re-votes
+        self.assertEqual(out["EFFORT"], ["high"] * 3)
+
+    def test_a_plan_without_a_review_effort_runs_the_reviewers_at_xhigh(self):
+        self.plan_text = IMPLEMENTATION
+        self.to_panel()
+        out, _ = self.reviewers()
+        self.assertEqual(out["EFFORT"], ["xhigh"] * 3 + [""])
+        self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "xhigh")
+
+    def test_a_pass_started_before_4_3_reads_the_plan(self):
+        self.to_panel()
+        self.reviewers()
+        state = json.loads((self.dir / "state.json").read_text())
+        del state["phase6"]["passes"][0]["effort"]  # as an older `next` saved it
+        (self.dir / "state.json").write_text(json.dumps(state))
+        self.assertEqual(self.next(0)["EFFORT"], ["high"] * 3)
 
 
 class QuoteTest(RunCase):

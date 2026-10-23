@@ -18,9 +18,16 @@ re-votes, takes the review snapshot, and generates the PR body.
 Output lines (only the ones that apply):
     ACTION:   what to do, in one line
     AGENT:    an agent to spawn (several AGENT lines: spawn them all in one
-              message, in parallel); its BRIEF and PROMPT follow it
+              message, in parallel); its BRIEF, PROMPT and (for a code
+              reviewer) EFFORT follow it
     BRIEF:    the brief file written for it
     PROMPT:   the one-line prompt to give the Agent tool (no `model` parameter)
+    EFFORT:   for a code reviewer only, after its PROMPT: the Agent tool's
+              `effort` parameter to spawn it with, `high` or `xhigh`: the
+              effort its review pass started at, which is the plan's
+              `Review effort:` line (xhigh when the plan has none). In --json,
+              EFFORT is a list parallel to AGENT, "" for an agent with none,
+              and left out when no agent has one
     BUDGET:   the round this action spent, and what is left
     SUMMARY:  lines to show the user before asking (exit 5)
     QUESTION: the AskUserQuestion JSON (exit 5)
@@ -252,7 +259,7 @@ def spawn(c, worker, mode=None, sets=None, rule="", budget=None, agent=None):
 
 def spawn_many(c, jobs, rule, budget=None, agent=None):
     """Spawn each (worker, mode, sets[, agent]) job in one message."""
-    agents, briefs_, prompts, after = [], [], [], []
+    agents, briefs_, prompts, after, efforts = [], [], [], [], []
     for job in jobs:
         worker, mode, sets = job[:3]
         job_agent = job[3] if len(job) > 3 else agent
@@ -267,15 +274,41 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
         briefs_.append(str(path))
         prompts.append(cmd_work.prompt_for(path))
         after.append(c.cmd("record", worker, n))
-    return spawn_lines(agents, briefs_, prompts, after, rule, budget)
+        efforts.append(effort_for(c, worker))
+    return spawn_lines(agents, briefs_, prompts, after, rule, budget, efforts)
 
 
-def spawn_lines(agents, briefs_, prompts, after, rule, budget=None):
+def spawn_lines(agents, briefs_, prompts, after, rule, budget=None, efforts=None):
+    """efforts, when any is set, parallels agents ("" for an agent spawned at its
+    own effort)."""
+    efforts = efforts if efforts and any(efforts) else None
     what = (f"spawn {agents[0]} with the PROMPT" if len(agents) == 1 else
             f"spawn these {len(agents)} agents in one message, in parallel, each "
             "with its PROMPT")
+    if efforts:
+        what += ", passing its EFFORT as the Agent tool's `effort` parameter"
     return action(what, rule, AGENT=agents, BRIEF=briefs_, PROMPT=prompts,
-                  BUDGET=budget, AFTER=after)
+                  EFFORT=efforts, BUDGET=budget, AFTER=after)
+
+
+def plan_effort(c):
+    """The code reviewers' effort the plan recommends; xhigh when it names none
+    (a plan written before 4.3) or names something else."""
+    try:
+        value = art.review_effort(art.read(c.ad / "IMPLEMENTATION.md"))
+    except art.ArtifactError:
+        value = None
+    return value if value in art.REVIEW_EFFORTS else art.DEFAULT_REVIEW_EFFORT
+
+
+def effort_for(c, worker):
+    """The Agent tool's `effort` for a spawn: a code reviewer runs at its review
+    pass's effort (the plan's, noted when the pass started); every other worker
+    at its agent file's, so ""."""
+    if worker != "code-reviewer":
+        return ""
+    passes = c.p6.get("passes") or []
+    return (passes[-1].get("effort") if passes else None) or plan_effort(c)
 
 
 def ask(c, gate, summary, questions, answers, rule):
@@ -339,12 +372,15 @@ def show(result, args):
         value = result.get(key)
         if not value:
             continue
-        if key == "AGENT":  # interleave each agent with its brief and prompt
+        if key == "AGENT":  # interleave each agent with its brief, prompt and effort
+            efforts = result.get("EFFORT") or []
             for i, agent in enumerate(value):
                 lines += [f"AGENT: {agent}", f"BRIEF: {result['BRIEF'][i]}",
                           f"PROMPT: {result['PROMPT'][i]}"]
+                if i < len(efforts) and efforts[i]:
+                    lines.append(f"EFFORT: {efforts[i]}")
             continue
-        if key in ("BRIEF", "PROMPT") and result.get("AGENT"):
+        if key in ("BRIEF", "PROMPT", "EFFORT") and result.get("AGENT"):
             continue
         lines.append(action_lines({key: value}))
     print("\n".join(lines))
@@ -466,7 +502,8 @@ def pending_briefs(c):
                        [cmd_work.prompt_for(p) for p in paths],
                        [c.cmd("record", b["worker"], b["n"]) for b in open_],
                        "a brief was issued and its result is not recorded yet: "
-                       "spawn it again")
+                       "spawn it again",
+                       efforts=[effort_for(c, b["worker"]) for b in open_])
 
 
 def not_ok(c):
@@ -1228,10 +1265,13 @@ def start_pass(c, scope, files, rule, since=None):
     (c.ad / "review" / f"pass-{n}").mkdir(parents=True, exist_ok=True)
     cmd_checks.git_add_intent(c.wt)
     tree = cmd_review.print_tree(c.wt)
-    p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq()}
+    effort = plan_effort(c)
+    p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq(),
+         "effort": effort}
     if since:
         p["since"] = since
     c.p6["passes"].append(p)
+    st.add_note(c.state, f"code-review pass {n}: the reviewers run at effort {effort}")
     c.dirty = True
     jobs = [("code-reviewer", "review", reviewer_sets(scope, files, slot, since))
             for slot in SLOTS]

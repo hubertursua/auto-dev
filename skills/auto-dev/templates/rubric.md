@@ -13,6 +13,20 @@
   the wrong thing, or can't fail when its condition is unmet. It goes to the
   acceptance tester's repair mode, never the coder.
 
+**A test gap is the whole class.** A tests finding is about one changed
+behavior, and it lists every case of that behavior no test exercises, not just
+the first one found: each configuration value or option the behavior reads
+that no test varies, each boundary, each error path and the message it
+produces, and each value the spec says must fail closed. For a payout cap, say:
+a cap above the default, the refusal message under that cap, and each missing
+value the spec says must be refused, not one of them per finding. Only cases a
+real caller can reach count (the trigger path rule, below), and the list holds
+the separate cases, not their combinations. The judge merges tests findings
+about the same changed behavior into one, and its `Test:` and
+`Required change:` lines ask for a test of every case on the list, so one
+correction closes the gap. A tests finding is `fixed` only when every case it
+lists has a test.
+
 A finding that breaks a binding rule (the repo's CLAUDE.md or AGENTS.md,
 CONTRIBUTING and coding-guideline docs, and the security directives
 `profile.md` names) is **correctness**, not conventions, so it can be
@@ -32,13 +46,19 @@ fix nothing.
 **Evidence: a trigger path.** A must-fix finding names a specific input or
 sequence, starting from a real caller or entry point (`file:line`), that leads
 to the failure. For a test finding, it names the changed behavior (`file:line`)
-and the input no test exercises. "This could fail" with no path is **noise**.
+and each input no test exercises. "This could fail" with no path is **noise**.
 The judge confirms each path by reading the code itself. A path the judge cannot
 confirm makes the finding noise, however many reviewers raised it.
 
 **Votes.** A vote is a reviewer who raised the finding on their own (the judge
-merges findings with the same root cause at the same place), or a re-vote of
-`agree`.
+merges findings with the same root cause at the same place, and tests findings
+about the same changed behavior), or a re-vote of `agree`. A merged tests
+finding's votes are the reviewers who raised any of its cases: what they
+corroborate is the gap in that behavior, and the judge's own trace of each case
+stands in for a vote per case. The judge drops a case it cannot confirm, and
+adds a reachable case it finds while tracing. A re-voter agrees with a tests
+finding when the behavior has a real gap, and names in its reason any listed
+case that does not hold.
 
 **Verdict and confidence:**
 
