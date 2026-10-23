@@ -18,8 +18,7 @@ see in S3, in order:
    `review-judge` (twice in one message when the security review found
    something to verify), maybe re-votes by the reviewers. Must-fix findings
    from either review run one correction (`coder`, `cleanup`, `verifier`), and
-   the panel and the security reviewer review it: one `code-reviewer` for a
-   small correction (then re-votes by the other two), three otherwise. A finding that a held-out
+   the panel and the security reviewer review it, without the nested skills. A finding that a held-out
    acceptance check is wrong goes to the `acceptance-tester` in repair mode,
    never the coder; it may fix the check or answer `STANDS` with its reason,
    and a check that stands is not sent back a second time.

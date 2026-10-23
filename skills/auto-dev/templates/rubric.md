@@ -53,10 +53,6 @@ merges findings with the same root cause at the same place), or a re-vote of
 If only 2 reviewers finished, a lone finding is re-voted by the one other
 reviewer, and must-fix still needs 2 votes.
 
-A small correction (at most 40 changed lines in at most 3 files) is
-re-reviewed by one reviewer, R1. Each of its findings is a lone finding, re-voted
-by R2 and R3, so must-fix still needs 2 of 3 votes.
-
 ### Security findings
 
 | Origin | Confidence | Verdict |
@@ -77,7 +73,7 @@ report's silence is worth.
 
 | Report | High | Medium | Low |
 |---|---|---|---|
-| **Code review** | Every reviewer the pass called finished (3/3, or 1/1 on a small correction's re-review), the scope was fully covered, and no must-fix finding was decided 2 votes to 1 | One reviewer failed and the panel rests on 2; or some files were only partly covered; or a must-fix finding was decided 2 votes to 1 | Fewer than 2 of 3 reviewers finished (when the one reviewer of a small correction's re-review fails twice, the other two review it) |
+| **Code review** | All 3 reviewers finished, the scope was fully covered, and no must-fix finding was decided 2 votes to 1 | One reviewer failed and the panel rests on 2; or some files were only partly covered; or a must-fix finding was decided 2 votes to 1 | Fewer than 2 reviewers finished |
 | **Security review** | The reviewer finished, the whole change was covered (a correction's focused re-check counts when earlier runs covered the rest), and every High or Medium finding was verified | Some files were only partly covered, or a verification could not run | The reviewer could not finish |
 
 A **Low** overall confidence is a warning at the PR gate, never a clean pass.

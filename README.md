@@ -205,15 +205,14 @@ uncommitted working tree, and you have seen the results:
    security run of its own.
 
 When both reviews leave must-fix findings open, one correction fixes them all,
-for one round of the budget, and the next pass reviews it. That re-review is
-sized to the correction. A small one (at most 40 changed lines in at most 3
-files) gets one code reviewer, and the other two re-vote on its lone findings,
-so a must-fix finding still needs 2 of 3 votes. A larger one gets the full
-panel. Either way, the code reviewers skip `/code-review` on a re-review, and the
-security reviewer skips `/security-review` and re-checks only what the
-correction changed, carrying its earlier findings forward. The first pass, and
-a pass over changes made outside the pipeline, still run both skills on the
-whole change.
+for one round of the budget, and the next pass reviews it. That re-review
+runs the full panel, whatever the correction's size: a one-line change can
+alter everything downstream of it. But it skips the nested skills. The code
+reviewers review the correction themselves, without `/code-review`, following
+every caller and use of what it changed. The security reviewer skips
+`/security-review` and re-checks the correction and everything downstream of
+it, carrying its earlier findings forward. The first pass, and a pass over
+changes made outside the pipeline, still run both skills on the whole change.
 
 A **rubric** decides what must be fixed and what is noise:
 
@@ -617,7 +616,7 @@ The PR body's quality-gate output leaves those lines out and says how many.
 | `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code; `INSTALLED` lists the checks `next` installed before Phase 5's cleanup; `AMBIGUOUS.md` lists a condition that reads two ways, for the Define agent |
 | `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and evidence tiers, and what it ran |
 | `lint/` | Phase 5 | one report per quality-gate check |
-| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes; `review/pass-<n>/PANEL` names the one reviewer of a small correction's re-review |
+| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes |
 | `fixes/` | Phases 2–3 | the Define and plan reviewers' FIX blocks |
 | `evidence/corrections.md` | Phase 5 | the verifier's required changes for the coder |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human blockers (`<ci\|human>-<n>.md`, for the coder), and the comments about a held-out check (`human-<n>-checks.md`, for the acceptance tester) |
@@ -712,17 +711,15 @@ rules for changing a script are in `CLAUDE.md`.
 
 ## Upgrading from 4.4
 
-- **Re-reviews are sized to the correction.** A pass that reviews a correction
-  used to run the full panel and both nested skills (`/code-review` three
-  times, `/security-review` once) whatever the correction's size. Now a
-  correction of at most 40 changed lines in at most 3 files gets one code
-  reviewer (R1), and R2 and R3 re-vote on its lone findings. Re-review passes
-  skip `/code-review`, and the security reviewer gets a `focus` and re-checks
-  only the correction. `CODE_REVIEW.md`'s header says `reviewers finished:
-  1/1` for a one-reviewer pass, and `review/pass-<n>/PANEL` names its reviewer.
-- **A run in flight resumes.** A pass started on 4.4 or earlier has no `panel`
-  in state and no `PANEL` file, so it is treated as a three-reviewer pass, as
-  before. Every pass started on 4.5 is sized.
+- **A correction's re-review skips the nested skills.** A pass that reviews a
+  correction used to run `/code-review` in each of the three reviewers and
+  `/security-review` in the security reviewer. Now the three code reviewers
+  review the correction and everything downstream of it themselves, and the
+  security reviewer gets a `focus` naming the correction, re-checks it and what
+  it reaches, and carries its earlier findings forward. The panel stays at
+  three reviewers.
+- **A run in flight resumes.** A reviewer briefed before 4.5 has no `focus` and
+  runs as before. Every pass started on 4.5 uses the new briefs.
 
 ## Upgrading from 4.3
 

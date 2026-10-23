@@ -675,8 +675,8 @@ class ShipTest(NextCase):
         self.correction_re_review()
 
     def correction_re_review(self):
-        """Pass 1's must-fix C1, its one-line correction, then pass 2 spawned
-        (R1 alone): returns pass 2's reviewer jobs."""
+        """Pass 1's must-fix C1, its one-line correction, then pass 2 spawned:
+        the whole panel, and a security reviewer focused on the correction."""
         self.ship_ready()
         out, jobs = self.reviewers()
         for w, n in jobs:
@@ -699,90 +699,12 @@ class ShipTest(NextCase):
         out, jobs = self.expect("cleanup", "GREEN")
         self.assertEqual(self.sets(*jobs[0]), {"scope": "review-fix", "files": "sort.ts"})
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        out, jobs = self.reviewers(count=1)  # a one-line correction: R1 alone
-        self.assertEqual(self.sets(*jobs[0])["reviewer"], "R1")
+        out, jobs = self.reviewers()  # a one-line correction: still the whole panel
         self.assertEqual(self.sets(*jobs[0])["scope"], "review-fix")
         self.assertEqual(self.sets(*jobs[0])["files"], "sort.ts")
         self.assertEqual(self.sets(*self.security_job)["focus"],
                          "the files a correction changed: sort.ts")
         self.assertEqual(self.state()["phase6"]["review_pass"], 2)
-        self.assertEqual((self.dir / "review" / "pass-2" / "PANEL").read_text(), "R1\n")
-        return jobs
-
-    def re_review_size(self, edits):
-        """Pass 1's must-fix C1, a correction that writes `edits` ({path: text}),
-        then pass 2: returns how many code reviewers it spawned."""
-        self.ship_ready()
-        _, jobs = self.reviewers()
-        self.assertEqual(self.sets(*self.security_job)["focus"], "none")
-        for w, n in jobs:
-            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
-             ).write_text(r_report("- null due date crashes sort"))
-            self.answer(w, n, "REVIEWED", findings="1", leads="0")
-        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
-        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
-            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
-            "missing due date\n")
-        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
-        _, jobs = self.expect("coder")
-        for path, text in edits.items():
-            (self.worktree / path).write_text(text)
-        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
-        self.expect("cleanup", "GREEN")
-        self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        jobs = [j for j in self.spawned(self.next(0)) if j[0] == "code-reviewer"]
-        self.assertEqual((self.dir / "review" / "pass-2" / "PANEL").exists(), len(jobs) == 1)
-        return len(jobs)
-
-    @staticmethod
-    def lines(n):
-        return "".join(f"export const s{i} = {i};\n" for i in range(n))
-
-    def test_a_correction_of_40_lines_gets_one_reviewer(self):
-        self.assertEqual(self.re_review_size({"sort.ts": self.lines(40)}), 1)
-
-    def test_a_correction_of_41_lines_gets_the_whole_panel(self):
-        self.assertEqual(self.re_review_size({"sort.ts": self.lines(41)}), 3)
-
-    def test_a_correction_in_4_files_gets_the_whole_panel(self):
-        self.assertEqual(self.re_review_size({f"f{i}.ts": self.lines(1)
-                                              for i in range(4)}), 3)
-
-    def test_a_small_correction_s_reviewer_failing_twice_widens_the_pass(self):
-        jobs = self.correction_re_review()
-        self.answer(*jobs[0], "", status="failed")
-        _, jobs = self.expect("code-reviewer", "", status="failed")  # its one re-spawn
-        self.assertEqual([self.sets(*j)["reviewer"] for j in jobs], ["R1"])
-        _, jobs = self.expect("code-reviewer")
-        self.assertEqual(sorted(self.sets(*j)["reviewer"] for j in jobs), ["R2", "R3"])
-        self.assertFalse((self.dir / "review" / "pass-2" / "PANEL").exists())
-        self.assertEqual(self.state()["phase6"]["passes"][-1]["panel"], ["R1", "R2", "R3"])
-
-    def test_a_lone_finding_of_a_one_reviewer_pass_is_re_voted_by_the_others(self):
-        jobs = self.correction_re_review()
-        pass_dir = self.dir / "review" / "pass-2"
-        (pass_dir / "R1.md").write_text(r_report("- empty list indexed"))
-        self.answer(*jobs[0], "REVIEWED", findings="1", leads="0")
-        # The judge miscounts the panel as 1/3: the PANEL file says 1/1.
-        review = CODE_REVIEW.replace("reviewers finished: 3/3", "reviewers finished: 1/3"
-                                     ).replace("Latest pass: 1", "Latest pass: 2").replace(
-            "| open |\n\n## Pending", "| fixed (pass 2) |\n\n## Pending").replace(
-            "1 open · 0 fixed", "0 open · 1 fixed").replace(
-            "| C6 | blank title saved | `src/save.ts:18` | tests | R2 | R1, R3 | |\n", "")
-        (self.dir / "CODE_REVIEW.md").write_text(review.format(tree=self.tree()))
-        self.expect("review-judge", "REVOTE", must_fix_open="0", revote="1")
-        _, jobs = self.expect("code-reviewer")
-        self.assertEqual(sorted(self.sets(*j)["reviewer"] for j in jobs), ["R2", "R3"])
-        for w, n in jobs:
-            (pass_dir / f"VOTES-{self.sets(w, n)['reviewer']}.md").write_text(
-                "| Finding | Vote | Reason |\n|---|---|---|\n| C4 | agree | reachable |\n")
-            self.answer(w, n, "VOTED", findings="1", leads="0")
-        out, jobs = self.expect("coder")
-        self.assertIn("pass-2-c4", out["BUDGET"])
-        text = (self.dir / "CODE_REVIEW.md").read_text()
-        self.assertIn("| C4 | empty list indexed | `src/list.ts:42` | correctness | 3/3 "
-                      "(re-vote) | Medium | open |", text)
-        self.assertIn("**Overall confidence: High** — reviewers finished: 1/1", text)
 
     def to_body(self, extra=(), first=(), answers=("Open PR",)):
         """Run S3 from the review to the PR body; returns (sha, url, out, body)."""
@@ -1191,7 +1113,7 @@ class ShipTest(NextCase):
         self.expect("cleanup", "GREEN")
         self.spec_eval()
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        self.review_clean(count=1)  # a one-line correction
+        self.review_clean()
         self.assertIn("commit: run", self.next(0)["ACTION"])
         r = self.autodev("commit", "--message", "fix: x", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1952,7 +1874,7 @@ class CiTest(NextCase):
         out, jobs = self.expect("cleanup", "GREEN")
         self.assertEqual(self.sets(*jobs[0]), {"scope": "after-commit"})
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        out, jobs = self.reviewers(count=1)
+        out, jobs = self.reviewers()
         self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
         self.assertEqual(self.sets(*self.security_job)["focus"],
                          "the uncommitted correction (the working tree against HEAD)")

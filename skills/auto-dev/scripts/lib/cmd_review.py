@@ -6,17 +6,14 @@ votes --plan
     Reads CODE_REVIEW.md's `Pending re-vote` table and the latest pass's
     R<k>.md reports, and prints which re-voter to spawn for which findings: one
     per reviewer slot that wrote a usable report and did not raise the finding.
-    A pass that called one reviewer (its review/pass-<n>/PANEL file names it)
-    has the other two slots re-vote on that reviewer's findings.
     Exit: 0 (`NONE` when there is nothing to re-vote).
 
 votes --apply
     Reads review/pass-<n>/VOTES-R<k>.md and moves each pending finding in
     CODE_REVIEW.md: the reviewer who raised it plus every `agree` reaching 2 is
     must-fix, Medium; fewer is advisory, Low. Then recomputes the header counts
-    and the overall confidence (High: every reviewer called finished (3/3, or
-    1/1 on a small correction's re-review), full coverage, nothing decided 2-1;
-    Low: fewer than 2 of 3, or 0 of 1, reviewers; Medium otherwise), and appends
+    and the overall confidence (High: 3/3 reviewers, full coverage, nothing
+    decided 2-1; Low: fewer than 2 reviewers; Medium otherwise), and appends
     each new must-fix finding to review/pass-<n>/corrections.md, numbered after
     the entries already there: its `Required change:` line, then the `Where:`
     (else the row's Location), `Now:` (its `Trigger path:`) and `Test:` lines
@@ -32,8 +29,7 @@ votes --apply
     one (re-spawn the judge), or an
     artifact is malformed (a vote not agree/disagree, a finding voted both
     ways, an `**Overall confidence` line without `reviewers finished: <n>/3`
-    (or `<n>/1` for a pass that called one reviewer) and `coverage:`);
-    nothing is written.
+    and `coverage:`); nothing is written.
 
 review-scope --snapshot | --files | --clear | --next-pass
     --snapshot  marks untracked files intent-to-add, then records the working
@@ -80,7 +76,7 @@ from .proc import git, run
 
 SCRIPTS = Path(__file__).resolve().parent.parent
 PASS_RE = re.compile(r"Latest pass:\s*(\d+)")
-REVIEWERS_RE = re.compile(r"reviewers finished:\s*([0-3])/([13])")
+REVIEWERS_RE = re.compile(r"reviewers finished:\s*([0-3])/3")
 COVERAGE_RE = re.compile(r"coverage:\s*(full|partial)")
 GATE_OPTIONS = {
     "post-plan": ["Approve & build", "Revise plan (tell me what to change)", "Stop"],
@@ -164,32 +160,9 @@ def usable(path):
         return False
 
 
-PANEL_FILE = "PANEL"
-
-
-def write_panel(pass_dir, slots):
-    """Note the reviewers a pass called, when fewer than three (a small fix)."""
-    path = pass_dir / PANEL_FILE
-    if len(slots) < 3:
-        path.write_text(", ".join(slots) + "\n", encoding="utf-8")
-    elif path.exists():
-        path.unlink()
-
-
-def called(pass_dir):
-    """The reviewer slots pass_dir's pass called: all three unless PANEL says."""
-    path = pass_dir / PANEL_FILE
-    if not path.exists():
-        return ["R1", "R2", "R3"]
-    return [s.strip() for s in path.read_text(encoding="utf-8").split(",") if s.strip()]
-
-
 def vote_plan(pass_dir, pending):
-    """{reviewer slot: [finding ids]}: who re-votes on what. A pass that called
-    one reviewer (a small correction) has the other two re-vote."""
+    """{reviewer slot: [finding ids]}: who re-votes on what."""
     slots = [f"R{k}" for k in (1, 2, 3) if usable(pass_dir / f"R{k}.md")]
-    if len(called(pass_dir)) == 1 and slots == called(pass_dir):
-        slots = ["R1", "R2", "R3"]
     plan = {}
     if len(slots) >= 2:
         for row in pending:
@@ -293,7 +266,7 @@ def apply_vote_files(path, text, pass_dir, pending, votes_expected=True):
     text = add_rows(text, "Must-fix", must)
     text = add_rows(text, "Advisory", advisory)
     text = clear_pending(text)
-    text = recount(text, decided_2_1, len(called(pass_dir)))
+    text = recount(text, decided_2_1)
     # Corrections first: it raises before writing if a Required change is missing,
     # so a failure leaves both files as they were.
     add_corrections(text, pass_dir / "corrections.md", coder, where)
@@ -388,9 +361,7 @@ def count_rows(text, name, status=None):
     return 0
 
 
-def recount(text, decided_2_1, total=None):
-    """The header's counts and overall confidence, recomputed. `total` is how
-    many reviewers the pass called (its PANEL file); without it, the header's."""
+def recount(text, decided_2_1):
     open_, fixed = count_rows(text, "Must-fix", "open"), count_rows(text, "Must-fix", "fixed")
     advisory, noise = count_rows(text, "Advisory"), count_rows(text, "Noise")
     head = art.header_line(text, "**Overall confidence")
@@ -398,23 +369,21 @@ def recount(text, decided_2_1, total=None):
     coverage = COVERAGE_RE.search(head)
     if not reviewers or not coverage:
         raise art.ArtifactError("CODE_REVIEW.md: the `**Overall confidence` line does "
-                                "not say `reviewers finished: <n>/<3 or 1>` and `coverage: "
+                                "not say `reviewers finished: <n>/3` and `coverage: "
                                 "full|partial`; re-spawn the judge")
     finished = int(reviewers.group(1))
-    total = total or int(reviewers.group(2))
-    finished = min(finished, total)
     full = coverage.group(1) == "full"
     prior = re.search(r"must-fix decided 2[–-]1:\s*([^>*\n]*)", head)
     earlier = [x.strip() for x in (prior.group(1) if prior else "").split(",")
                if x.strip() and x.strip() != "none"]
     two_one = earlier + [x for x in decided_2_1 if x not in earlier]
-    if finished < min(2, total):
+    if finished < 2:
         level = "Low"
-    elif finished == total and full and not two_one:
+    elif finished == 3 and full and not two_one:
         level = "High"
     else:
         level = "Medium"
-    new_head = (f"**Overall confidence: {level}** — reviewers finished: {finished}/{total}; "
+    new_head = (f"**Overall confidence: {level}** — reviewers finished: {finished}/3; "
                 f"coverage: {'full' if full else 'partial'}; must-fix decided 2–1: "
                 f"{', '.join(two_one) or 'none'}")
     text = text.replace(head, new_head, 1)
