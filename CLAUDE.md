@@ -19,13 +19,24 @@ python3 tools/check-repo.py               # files agree with each other
 python3 -m unittest discover -s tests     # helper-script tests
 ```
 
+Once per clone, turn on the pre-commit hook with `git config core.hooksPath
+.githooks`. It runs `python3 tools/check-identity.py --staged`, which fails when
+a staged file names the person committing: their git name or email, the email's
+local part, their login name or the GitHub username gh is logged in as. Only
+the repo's `<owner>/<repo>` slug and the plugin's author and owner names in
+`.claude-plugin/*.json` may name them. Write a role ("the maintainer") or a
+placeholder instead. It isn't in CI, because a runner's identity is its own;
+without the hook, run it yourself before a push (without `--staged` it reads
+the files on disk, untracked ones included).
+
 `tools/check-repo.py` catches drift a reviewer would miss: the model tables in
 `SKILL.md` and `README.md` against `agents/*.md`, paths the docs name that don't
 exist, an `evals/files/` fixture `evals.json` names that doesn't exist, a script
 the README doesn't mention, a script that isn't executable, a `SKILL.md`
 description over Claude Code's 1024-character limit, an agent file that tells a
-worker to run `cd … && git`, a `$(…)` substitution or a shell variable, and
-`plugin.json` / `marketplace.json` disagreeing. When you add a sync rule below
+worker to run `cd … && git`, a `$(…)` substitution or a shell variable, a
+path from one person's machine (`/Users/<name>`, a folder of your own under
+`~`), and `plugin.json` / `marketplace.json` disagreeing. When you add a sync rule below
 that a script can check, add it there.
 
 ## Changing a helper script
@@ -46,6 +57,7 @@ that a script can check, add it there.
   `tests/test_work.py` (`brief`, `record`, `check-artifact`),
   `tests/test_next.py` (`next`, `pr publish`), `tests/test_parsers.py` (the
   artifact parsers), `tests/test_check_repo.py` (`tools/check-repo.py`),
+  `tests/test_check_identity.py` (`tools/check-identity.py`),
   `tests/test_eval_run.py` (`tools/eval-run.py`) or
   `tests/test_eval_fixtures.py` (the eval fixtures;
   regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
@@ -244,3 +256,10 @@ the types table, in the same PR. A minor or major bump also adds an
 Plain, direct sentences. Say what the pipeline does, and why when it isn't
 obvious. Reference files by their repo path (`skills/auto-dev/references/…`)
 in the README, and by `references/…` inside `SKILL.md`.
+
+No paths from your own machine. Users keep their files wherever they like, so a
+command or example in the docs must not assume a home-folder layout, such as
+your home directory's absolute path or a folder of your own under `~`. Write
+this repo's clone as `/path/to/auto-dev` and say once nearby what to replace it
+with. Paths a tool fixes, such as `~/.claude/agents` or `~/.config/auto-dev`,
+are fine. `tools/check-repo.py` flags the rest.

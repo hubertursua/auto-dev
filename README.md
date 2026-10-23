@@ -510,9 +510,11 @@ tests/                  unit tests for the helper scripts, tools/ and the eval f
   fake_gh/              a fake `gh` that plays back scripted responses
 tools/check-repo.py     checks that the repo's files agree with each other
 tools/check-pr.py       checks a branch name and PR title against the conventions
+tools/check-identity.py checks that no file names the person committing (run by the pre-commit hook)
 tools/eval-run.py       gives each pipeline eval its own branches of the fixture repo, and cleans them up
 ruff.toml               lint config
 .github/                CI workflow and PR template
+.githooks/              the pre-commit hook (turn on with `git config core.hooksPath .githooks`)
 CLAUDE.md               conventions for agents (and people) changing this repo
 UPGRADING.md            what changed in each release, and whether a run in flight resumes
 ```
@@ -526,6 +528,11 @@ ruff check .
 python3 tools/check-repo.py
 python3 -m unittest discover -s tests
 ```
+
+Turn on the pre-commit hook once per clone with `git config core.hooksPath
+.githooks`. It runs `tools/check-identity.py`, which stops a commit when a
+staged file names you: your git name or email, your login name or your GitHub
+username.
 
 Branch and PR conventions, the README checklist, the language-agnostic rules,
 the rules for changing a script and how to run the pipeline evals are in
