@@ -36,7 +36,7 @@ class GitRepoCase(unittest.TestCase):
     """A fresh git repo with one commit, in self.repo."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.repo = self.tmp / "repo"
         self.repo.mkdir()

@@ -4,6 +4,7 @@ Run: python3 -m unittest discover -s tests -v   (from the repo root)
 """
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -364,6 +365,26 @@ class RecordTest(WorkCase):
         (self.dir / "triage" / "human-1.md").write_text(
             "# Required changes\n1. c-77: keep the field name when it is empty\n")
         self.assertEqual(self.cmd("record", "triager", "1").returncode, 0)
+
+    def test_a_triage_file_named_through_a_symlink_is_this_triages_file(self):
+        self.assertEqual(self.cmd("brief", "triager", "--mode", "human").returncode, 0)
+        self.write("triage/human-1.md",
+                   "# Required changes\n1. c-77: keep the field name when it is empty\n")
+        self.write("triage/human-1-checks.md", "# Required changes\n1. 12345: the sort "
+                   "check compares titles, not dates\n")
+        link = self.tmp / "link"
+        link.symlink_to(self.dir)
+        self.returned("triager", 1, next="TRIAGED", blockers="1", acceptance_checks="1",
+                      triage_file=str(link / "triage" / "human-1.md"),
+                      checks_file=str(link / "triage" / "human-1-checks.md"))
+        r = self.cmd("record", "triager", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.returned("triager", 1, next="TRIAGED", blockers="1", acceptance_checks="0",
+                      triage_file=os.path.relpath(self.dir / "triage" / "human-1.md"),
+                      checks_file="none")
+        r = self.cmd("record", "triager", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not this triage's file", r.stdout)
 
     def review_brief(self, mode="review", **sets):
         state = self.state()

@@ -72,6 +72,7 @@ All exit 2 when they could not run — never a pass.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -616,7 +617,7 @@ def derive_triager(data, ad, n):
     triage_file = str(data.get("triage_file", "")).strip()
     checks_file = str(data.get("checks_file", "none")).strip()
     if nxt == "CODE" or (nxt == "TRIAGED" and as_int(data, "blockers") > 0):
-        if triage_file not in expected:
+        if not any(same_path(triage_file, e) for e in expected):
             issues.append(f"triage_file is {triage_file!r}, not this triage's file "
                           f"({' or '.join(sorted(expected))})")
         elif entries(triage_file) == 0:
@@ -625,12 +626,19 @@ def derive_triager(data, ad, n):
             issues += coder_bound(Path(triage_file), ad, triage_file)
     if nxt == "TRIAGED" and as_int(data, "acceptance_checks") > 0:
         want = str(triage / f"human-{n}-checks.md")
-        if checks_file != want:
+        if not same_path(checks_file, want):
             issues.append(f"checks_file is {checks_file!r}, not {want}")
         elif entries(checks_file) == 0:
             issues.append(f"acceptance_checks is {data.get('acceptance_checks')} but "
                           f"{checks_file} holds no entry")
     return issues
+
+
+def same_path(given, want):
+    """Whether an absolute path a worker returned names `want`, through any
+    symlink (on macOS the temp dir's /var is /private/var). A relative path never
+    does: the coder it is handed to may run in another directory."""
+    return os.path.isabs(given) and os.path.realpath(given) == os.path.realpath(want)
 
 
 def lint_passes(path):

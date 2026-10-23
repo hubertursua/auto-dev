@@ -49,7 +49,7 @@ class RunCase(unittest.TestCase):
     """A bare origin, a clone of it in self.repo, and a fake gh on PATH."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.env = {**BASE_ENV,
                     "PATH": f"{FAKE_GH}{os.pathsep}{os.environ.get('PATH', '')}",

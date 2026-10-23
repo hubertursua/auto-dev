@@ -8,6 +8,7 @@ skills/auto-dev/templates/. Examples are in TypeScript, as CLAUDE.md asks.
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -48,7 +49,7 @@ class ArtifactCase(unittest.TestCase):
     """A worktree-like folder with .auto-dev/ holding the fixture artifacts."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)], check=False))
         self.dir = self.tmp / ".auto-dev"
         acc = self.dir / "acceptance"
