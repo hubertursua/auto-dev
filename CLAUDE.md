@@ -248,6 +248,8 @@ the PR's *Testing* section that the review ran.
 **PR bodies** follow `.github/pull_request_template.md`: *Summary* (what and
 why), *Testing* (what you ran and saw, before and after for a fix, and what was
 not tested), *Docs*, and *Not included* when something is left for later.
+Leave out Claude Code session info, such as a `https://claude.ai/code/session_…`
+link, in the PR body and in the squash message built from its Summary.
 
 **Commits on the branch** are squashed away, so they only need to make sense
 during review: a short imperative subject, one logical change each. Fix review
