@@ -363,6 +363,33 @@ class ResumeTest(RunCase):
             self.assertIn("phase: 2 — Define", r.stdout)
             self.assertIn("session: S1 — Plan", r.stdout)
 
+    def two_runs(self):
+        self.assertEqual(self.init().returncode, 0)
+        r = self.autodev("init", "--repo", self.repo, "--slug", "dark-mode",
+                         "--task", "Add a dark mode", "--profile", self.profile,
+                         "--max-wait", "30")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return self.tmp / "app-dark-mode"
+
+    def test_several_open_runs_ask_from_the_main_checkout(self):
+        self.two_runs()
+        r = self.resume()
+        self.assertTrue(r.stdout.startswith("ASK"), r.stdout)
+
+    def test_inside_a_runs_worktree_that_run_resumes(self):
+        other = self.two_runs()
+        for tree in (other, other / "sub"):  # its root or a folder in it
+            tree.mkdir(exist_ok=True)
+            r = self.autodev("resume", "--repo", tree)
+            self.assertTrue(r.stdout.startswith(f"RESUME: {other}"), r.stdout)
+        # A finished run where the session started is reported, not skipped.
+        self.autodev("gate", "jira", "stop", "--dir", other / ".auto-dev")
+        r = self.autodev("resume", "--repo", other)
+        self.assertTrue(r.stdout.startswith(f"FINISHED: {other}"), r.stdout)
+        # A named task still wins over where the session started.
+        r = self.autodev("resume", "--repo", other, "--task", "Add due dates to todos")
+        self.assertTrue(r.stdout.startswith(f"RESUME: {self.worktree}"), r.stdout)
+
     def test_near_miss_asks(self):
         self.assertEqual(self.init().returncode, 0)
         r = self.resume("--task", "due dates")
@@ -393,6 +420,166 @@ class ResumeTest(RunCase):
         self.assertTrue(r.stdout.startswith(f"OLD-VERSION: {old}"), r.stdout)
         r = self.resume("--task", "Fix the expiry message")
         self.assertTrue(r.stdout.startswith("OLD-VERSION"), r.stdout)
+
+
+class AdoptWorktreeTest(RunCase):
+    """`init` run from a worktree the user made uses it instead of a new one."""
+
+    def make_worktree(self, *how):
+        self.mine = self.tmp / "app-mine"
+        self.sh("git", "fetch", "-q", "origin", cwd=self.repo)
+        self.sh("git", "worktree", "add", "-q", str(self.mine), *how, "origin/main",
+                cwd=self.repo)
+        self.dir = self.mine / ".auto-dev"
+
+    def init_here(self, task="Add due dates to todos"):
+        return self.autodev("init", "--repo", self.mine, "--slug", "due-dates",
+                            "--task", task, "--profile", self.profile,
+                            "--max-wait", "30")
+
+    def test_runs_in_the_worktree_and_keeps_its_branch(self):
+        self.make_worktree("-b", "my-branch")
+        r = self.init_here()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"INIT: {self.mine}", r.stdout)
+        self.assertFalse(self.worktree.exists())  # no ../app-due-dates
+        self.assertFalse((self.tmp / "app-mine-due-dates").exists())
+        state = self.state()
+        self.assertEqual(state["worktree"], str(self.mine))
+        self.assertEqual(state["branch"], "my-branch")
+        self.assertEqual(state["repo"]["main_checkout"], str(self.mine))
+        self.assertEqual((self.mine / ".env").read_text(), "SECRET=1\n")  # seeded
+        self.assertTrue((self.mine / "setup-ran.txt").exists())
+        self.assertIn("worktree the user made", json.dumps(state["notes"]))
+        self.assertEqual(self.sh("git", "status", "--porcelain", cwd=self.mine), "")
+        r = self.autodev("resume", "--repo", self.repo)
+        self.assertTrue(r.stdout.startswith(f"RESUME: {self.mine}"), r.stdout)
+
+    def test_keeps_a_seeded_file_already_there(self):
+        self.make_worktree("-b", "my-branch")
+        (self.mine / ".env").write_text("MINE=1\n")
+        self.assertEqual(self.init_here().returncode, 0)
+        self.assertEqual((self.mine / ".env").read_text(), "MINE=1\n")
+
+    def test_detached_head_gets_a_branch_at_the_same_commit(self):
+        self.make_worktree("--detach")
+        head = self.sh("git", "rev-parse", "HEAD", cwd=self.mine)
+        r = self.init_here()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["branch"], "feat/due-dates")
+        self.assertEqual(self.sh("git", "symbolic-ref", "--short", "HEAD",
+                                 cwd=self.mine), "feat/due-dates\n")
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD", cwd=self.mine), head)
+
+    def test_commits_already_on_the_branch_are_noted(self):
+        self.make_worktree("-b", "my-branch")
+        (self.mine / "extra.ts").write_text("export const two = 2;\n")
+        self.sh("git", "add", "-A", cwd=self.mine)
+        self.sh("git", "commit", "-q", "-m", "start", cwd=self.mine)
+        self.assertEqual(self.init_here().returncode, 0)
+        self.assertIn("my-branch already holds 1 commit(s) not on origin/main",
+                      json.dumps(self.state()["notes"]))
+
+    def test_uncommitted_changes_stop(self):
+        self.make_worktree("-b", "my-branch")
+        (self.mine / "app.ts").write_text("export const one = 3;\n")
+        r = self.init_here()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("uncommitted changes", r.stderr)
+        self.assertFalse(self.dir.exists())
+        self.assertEqual((self.mine / "app.ts").read_text(), "export const one = 3;\n")
+
+    def test_failure_keeps_the_worktree_and_drops_a_created_branch(self):
+        self.make_worktree("--detach")
+        self.profile.write_text(PROFILE.replace('[".env"]', '["app.ts"]'))
+        r = self.init_here()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not gitignored", r.stderr)
+        self.assertTrue((self.mine / "app.ts").exists())
+        self.assertFalse(self.dir.exists())
+        self.assertEqual(self.sh("git", "branch", "--list", "feat/due-dates",
+                                 cwd=self.repo), "")
+        self.profile.write_text(PROFILE)
+        self.assertEqual(self.init_here().returncode, 0)
+
+    def test_rerun_reattaches_and_another_task_stops(self):
+        self.make_worktree("-b", "my-branch")
+        self.assertEqual(self.init_here().returncode, 0)
+        self.assertEqual(self.init_here().returncode, 0)  # the same task reattaches
+        r = self.init_here(task="Rename the settings page")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("already holds another task's run", r.stderr)
+
+    def test_a_worktree_on_the_base_branch_gets_a_new_one(self):
+        self.sh("git", "switch", "-q", "--detach", cwd=self.repo)  # frees main
+        self.mine = self.tmp / "home"
+        self.sh("git", "worktree", "add", "-q", str(self.mine), "main", cwd=self.repo)
+        r = self.init_here()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        new = self.tmp / "home-due-dates"
+        self.assertIn(f"INIT: {new}", r.stdout)
+        self.assertNotIn("adopted", r.stdout)
+        self.assertFalse((self.mine / ".auto-dev").exists())
+
+    def test_a_worktree_on_the_default_branch_is_not_adopted(self):
+        # The base is `develop`; a worktree on `main` (the default) is not the
+        # run's branch either: pushing to it would push to main.
+        self.sh("git", "push", "-q", "origin", "main:develop", cwd=self.repo)
+        self.sh("git", "switch", "-q", "--detach", cwd=self.repo)  # frees main
+        self.mine = self.tmp / "home"
+        self.sh("git", "worktree", "add", "-q", str(self.mine), "main", cwd=self.repo)
+        self.sh("git", "config", "core.excludesFile", str(self.tmp / "ignore"),
+                cwd=self.mine)
+        (self.tmp / "ignore").write_text(".auto-dev.yml\n")
+        (self.mine / ".auto-dev.yml").write_text("branches:\n  base: develop\n")
+        r = self.init_here()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"INIT: {self.tmp / 'home-due-dates'}", r.stdout)
+        self.assertFalse((self.mine / ".auto-dev").exists())
+
+    def test_init_says_it_adopted_and_counts_commits_ahead(self):
+        self.make_worktree("-b", "my-branch")
+        (self.mine / "extra.ts").write_text("export const two = 2;\n")
+        self.sh("git", "add", "-A", cwd=self.mine)
+        self.sh("git", "commit", "-q", "-m", "start", cwd=self.mine)
+        r = self.init_here()
+        self.assertIn("adopted: yes", r.stdout)
+        self.assertIn("ahead: 1", r.stdout)
+
+    def test_a_stray_auto_dev_dir_stops(self):
+        self.make_worktree("-b", "my-branch")
+        (self.mine / ".auto-dev").mkdir()
+        (self.mine / ".auto-dev" / ".gitignore").write_text("*\n")
+        r = self.init_here()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("holds no 4.x run", r.stderr)
+
+    def test_unrelated_history_stops(self):
+        self.make_worktree("-b", "my-branch")
+        self.sh("git", "switch", "-q", "--orphan", "lonely", cwd=self.mine)
+        self.sh("git", "commit", "-q", "--allow-empty", "-m", "alone", cwd=self.mine)
+        r = self.init_here()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("shares no history with origin/main", r.stderr)
+        self.assertFalse(self.dir.exists())
+
+    def test_a_missing_base_on_origin_stops(self):
+        self.make_worktree("-b", "my-branch")
+        self.sh("git", "config", "core.excludesFile", str(self.tmp / "ignore"),
+                cwd=self.mine)
+        (self.tmp / "ignore").write_text(".auto-dev.yml\n")
+        (self.mine / ".auto-dev.yml").write_text("branches:\n  base: nowhere\n")
+        r = self.init_here()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("origin/nowhere does not exist", r.stderr)
+
+    def test_cleanup_never_removes_the_users_worktree(self):
+        self.make_worktree("-b", "my-branch")
+        self.assertEqual(self.init_here().returncode, 0)
+        r = self.autodev("cleanup-worktree", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("user's own worktree", r.stdout + r.stderr)
+        self.assertTrue(self.mine.exists())
 
 
 class StateCommandsTest(RunCase):

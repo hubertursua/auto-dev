@@ -1,7 +1,7 @@
 """autodev.py resume — find the run to continue, if any.
 
 Usage:
-    autodev.py resume [--repo <main checkout>] [--task "<ticket or task>"] [--json]
+    autodev.py resume [--repo <the directory you are in>] [--task "<ticket or task>"] [--json]
 
 Scans every tree `git worktree list` names for `.auto-dev/state.json` (a 4.x
 run) or a `WORK_LOG.md` with no state.json (a 3.x run), and prints one
@@ -24,6 +24,9 @@ decision on the first line:
 
 Pass --task whenever the user states the task (its Jira key or what it does);
 omit it on a bare `auto-dev continue` or a loose name like "the dark-mode run".
+Without --task, the run in the worktree --repo is in wins: starting inside a
+run's worktree decides on that run (RESUME, FINISHED or OLD-VERSION) even when
+others are open.
 Being given a task never resumes a run that doesn't match it.
 
 A run whose setup failed is open: RESUME at Phase 1, with the
@@ -92,6 +95,16 @@ def candidates(repo):
     return found
 
 
+def current_tree(repo):
+    """The root of the checkout `repo` is in, resolved; None when it is in
+    none (a bare repo, or inside .git/)."""
+    try:
+        top = git(str(Path(repo).resolve()), "rev-parse", "--show-toplevel")
+    except CommandError:
+        return None
+    return Path(top.strip()).resolve() if top.strip() else None
+
+
 def describe(tree, state):
     opened = st.first_open_phase(state)
     if opened is None:
@@ -144,6 +157,12 @@ def main(args):
             emit(args.json, "FRESH", "no run here matches the task: start a fresh run")
             return 0
         return decide_one(matched[0], args)
+    here = current_tree(args.repo) if found else None
+    mine = [i for i in found if Path(i[1]).resolve() == here]
+    if mine:  # started inside a run's worktree: that is the run
+        if mine[0][0] == "broken":
+            unreadable(mine)
+        return decide_one(mine[0], args)
     open_runs = [i for i in found if i[0] == "v4"
                  and st.run_state(i[3]) in ("open", "held")]
     if len(open_runs) == 1:

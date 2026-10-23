@@ -815,6 +815,25 @@ class ShipTest(NextCase):
                (self.tmp / "gh.log").read_text().splitlines()]
         self.assertEqual(sum(1 for a in log if a[:2] == ["pr", "create"]), 1)
 
+    def test_a_worktree_the_user_made_is_never_offered_for_removal(self):
+        sha, _ = self.open_pr()
+        state = self.state()
+        state["repo"]["adopted"] = True  # as `init` writes it in the user's worktree
+        self.write_state(state)
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none")
+        self.after(self.next(0))
+        self.after(self.next(5), "Merge PR to main")
+        self.next(0)
+        self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        out = self.next(3)  # done: no worktree question
+        self.assertNotIn("cleanup-worktree", out["ACTION"])
+        self.assertNotIn("cleanup", [g["gate"] for g in self.state()["gates"]])
+        self.assertEqual(self.state()["phases"]["6"]["status"], "done")
+
     def test_a_security_must_fix_is_verified_then_corrected(self):
         self.ship_ready()
         jobs = self.panel(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))

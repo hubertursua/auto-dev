@@ -152,6 +152,7 @@ wasn't. A run that stopped early uses the same shape and says where it stopped.
 
 The last question (exit 5) is whether to remove the worktree. On `Remove it`,
 `next` exits 3 with a `cleanup-worktree` command: run it from the main checkout.
+A run that started in a worktree the user made never asks: that worktree stays.
 If git refuses (exit 1), leave the tree and tell the user which files are in
 it.
 

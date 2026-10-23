@@ -440,10 +440,13 @@ def ended(c, how):
         rows.append("The run is held. Saying `auto-dev continue` in a new session "
                     "re-asks the gate that held it.")
     elif c.state.get("size") == "OVERSIZED":
+        kept = (f"The run's files are in the user's own worktree {c.wt}, which stays."
+                if c.state["repo"].get("adopted") else
+                f"The worktree is kept: {c.wt} (remove it with "
+                f"`git worktree remove {q(c.wt)}`).")
         rows.append("The task is too big for one PR. Tell the user Define's reasons, the "
                     "subsystems it found and its suggested split lines, below. Jira was "
-                    f"not moved. The worktree is kept: {c.wt} (remove it with "
-                    f"`git worktree remove {q(c.wt)}`).")
+                    f"not moved. {kept}")
         rows += size_check(c)
     rows.append(f"State and artifacts: {c.ad}")
     return stop(rows, f"the run is {how}")
@@ -1880,6 +1883,10 @@ def main_step(c, sha):
                          f"the PR ({failed}): they are in CODE_REVIEW.md and "
                          "SECURITY_REVIEW.md" if failed else ""),
                       "the PR is merged", AFTER=[c.cmd("mark", "final-report")])
+    if c.state["repo"].get("adopted"):  # the user made the worktree: never remove it
+        c.finish(6, f"merged PR #{p6.get('pr')}")
+        return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
+                "RULE": "the run used the user's own worktree, which stays"}
     gate = c.gate("cleanup")
     if gate is None:
         return ask(c, "the worktree", [(f"The run is finished. Remove the worktree {c.wt}? "
