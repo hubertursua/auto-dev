@@ -227,14 +227,19 @@ BLOCKED_ONCE = ("Your last spawn for this job returned `blocked`, and the run sp
                 "for a reason a new attempt can't fix, and say what it is.")
 
 
-def blocked_last(state, worker):
-    """Whether the newest result since the last resume is this worker's, blocked.
-    Never for the code reviewers, who run in parallel: the newest result may be
-    another slot's."""
+def blocked_last(state, worker, mode=None):
+    """Whether the newest result since the last resume is this worker's (in
+    `mode`), blocked. Never for the code reviewers, who run in parallel: the
+    newest result may be another slot's. Their results are skipped for the
+    others too, so the security reviewer spawned beside them is told, and so
+    are the same worker's results in another mode (the judge's two modes run
+    in parallel)."""
     if worker == "code-reviewer":
         return False
     log = [e for e in state.get("log") or []
-           if e.get("seq", 0) > state.get("resumed_seq", 0)]
+           if e.get("seq", 0) > state.get("resumed_seq", 0)
+           and e.get("worker") != "code-reviewer"
+           and not (e.get("worker") == worker and e.get("mode") != mode)]
     return bool(log) and log[-1].get("worker") == worker and \
         log[-1].get("status") == "blocked"
 
@@ -315,7 +320,7 @@ def write_brief(state, where, worker, mode, given, retry=None):
         n = next_number(directory, worker)
         auto = auto_values(worker, n, state, ad, mode)
         previous = saved_issues(state, worker, retry)
-        if previous is None and blocked_last(state, worker):
+        if previous is None and blocked_last(state, worker, mode):
             previous = BLOCKED_ONCE
     needed = briefs.slots(worker, mode)
     values, missing = {}, []

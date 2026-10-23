@@ -31,7 +31,7 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
 │           Acceptance tester  held-out checks from the spec, proven to fail, sealed [optional gate]
 ├─ Phase 4  Coder ......... code + tests (given only the plan)
 ├─ Phase 5  Cleanup + verifier  /simplify → quality gate → RUN the checks vs. the withheld spec
-└─ Phase 6  orch + reviewers  code review panel → security review → [GATE] PR + CI → [GATE] main
+└─ Phase 6  orch + reviewers  code review panel ∥ security review → [GATE] PR + CI → [GATE] main
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
 ```
 
@@ -199,7 +199,15 @@ uncommitted working tree, and you have seen the results:
    correctness or test finding that only one reviewer raised goes to
    the other two for a re-vote.
 2. **Security review.** One security reviewer runs `/security-review` over the
-   whole change, and the judge double-checks every finding rated High or Medium.
+   whole change, alongside the panel and on the same tree, and the judge
+   double-checks every finding rated High or Medium while it consolidates the
+   panel. The judge marks each security lead the panel raised as covered by a
+   security finding or passed on. A lead passed on that no security run has seen
+   goes to the next pass's security review, or, when nothing else is open, to a
+   security run of its own.
+
+When both reviews leave must-fix findings open, one correction fixes them all,
+for one round of the budget, and the next pass reviews it.
 
 A **rubric** decides what must be fixed and what is noise:
 
@@ -711,6 +719,22 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 4.3
+
+- **The security review runs alongside the code review panel.** It used to
+  start only after the panel and its corrections had settled, so a security
+  finding cost a second correction and a second panel pass. Now `next` spawns
+  the security reviewer in the same message as the three code reviewers, the
+  judge verifies the security findings while it consolidates the panel, and one
+  correction (one round) fixes what both left open: the coder gets both
+  required-changes files. A security lead the panel raises that the security
+  review hasn't seen goes to the next pass's security review, or to a security
+  run of its own when nothing else is open.
+- **A run in flight resumes.** A review pass started on 4.3 or earlier, whose
+  panel ran without the security reviewer, gets its security review as soon as
+  `next` sees it missing: before the judge if the panel was still running,
+  after it otherwise. Every new pass uses the new order.
 
 ## Upgrading from 4.2
 

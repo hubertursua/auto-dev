@@ -14,10 +14,11 @@ moving Jira, watching CI after the merge, and the final report. Each is below.
 Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
 see in S3, in order:
 
-1. Three `code-reviewer`s in one message, then the `review-judge`, maybe
-   re-votes by the reviewers, then a security reviewer and the judge again.
-   A must-fix finding runs a correction (`coder`, `cleanup`, `verifier`) and
-   the panel reviews the files it changed. A finding that a held-out
+1. Three `code-reviewer`s and a security reviewer in one message, then the
+   `review-judge` (twice in one message when the security review found
+   something to verify), maybe re-votes by the reviewers. Must-fix findings
+   from either review run one correction (`coder`, `cleanup`, `verifier`), and
+   the panel and the security reviewer review it. A finding that a held-out
    acceptance check is wrong goes to the `acceptance-tester` in repair mode,
    never the coder; it may fix the check or answer `STANDS` with its reason,
    and a check that stands is not sent back a second time.
