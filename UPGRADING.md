@@ -1,0 +1,230 @@
+# Upgrading auto-dev
+
+What changed in each release, and whether a run started on the previous version
+can resume on the new one. Newest first. The current version is in
+`.claude-plugin/plugin.json`.
+
+## Upgrading from 4.4
+
+- **A correction's re-review skips the nested skills.** A pass that reviews a
+  correction used to run `/code-review` in each of the three reviewers and
+  `/security-review` in the security reviewer. Now the three code reviewers
+  review the correction and everything downstream of it themselves, and the
+  security reviewer gets a `focus` naming the correction, re-checks it and what
+  it reaches, and carries its earlier findings forward. The panel stays at
+  three reviewers.
+- **A run in flight resumes.** A reviewer briefed before 4.5 has no `focus` and
+  runs as before. Every pass started on 4.5 uses the new briefs.
+
+## Upgrading from 4.3
+
+- **The security review runs alongside the code review panel.** It used to
+  start only after the panel and its corrections had settled, so a security
+  finding cost a second correction and a second panel pass. Now `next` spawns
+  the security reviewer in the same message as the three code reviewers, the
+  judge verifies the security findings while it consolidates the panel, and one
+  correction (one round) fixes what both left open: the coder gets both
+  required-changes files. A security lead the panel raises that the security
+  review hasn't seen goes to the next pass's security review, or to a security
+  run of its own when nothing else is open.
+- **A run in flight resumes.** A review pass started on 4.3 or earlier, whose
+  panel ran without the security reviewer, gets its security review as soon as
+  `next` sees it missing: before the judge if the panel was still running,
+  after it otherwise. Every new pass uses the new order.
+
+## Upgrading from 4.2
+
+- **The plan sets the code reviewers' effort.** `IMPLEMENTATION.md` has a new
+  `Review effort: high | xhigh — <reason>` line, which `check-artifact` checks
+  when present. `next` prints an `EFFORT` line after each code reviewer's
+  `PROMPT` (only for code reviewers), and `SKILL.md` tells the orchestrator to
+  pass it as the Agent tool's `effort` parameter. The state's review passes
+  record the effort they ran at.
+- **A run in flight resumes.** A plan written before 4.3 has no `Review
+  effort:` line, which means `xhigh`, the effort the reviewers ran at before.
+
+## Upgrading from 4.1
+
+- **A test-gap finding asks for the whole gap.** A code reviewer who finds a
+  changed behavior under-tested now lists every reachable case no test covers
+  in one finding, the judge merges tests findings about the same behavior, and
+  the required change asks the coder for a test of each case. Before, each
+  review pass tended to find the next missing case, and each one cost a full
+  correction round and re-review. The rule is in
+  `skills/auto-dev/templates/rubric.md`.
+- **A run in flight resumes.** Only agent files and templates changed; the
+  next review pass uses the new rule.
+
+## Upgrading from 4.0
+
+- **Cleanup runs before the verifier.** Phase 5 used to run the verifier, then
+  the cleanup agent, then the verifier again. Now `next` installs the sealed
+  acceptance checks itself (and lists them in `acceptance/INSTALLED`), the
+  cleanup agent simplifies the change and runs the quality gate, and the
+  verifier's first pass checks the cleaned code. On the happy path the verifier
+  runs once instead of twice. A correction still runs coder, cleanup, verifier,
+  and a check the acceptance tester repairs goes through cleanup's quality
+  gate before the verifier's re-check.
+  If a sealed check's path already holds another file, nothing is installed
+  and the verifier goes first, as before, to report the conflict.
+- **A run in flight resumes.** A run that has already started Phase 5 on 4.0
+  finishes it in the old order. One that hasn't reached Phase 5 uses the new
+  one.
+
+## Upgrading from 3.9
+
+4.0 is a breaking release.
+
+- **One PR per run.** The scope call is gone. The Define agent now returns a size
+  check: a task that fits one PR runs every step, and one that doesn't is handed
+  back to you with suggested split lines. auto-dev no longer splits a task into
+  sub-tasks or opens several PRs, and the TRIVIAL fast path is gone, so the
+  planner writes every plan and the `coder-trivial` worker is removed.
+- **Jira moves later.** A ticket moves to In Progress after the size check, not
+  in Phase 1, so a task handed back never shows as started.
+- **The ledger changed.** The run's state lives in `.auto-dev/state.json`,
+  written only by `skills/auto-dev/scripts/autodev.py`; `WORK_LOG.md` is
+  generated from it for people to read. Its header has `Worktree`, `Size` and
+  `High risk` lines in place of `Control worktree` and `Mode`.
+- **Python 3.9+ and PyYAML are required** by `autodev.py`.
+- **Workers write the fixes.** The verifier and the review judge write the
+  required changes the coder gets; the Define and plan reviewers write exact
+  FIX blocks that a script applies; the planner settles a `BLOCKED` step; a new
+  `triager` worker reads red CI and human PR comments. The orchestrator no
+  longer writes correction briefs or edits `SPEC.md` and `IMPLEMENTATION.md`.
+- **Briefs live in the agent files.** Each worker's instructions are in
+  `agents/<name>.md` (its system prompt); `autodev.py brief` writes only the
+  values that vary, and the spawn prompt is one line. Every worker ends with an
+  `auto-dev-result` block, which `autodev.py record` checks against what it
+  wrote. Templates and the rubric moved to `skills/auto-dev/templates/`.
+- **`autodev.py next` drives the run.** It prints the one next action from the
+  run's state, so the orchestrator no longer works out the order of steps,
+  when to spend a round, or how to assemble the PR description; `pr publish`
+  opens or refreshes the PR. `resume` now records that a new session holds the
+  run, and un-holds a gate so it is asked again.
+- **Any model runs the orchestrator.** `SKILL.md` is now the `next` loop and
+  its hard rules, with one short runbook per session
+  (`skills/auto-dev/references/S1-plan.md`, `S2-build.md`, `S3-ship.md`) and
+  one file of shared tables. The old phase references are gone. No session
+  asks you to switch models.
+- **Checkpoints count events, not tokens.** `next` ends a long session after 80
+  events (about 35 workers) and asks you to continue in a fresh session.
+- **No more by-hand fallbacks.** Without python3 3.9+ and PyYAML the run stops
+  in Phase 1. `resume-point.py` is removed: `autodev.py resume` finds the run.
+- **`init` finds the security directives** from `security_docs`, or the repo's
+  `SECURITY.md`, `.github/SECURITY.md` and `docs/security/*.md`.
+- **The PR follows the repo's PR template and links the ticket.** The
+  description gets the template's sections, with a box of its checklist ticked
+  only when the run's files show it is true, and `pr_review.inline_comments`
+  now posts once, after the PR opens, only the review findings left open or
+  advisory (3.x posted the Phase 6a findings). `record` checks every file a
+  worker says it wrote against its template, and refuses a plan, or a plan
+  reviewer's FIX, that copies `SPEC.md`'s wording. A push to the PR branch can
+  now be brought in and re-checked instead of ending the run.
+- **No staging branch.** The staging gate, the direct merge into staging and
+  `autodev.py merge-staging` are gone: the PR targets the base branch and the
+  main gate is the only merge gate. A `staging` branch on origin is ignored, and
+  `validate-config.py` refuses `branches.staging` in `.auto-dev.yml`: delete
+  the key.
+
+A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
+and start again.
+
+## Upgrading from 3.8
+
+3.9 keeps the proof that the held-out checks failed on the old code (see the
+README's *How the build is verified*). The acceptance tester saves each condition's run on the
+untouched tree as `acceptance/base-run/C<n>.txt`, and `MANIFEST.md` gains
+*Covers* and *Level* columns. The orchestrator checks that every edge case has a
+check or a reason it can't have one, and the verifier rates a condition Strong
+only when its checks cover both its example and its edge case and the saved run
+shows them failing for the right reason. The PR description quotes that run.
+
+A run in flight resumes on 3.9. A run whose Phase 3 finished on 3.8 has no
+`base-run/` and no *Covers* column, and the tester is not run again to add them.
+The verifier trusts `MANIFEST.md`'s one-line *Base run* note, as before, and
+says so in `SPEC_EVAL.md`; it reads each check to see what it covers. The PR
+description then leaves out the old-code output. A verifier re-check on 3.9 can
+rate a condition lower than 3.8 did (Adequate instead of Strong, when no check
+covers its edge case or a check is below the level the spec asks for) and can
+report a held-out check as too weak; a repair that follows spends a round as
+usual.
+
+## Upgrading from 3.7
+
+3.8 rewrites the PR description for reviewers who don't know auto-dev (see
+*How the build is verified*). The verifier now writes each `evidence/C<n>.txt`
+in a fixed shape (expected, command, result, the last lines of output) for the
+description to quote. A run in flight resumes on 3.8: only the description
+changes. An evidence file written by an older verifier may have no output in
+it; that requirement's entry then leaves the output block out. A PR opened on
+3.7 gets the new sections the next time its description is refreshed.
+
+## Upgrading from 3.6
+
+3.7 stamps every report that judges the code (`SPEC_EVAL.md`, `lint/*.md`,
+`CODE_REVIEW.md`, `SECURITY_REVIEW.md`) with a `Tree:` line naming the code it
+checked, and adds `scripts/check-fresh.py`, which compares the stamps with the
+code at each step that relies on them. The PR description gains a `Checked at
+commit` line, and the main merge is locked to the checked commit with
+`gh pr merge --match-head-commit`. If someone pushes to the PR before the main
+gate, the pipeline checks their commits before asking you. A run in flight
+resumes on 3.7: its reports have no stamp, which reads as stale, so the next
+check re-runs the verifier, the quality gate and the reviews before going on.
+Those re-runs spend no iteration budget.
+
+## Upgrading from 3.5
+
+3.6 removes the shipped stack profiles (Elixir, and the `default` discovery
+fallback) along with the `profiles/` folder. The first run on each repo now has the new `profiler`
+worker research the profile, and pauses once for you to confirm it, with an
+offer to save it to `~/.config/auto-dev/profiles/` so later runs skip the
+pause (see the README's *Stack profiles*). `.auto-dev.yml` keeps every key; `stack:` now only
+names the stack and no longer selects a profile, and the
+validator warns when it is set without `setup` and `gate`. A repo whose `.auto-dev.yml`
+sets both `setup` and `gate` runs as before, with no research and no pause.
+A run in flight resumes on 3.6: Phase 1 never runs again on a resume, and its
+`profile.md` is read as written.
+
+## Upgrading from 3.4
+
+3.5 moves the Elixir-only `dexter` rule out of `SKILL.md` into a new optional
+profile key, `symbol_lookup`, which any profile or `.auto-dev.yml` can set.
+Phase 1 records the resolved lookup in `profile.md`. A run in flight can resume
+on 3.5: a `profile.md` written by 3.4 has no _Symbol lookup_ line, and the
+orchestrator then uses `grep -n`.
+
+## Upgrading from 3.3
+
+3.4 adds Example, Edge and Verify by lines under every `SPEC.md` condition, an
+ambiguity probe in the Define review, and a mutation step in the verifier
+(`scripts/mutate.py`, the `mutation.max` key in `.auto-dev.yml`). A run with a
+3.3 `SPEC.md` still works: the acceptance tester falls back to the condition's
+own words, and the mutation step needs nothing from the spec.
+
+## Upgrading from 3.2
+
+3.3 moves the Phase 5 acceptance check from the orchestrator to two new workers:
+the `acceptance-tester`, which runs at the end of Phase 3, and the `verifier`.
+It adds `acceptance/` and `evidence/` to `.auto-dev/`, an evidence tier and a
+test-integrity section to `SPEC_EVAL.md`, and `scripts/check-tests.py`. A run
+whose Phase 3 is already done has no sealed checks: finish it on 3.2, or re-run
+its Phase 3 on 3.3 before the build.
+
+## Upgrading from 3.1
+
+3.2 replaces the single PR reviewer, which ran after the PR was opened, with a
+code review panel and a separate security review that run before the PR gate.
+`PR_REVIEW.md` is replaced by `CODE_REVIEW.md` and `SECURITY_REVIEW.md`, and the
+`pr-reviewer` agents by `code-reviewer`, `review-judge`, `security-reviewer` and
+`security-reviewer-sensitive`. A run that has not reached Phase 6 resumes
+normally. A run already in Phase 6 should be finished on 3.1.
+
+## Upgrading from 2.x
+
+3.0 restructures the pipeline from ten phases to six and changes the artifact set:
+`TICKET.md` and `ACCEPTANCE_CRITERIA.md` are merged into `SPEC.md`,
+`CODING_TODO.md` is dropped (the plan's build sequence is the coder's worklist),
+and `IMPLEMENTATION_EVAL.md` is dropped along with the plan-adherence check. A run
+started on 2.x cannot be resumed on 3.0 — its `.auto-dev/` and its `WORK_LOG.md`
+phase table won't match. Finish in-flight runs before upgrading.

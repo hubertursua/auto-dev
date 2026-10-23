@@ -71,9 +71,13 @@ that a script can check, add it there.
   The full eval suite is slow and needs a GitHub-hosted fixture repo, so PRs
   usually don't run it. Say so in the PR's Testing section. When you do run
   evals, give each one its own branches of the fixture repo with
-  `tools/eval-run.py setup`, and remove them with `tools/eval-run.py cleanup`
-  once the evals are scored. Never create or delete a repo per eval: deleting
-  one needs a token that can delete any repo the user can reach.
+  `python3 tools/eval-run.py setup --repo <owner>/<name> --run <run> --eval <id>`,
+  and once the evals are scored remove the run's PRs, branches, run-named
+  secrets and clones with `python3 tools/eval-run.py cleanup --repo
+  <owner>/<name> --run <run>`. This needs push access and `gh` with the `repo`
+  scope (plus `workflow` to push a CI change). The fixture's CI must run on PRs
+  to any branch and on pushes to `eval/**`. Never create or delete a repo per
+  eval: deleting one needs a token that can delete any repo the user can reach.
 
 ## Keep auto-dev language-agnostic
 
@@ -139,6 +143,11 @@ against this list and edit each README section it touches:
 | the repo's folders                                         | *Repository layout* |
 | install steps or the plugin/marketplace name               | *Install* |
 
+The README is for someone deciding to use auto-dev or running it: what each
+step does and why, not every rule behind it. Keep each section to a summary and
+link to the reference or agent file that holds the detail, rather than copying
+it in. What changed in a release goes in `UPGRADING.md`, not the README.
+
 A pure wording fix inside `references/` that changes no behavior needs no README
 change. If you're unsure, check: would someone reading only the README now be
 wrong about something? If yes, fix the README.
@@ -149,8 +158,8 @@ wrong about something? If yes, fix the README.
   table in `README.md` (_Models and effort_), and each `agents/<name>.md`
   frontmatter must agree.
 - **Version.** Bump `.claude-plugin/plugin.json` as _Branches, commits and
-  PRs_ says. An *Upgrading from X.Y* section in the README (newest first) says
-  what changed and whether a run in flight can resume on the new version.
+  PRs_ says. An *Upgrading from X.Y* section in `UPGRADING.md` (newest first)
+  says what changed and whether a run in flight can resume on the new version.
 - **Descriptions.** `plugin.json` and `marketplace.json` carry the same plugin
   description.
 - **Evals.** When behavior changes, update the expectations in
@@ -228,7 +237,7 @@ Bring in `main` by merging it, not rebasing, once a review has started.
 
 **Versioning.** The version in `.claude-plugin/plugin.json` follows the bump in
 the types table, in the same PR. A minor or major bump also adds an
-*Upgrading from X.Y* section to the README.
+*Upgrading from X.Y* section to `UPGRADING.md`.
 
 ## Writing style
 
