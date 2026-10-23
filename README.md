@@ -2,25 +2,84 @@
 
 An orchestration skill for autonomous development.
 
-It drives a single coding task from a ticket to a merged pull request hands-off,
-delegating each job to a purpose-built **worker** (a subagent) and handing
-structured artifacts between them through a `.auto-dev/` scratch directory. It is
-**stack-agnostic**: it ships no stack profile, and instead researches each repo's
-setup and quality-gate commands on the first run, confirms them with you and can
-save them for later runs. It integrates
-optionally with Jira and CI — each auto-detected and skipped when absent.
+It takes one coding task from a ticket to a merged pull request without you
+stepping in. Each job goes to a purpose-built **worker** (a subagent), and the
+workers hand structured artifacts to each other through a `.auto-dev/` scratch
+directory. It is **stack-agnostic**: it ships no stack profile. On the first run
+in a repo it researches the setup and quality-gate commands, confirms them with
+you and can save them for later runs. Jira and CI are optional; each is
+detected automatically and skipped when absent.
+
+Upgrading from an earlier version? See [`UPGRADING.md`](UPGRADING.md).
+
+## Install
+
+Add this repo as a marketplace, then install the plugin. From GitHub:
+
+```
+/plugin marketplace add hubertursua/auto-dev
+/plugin install auto-dev@auto-dev-marketplace
+```
+
+Or from a local clone, point at the directory that contains `.claude-plugin/`:
+
+```
+/plugin marketplace add ./auto-dev
+/plugin install auto-dev@auto-dev-marketplace
+```
+
+As a safeguard, add the scratch directory to each project's `.gitignore` so its
+planning artifacts can never be committed:
+
+```
+echo ".auto-dev/" >> .gitignore
+```
+
+To keep a run from stopping on permission prompts, add the rules in
+[*Permissions for unattended runs*](#permissions-for-unattended-runs).
+
+### Install without the plugin
+
+If policy blocks plugins, link the agents into your user folder instead:
+
+```
+ln -s ~/Dev/auto-dev/agents ~/.claude/agents
+```
+
+This works only when `~/.claude/agents` does not exist yet. If it exists, link
+each file into it:
+
+```
+ln -s ~/Dev/auto-dev/agents/*.md ~/.claude/agents/
+```
+
+The agents load as `auto-dev-<name>`, and the orchestrator falls back to that form.
+Link `skills/auto-dev` into `~/.claude/skills/` too.
+
+## What it does
+
+Ask Claude to take a whole task off your plate, e.g. *"auto-dev this…"*,
+*"take it all the way to a PR"*, *"pick up JIRA-1234 and ship it"*. The
+orchestrator runs:
+
+| Phase | Worker | Output |
+|-------|--------|--------|
+| 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch, `.auto-dev/` |
+| 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
+| 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
+| 4 Build | coder | code + tests given **only** the plan |
+| 5 Verify | cleanup agent, then verifier | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
+| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate |
 
 ## Agent hierarchy
 
-The main agent stays the orchestrator and never writes code itself — it spawns a
-fresh worker per delegated job and hands off through files in `.auto-dev/`,
-never shared memory. It doesn't decide the order of steps either: it runs
-`autodev.py next`, does the one action printed, and runs it again. Phase 1's
-profile and ticket steps are its own work. Correction briefs come from the
-workers that found the problem (the verifier, the review judge, the triager),
-and the orchestrator passes them on unedited. Judging the build is not its job
-either — it holds the plan and the story of every round, which is the context a
-judge must not have.
+The main agent is the orchestrator and never writes code. It spawns a fresh
+worker for each job, and they hand off through files in `.auto-dev/`, never
+shared memory. It doesn't choose the order of steps either: it runs
+`autodev.py next`, does the one action printed, and runs it again. It doesn't
+judge the build or write correction briefs; the workers that found a problem
+write those, and the orchestrator passes them on unedited. It holds the plan
+and the story of every round, which is the context a judge must not have.
 
 ```
 Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the human gates
@@ -35,259 +94,198 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
 ```
 
-Two documents describe the work, and they answer different questions: `SPEC.md`
-asks *did we build the right thing*, `IMPLEMENTATION.md` asks *did we build it the
-way we decided*. They fail independently — a plan executed faithfully can still
-miss the outcome — so the pipeline checks both.
+Two documents describe the work. `SPEC.md` answers *did we build the right
+thing*; `IMPLEMENTATION.md` answers *did we build it the way we decided*. A plan
+executed faithfully can still miss the outcome, so the pipeline checks both.
 
-The coder builds from the plan, never the contract. The plan is *required* to
-cover every condition, so this isn't information-hiding — it's **language**-hiding:
-the coder can't satisfy the check by echoing the contract's own wording back in a
-test name.
+The coder builds from the plan, never the spec. The plan must cover every spec
+condition, so nothing is hidden from the coder except the spec's wording: the
+coder can't satisfy a check by echoing that wording back in a test name.
 
 ## How the build is verified
 
-Tests the coder wrote are evidence the coder produced, so they can't be the main
-proof that the work is right. Agents are known to mark work done too early and to
-make tests pass by weakening them. Verification is built around that:
+Tests the coder wrote are the coder's own evidence, so they can't be the main
+proof. Agents are known to mark work done too early and to make tests pass by
+weakening them. Verification is built around that:
 
-- **A spec written to be tested.** Every condition in `SPEC.md` carries a
-  concrete example (Given / When / Then), its tricky edge case, and how it should
-  be verified (unit, integration, end-to-end or manual). The Define reviewer runs
-  an ambiguity probe: if two different implementations both fit a condition's
-  words, the condition is rewritten before anything is built.
-- **Held-out acceptance checks.** After planning, an acceptance tester turns each
-  spec condition into a black-box test from the spec alone, one for its example
-  and one for its edge case, at the level the spec asks for (or the highest the
-  repo's tests reach, saying why). Every
-  check for new behavior must **fail on the untouched code for the right
-  reason**, since a test that passes before the change exists proves nothing.
-  The tester saves that run (the command and its output) next to the checks.
-  The orchestrator reads it and sends the tester back for an edge case left
-  out without a reason, or a check that failed for the wrong reason. The checks
-  are then sealed out of the worktree (stored where no test runner collects
-  them), and the coder's brief never names them.
-- **An independent verifier that runs things.** After the build, a fresh verifier
-  installs the checks and **runs** them. It never sees the plan or the coder's
-  report. Each condition gets a verdict and an evidence tier: **Strong** (the
-  held-out checks passed, they cover both the example and the edge case at the
-  level the spec asks for, and the saved run shows each check for new behavior
-  failing on the old code for the right reason), **Adequate** (it ran
-  something itself for what the checks don't prove and saw what it predicted
-  beforehand) or **Weak** (a code citation, which can never count as met). The
-  verifier reads the saved run rather than running the checks on the old code
-  again, which would need a second setup of the repo. A held-out check too weak
-  to prove what it claims is reported; the tester repairs it only when the
-  condition can't be shown to hold any other way. A condition no agent can
-  observe is marked `manual` and handed to you at the PR gate as a check to
-  make, and so is an edge case no agent can observe.
+- **A spec written to be tested.** Every condition in `SPEC.md` has a concrete
+  example (Given / When / Then), its tricky edge case, and how it should be
+  verified. The Define reviewer flags any condition that two different
+  implementations could both satisfy, and the Define agent rewrites it.
+- **Held-out acceptance checks.** An acceptance tester writes black-box tests
+  from the spec alone, one for each condition's example and one for its edge
+  case. Every check for new behavior must **fail on the untouched code for the
+  right reason**, and the tester saves that run. The checks are then sealed out
+  of the worktree; the coder never sees them.
+- **An independent verifier that runs things.** After the build, a fresh
+  verifier installs the checks and **runs** them, without seeing the plan or the
+  coder's report. Each condition gets a verdict and an evidence tier: **Strong**
+  (the held-out checks pass, cover the example and edge case, and were seen
+  failing on the old code), **Adequate** (the checks pass, and for what they
+  don't prove it ran something itself and saw what it predicted) or **Weak** (a
+  code citation, which never counts as met). A condition no agent can observe is
+  handed to you at the PR gate as a manual check.
 - **A test-integrity audit.** `scripts/check-tests.py` flags deleted or skipped
   tests, removed assertions, new tests that assert nothing, and any edit to a
-  sealed check. Each finding must be justified by the spec or it goes back to the
-  coder. The coder and cleanup agent are told never to game tests, and the coder
-  has a `BLOCKED` exit for when a step can't be done honestly.
-- **Targeted mutation testing.** Passing tests show the code works; they don't
-  show the tests would notice if it broke. The verifier plants a few small bugs
-  in the changed lines (a flipped comparison, a boundary moved by one) with
-  `scripts/mutate.py`, which restores every file afterwards. A bug no test
-  catches on a line a condition depends on is a test gap and goes back to the
-  coder. Capped at 20 mutants per pass by default; set `mutation.max` in
-  `.auto-dev.yml` (0 turns it off).
-- **Fixes described by the verifier.** Once its verdicts are final, the
-  verifier writes `evidence/corrections.md`: what the code must do, where, the
-  failure it saw and the test to add, in its own words, never the spec's. The
-  coder gets that file unedited. A script refuses one that copies the spec's
-  wording, which would let the coder echo it back in a test name.
-- **Re-checked after every change.** The cleanup agent's `/simplify` and
-  quality gate run before the verifier's first pass, so the verifier checks the
-  code that ships, and it runs again after every later fix, so the PR
-  description always reflects the final code.
-- **Every result names the code it checked.** `SPEC_EVAL.md`, each quality-gate
-  report and both review reports carry a `Tree:` line: the git tree hash of the
-  code when it was checked. `scripts/check-fresh.py` compares those stamps with
-  the code as it is now at the end of the build session, on entry to the ship
-  session, before the PR gate, after the commit, before the PR description is
-  written, and before the main gate. A result checked on other code, because
-  someone edited the worktree, pushed to the PR or merged the base into it, is
-  run again before anything relies on it. Those re-runs spend no iteration
-  budget; anything they find is fixed like any other problem. The PR description
-  names the commit its results were checked on.
+  sealed check. Each finding must be justified by the spec or it goes back to
+  the coder.
+- **Targeted mutation testing.** The verifier plants a few small bugs in the
+  changed lines with `scripts/mutate.py`, which restores every file afterwards.
+  A planted bug no test catches, on a line a condition depends on, is a test gap
+  and goes back to the coder. At most 20 mutants per pass; `mutation.max` in
+  `.auto-dev.yml` changes that (`0` turns it off).
+- **Re-checked after every change.** Cleanup (`/simplify` and the quality gate)
+  runs before the verifier, so the verifier checks the code that ships, and
+  both run again after every fix.
+- **Every result names the code it checked.** Each verdict, quality-gate report
+  and review report carries the git tree hash of the code it checked.
+  `scripts/check-fresh.py` compares those stamps with the current code before
+  anything relies on them, and a stale result is run again (without spending
+  the iteration budget).
 - **A PR description a stranger can check.** It is written for a reviewer who
-  has never heard of auto-dev and can't see `.auto-dev/`: plain words, no
-  condition or mutant IDs. For each requirement it links the test written
-  before the code, at the checked commit, with that test's result on the old
-  code and now, and both runs' commands and output in a collapsed block. It lists
-  every test change the audit flagged with its reason, says how many small
-  deliberate bugs the tests caught and, for each one they missed, why it is
-  harmless or what no test checks,
-  and turns each check left to a person into steps. It tells the reviewer to
-  start with the tests written before the code. A description too long for
-  GitHub moves its output blocks into one PR comment. The PR gate keeps the
-  short IDs (`C2`, `M7`), since you can open the run's files.
+  has never heard of auto-dev: for each requirement it links the test written
+  before the code, with that test's result on the old code and now. It also
+  lists every flagged test change with its reason, says how many planted bugs
+  the tests caught, and turns each manual check into steps.
 
-## What it does
-
-Invoke it when you want a whole task taken off your plate and delivered as a
-finished PR, hands-off — e.g. *"auto-dev this…"*, *"take it all the way to a
-PR"*, *"pick up JIRA-1234 and ship it"*. The orchestrator runs:
-
-| Phase | Worker | Output |
-|-------|--------|--------|
-| 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch, `.auto-dev/` |
-| 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
-| 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
-| 4 Build | coder | code + tests given **only** the plan |
-| 5 Verify | cleanup agent, then verifier | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
-| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate |
+The verifier's and tester's full rules are in `agents/verifier.md` and
+`agents/acceptance-tester.md`.
 
 ## Three sessions, not one
 
-The pipeline deliberately does **not** run end-to-end in a single context. It is
-cut into three sessions — **Plan** (phases 1–3), **Build** (4–5) and **Ship** (6)
-— and stops at each boundary after writing `.auto-dev/HANDOFF.md`, a short brief
-for the next one. Start a fresh session and say `auto-dev continue` to pick up.
+The pipeline is split into three sessions: **Plan** (phases 1–3), **Build**
+(4–5) and **Ship** (6). At the end of each it writes `.auto-dev/HANDOFF.md`, a
+short brief for the next one, and stops. Start a fresh session and say
+`auto-dev continue` to pick up. Each session follows a short runbook
+(`skills/auto-dev/references/S1-plan.md`, `S2-build.md`, `S3-ship.md`) and is
+never asked to judge, so any model can run it.
 
-Every session runs on whatever model you pick; the orchestrator follows short
-runbooks (`skills/auto-dev/references/S1-plan.md`, `S2-build.md`,
-`S3-ship.md`) and is never asked to judge, so it doesn't need a stronger model
-for any of them, and it never asks you to switch.
-
-Orchestrator context is the real cost driver: every added turn makes every later
-turn more expensive. So the orchestrator holds the pipeline, not the code — it
-delegates reads and keeps large artifacts in workers — and `next` ends a long
-session at a **checkpoint**: after 80 recorded events in one session (about 35
-workers; `checkpoint_events` in `.auto-dev.yml` changes the count), at the next point where the step would be an action and no worker is
-in flight (a stop or a question the step would print comes first), it writes `HANDOFF.md`
-and asks you to continue in a fresh session. Continuing after a checkpoint
-lifts no stop: a worker that failed once before it and once after still stops
-the run. Nothing crosses a boundary except `.auto-dev/` on disk and the git tree,
-which is also what makes an interrupted run resumable.
+The orchestrator's context is the real cost: every added turn makes every later
+turn more expensive. So it delegates reads to workers, and `next` ends a long
+session at a **checkpoint** after 80 recorded events (about 35 workers;
+`checkpoint_events` in `.auto-dev.yml` changes it). Nothing crosses a session
+boundary except `.auto-dev/` and the git tree, which also makes an interrupted
+run resumable: `autodev.py resume` finds it, and `next` picks up where it
+stopped.
 
 ## Size check: one PR, or back to you
 
 The Define agent says whether the task fits one PR:
 
 - **FITS** — the pipeline runs every step, the same way for every task: **11
-  worker roles**. (Roles, not spawns — the code review panel alone spawns three
-  reviewers and a judge, and a correction round re-spawns workers.) This count
-  leaves out Phase 1's profiler, which runs only when the repo has no saved
-  profile.
-- **OVERSIZED** — multiple independent deliverables, several subsystems, or a
-  large file count. auto-dev builds nothing and hands the task back to you with
-  Define's reasons, the subsystems it found and suggested lines to split along.
-  Jira is left alone, and the worktree and branch stay in place, with the
-  commands to remove them. Split the task (by hand or with another tool) and run
+  worker roles** (roles, not spawns). The profiler runs only when the repo has
+  no saved profile, and the triager only when CI fails or a person comments.
+- **OVERSIZED** — several independent deliverables or subsystems, or a large
+  file count. auto-dev builds nothing and hands the task back with its reasons
+  and suggested lines to split along. Jira is left alone, and the worktree and
+  branch stay, with the commands to remove them. Split the task and run
   auto-dev on each part.
 
 Define also flags a task as **high-risk** (security criteria, auth, payments,
-access control or a data migration), which turns on the post-plan gate. A
-security criterion that a later revision or review fix adds to `SPEC.md` turns
-it on too; nothing turns it off.
-
-An interrupted run resumes from `.auto-dev/state.json`: `autodev.py resume`
-finds it, and `next` picks up at the step it stopped on.
+access control or a data migration), which turns on the post-plan gate.
 
 ## Review before the PR
 
-Nothing is committed or pushed until the change has been reviewed twice, on the
-uncommitted working tree, and you have seen the results:
+Nothing is committed or pushed until the uncommitted change has been reviewed
+twice, at the same time, and you have seen the results:
 
-1. **Code review panel.** Three reviewers run `/code-review xhigh` on the change
-   independently; the agents run at the effort the plan recommends (see
-   *Models and effort*).
-   A judge merges their findings and checks each trigger path in the code. A
-   correctness or test finding that only one reviewer raised goes to
-   the other two for a re-vote.
-2. **Security review.** One security reviewer runs `/security-review` over the
-   whole change, alongside the panel and on the same tree, and the judge
-   double-checks every finding rated High or Medium while it consolidates the
-   panel. The judge marks each security lead the panel raised as covered by a
-   security finding or passed on. A lead passed on that no security run has seen
-   goes to the next pass's security review, or, when nothing else is open, to a
-   security run of its own.
+1. **Code review panel.** Three reviewers run `/code-review xhigh`
+   independently; the plan sets the reviewer agents' effort (see
+   [*Models and effort*](#models-and-effort)). A judge merges their findings and
+   checks each one's trigger path in the code. A finding that could be must-fix
+   but only one reviewer raised goes to the other two for a re-vote.
+2. **Security review.** A security reviewer runs `/security-review` over the
+   whole change, and the judge double-checks every High or Medium finding.
 
-When both reviews leave must-fix findings open, one correction fixes them all,
-for one round of the budget, and the next pass reviews it. That re-review
-runs the full panel, whatever the correction's size: a one-line change can
-alter everything downstream of it. But it skips the nested skills. The code
-reviewers review the correction themselves, without `/code-review`, following
-every caller and use of what it changed. The security reviewer skips
-`/security-review` and re-checks the correction and everything downstream of
-it, carrying its earlier findings forward. The first pass, and a pass over
-changes made outside the pipeline, still run both skills on the whole change.
+One correction fixes every must-fix finding from both, for one round of the
+iteration budget. A finding about a held-out check goes to the acceptance
+tester, never the coder. After the correction, the full panel reviews the
+result again. A re-review of a correction skips the nested `/code-review` and `/security-review` skills: the
+reviewers follow the correction and everything downstream of it themselves.
 
-A **rubric** decides what must be fixed and what is noise:
+A **rubric** (`skills/auto-dev/templates/rubric.md`) decides what must be fixed:
 
-- **Code findings.** Only correctness bugs, missing or weak tests, and a
-  held-out acceptance check that asserts the wrong thing or can't fail can be
-  must-fix. Each one needs a concrete trigger path, a real input or sequence that
-  leads to the failure, and at least 2 of the 3 reviewers' votes. A finding
-  about an acceptance check goes to the acceptance tester's repair mode, never
-  the coder. Scope, performance and design findings are advisory. Problems the
-  change didn't introduce are dropped.
-- **Test gaps, whole.** A finding that a changed behavior is under-tested lists
-  every case of it no test reaches (each config value no test varies, each
-  boundary, each error path and message, each value the spec says must fail
-  closed), and the judge merges tests findings about the same behavior into
-  one. The coder closes the whole gap in one correction, instead of one case
-  per review pass. Only cases a real caller can reach count
-  (`skills/auto-dev/templates/rubric.md`).
-- **Security findings.** One this change introduced, with a traced path, is
-  must-fix. One that was already there is shown to you at the PR gate to triage:
-  note it as a follow-up for a separate PR (the PR description lists it), or
-  ignore it. This PR never fixes it, because that would widen the PR's scope.
-  Your answer is recorded in the run's state, not just noted.
-- **Confidence.** Every finding carries a confidence level (High, Medium or
-  Low), and so does each report as a whole. A report whose confidence is Low
-  (say, a reviewer failed) is flagged at the gate as a warning, never shown as a
-  clean pass.
+- **Code findings.** Only correctness bugs, missing or weak tests, and a broken
+  held-out check can be must-fix, and each needs a concrete trigger path and 2
+  of the 3 reviewers' votes. Scope, performance and design findings are
+  advisory. Problems the change didn't introduce are dropped.
+- **Test gaps, whole.** A test-gap finding lists every reachable case no test
+  covers, so the coder closes the whole gap in one round.
+- **Security findings.** One this change introduced, rated High or Medium with
+  a traced path the judge confirms, is must-fix; a Low one is advisory. A High
+  or Medium one that was already there is shown to you at the PR gate, to note
+  as a follow-up or ignore; this PR never fixes it.
+- **Confidence.** Every finding and every report carries a confidence level. A
+  low-confidence report (say, two reviewers failed, or the security reviewer
+  couldn't finish) is flagged at the gate, never
+  shown as a clean pass.
 
-The judge writes a **required change** for each must-fix finding, and those go
-back to the coder unedited, through the same correction loop as an unmet spec
-condition; the fix is reviewed again before anything moves on. After the PR is
-open, a **triager** reads what the orchestrator never sees: a red CI run's logs
-(is it the code, the infrastructure, a flaky test or a missing secret? only the
-code goes to the coder) and human reviewers' comments (blocker, nit, question,
-already addressed, or about a held-out check, which goes to the acceptance
-tester rather than the coder; when both kinds come back, the tester goes first
-and the coder second, in one revise round). After a correction refreshes the PR,
-the next triager reads the earlier rounds' triage files and what became of them,
-so a comment about a check the tester ruled right, or a blocker the code now
-fixes, is sorted as addressed and doesn't spend another round. Everything the pipeline posts on
-the PR ends with `<!-- auto-dev -->`, and the triager skips those comments.
-A red CI run the code can't fix (a secret, infrastructure, a flaky test,
-unknown) stops the run and is reported before Jira moves;
-once the cause is fixed and CI re-run, resuming watches it again. CI that times
-out or can't be watched is shown at the main gate as not monitored, never as
-green.
-Comment text never reaches the orchestrator, so a comment can't steer the run.
-The coder gets every required change unedited, so `autodev.py record` refuses
-one that copies `SPEC.md`'s wording. Those fixes are reviewed the
-same way before they are pushed. The reviewers' instructions are in
-`agents/code-reviewer.md`, `agents/review-judge.md` and
-`agents/security-reviewer.md`, and the full rubric in
-`skills/auto-dev/templates/rubric.md`.
+After the PR opens, a **triager** reads red CI logs and human review comments,
+so their text never reaches the orchestrator and can't steer the run. It sends
+only real code problems to the coder (and comments about a held-out check to
+the acceptance tester). A red CI run the code can't fix (a missing secret,
+infrastructure, a flaky test, an unknown cause) stops the run before Jira
+moves; once the cause is fixed and CI re-run, `auto-dev continue` watches it
+again. The reviewers'
+instructions are in `agents/code-reviewer.md`, `agents/review-judge.md`,
+`agents/security-reviewer.md` and `agents/triager.md`.
+
+## Human gates & integrations
+
+Planning and build run unattended. The pipeline pauses for approval:
+
+- before **opening the PR**, and
+- before the **main merge**,
+- plus an optional **post-plan gate** (on for high-risk tasks, or with
+  `gates.post_plan`).
+
+Three more pauses fire only when their situation arises: the **profile
+confirmation** (a repo with no saved profile), the **Jira In Progress
+confirmation** (only with a ticket, once the size check says the task fits), and the **worktree
+cleanup offer** (after the merge).
+
+Declining is safe at every gate: `Stop` ends the run; `Hold`, at the PR and
+main gates, pauses it so you can resume later. Both leave the branch, the worktree and every artifact on
+disk. What each option does is in `skills/auto-dev/references/tables.md`.
+
+- **The PR** opens as a draft and is marked ready before the main gate. Its
+  description follows the repo's default PR template (never one from a
+  `PULL_REQUEST_TEMPLATE/` folder) and links the Jira ticket. A checklist box in
+  the template is ticked only when the run's files show it is true.
+  With `pr_review.inline_comments: true`, the review findings left open or
+  advisory are posted on the PR.
+- **The merge** goes only through `gh pr merge`, respecting branch protection
+  and never with `--admin`: `--squash` by default, `--merge` if the repo
+  disallows squash, `--rebase` only when it is the one method allowed. It is
+  locked to the checked commit with `--match-head-commit`. If someone pushed to
+  the PR branch, the run stops and tells you how to bring those commits in to
+  be checked. auto-dev has no staging step; the PR targets the base branch.
+- **Jira** only moves the ticket (In Progress → In Review → Done), and is
+  skipped without a ticket. The ticket's text is stored at setup and given to
+  the Define agent, which has no Jira access
+  (`skills/auto-dev/references/gates-and-jira.md`).
+- **CI** is watched with a time limit on the PR, and again after the merge. CI
+  that timed out or couldn't be watched is shown as not monitored, never as
+  green.
 
 ## Stack profiles
 
-The pipeline is language/framework-agnostic and ships no stack profile. A
-**profile** says how a repo installs its dependencies and which commands make up
-its quality gate (test, lint, format check, type check, build). Phase 1 gets one
-in this order:
+A **profile** says how a repo installs its dependencies and which commands make
+up its quality gate (test, lint, format check, type check, build). Phase 1 gets
+one in this order:
 
 1. **A saved profile.** If you saved one for this repo on an earlier run, Phase 1
    loads it without asking.
 2. **A committed `.auto-dev.yml` that sets both `setup` and `gate`.** The repo
    has declared its profile, so there is nothing to research.
 3. **Research.** Otherwise the `profiler` worker reads the repo (CI config, task
-   runners, manifests, lockfiles, contributing docs) and returns a draft profile
-   with the file and line each command came from, plus anything it had to guess.
-   The run pauses to show you the draft and asks: save it for this repo, use it
-   for this run only, change something, or stop.
+   runners, manifests, lockfiles, contributing docs) and drafts a profile, citing
+   the file and line each command came from and naming anything it guessed. The
+   run shows you the draft and asks: save it for this repo, use it for this run
+   only, change something, or stop.
 
 `.auto-dev.yml` is applied on top in every case. The schema is in
-`skills/auto-dev/references/profiles.md`, and the steps in
-`skills/auto-dev/references/S1-plan.md`.
+`skills/auto-dev/references/profiles.md`.
 
 ### Where saved profiles live
 
@@ -304,8 +302,8 @@ worktree of that repo finds the same file. Set `AUTO_DEV_PROFILES_DIR` to use
 another directory (`$XDG_CONFIG_HOME/auto-dev/profiles` is used when that is
 set). `skills/auto-dev/scripts/profile-path.py <repo>` prints the path for a
 repo. Edit the file to change the profile, or delete it to have the next run
-research it again. It holds only how the stack installs and checks itself; repo
-policy such as branches and the iteration budget stays in `.auto-dev.yml`.
+research it again. It holds only how the stack installs and checks itself;
+repo policy such as branches and the iteration budget stays in `.auto-dev.yml`.
 
 ### Permissions for unattended runs
 
@@ -336,9 +334,9 @@ these rules to `~/.claude/settings.json` (or run `/permissions`):
 - The directory is deliberately not under `~/.claude/`: Claude Code protects
   that folder, and every write there prompts whatever your rules say.
 
-The run also executes the helper scripts and the profile's commands through
-Bash. To let those run without prompts, add `Bash(...)` rules for them to the
-main checkout's `.claude/settings.local.json`. Example in TypeScript:
+The run also runs the helper scripts and the profile's commands through Bash.
+To let those run without prompts, add `Bash(...)` rules for them to the main
+checkout's `.claude/settings.local.json`. Example in TypeScript:
 
 ```json
 {
@@ -353,228 +351,64 @@ main checkout's `.claude/settings.local.json`. Example in TypeScript:
 ```
 
 A rule matches the command's text, so copy the commands exactly as the profile
-lists them. Workers write their git commands as `git -C <worktree> …` with the
-cut commit as a literal sha, never `cd … && git` or `$(…)`, which a headless
-run refuses even when the command is allowed. A worker whose call the
-permission check refuses retries it once in that form, and stops only if it is
-refused again; a call you deny stops it straight away. At the profile
-confirmation the orchestrator prints these snippets filled in with your real
-paths and commands. It never edits your settings itself; you choose what to
-allow.
+lists them. At the profile confirmation the orchestrator prints these snippets
+filled in with your real paths and commands. It never edits your settings
+itself.
 
 ### `.auto-dev.yml`
 
-The keys most runs touch in `.auto-dev.yml`: `iteration_budget` (revise rounds,
-default 4), `mutation.max` (mutants per verifier pass, default 20, `0` = off),
-`gates.post_plan` (turn the post-plan gate on), `branches` (`base`,
-`prefix`), `ci` and `ci_timeout_minutes`, `worktree_files`, `security_docs`,
-`symbol_lookup` (a code-index tool to use instead of grep),
-`pr_review.inline_comments` (post the open and advisory review findings on the
-PR), `checkpoint_events` (events one session writes before `next` checkpoints
-it, default 80), and `jira.states`.
-It can also set any profile key (`setup`, `gate`, `test_notes`, …) to override the
-profile. Phase 1 validates the file with `scripts/validate-config.py`, so a
-mistyped key is reported rather than silently ignored. Without
-`security_docs`, `autodev.py init` uses the repo's `SECURITY.md`,
-`.github/SECURITY.md` and `docs/security/*.md`; `security_docs: []` turns them
-off, and a listed path the worktree doesn't have is dropped with a warning. See
-`skills/auto-dev/references/profiles.md`.
+The keys most runs touch:
 
-## Human gates & integrations
+| Key | What it sets |
+| --- | ------------ |
+| `iteration_budget` | revise rounds per task (default 4) |
+| `mutation.max` | mutants per verifier pass (default 20, `0` = off) |
+| `gates.post_plan` | turn the post-plan gate on |
+| `branches` | `base` and `prefix` |
+| `ci`, `ci_timeout_minutes` | CI watching |
+| `worktree_files` | gitignored files (an `.env`, say) to copy into each new worktree |
+| `security_docs` | the repo's security directives (default: `SECURITY.md`, `.github/SECURITY.md`, `docs/security/*.md`; `[]` = none) |
+| `symbol_lookup` | a code-index tool to use instead of `grep` |
+| `pr_review.inline_comments` | post the open and advisory review findings on the PR |
+| `checkpoint_events` | events one session records before it checkpoints (default 80) |
+| `jira.states` | the board's state names for In Progress, In Review and Done |
 
-Planning and build run unattended; the pipeline pauses for approval before
-**opening the PR** and before the **main merge**
-(plus an optional post-plan gate you can enable per run). The PR opens as a
-**draft** unless you ask for it ready for review, and is marked ready before the
-main gate. Its description follows the repo's default PR template when there is
-one (never a template from a `PULL_REQUEST_TEMPLATE/` folder, which GitHub only
-applies when asked), and links the Jira ticket. A checklist in the template
-keeps its items word for word; the orchestrator ticks a box only when the spec,
-the handoff or the description's own sections show it is true, and leaves the
-rest for a person. With
-`pr_review.inline_comments: true`, the review findings left open or advisory are
-posted on the PR once it opens: inline at their line when it is in the diff, the
-rest in one comment. The main gate doesn't count those posts as people's
-comments, and CI that timed out or couldn't be watched shows there as not
-monitored, never as green. Main is merged only via `gh pr merge` (respecting branch protection,
-never `--admin`), with `--squash` by default — `--merge` if the repo disallows
-squash, `--rebase` only when it is the one method allowed. Before the main gate
-the pipeline fetches the PR branch and checks it still holds the code every
-result was checked on. If someone pushed to it, the run stops and tells you,
-rather than merging commits nothing checked. To ship those commits, bring them
-into the worktree with the `git merge --ff-only origin/<branch>` command the stop
-names and say `auto-dev continue`: the quality gate and the verifier run again,
-a review pass covers what the commits (and the re-check) changed, `commit`
-verifies the new head, and the main gate is asked again. The merge is locked to that commit with
-`--match-head-commit`, so a push made after the check makes GitHub refuse the
-merge instead of shipping unchecked code. The PR targets the base branch, and the
-main merge is the only merge: auto-dev has no staging step, and ignores a
-`staging` branch on origin. **Jira** integration is
-status-transitions-only (In Progress → In Review → Done) and is skipped if no
-ticket is given; the ticket's summary and description are stored at setup
-(`autodev.py init --ticket-text-file`) and given to the Define agent verbatim,
-since it has no Jira access. **CI** is monitored, with a bounded timeout, on the PR before
-merge (and once more after the PR is marked ready, since some workflows skip
-drafts), and again after the main merge to confirm the merge itself didn't
-break the branch.
-
-Three more pauses are **conditional** and fire only when their situation
-arises: the **profile confirmation** (Phase 1, only on a repo with no saved
-profile), the **Jira In Progress confirmation** (Phase 2, only with a ticket,
-once the size check says the task fits one PR) and the **worktree cleanup
-offer** (after the main merge). Everything
-else runs without check-ins.
-
-Declining is safe at every gate: `Stop` ends the run, `Hold` (where a gate offers
-it) pauses a run you can resume later, and both leave the branch, the worktree,
-and every artifact on disk. What each option does is in
-`skills/auto-dev/references/tables.md`, and how a Jira ticket is moved in
-`skills/auto-dev/references/gates-and-jira.md`.
-
-## Install
-
-Add this repo as a marketplace, then install the plugin. From GitHub:
-
-```
-/plugin marketplace add hubertursua/auto-dev
-/plugin install auto-dev@auto-dev-marketplace
-```
-
-Or from a local clone, point at the directory that contains `.claude-plugin/`:
-
-```
-/plugin marketplace add ./auto-dev
-/plugin install auto-dev@auto-dev-marketplace
-```
-
-As a safeguard, add the scratch directory to each project's `.gitignore` so its
-planning artifacts can never be committed:
-
-```
-echo ".auto-dev/" >> .gitignore
-```
-
-Now ask Claude to "auto-dev" a task and the skill triggers. To keep a run from
-stopping on permission prompts, add the rules in *Permissions for unattended
-runs* under *Stack profiles*.
-
-### Install without the plugin
-
-If policy blocks plugins, link the agents into your user folder instead:
-
-```
-ln -s ~/Dev/auto-dev/agents ~/.claude/agents
-```
-
-This works only when `~/.claude/agents` does not exist yet. If it exists, link
-each file into it:
-
-```
-ln -s ~/Dev/auto-dev/agents/*.md ~/.claude/agents/
-```
-
-The agents load as `auto-dev-<name>`, and the orchestrator falls back to that form.
-Link `skills/auto-dev` into `~/.claude/skills/` too.
+It can also set any profile key (`setup`, `gate`, `test_notes`, …) to override
+the profile. Phase 1 validates the file with `scripts/validate-config.py`, so a
+mistyped key is reported rather than silently ignored.
 
 ## Dependencies
 
-Built-in tools only — no plugins required: `Task`/`Agent`, `Bash`,
-`Read`, `Edit`, `Write`, `Grep`, `Glob`, `AskUserQuestion`, and the `Skill` tool
-(the Phase 5 cleanup agent runs `/simplify` with it, the code reviewers
-`/code-review`, and the security reviewer `/security-review`). `gh` must be on your `PATH`
-and authenticated: Phase 1 checks, and stops before doing any work if it isn't.
-Optional integration: the Atlassian MCP (Jira transitions). CI is watched with
-`gh` alone (`gh pr checks` on the PR, `gh run list` after a merge, GitHub
-Actions only); no CI provider's own CLI is needed.
-The Jira tools are found by base name (`getJiraIssue`, …) with `ToolSearch`, so
-the MCP server can be registered under any name; no match means Jira is skipped.
-`autodev.py pr publish` opens the PR (with `gh pr create`) and refreshes its
-description; no PR skill is used.
-**Python 3.9+** with **PyYAML** (`pip install pyyaml`) is required:
-`autodev.py init` checks both and stops before doing any work without them.
-The helpers in `skills/auto-dev/scripts/` need only Python's standard library,
-except `validate-config.py` (checks a repo's `.auto-dev.yml`, or a saved
-profile with `--profile`, so a mistyped key is reported rather than silently
-ignored) and `autodev.py init`, which read YAML. The orchestrator runs
-`profile-path.py` itself (names the saved profile's path for a repo and says
-whether it exists). `autodev.py` runs the others: `exclude-artifacts.py`
-(makes `.auto-dev/` self-excluding and verifies it with git),
-`check-staged.py` (the read-only check before each commit that nothing under
-`.auto-dev/` is staged) and `check-fresh.py` (the read-only check that every
-report was produced on the code as it is now; the verifier, cleanup agent,
-review judge and security reviewer also run its `--print-tree` to stamp their
-reports). Two are run by the Phase 5 verifier: `check-tests.py` (the
-test-integrity audit) and `mutate.py` (applies mutants one at a time and
-restores every file afterwards).
-`skills/auto-dev/scripts/autodev.py` is the one entry point for the steps
-4.0 moves out of the orchestrator's prose, so a user allows one command. It
-keeps the run's state in
-`.auto-dev/state.json`, which only it writes; `WORK_LOG.md` is generated from
-it. Its subcommands: `init` (Phase 1's preflight, config, worktree,
-seeded files, security directives and setup, run in the background past the
-Bash tool's 10-minute limit), `resume` (finds the run to continue, or says to start fresh or ask),
-`show`, `phase`, `note`, `size` (the Define agent's size check), `budget`
-(spends a revise round once per correction, and refuses at zero with what to do
-next), `gate` (records a gate decision; `hold` and `stop` are different states)
-and `handoff` (writes `HANDOFF.md` and the message that ends a session). For
-Phase 6: `commit` (re-checks freshness, stages every changed path by name, runs
-`check-staged.py`, commits, and verifies the commit carries the checked code,
-unstaging if anything fails), `ci-watch` (polls `gh pr checks` with a bound and
-says green, red with links, pending, timed out or unwatchable; never assumes
-green), `merge-pr` (`gh pr merge` locked with `--match-head-commit`, never
-`--admin`, then confirms it merged), `pr-body` (generates the PR description
-from the run's artifacts, with links at the checked commit, paths hidden and
-output cut to fit, the ticket linked and the repo's own PR template's
-sections added, leaving the Summary, the Assumptions, any template section
-it can't fill and the template checklist's boxes to write; with
-`--check`, lints one: strict sections, the checked commit, size, no internal
-IDs, paths or secrets, the template checklist's items unchanged; the ID, term
-and tier checks skip the test names, commands, output and verifier reasons it quotes word for word), `pr publish` (opens the one PR, or refreshes the
-sections the pipeline writes in the live description, keeps overflowing output
-in one comment edited in place, and reads the PR back) and `cleanup-worktree`. Parsers that turn a worker's artifact into a decision:
-`check-manifest` (the acceptance tester's `MANIFEST.md` against `SPEC.md`: which
-conditions to re-spawn it for), `eval-status` (`SPEC_EVAL.md` into `ALL_MET`,
-`CORRECT`, `REPAIR` or `STOP`, with the survivors to carry forward), `apply-fix`
-(applies a reviewer's exact old → new FIX blocks, all or nothing),
-`spec-overlap` (refuses a brief or plan that copies `SPEC.md`'s wording),
-`install-checks` (the verifier installs the sealed acceptance checks with it,
-or copies them back over an edit with `--recheck`),
-`votes` (plans the code-review re-votes and applies them to `CODE_REVIEW.md`,
-adding each new must-fix finding to the pass's `corrections.md` for the coder,
-except one about an acceptance check, which it names for the acceptance tester),
-`security-reviewer` (which security reviewer to spawn: the sensitive one when
-`SPEC.md` lists Security/Compliance criteria), `review-scope` (the snapshot a
-correction is diffed against) and `gate-summary` (checks a gate's preconditions
-and prints its summary and question). For workers: `brief` (writes a worker's
-brief file from state (with `--out`, a profiler or pre-run lookup brief, before
-any state exists), refusing when a value only the orchestrator can give is
-missing, and prints the one-line prompt to spawn it with), `record` (checks the
-result a worker wrote against the artifact it wrote, checks every other file it
-wrote against its template and the planner's IMPLEMENTATION.md with
-`spec-overlap`, and stops on a mismatch, saving the issues so the next `next` re-spawns that job with them; `brief
---retry <n>` does the same by hand) and
-`check-artifact` (the workers with a shell check what they wrote against its
-template before returning; `record` checks the rest). And `next`, the orchestrator's loop: it reads the state, the recorded results and the artifacts,
-and prints the one next action (spawn these agents with these briefs, run this
-command, ask this gate, stop and report, or end the session), with the command
-to run after it. It does the mechanical steps itself: writing briefs, spending
-a round before a correction, applying FIX blocks, checking the manifest,
-reading the verdicts, planning and applying re-votes, taking the review
-snapshot and generating the PR body. It also ends a long session at a
-checkpoint. `next --explain` shows the action and the
-rule that chose it without taking it (it writes and saves nothing). A step
-`next` can't take is a stop that says why, never a bare failure.
-Shared code lives in `skills/auto-dev/scripts/lib/`.
-Also optional: a code-index tool a profile names under `symbol_lookup`, which the
-`lookup` worker uses instead of `grep` to find a symbol's definition and
-callers. The profiler names one only if the repo's ecosystem uses one and it is
-on your `PATH`; without it, the worker uses `grep`.
+- **Claude Code's built-in tools** only, no other plugins. The `Skill` tool runs
+  `/simplify`, `/code-review` and `/security-review`.
+- **`gh`** on your `PATH` and authenticated. It opens and merges the PR and
+  watches CI (GitHub Actions); Phase 1 stops if it is missing, signed out, or
+  `origin` isn't on GitHub.
+- **Python 3.9+** with **PyYAML** (`pip install pyyaml`). `autodev.py init`
+  stops if either is missing.
+- **Optional:** the Atlassian MCP for Jira (found by tool name, so it can be
+  registered under any server name), and a code-index tool named by the
+  profile's `symbol_lookup`.
+
+The helper scripts in `skills/auto-dev/scripts/` use only Python's standard
+library, except where they read YAML:
+
+| Script | What it does |
+| ------ | ------------ |
+| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action. `autodev.py --help` lists every subcommand |
+| `validate-config.py` | checks `.auto-dev.yml`, or a saved profile with `--profile` |
+| `profile-path.py` | prints the saved profile's path for a repo and whether it exists |
+| `exclude-artifacts.py` | makes `.auto-dev/` ignore itself and checks it with git |
+| `check-staged.py` | before each commit, checks nothing under `.auto-dev/` is staged |
+| `check-fresh.py` | checks each report was produced on the code as it is now |
+| `check-tests.py` | the verifier's test-integrity audit |
+| `mutate.py` | the verifier's mutation testing; restores every file afterwards |
 
 ## Models and effort
 
-Each worker ships as its own agent type in `agents/`, which fixes its tools, model
-and effort. The types name model families (`opus`, `sonnet`, `fable`), not
-versions, so a new release is picked up without editing the plugin.
+Each worker is its own agent type in `agents/`, which fixes its tools, model and
+effort. The types name model families (`opus`, `sonnet`, `fable`), not versions,
+so a new release is picked up without editing the plugin.
 
 | Worker                                   | Agent type                       | Model · effort    |
 | ---------------------------------------- | -------------------------------- | ----------------- |
@@ -594,84 +428,68 @@ versions, so a new release is picked up without editing the plugin.
 | Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
 | Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · medium |
 
-The orchestrator runs on the session's model, whichever you pick; `sonnet` at
-medium effort is enough for every session, since `next` makes the decisions and
-the workers above do the judging. To retune a worker,
-edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
-`SKILL.md`.
+The orchestrator runs on the session's model; `sonnet` at medium effort is
+enough, since `next` makes the decisions and the workers do the judging. To
+retune a worker, edit the `model:` / `effort:` frontmatter in `agents/<name>.md`
+and the table in `SKILL.md`.
 
-The code reviewers are the costliest workers, and most of their time is
-thinking, so their effort is set per run. The planner writes a `Review effort:`
-line in `IMPLEMENTATION.md`: `high` for a small, local, straightforward change,
-otherwise `xhigh` (`agents/planner.md` says how it chooses). `next` prints it as an `EFFORT`
-line after each code reviewer's `PROMPT`, and the orchestrator passes it as the
-Agent tool's `effort` parameter, which overrides the agent file's `xhigh`. A
-plan with no such line means `xhigh`. Each review pass keeps the effort it
-started with, and `WORK_LOG.md` notes it.
+The code reviewers' effort is set per run. The planner writes a
+`Review effort:` line in `IMPLEMENTATION.md`: `high` for a small, local,
+straightforward change, otherwise `xhigh`. The orchestrator passes it to each
+code reviewer, overriding the agent file's `xhigh`.
 
 ## The `.auto-dev/` scratch directory
 
-Each run creates `.auto-dev/` holding the artifacts phases hand off. Git ignores
-it, but a gate command that walks the filesystem (a formatter run over `.`, say)
-still sees it. When a check fails only on files in `.auto-dev/`, the cleanup
-agent counts it as passing and says so in its report. It never edits the repo's
-ignore files or config to hide them, since that edit would ship in the PR.
-The PR body's quality-gate output leaves those lines out and says how many.
+Each run creates `.auto-dev/` in its worktree for the artifacts phases hand off.
+It is scratch, not part of your project: the pipeline never commits it, and
+writes a `.gitignore` containing `*` inside it, so even a stray `git add -A`
+can't stage it. A committed `.auto-dev.yml` is separate and is *not* excluded.
+Each artifact's template is in `skills/auto-dev/templates/`.
 
 | Path | Written by | Holds |
 | ---- | ---------- | ----- |
 | `profile.md` | Phase 1 | the resolved stack, where the profile came from, commands, branches, CI and Jira settings |
-| `state.json` | `autodev.py`, Phase 1 onward | the run's state: phases, size check, gates, budget and every round spent; written only by `autodev.py` |
-| `WORK_LOG.md` | generated from `state.json` | the ledger for people to read: phase status, size check, high-risk flag, gate decisions, budget |
+| `state.json` | `autodev.py` only | the run's state: phases, size check, gates, budget and every round spent |
+| `WORK_LOG.md` | generated from `state.json` | the same, for people to read |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
-| `briefs/`, `returns/` | `autodev.py brief` and `next`, each worker | each worker's brief file, and the result it returned |
-| `tmp/` | `autodev.py brief` | where workers spill long command output, a literal path in place of `$TMPDIR` |
-| `blocked/` | Phases 4–6, coder | the build steps the coder stopped, for the planner |
-| `pr-body.md`, `pr-output-comment.md` | Phase 6, `autodev.py next` | the generated PR description, and the command output moved out of it when it would be too long |
-| `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session: the task, what is done, what comes next, the run files its orchestrator may open |
+| `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
+| `tmp/` | workers | long command output |
+| `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
-| `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md` (what each check covers, its level, its result on the old code) and `base-run/`, each condition's run on the old code; `INSTALLED` lists the checks `next` installed before Phase 5's cleanup; `AMBIGUOUS.md` lists a condition that reads two ways, for the Define agent |
-| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and evidence tiers, and what it ran |
-| `lint/` | Phase 5 | one report per quality-gate check |
-| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6a | the panel's raw reports, the judge's code review, the security review, and the judge's required changes |
 | `fixes/` | Phases 2–3 | the Define and plan reviewers' FIX blocks |
-| `evidence/corrections.md` | Phase 5 | the verifier's required changes for the coder |
-| `triage/` | Phase 6 | the triager's required changes for red CI and human blockers (`<ci\|human>-<n>.md`, for the coder), and the comments about a held-out check (`human-<n>-checks.md`, for the acceptance tester) |
+| `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md`, and their runs on the old code |
+| `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
+| `lint/` | Phase 5 | one report per quality-gate check |
+| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran, and its required changes (`evidence/corrections.md`) |
+| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports, the judge's code review, the security review, and the review's required changes for the coder |
+| `pr-body.md`, `pr-output-comment.md` | Phase 6 | the generated PR description, and output moved out of it when too long |
+| `triage/` | Phase 6 | the triager's required changes for red CI and human comments |
 | `lookups/` | any phase | lookup answers |
-
-Each artifact's template is in `skills/auto-dev/templates/`. This is scratch, not part of your
-project — the pipeline never commits it and makes the directory self-ignoring (a
-`.gitignore` containing `*`, written into `.auto-dev/` itself) automatically, so
-it cannot be staged even by a stray `git add -A`. (Note: a committed
-`.auto-dev.yml` override file is separate and is *not* excluded.)
 
 ## Safety
 
-Autonomous but bounded: the correction loop and the Define/plan re-reviews share
-one iteration budget per task (default 4 revise rounds), and the pipeline stops
-and reports
-rather than committing a red build or weakening any security control. It also
-stops if the mutation step may have left a planted bug in the tree, if the
-build edited source inside a submodule, or if a commit holds code that no result
-checked. It stops instead of spending another round when the verifier and the
-acceptance tester disagree about a check, when a correction after the commit
-changes nothing, or when a re-voter fails twice. A worker that stops on
-purpose (`blocked`) is spawned once more, told to write any refused command out
-in full; a stop on a worker (it stopped on purpose twice, failed twice, or
-never returned) lasts until you resume:
-then that worker is spawned again, and a refused `pr publish` is run
-again the same way. A stop on a result (a red quality gate, an
-impossible spec, a possibly planted bug, the budget used up) stays. A stop
-because someone pushed to the PR branch lasts until you bring those commits
-into the worktree; then they are re-checked before the main gate. If Define's size check returns OVERSIZED, it builds nothing and hands
-the task back to you; Jira is left alone, and the worktree and branch stay in
-place (see *Size check* above). It never asks you at a gate, or writes a PR description, on results
-that were checked on other code. It refuses a
-resolved quality gate with no test command in it, since that would pass Phase 5 by
-having nothing to check. It merges to main only through a PR, only after your
-approval, and if `gh pr merge` is refused it tells you why instead of working around
-branch protection.
+Autonomous but bounded:
+
+- **One iteration budget per task** (default 4 revise rounds) covers every
+  correction and every Define or plan re-review.
+- **It stops and reports** rather than commit a red build, weaken a security
+  control, or carry on when a planted bug may be left in the tree, the build
+  edited a submodule, or a commit holds code no result checked.
+- **It never acts on stale results.** No gate is asked, and no PR description
+  written, on results checked against other code.
+- **It refuses a quality gate with no test command**, which would pass by having
+  nothing to check.
+- **It merges to main only through a PR**, only after your approval, and if
+  `gh pr merge` is refused it tells you why instead of working around branch
+  protection.
+
+Some stops last until you fix the cause and say `auto-dev continue`: a stop on
+a worker (it stopped on purpose twice, failed twice, or never left a usable
+result), a refused `pr publish`, and red CI the code can't fix. A push to the PR
+branch stops the run until you bring those commits into the worktree, where
+they are checked again. A stop on a result (a red gate, an impossible spec, a
+possibly planted bug, the budget used up) stays.
 
 ## Repository layout
 
@@ -695,6 +513,7 @@ tools/eval-run.py       gives each pipeline eval its own branches of the fixture
 ruff.toml               lint config
 .github/                CI workflow and PR template
 CLAUDE.md               conventions for agents (and people) changing this repo
+UPGRADING.md            what changed in each release, and whether a run in flight resumes
 ```
 
 ## Contributing
@@ -707,247 +526,6 @@ python3 tools/check-repo.py
 python3 -m unittest discover -s tests
 ```
 
-To run a pipeline eval (`skills/auto-dev/evals/evals.json`), give it its own
-branches of a GitHub-hosted fixture repo with `python3 tools/eval-run.py setup
---repo <owner>/<name> --run <run> --eval <id>`, and remove the run's PRs,
-branches, run-named secrets and clones afterwards with `python3
-tools/eval-run.py cleanup --repo <owner>/<name> --run <run>`. It needs push
-access and `gh` with the `repo` scope (plus `workflow` to push a CI change),
-never a token that can delete repos. The fixture's CI must run on PRs to any
-branch and on pushes to `eval/**`.
-
-Every change that alters how the pipeline behaves updates this README in the same
-PR: the phase table, the worker and model table, the dependencies, the
-`.auto-dev/` layout, and an *Upgrading* note for a version bump.
-
-Branches are named `<type>/<short-kebab-description>` (`fix/mutate-mtime`), PR
-titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`,
-`chore` and `ci`. Every PR is squash-merged. No change may tie the pipeline to
-one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
-conventions, the full README checklist, the language-agnostic rules and the
-rules for changing a script are in `CLAUDE.md`.
-
-## Upgrading from 4.4
-
-- **A correction's re-review skips the nested skills.** A pass that reviews a
-  correction used to run `/code-review` in each of the three reviewers and
-  `/security-review` in the security reviewer. Now the three code reviewers
-  review the correction and everything downstream of it themselves, and the
-  security reviewer gets a `focus` naming the correction, re-checks it and what
-  it reaches, and carries its earlier findings forward. The panel stays at
-  three reviewers.
-- **A run in flight resumes.** A reviewer briefed before 4.5 has no `focus` and
-  runs as before. Every pass started on 4.5 uses the new briefs.
-
-## Upgrading from 4.3
-
-- **The security review runs alongside the code review panel.** It used to
-  start only after the panel and its corrections had settled, so a security
-  finding cost a second correction and a second panel pass. Now `next` spawns
-  the security reviewer in the same message as the three code reviewers, the
-  judge verifies the security findings while it consolidates the panel, and one
-  correction (one round) fixes what both left open: the coder gets both
-  required-changes files. A security lead the panel raises that the security
-  review hasn't seen goes to the next pass's security review, or to a security
-  run of its own when nothing else is open.
-- **A run in flight resumes.** A review pass started on 4.3 or earlier, whose
-  panel ran without the security reviewer, gets its security review as soon as
-  `next` sees it missing: before the judge if the panel was still running,
-  after it otherwise. Every new pass uses the new order.
-
-## Upgrading from 4.2
-
-- **The plan sets the code reviewers' effort.** `IMPLEMENTATION.md` has a new
-  `Review effort: high | xhigh — <reason>` line, which `check-artifact` checks
-  when present. `next` prints an `EFFORT` line after each code reviewer's
-  `PROMPT` (only for code reviewers), and `SKILL.md` tells the orchestrator to
-  pass it as the Agent tool's `effort` parameter. The state's review passes
-  record the effort they ran at.
-- **A run in flight resumes.** A plan written before 4.3 has no `Review
-  effort:` line, which means `xhigh`, the effort the reviewers ran at before.
-
-## Upgrading from 4.1
-
-- **A test-gap finding asks for the whole gap.** A code reviewer who finds a
-  changed behavior under-tested now lists every reachable case no test covers
-  in one finding, the judge merges tests findings about the same behavior, and
-  the required change asks the coder for a test of each case. Before, each
-  review pass tended to find the next missing case, and each one cost a full
-  correction round and re-review. The rule is in
-  `skills/auto-dev/templates/rubric.md`.
-- **A run in flight resumes.** Only agent files and templates changed; the
-  next review pass uses the new rule.
-
-## Upgrading from 4.0
-
-- **Cleanup runs before the verifier.** Phase 5 used to run the verifier, then
-  the cleanup agent, then the verifier again. Now `next` installs the sealed
-  acceptance checks itself (and lists them in `acceptance/INSTALLED`), the
-  cleanup agent simplifies the change and runs the quality gate, and the
-  verifier's first pass checks the cleaned code. On the happy path the verifier
-  runs once instead of twice. A correction still runs coder, cleanup, verifier,
-  and a check the acceptance tester repairs goes through cleanup's quality
-  gate before the verifier's re-check.
-  If a sealed check's path already holds another file, nothing is installed
-  and the verifier goes first, as before, to report the conflict.
-- **A run in flight resumes.** A run that has already started Phase 5 on 4.0
-  finishes it in the old order. One that hasn't reached Phase 5 uses the new
-  one.
-
-## Upgrading from 3.9
-
-4.0 is a breaking release.
-
-- **One PR per run.** The scope call is gone. The Define agent now returns a size
-  check: a task that fits one PR runs every step, and one that doesn't is handed
-  back to you with suggested split lines. auto-dev no longer splits a task into
-  sub-tasks or opens several PRs, and the TRIVIAL fast path is gone, so the
-  planner writes every plan and the `coder-trivial` worker is removed.
-- **Jira moves later.** A ticket moves to In Progress after the size check, not
-  in Phase 1, so a task handed back never shows as started.
-- **The ledger changed.** The run's state lives in `.auto-dev/state.json`,
-  written only by `skills/auto-dev/scripts/autodev.py`; `WORK_LOG.md` is
-  generated from it for people to read. Its header has `Worktree`, `Size` and
-  `High risk` lines in place of `Control worktree` and `Mode`.
-- **Python 3.9+ and PyYAML are required** by `autodev.py`.
-- **Workers write the fixes.** The verifier and the review judge write the
-  required changes the coder gets; the Define and plan reviewers write exact
-  FIX blocks that a script applies; the planner settles a `BLOCKED` step; a new
-  `triager` worker reads red CI and human PR comments. The orchestrator no
-  longer writes correction briefs or edits `SPEC.md` and `IMPLEMENTATION.md`.
-- **Briefs live in the agent files.** Each worker's instructions are in
-  `agents/<name>.md` (its system prompt); `autodev.py brief` writes only the
-  values that vary, and the spawn prompt is one line. Every worker ends with an
-  `auto-dev-result` block, which `autodev.py record` checks against what it
-  wrote. Templates and the rubric moved to `skills/auto-dev/templates/`.
-- **`autodev.py next` drives the run.** It prints the one next action from the
-  run's state, so the orchestrator no longer works out the order of steps,
-  when to spend a round, or how to assemble the PR description; `pr publish`
-  opens or refreshes the PR. `resume` now records that a new session holds the
-  run, and un-holds a gate so it is asked again.
-- **Any model runs the orchestrator.** `SKILL.md` is now the `next` loop and
-  its hard rules, with one short runbook per session
-  (`skills/auto-dev/references/S1-plan.md`, `S2-build.md`, `S3-ship.md`) and
-  one file of shared tables. The old phase references are gone. No session
-  asks you to switch models.
-- **Checkpoints count events, not tokens.** `next` ends a long session after 80
-  events (about 35 workers) and asks you to continue in a fresh session.
-- **No more by-hand fallbacks.** Without python3 3.9+ and PyYAML the run stops
-  in Phase 1. `resume-point.py` is removed: `autodev.py resume` finds the run.
-- **`init` finds the security directives** from `security_docs`, or the repo's
-  `SECURITY.md`, `.github/SECURITY.md` and `docs/security/*.md`.
-- **The PR follows the repo's PR template and links the ticket.** The
-  description gets the template's sections, with a box of its checklist ticked
-  only when the run's files show it is true, and `pr_review.inline_comments`
-  now posts once, after the PR opens, only the review findings left open or
-  advisory (3.x posted the Phase 6a findings). `record` checks every file a
-  worker says it wrote against its template, and refuses a plan, or a plan
-  reviewer's FIX, that copies `SPEC.md`'s wording. A push to the PR branch can
-  now be brought in and re-checked instead of ending the run.
-- **No staging branch.** The staging gate, the direct merge into staging and
-  `autodev.py merge-staging` are gone: the PR targets the base branch and the
-  main gate is the only merge gate. A `staging` branch on origin is ignored, and
-  `validate-config.py` refuses `branches.staging` in `.auto-dev.yml`: delete
-  the key.
-
-A run in flight does not resume on 4.0. Finish it on 3.9, or remove its worktree
-and start again.
-
-## Upgrading from 3.8
-
-3.9 keeps the proof that the held-out checks failed on the old code (see *How
-the build is verified*). The acceptance tester saves each condition's run on the
-untouched tree as `acceptance/base-run/C<n>.txt`, and `MANIFEST.md` gains
-*Covers* and *Level* columns. The orchestrator checks that every edge case has a
-check or a reason it can't have one, and the verifier rates a condition Strong
-only when its checks cover both its example and its edge case and the saved run
-shows them failing for the right reason. The PR description quotes that run.
-
-A run in flight resumes on 3.9. A run whose Phase 3 finished on 3.8 has no
-`base-run/` and no *Covers* column, and the tester is not run again to add them.
-The verifier trusts `MANIFEST.md`'s one-line *Base run* note, as before, and
-says so in `SPEC_EVAL.md`; it reads each check to see what it covers. The PR
-description then leaves out the old-code output. A verifier re-check on 3.9 can
-rate a condition lower than 3.8 did (Adequate instead of Strong, when no check
-covers its edge case or a check is below the level the spec asks for) and can
-report a held-out check as too weak; a repair that follows spends a round as
-usual.
-
-## Upgrading from 3.7
-
-3.8 rewrites the PR description for reviewers who don't know auto-dev (see
-*How the build is verified*). The verifier now writes each `evidence/C<n>.txt`
-in a fixed shape (expected, command, result, the last lines of output) for the
-description to quote. A run in flight resumes on 3.8: only the description
-changes. An evidence file written by an older verifier may have no output in
-it; that requirement's entry then leaves the output block out. A PR opened on
-3.7 gets the new sections the next time its description is refreshed.
-
-## Upgrading from 3.6
-
-3.7 stamps every report that judges the code (`SPEC_EVAL.md`, `lint/*.md`,
-`CODE_REVIEW.md`, `SECURITY_REVIEW.md`) with a `Tree:` line naming the code it
-checked, and adds `scripts/check-fresh.py`, which compares the stamps with the
-code at each step that relies on them. The PR description gains a `Checked at
-commit` line, and the main merge is locked to the checked commit with
-`gh pr merge --match-head-commit`. If someone pushes to the PR before the main
-gate, the pipeline checks their commits before asking you. A run in flight
-resumes on 3.7: its reports have no stamp, which reads as stale, so the next
-check re-runs the verifier, the quality gate and the reviews before going on.
-Those re-runs spend no iteration budget.
-
-## Upgrading from 3.5
-
-3.6 removes the shipped stack profiles (Elixir, and the `default` discovery
-fallback) along with the `profiles/` folder. The first run on each repo now has the new `profiler`
-worker research the profile, and pauses once for you to confirm it, with an
-offer to save it to `~/.config/auto-dev/profiles/` so later runs skip the
-pause (see *Stack profiles*). `.auto-dev.yml` keeps every key; `stack:` now only
-names the stack and no longer selects a profile, and the
-validator warns when it is set without `setup` and `gate`. A repo whose `.auto-dev.yml`
-sets both `setup` and `gate` runs as before, with no research and no pause.
-A run in flight resumes on 3.6: Phase 1 never runs again on a resume, and its
-`profile.md` is read as written.
-
-## Upgrading from 3.4
-
-3.5 moves the Elixir-only `dexter` rule out of `SKILL.md` into a new optional
-profile key, `symbol_lookup`, which any profile or `.auto-dev.yml` can set.
-Phase 1 records the resolved lookup in `profile.md`. A run in flight can resume
-on 3.5: a `profile.md` written by 3.4 has no _Symbol lookup_ line, and the
-orchestrator then uses `grep -n`.
-
-## Upgrading from 3.3
-
-3.4 adds Example, Edge and Verify by lines under every `SPEC.md` condition, an
-ambiguity probe in the Define review, and a mutation step in the verifier
-(`scripts/mutate.py`, the `mutation.max` key in `.auto-dev.yml`). A run with a
-3.3 `SPEC.md` still works: the acceptance tester falls back to the condition's
-own words, and the mutation step needs nothing from the spec.
-
-## Upgrading from 3.2
-
-3.3 moves the Phase 5 acceptance check from the orchestrator to two new workers:
-the `acceptance-tester`, which runs at the end of Phase 3, and the `verifier`.
-It adds `acceptance/` and `evidence/` to `.auto-dev/`, an evidence tier and a
-test-integrity section to `SPEC_EVAL.md`, and `scripts/check-tests.py`. A run
-whose Phase 3 is already done has no sealed checks: finish it on 3.2, or re-run
-its Phase 3 on 3.3 before the build.
-
-## Upgrading from 3.1
-
-3.2 replaces the single PR reviewer, which ran after the PR was opened, with a
-code review panel and a separate security review that run before the PR gate.
-`PR_REVIEW.md` is replaced by `CODE_REVIEW.md` and `SECURITY_REVIEW.md`, and the
-`pr-reviewer` agents by `code-reviewer`, `review-judge`, `security-reviewer` and
-`security-reviewer-sensitive`. A run that has not reached Phase 6 resumes
-normally. A run already in Phase 6 should be finished on 3.1.
-
-## Upgrading from 2.x
-
-3.0 restructures the pipeline from ten phases to six and changes the artifact set:
-`TICKET.md` and `ACCEPTANCE_CRITERIA.md` are merged into `SPEC.md`,
-`CODING_TODO.md` is dropped (the plan's build sequence is the coder's worklist),
-and `IMPLEMENTATION_EVAL.md` is dropped along with the plan-adherence check. A run
-started on 2.x cannot be resumed on 3.0 — its `.auto-dev/` and its `WORK_LOG.md`
-phase table won't match. Finish in-flight runs before upgrading.
+Branch and PR conventions, the README checklist, the language-agnostic rules,
+the rules for changing a script and how to run the pipeline evals are in
+[`CLAUDE.md`](CLAUDE.md).
