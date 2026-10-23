@@ -193,8 +193,10 @@ Nothing is committed or pushed until the change has been reviewed twice, on the
 uncommitted working tree, and you have seen the results:
 
 1. **Code review panel.** Three reviewers run `/code-review xhigh` on the change
-   independently. A judge merges their findings and checks each trigger path in
-   the code. A correctness or test finding that only one reviewer raised goes to
+   independently; the agents run at the effort the plan recommends (see
+   *Models and effort*).
+   A judge merges their findings and checks each trigger path in the code. A
+   correctness or test finding that only one reviewer raised goes to
    the other two for a re-vote.
 2. **Security review.** One security reviewer runs `/security-review` over the
    whole change, and the judge double-checks every finding rated High or Medium.
@@ -583,6 +585,15 @@ the workers above do the judging. To retune a worker,
 edit the `model:` / `effort:` frontmatter in `agents/<name>.md` and the table in
 `SKILL.md`.
 
+The code reviewers are the costliest workers, and most of their time is
+thinking, so their effort is set per run. The planner writes a `Review effort:`
+line in `IMPLEMENTATION.md`: `high` for a small, local, straightforward change,
+otherwise `xhigh` (`agents/planner.md` says how it chooses). `next` prints it as an `EFFORT`
+line after each code reviewer's `PROMPT`, and the orchestrator passes it as the
+Agent tool's `effort` parameter, which overrides the agent file's `xhigh`. A
+plan with no such line means `xhigh`. Each review pass keeps the effort it
+started with, and `WORK_LOG.md` notes it.
+
 ## The `.auto-dev/` scratch directory
 
 Each run creates `.auto-dev/` holding the artifacts phases hand off. Git ignores
@@ -700,6 +711,17 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 4.2
+
+- **The plan sets the code reviewers' effort.** `IMPLEMENTATION.md` has a new
+  `Review effort: high | xhigh — <reason>` line, which `check-artifact` checks
+  when present. `next` prints an `EFFORT` line after each code reviewer's
+  `PROMPT` (only for code reviewers), and `SKILL.md` tells the orchestrator to
+  pass it as the Agent tool's `effort` parameter. The state's review passes
+  record the effort they ran at.
+- **A run in flight resumes.** A plan written before 4.3 has no `Review
+  effort:` line, which means `xhigh`, the effort the reviewers ran at before.
 
 ## Upgrading from 4.1
 
