@@ -4,6 +4,32 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.6
+
+- **Acceptance checks go where the repo's tests already are.** The acceptance
+  tester used to write every check to a new `*.acceptance.*` test file, so each
+  PR added test files no developer would have made. Now it adds a check to the
+  test file the code it drives already has, and writes a new test file only for
+  code that has none, named by the repo's conventions with no `acceptance`
+  marker. A check in an existing file may only add lines to it.
+- **Checks are merged back in.** After the build, `install-checks` puts each
+  check's added lines into its file among the coder's own changes, and the
+  audit checks those lines are unchanged rather than the whole file. When a
+  check can't go in mechanically (the coder made the same new test file, or
+  rewrote the lines around a check), `next` spawns the acceptance tester in a
+  new `fold` mode, which adds its tests to the coder's file (no round spent);
+  only if that fails does the verifier report an install conflict.
+- **A repair in place keeps the coder's lines.** Before the tester repairs an
+  installed check, `next` makes the coder's version of that file the check's
+  base, and on a re-check `install-checks --recheck` undoes only the edits that
+  touched a check.
+- **The coder and cleanup briefs name the checks' tests,** not just their
+  files, since a file can hold the coder's tests too.
+- **A run in flight resumes.** Checks sealed before 4.7 are new files with no
+  `<path>.base`, and install as before. The audit now also accepts the coder's
+  own lines added before or after such a file's sealed content, where it used
+  to report ACCEPTANCE_MODIFIED.
+
 ## Upgrading from 4.5
 
 - **A run can start in a worktree you made.** When you start auto-dev inside a

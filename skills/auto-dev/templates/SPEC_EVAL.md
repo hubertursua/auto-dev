@@ -7,7 +7,7 @@ Pass: <first | re-check after <what changed>> · acceptance run: <n passed / n t
 
 | # | Condition | Verdict | Tier | Evidence | In plain words |
 |---|-----------|---------|------|----------|----------------|
-| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todo-delete.acceptance.test.ts` :: "owner deleting…" passed (`evidence/C1.txt`) | the test written before the code passes |
+| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todos.test.ts` :: "owner deleting…" passed (`evidence/C1.txt`) | the test written before the code passes |
 | 2 | <condition> | met | Adequate | expected `GET /todos` without the deleted id; saw it (`evidence/C2.txt`) | checked by listing the todos after a delete |
 | 3 | <condition> | partial | Weak | <what holds, what was not run, and why> | <the same, for a reader who doesn't know this pipeline> |
 | 4 | <condition> | unmet | Strong | acceptance check failed: <the failing assertion, one line> | <what still fails, in a sentence> |

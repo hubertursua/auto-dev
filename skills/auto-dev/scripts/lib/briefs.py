@@ -47,7 +47,7 @@ RESULTS = {
     "define-reviewer": {"CLEAN", "BLOCKERS"},
     "planner": {"WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST", "SPEC_IMPOSSIBLE"},
     "plan-reviewer": {"CLEAN", "BLOCKERS"},
-    "acceptance-tester": {"SEALED", "REPAIRED", "STANDS"},
+    "acceptance-tester": {"SEALED", "REPAIRED", "STANDS", "FOLDED"},
     "coder": {"BUILT", "BLOCKED"},
     "verifier": {"ALL_MET", "CORRECT", "REPAIR", "INSTALL_CONFLICT",
                  "MUTATION_LEFT_CHANGES"},

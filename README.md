@@ -69,7 +69,7 @@ orchestrator runs:
 | 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
-| 5 Verify | cleanup agent, then verifier | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
+| 5 Verify | cleanup agent, then verifier (acceptance tester to fold or repair a check, when needed) | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
 | 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate |
 
 ## Agent hierarchy
@@ -116,8 +116,17 @@ weakening them. Verification is built around that:
 - **Held-out acceptance checks.** An acceptance tester writes black-box tests
   from the spec alone, one for each condition's example and one for its edge
   case. Every check for new behavior must **fail on the untouched code for the
-  right reason**, and the tester saves that run. The checks are then sealed out
-  of the worktree; the coder never sees them.
+  right reason**, and the tester saves that run. Each check goes where a
+  developer would put that test: into the test file the code already has, or
+  a new test file only for code that has none, so the PR adds no test files
+  just for the checks. The checks are then sealed out of the worktree; the
+  coder never sees them.
+- **Merged back in after the build.** The pipeline puts each check back into
+  its file among the coder's own changes to it
+  (`skills/auto-dev/scripts/lib/sealed.py`). When it can't (the coder made the
+  same new test file, or rewrote the lines around a check), the acceptance
+  tester adds its tests to the coder's file, changing none of the coder's
+  lines.
 - **An independent verifier that runs things.** After the build, a fresh
   verifier installs the checks and **runs** them, without seeing the plan or the
   coder's report. Each condition gets a verdict and an evidence tier: **Strong**
@@ -128,7 +137,7 @@ weakening them. Verification is built around that:
   handed to you at the PR gate as a manual check.
 - **A test-integrity audit.** `scripts/check-tests.py` flags deleted or skipped
   tests, removed assertions, new tests that assert nothing, and any edit to a
-  sealed check. Each finding must be justified by the spec or it goes back to
+  sealed check, even one sharing a file with the coder's tests. Each finding must be justified by the spec or it goes back to
   the coder.
 - **Targeted mutation testing.** The verifier plants a few small bugs in the
   changed lines with `scripts/mutate.py`, which restores every file afterwards.
@@ -460,7 +469,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
 | `fixes/` | Phases 2–3 | the Define and plan reviewers' FIX blocks |
-| `acceptance/` | Phase 3 | the sealed held-out checks, their `MANIFEST.md`, and their runs on the old code |
+| `acceptance/` | Phase 3 | the sealed held-out checks (`files/<path>.sealed`, with `<path>.base`, the file a check adds to, and `<path>.installed`, that file as it was with the check whole), their `MANIFEST.md`, and their runs on the old code |
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
 | `lint/` | Phase 5 | one report per quality-gate check |
 | `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran, and its required changes (`evidence/corrections.md`) |
@@ -504,7 +513,7 @@ skills/auto-dev/
                         shared tables, the profile schema and the Jira steps
   templates/            the artifact templates and the review rubric workers read by path
   scripts/              the Python helpers listed under Dependencies
-    lib/                shared code for autodev.py (not run directly)
+    lib/                shared code for autodev.py and check-tests.py (not run directly)
   evals/                evals.json (pipeline evals, with fixtures in files/)
                         and trigger-eval.json (should / shouldn't trigger)
 tests/                  unit tests for the helper scripts, tools/ and the eval fixtures

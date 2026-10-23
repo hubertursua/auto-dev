@@ -44,7 +44,8 @@ that a script can check, add it there.
 - **Standard library only**, Python 3.9+ (`validate-config.py`, and
   `autodev.py init`, which reads YAML, may use PyYAML). Users run these with
   whatever `python3` they have.
-- **Shared code goes in `scripts/lib/`**, imported by `autodev.py`. Modules
+- **Shared code goes in `scripts/lib/`**, imported by `autodev.py` (and by
+  `check-tests.py`, which shares `lib/sealed.py`). Modules
   there aren't run directly, so they need no shebang, no executable bit and no
   README mention. A new subcommand's docstring is its `--help`, as for a script.
 - **Keep the CLI contract.** Each script's docstring is its `--help` and lists

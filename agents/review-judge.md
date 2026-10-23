@@ -83,7 +83,10 @@ Read every one. <Pass 2 or later: also read the previous
    copies only that line into corrections.md. A finding about a held-out
    acceptance check itself (it asserts the wrong thing, or can't fail when its
    condition is unmet) gets the category `acceptance-check` (the rubric): it
-   goes to the acceptance tester's repair mode, never the coder.
+   goes to the acceptance tester's repair mode, never the coder. The checks are
+   the tests {{artifact_dir}}/acceptance/MANIFEST.md names; a file that holds
+   one can hold the coder's tests too, and a finding about one of those is an
+   ordinary `tests` finding.
 6. Write the Tree line. The panel reviewed tree {{tree}}. Run
    `python3 {{skill_dir}}/scripts/check-fresh.py --print-tree {{worktree}}`: if it
    prints that hash, write it; if not, the code changed after the review, so

@@ -20,9 +20,13 @@ Usage:
 files, read straight from disk. Paths under `.auto-dev/` are ignored.
 
 --acceptance is `<artifact-dir>/acceptance`, the held-out checks Phase 3
-wrote. Each file under its `files/` directory is the sealed copy of one check,
-stored at `<repo-relative install path>.sealed` so no test runner collects it;
-the installed file in <worktree> must be byte-identical to it.
+wrote. Each `.sealed` file under its `files/` directory is the sealed copy of
+one test file, stored at `<repo-relative install path>.sealed` so no test
+runner collects it. A sealed copy of a new file must be installed whole, with
+any lines added only before or after it. A sealed copy that adds tests to a
+file that already existed has a `<path>.base` beside it (the file it added
+to): each run of lines it added must be in the installed file, unchanged and
+in order, and the other lines of that file are audited like any test file.
 
 Findings (one per line on stdout, tab-separated: KIND, location, detail):
     ACCEPTANCE_MISSING   a sealed acceptance test is not installed
@@ -69,7 +73,9 @@ import re
 import subprocess
 import sys
 
-SEALED_SUFFIX = ".sealed"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lib import sealed as sealed_lib
+
 CODE_EXT = {
     ".ex", ".exs", ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".rb",
     ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
@@ -180,28 +186,29 @@ def main() -> int:
     findings = []
     tampered = False
 
-    # Acceptance tests: each installed copy must equal its sealed copy.
-    sealed = set()
+    # Acceptance tests: each sealed check must be in its file, unchanged.
+    sealed = set()  # new files that hold nothing but a sealed check
     if args.acceptance:
+        ad = os.path.dirname(os.path.abspath(args.acceptance))
         root = os.path.join(os.path.abspath(args.acceptance), "files")
-        for dirpath, _, names in os.walk(root):
-            for n in names:
-                if not n.endswith(SEALED_SUFFIX):
-                    continue
-                src = os.path.join(dirpath, n)
-                rel = os.path.relpath(src, root).replace(os.sep, "/")[: -len(SEALED_SUFFIX)]
-                sealed.add(rel)
-                installed = read(os.path.join(wt, rel))
-                if installed is None:
-                    findings.append(("ACCEPTANCE_MISSING", rel, "sealed check not installed"))
-                    tampered = True
-                elif installed != read(src):
-                    findings.append(("ACCEPTANCE_MODIFIED", rel, "differs from the sealed copy"))
-                    tampered = True
         if not os.path.isdir(root):
             print(f"ERROR: no sealed-checks directory at {root}", file=sys.stderr)
             return 2
         # An empty files/ is valid: every condition was not automatable.
+        try:
+            for rel, src in sealed_lib.sealed_files(ad).items():
+                current = sealed_lib.read(os.path.join(wt, rel))
+                if current is None:
+                    findings.append(("ACCEPTANCE_MISSING", rel, "sealed check not installed"))
+                    tampered = True
+                elif not sealed_lib.intact(ad, rel, current):
+                    findings.append(("ACCEPTANCE_MODIFIED", rel, "differs from the sealed copy"))
+                    tampered = True
+                elif sealed_lib.base_of(ad, rel) is None and current == sealed_lib.read(src):
+                    sealed.add(rel)
+        except sealed_lib.SealError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
 
     tokens = status.split("\0")
     changed = []
