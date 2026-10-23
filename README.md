@@ -40,17 +40,18 @@ To keep a run from stopping on permission prompts, add the rules in
 
 ### Install without the plugin
 
-If policy blocks plugins, link the agents into your user folder instead:
+If policy blocks plugins, link the agents into your user folder instead
+(replace `/path/to/auto-dev` with where you cloned this repo):
 
 ```
-ln -s ~/Dev/auto-dev/agents ~/.claude/agents
+ln -s /path/to/auto-dev/agents ~/.claude/agents
 ```
 
 This works only when `~/.claude/agents` does not exist yet. If it exists, link
 each file into it:
 
 ```
-ln -s ~/Dev/auto-dev/agents/*.md ~/.claude/agents/
+ln -s /path/to/auto-dev/agents/*.md ~/.claude/agents/
 ```
 
 The agents load as `auto-dev-<name>`, and the orchestrator falls back to that form.
