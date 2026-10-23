@@ -28,7 +28,7 @@ comes next yourself.
 The pipeline:
 
 ```
-Phase 1  Setup   → find or research the repo's profile, create the worktree   (S1 Plan)
+Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (S1 Plan)
 Phase 2  Define  → SPEC.md, the testable contract, and the size check          (S1 Plan)
 Phase 3  Plan    → IMPLEMENTATION.md, then sealed acceptance checks             (S1 Plan)
 Phase 4  Build   → the coder builds from the plan                               (S2 Build)
@@ -69,7 +69,8 @@ repo. Below, `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 1. Run `autodev.py resume --repo <the directory you are in>`, adding
    `--task "<the ticket key or task, word for word>"` when the user stated one.
-   Leave `--task` out on a bare `auto-dev continue`.
+   Leave `--task` out on a bare `auto-dev continue`: inside a run's worktree,
+   `resume` picks that run.
 2. Act on the first word it prints:
 
 | Prints | Do |

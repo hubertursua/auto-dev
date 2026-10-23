@@ -84,7 +84,9 @@ pr-body --check <file>
 cleanup-worktree
     Removes the run's worktree from the main checkout with `git worktree
     remove` (never --force). Only after the final report: it deletes
-    .auto-dev/. Exit: 0 removed; 1 git refused (files are listed; leave it).
+    .auto-dev/. Refuses a worktree the user made (the run started in it).
+    Exit: 0 removed; 1 git refused (files are listed; leave it), or the
+    worktree is the user's own.
 
 All of them exit 2 when they could not run (no state, git or gh missing, an
 unexpected error) — never a pass.
@@ -654,6 +656,9 @@ def path_shown(text, path, whole=False):
 def cleanup_worktree(args):
     state = load(args)
     main_checkout, wt = state["repo"]["main_checkout"], state["worktree"]
+    if state["repo"].get("adopted"):
+        raise Fail(f"{wt} is the user's own worktree (the run started in it); "
+                   "auto-dev never removes it", FAILED, "REFUSED")
     code, out, err = git(main_checkout, "worktree", "remove", wt, check=False)
     if code != 0:
         raise Fail(f"git refused to remove {wt}; leave it in place and report what is "

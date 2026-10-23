@@ -4,6 +4,24 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.5
+
+- **A run can start in a worktree you made.** When you start auto-dev inside a
+  linked worktree (one `git worktree add` made) on a branch other than the
+  base, `autodev.py init` runs the task there, on that branch, instead of
+  making a sibling `../<repo>-<slug>` worktree. The worktree must have no
+  uncommitted changes; a detached HEAD gets the branch `<prefix>/<slug>` at the
+  same commit, and commits already on the branch ship with the run. Starting in
+  the main checkout, or in a linked worktree on the base or default branch,
+  makes a new worktree as before. The run never removes a worktree you made:
+  the last question (remove the worktree?) is skipped, and `cleanup-worktree`
+  refuses it.
+- **`auto-dev continue` picks the run you are in.** With no task named and
+  several runs open, `resume` used to ask which one. Started inside a run's
+  worktree, it now continues that run; from anywhere else it asks as before.
+- **A run in flight resumes.** `state.json` gains only optional `repo.adopted` and
+  `repo.ahead` keys, which a run started before 4.6 doesn't have.
+
 ## Upgrading from 4.4
 
 - **A correction's re-review skips the nested skills.** A pass that reviews a

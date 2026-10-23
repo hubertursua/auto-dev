@@ -26,9 +26,19 @@ Does, in order, stopping at the first failure:
     from the override, else `--prefix` (default `feat`).
  4. `git fetch origin`, then `git worktree add ../<repo>-<slug> -b
     <prefix>/<slug> origin/<base>`.
+    When `--repo` is a linked worktree (one `git worktree add` made) on a branch
+    other than the base and the default branch, the run uses that worktree and
+    its branch instead of making a new one. Its tree must be clean, and its HEAD must share history
+    with origin/<base>; a detached HEAD gets the branch `<prefix>/<slug>` at the
+    same commit. Commits it already holds past origin/<base> ship with the run.
+    A linked worktree on the base or default branch gets a new worktree, as
+    above. `INIT` then prints `adopted: yes` and, when the branch already holds
+    commits past origin/<base>, `ahead: <n>`; the run never removes that
+    worktree.
  5. Make `.auto-dev/` self-excluding (exclude-artifacts.py).
  6. Copy each `worktree_files` entry from the main checkout and check git ignores
-    it. A listed file that isn't there is reported, not fatal.
+    it. A listed file that isn't there is reported, not fatal; in a worktree the
+    user made, a copy already there is kept.
  7. Write `.auto-dev/profile.md`, `state.json` and `WORK_LOG.md`.
  8. Run the profile's `setup` commands in the background, in order, logging to
     `.auto-dev/setup.log`, and wait up to `--max-wait` seconds (default 540, under
@@ -37,6 +47,8 @@ Does, in order, stopping at the first failure:
 
 If anything fails after step 4 and before setup starts, the worktree and its
 branch are removed again, so the same command can run once the cause is fixed.
+In a worktree the user made, `.auto-dev/` and a branch init created are
+removed; the worktree and any `worktree_files` copied into it stay.
 
 A failed setup leaves the run open (Phase 1 `held`). `--continue` resumes a run
 whose `init` already got to step 8: it keeps waiting while setup runs, and when
@@ -54,7 +66,10 @@ Exit codes:
     1  stop and report: the reason is printed (gh missing or signed out, origin
        not on GitHub, invalid config, no test command in the gate, worktree
        path taken, the slug used by another task's run, a seeded file not
-       gitignored, a setup command missing or failing, the setup runner dying)
+       gitignored, a setup command missing or failing, the setup runner dying;
+       in a worktree the user made: uncommitted changes, another task's run or a
+       stray .auto-dev/ there, origin/<base> missing, or a HEAD with no history
+       in common with it)
     2  could not run (bad arguments, a helper script missing, the ticket text
        file unreadable) — not a pass
     3  setup is still running; call `init --continue <worktree>`
@@ -134,18 +149,16 @@ def main(args):
         raise Fail(f"--slug {args.slug!r} must be lowercase words joined by "
                    "single hyphens", CANNOT_RUN, "ERROR")
     repo = repo_root(args.repo)
-    name = Path(repo).name
-    worktree = Path(repo).parent / f"{name}-{args.slug}"
-    if (worktree / ".auto-dev" / st.STATE_FILE).exists():
-        artifact_dir = worktree / ".auto-dev"
-        state = st.load(artifact_dir)
-        if not same_task(state["task"], args):
-            raise Fail(f"slug {args.slug} is already used by another run "
-                       f"({state['task'].get('text', '')}); pick another slug")
-        return wait_for_setup(artifact_dir, state, args)
-    if worktree.exists():
-        raise Fail(f"{worktree} already exists and holds no 4.x run; pick another "
-                   "slug, or remove it")
+    current = linked_branch(repo)
+    if current is not None:
+        # A linked worktree: it may be the one the user made for this task.
+        found = existing_run(Path(repo), args, adopted=True)
+        if found is not None:
+            return found
+    else:
+        found = existing_run(sibling(repo, args.slug), args)
+        if found is not None:
+            return found
 
     preflight(repo)
     config = resolve_config(repo, args.profile)
@@ -153,6 +166,13 @@ def main(args):
     branches = config.get("branches", {})
     base = branches.get("base") or default_branch
     prefix = branches.get("prefix") or args.prefix
+    if current is not None and current not in (base, default_branch):
+        return adopt(repo, current, config, args, base, prefix)
+    worktree = sibling(repo, args.slug)
+    if current is not None:  # a linked worktree on a long-lived branch: as from main
+        found = existing_run(worktree, args)
+        if found is not None:
+            return found
     git(repo, "fetch", "origin")
     branch = f"{prefix}/{args.slug}"
     code, _, err = git(repo, "worktree", "add", str(worktree), "-b", branch,
@@ -165,6 +185,107 @@ def main(args):
         runner = start_setup(worktree / ".auto-dev", state)
     except BaseException:
         remove_worktree(repo, worktree, branch)
+        raise
+    return wait_for_setup(worktree / ".auto-dev", state, args, runner)
+
+
+def sibling(repo, slug):
+    """Where a new worktree goes: `../<repo>-<slug>`."""
+    return Path(repo).parent / f"{Path(repo).name}-{slug}"
+
+
+def existing_run(worktree, args, adopted=False):
+    """Keep waiting on the run already in `worktree` when it is this task's, or
+    None when there is none. For a new worktree's path (not `adopted`), stops
+    when anything else is there."""
+    if (worktree / ".auto-dev" / st.STATE_FILE).exists():
+        artifact_dir = worktree / ".auto-dev"
+        state = st.load(artifact_dir)
+        if same_task(state["task"], args):
+            return wait_for_setup(artifact_dir, state, args)
+        other = state["task"].get("text", "")
+        if adopted:
+            raise Fail(f"{worktree} already holds another task's run ({other}); "
+                       "finish it, or start this task from another worktree")
+        raise Fail(f"slug {args.slug} is already used by another run ({other}); "
+                   "pick another slug")
+    if not adopted and worktree.exists():
+        raise Fail(f"{worktree} already exists and holds no 4.x run; pick another "
+                   "slug, or remove it")
+    return None
+
+
+def linked_branch(repo):
+    """None when `repo` is the repo's main worktree; for a linked worktree (one
+    `git worktree add` made), the branch it has checked out, or '' when its HEAD
+    is detached."""
+    git_dir, common = git(repo, "rev-parse", "--absolute-git-dir",
+                          "--git-common-dir").strip().splitlines()
+    if Path(repo, common).resolve() == Path(git_dir).resolve():
+        return None
+    code, out, _ = git(repo, "symbolic-ref", "-q", "--short", "HEAD", check=False)
+    return out.strip() if code == 0 else ""
+
+
+def main_worktree(repo):
+    """The main worktree's path, or None when the repo is bare (it has none)."""
+    out = git(repo, "worktree", "list", "--porcelain")
+    first = out.split("\n\n", 1)[0].splitlines()
+    if "bare" in first or not first[0].startswith("worktree "):
+        return None
+    return first[0][len("worktree "):]
+
+
+def adopt(repo, current, config, args, base, prefix):
+    """Run in the linked worktree `repo` the user made, instead of a new one.
+
+    Its branch is the run's branch; a detached HEAD gets `<prefix>/<slug>` at
+    the same commit, so no file changes. Uncommitted changes stop it: they would
+    end up in the PR unchecked."""
+    worktree = Path(repo)
+    if (worktree / ".auto-dev").exists():
+        raise Fail(f"{worktree / '.auto-dev'} exists but holds no 4.x run; remove "
+                   "it, then run init again")
+    dirty = git(repo, "status", "--porcelain", "--untracked-files=all").strip()
+    if dirty:
+        raise Fail(f"{worktree} has uncommitted changes; commit or stash them, then "
+                   "run init again:\n" + dirty[:500])
+    git(repo, "fetch", "origin")
+    code, _, _ = git(repo, "rev-parse", "-q", "--verify", f"origin/{base}^{{commit}}",
+                     check=False)
+    if code != 0:
+        raise Fail(f"origin/{base} does not exist after `git fetch origin`; check "
+                   "the base branch (`branches.base` in .auto-dev.yml)")
+    code, _, err = git(repo, "merge-base", f"origin/{base}", "HEAD", check=False)
+    if code != 0:
+        raise Fail(f"{worktree}'s HEAD shares no history with origin/{base}: "
+                   f"{err.strip()}")
+    branch, created = current, False
+    if not branch:
+        branch = f"{prefix}/{args.slug}"
+        code, _, err = git(repo, "switch", "-q", "-c", branch, check=False)
+        if code != 0:
+            raise Fail(f"could not create branch {branch}: {err.strip()}")
+        created = True
+    try:
+        state = create_run(repo, worktree, branch, config, args, base=base,
+                           prefix=prefix, seed_from=main_worktree(repo))
+        st.add_note(state, f"started in the worktree the user made ({worktree}), "
+                    f"on branch {branch}" + (" (created at its detached HEAD)"
+                                             if created else ""))
+        ahead = git(repo, "rev-list", "--count", f"origin/{base}..HEAD").strip()
+        # `adopted`: the worktree is the user's, so the run never removes it.
+        state["repo"].update(adopted=True, ahead=int(ahead))
+        if ahead != "0":
+            st.add_note(state, f"{branch} already holds {ahead} commit(s) not on "
+                        f"origin/{base}; they ship with this run")
+        st.save(worktree / ".auto-dev", state)
+        runner = start_setup(worktree / ".auto-dev", state)
+    except BaseException:
+        shutil.rmtree(worktree / ".auto-dev", ignore_errors=True)
+        if created:
+            git(repo, "switch", "-q", "--detach", check=False)
+            git(repo, "branch", "-D", branch, check=False)
         raise
     return wait_for_setup(worktree / ".auto-dev", state, args, runner)
 
@@ -198,8 +319,9 @@ def remove_worktree(repo, worktree, branch):
     git(repo, "branch", "-D", branch, check=False)
 
 
-def create_run(repo, worktree, branch, config, args, base, prefix):
-    """Steps 5-7: exclude .auto-dev/, seed files, write profile.md and state."""
+def create_run(repo, worktree, branch, config, args, base, prefix, seed_from=None):
+    """Steps 5-7: exclude .auto-dev/, seed files, write profile.md and state.
+    Files are seeded from `seed_from` (default: `repo`)."""
     name = Path(repo).name
     artifact_dir = worktree / ".auto-dev"
     code, out, err = run([sys.executable, str(SCRIPTS / "exclude-artifacts.py"),
@@ -207,7 +329,8 @@ def create_run(repo, worktree, branch, config, args, base, prefix):
     if code != 0:
         raise Fail(f"exclude-artifacts.py exited {code}: {(err or out).strip()}",
                    CANNOT_RUN if code == 2 else 1)
-    seeded, missing = seed_files(repo, worktree, config.get("worktree_files", []))
+    seeded, missing = seed_files(seed_from or repo, worktree,
+                                 config.get("worktree_files", []))
     docs, missing_docs = security_docs(worktree, config, args.security_doc)
 
     settings = {
@@ -339,7 +462,9 @@ def seed_files(repo, worktree, files):
     seeded, missing = [], []
     for rel in files:
         source, target = Path(repo) / rel, worktree / rel
-        if not source.is_file():
+        # A worktree the user made may have it already: keep theirs.
+        there = target.is_file()
+        if not there and not source.is_file():
             missing.append(rel)
             continue
         # Check before copying, so a tracked file is never overwritten.
@@ -348,8 +473,9 @@ def seed_files(repo, worktree, files):
             raise Fail(f"worktree file {rel} is not gitignored; it would show in "
                        "the PR and could leak a secret. Ignore it, or drop it from "
                        "worktree_files")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        if not there:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
         seeded.append(rel)
     return seeded, missing
 
@@ -595,5 +721,7 @@ def report_ready(state, args):
     emit(args.json, "INIT", state["worktree"], branch=state["branch"],
          base=state["repo"]["base"],
          artifact_dir=state["artifact_dir"], setup="done",
-         ci=state["settings"]["ci"])
+         ci=state["settings"]["ci"],
+         adopted="yes" if state["repo"].get("adopted") else None,
+         ahead=state["repo"].get("ahead") or None)
     return 0

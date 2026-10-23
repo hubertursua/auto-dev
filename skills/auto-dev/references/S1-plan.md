@@ -2,8 +2,8 @@
 
 Phase 1 is the one part of the run you do by hand: steps 1–6 below. From step 7
 on, `autodev.py next` drives. `autodev.py` means `python3
-<skill-dir>/scripts/autodev.py`; `<repo>` is the absolute path of the main
-checkout you started in.
+<skill-dir>/scripts/autodev.py`; `<repo>` is the absolute path of the checkout
+you started in: the main checkout, or a worktree the user made for this task.
 
 On a run resumed in S1 (`resume` printed `RESUME <tree>`), `cd <tree>`. IF
 `resume` also printed an `action:` line (setup is not done), run it
@@ -36,7 +36,8 @@ Write a one- or two-sentence restatement of the ask (`--ask` below).
 
 Make a kebab-case slug, 2–5 words, from the ticket key or task
 (`proj-123-due-dates`, `due-dates`). It names the branch and worktree; nothing
-renames it later.
+renames it later. In a worktree the user made, the run keeps that worktree and
+its branch, and the slug names the branch only if HEAD is detached.
 
 ### 3. The base branch
 
@@ -133,13 +134,20 @@ autodev.py init --repo <repo> --slug <slug> --task "<task, one line>" \
 | 3 | setup is still running: run `autodev.py init --continue <worktree>` until it exits 0 or 1 |
 
 Pass `--ticket-text-file` whenever step 1 wrote one: without it, Define
-works from your restated ask alone. `init` finds the security directives itself (`security_docs` in
+works from your restated ask alone. When `<repo>` is a worktree the user made
+(a linked worktree on a branch other than the base and the default branch),
+`init` runs the task in it instead of making a new one, and prints `adopted:
+yes`; it stops if the worktree has uncommitted changes. IF it also prints
+`ahead: <n>`, tell the user the <n> commits already on that branch will be part
+of the PR.
+`init` finds the security directives itself (`security_docs` in
 `.auto-dev.yml`, else `SECURITY.md`, `.github/SECURITY.md` and
 `docs/security/`).
 
 ### 6. Move into the worktree
 
-`cd <worktree>`. Every later step runs there.
+`cd <worktree>` (the path `INIT:` printed; the one you are in when `init`
+used yours). Every later step runs there.
 
 ## Phases 2–3 — the loop
 

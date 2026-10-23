@@ -65,7 +65,7 @@ orchestrator runs:
 
 | Phase | Worker | Output |
 |-------|--------|--------|
-| 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch, `.auto-dev/` |
+| 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch (or the worktree you started in), `.auto-dev/` |
 | 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
@@ -157,7 +157,8 @@ The verifier's and tester's full rules are in `agents/verifier.md` and
 The pipeline is split into three sessions: **Plan** (phases 1–3), **Build**
 (4–5) and **Ship** (6). At the end of each it writes `.auto-dev/HANDOFF.md`, a
 short brief for the next one, and stops. Start a fresh session and say
-`auto-dev continue` to pick up. Each session follows a short runbook
+`auto-dev continue` to pick up. Started inside a run's worktree, it continues
+that run; elsewhere, it asks when several runs are open. Each session follows a short runbook
 (`skills/auto-dev/references/S1-plan.md`, `S2-build.md`, `S3-ship.md`) and is
 never asked to judge, so any model can run it.
 
@@ -367,7 +368,7 @@ The keys most runs touch:
 | `gates.post_plan` | turn the post-plan gate on |
 | `branches` | `base` and `prefix` |
 | `ci`, `ci_timeout_minutes` | CI watching |
-| `worktree_files` | gitignored files (an `.env`, say) to copy into each new worktree |
+| `worktree_files` | gitignored files (an `.env`, say) to copy into the run's worktree |
 | `security_docs` | the repo's security directives (default: `SECURITY.md`, `.github/SECURITY.md`, `docs/security/*.md`; `[]` = none) |
 | `symbol_lookup` | a code-index tool to use instead of `grep` |
 | `pr_review.inline_comments` | post the open and advisory review findings on the PR |

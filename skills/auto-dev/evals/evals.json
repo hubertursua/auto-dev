@@ -394,6 +394,23 @@
         "In that session no Jira transition is attempted, no main gate is asked, no human-mode triager is spawned, `gh pr ready` is not run, and no `gh pr merge` or `autodev.py merge-pr` runs",
         "In the fresh session, the first Phase 6 step `next` prints is `autodev.py ci-watch`, and the run goes on from the green CI"
       ]
+    },
+    {
+      "id": 26,
+      "session": "S1, S2",
+      "setup": "Make a worktree of the fixture checkout yourself before the session, on a new branch cut from the eval's base branch (`git worktree add ../<name>-mine -b mine origin/<base>`), with a clean tree. Start the session inside that worktree, not the main checkout. Stop the run at the S1 boundary. Before S2, start a second run from the main checkout (any other task) and stop it at its S1 handoff, so two runs are open. Then start the S2 session inside the worktree the user made and say only `auto-dev continue`.",
+      "prompt": "auto-dev this: reject creation of a record when the requested value isn't in the allowed set for that context. I already made this worktree for it.",
+      "expected_output": "Phase 1 runs with `<repo>` set to the worktree the session started in. `autodev.py init --repo <that worktree>` sees a linked worktree on a branch other than the base and runs the task there: it makes no sibling worktree and no new branch, keeps the branch `mine`, makes .auto-dev/ self-excluding in that worktree, runs setup there, and writes state.json whose worktree and main_checkout are that worktree and whose notes say the run started in the worktree the user made. `INIT:` prints that worktree's path and `adopted: yes`, the orchestrator stays in it, and S1 runs to its handoff as in eval 1. In S2, `autodev.py resume --repo <that worktree>`, with no --task, prints RESUME naming that worktree, although two runs are open, and asks nothing.",
+      "files": [],
+      "expectations": [
+        "`git worktree list` shows only the main checkout and the worktree the user made; no `<name>-mine-<slug>` or `<name>-<slug>` worktree exists",
+        "state.json's worktree is the worktree the user made and its branch is `mine`; no `<prefix>/<slug>` branch was created",
+        "state.json's notes include one saying the run started in the worktree the user made",
+        "`git status --porcelain` in that worktree shows nothing from .auto-dev/",
+        "S1 ends at the handoff with HANDOFF.md in that worktree's .auto-dev/",
+        "`autodev.py cleanup-worktree` run against the run refuses (exit 1) and the worktree still exists",
+        "On the bare `auto-dev continue` in S2, `resume` prints RESUME with the worktree the user made, not ASK, and the user is not asked which run"
+      ]
     }
   ]
 }

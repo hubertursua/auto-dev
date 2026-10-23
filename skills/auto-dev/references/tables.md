@@ -40,7 +40,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 |---|---|---|
 | 1 | `gh` missing or signed out, `origin` not on GitHub, python3 < 3.9 or no PyYAML | `init` exit 1 |
 | 2 | invalid `.auto-dev.yml` or saved profile, no test command in the quality gate | `init` exit 1 |
-| 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing | `init` exit 1 |
+| 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing; in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `init` exit 1 |
 | 4 | the run was started on auto-dev 3.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | Define returns `OVERSIZED` |
 | 6 | a worker stopped on purpose twice running, or failed twice running (lifted by `auto-dev continue`) | `record` logs a second `blocked` or a second `failed` |

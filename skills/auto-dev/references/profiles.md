@@ -48,7 +48,7 @@ gate:
   - { kind: lint,      command: "npx eslint .",           report: "LINT.md" }
   - { kind: format,    command: "npx prettier --check .", report: "FORMAT.md" }
   - { kind: test,      command: "npm test",               report: "TEST.md" }
-# Optional: gitignored files copied from the main checkout into each new worktree
+# Optional: gitignored files copied from the main checkout into the run's worktree
 # before `setup` runs — env/config a suite needs but git does not track.
 worktree_files: [".env", ".env.test"]
 # Optional: how tests are scoped (services required, monorepo layout, slow tiers)
@@ -70,8 +70,8 @@ Fields:
 - **`gate`** (required) — the ordered quality-gate checks. Each is
   `{ kind, command, report }`, and one must be `kind: test`. The pipeline is
   only "green" when every `command` exits clean.
-- **`worktree_files`** (optional) — gitignored paths seeded into every new worktree
-  before `setup`. A fresh worktree has no `.env`, and the resulting failure looks
+- **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
+  before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.
 - **`test_notes`** (optional) — hints passed into the coding/cleanup briefs so
   tests run at the right scope.
@@ -172,7 +172,8 @@ Guidance to show (adapt the paths):
 The commands in the second snippet are an example in TypeScript; list this run's
 `setup` and `gate` commands there. Rules in `.claude/settings.json` or
 `.claude/settings.local.json` apply in the directory Claude Code was started
-in, which is the main checkout, also when the run works in a worktree.
+in: the main checkout, also when the run works in a worktree `init` made, or
+the worktree you made when the run started in it.
 
 ## Monorepos, umbrellas, and multi-stack repos
 
@@ -212,7 +213,7 @@ ci: circleci                  # github-actions | circleci | gitlab | none
 ci_timeout_minutes: 30        # bound on CI watching; then the gates show CI as not monitored
 iteration_budget: 4           # revise rounds per task
 checkpoint_events: 80         # events one session writes before `next` checkpoints it
-worktree_files: [".env"]      # gitignored files to seed every new worktree with
+worktree_files: [".env"]      # gitignored files to seed the run's worktree with
 symbol_lookup:                # code-index commands instead of grep; <symbol> is the name
   definition: "<index-tool> definition <symbol>"
   references: "<index-tool> references <symbol>"
