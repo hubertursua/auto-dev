@@ -21,12 +21,17 @@ Checks:
 - every template a script parses exists in templates/;
 - every evals/files/ path a string in evals/evals.json names exists (the
   setup and expectations as well as each eval's `files`);
-- SKILL.md's description fits Claude Code's 1024-character limit.
+- SKILL.md's description fits Claude Code's 1024-character limit;
+- no file names a path from one person's machine: a home directory such as
+  /Users/<name>, /home/<name> or C:\\Users\\<name>, or a folder of their own
+  under ~ or $HOME (such a path must start with a dot directory, like
+  ~/.claude or ~/.config, or be ~/…).
 """
 
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -289,6 +294,31 @@ def check_skill_description(path=SKILL):
              f"the limit is {DESCRIPTION_LIMIT}")
 
 
+# A path only one person's machine has. ~/.claude, ~/.config and ~/… are fine:
+# a tool fixes those, not the user's own folder layout.
+PERSONAL_PATH = re.compile(r"(?<![\w.-])(?:/(?:Users|home)/|[A-Za-z]:[\\/]Users[\\/]"
+                           r"|(?:~|\$HOME|\$\{HOME\})/(?=[\w-]))[\w.-]+")
+
+
+def check_personal_paths(root=ROOT):
+    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached",
+                             "--others", "--exclude-standard"],
+                            capture_output=True, text=True, check=False)
+    if listed.returncode != 0:
+        fail(f"could not list the repo's files: {listed.stderr.strip()}")
+        return
+    for name in sorted(set(filter(None, listed.stdout.split("\0")))):
+        try:
+            text = (root / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            match = PERSONAL_PATH.search(line)
+            if match:
+                fail(f"{name}:{n}: names {match.group()}, a path from one person's "
+                     "machine; write a placeholder such as /path/to/auto-dev")
+
+
 def main():
     check_json()
     check_plugin_metadata()
@@ -299,6 +329,7 @@ def main():
     check_briefs()
     check_eval_paths()
     check_skill_description()
+    check_personal_paths()
     for msg in errors:
         print(f"FAIL {msg}")
     if errors:

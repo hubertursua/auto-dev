@@ -74,6 +74,44 @@ class CheckRepoTest(unittest.TestCase):
         self.assertEqual(len(errors), 4, errors)
         self.assertTrue(all("a shell variable" in e for e in errors), errors)
 
+    def check_files(self, files):
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.md"], check=False)
+            tool.check_personal_paths(root)
+        return tool.errors
+
+    def test_paths_a_tool_fixes_pass(self):
+        text = ("ln -s /path/to/auto-dev/agents ~/.claude/agents\n"
+                "Save to `~/.config/auto-dev/profiles` or `~/…`; see /usr/home/x.\n"
+                "Or `$HOME/.config`, and https://example.com/home/page.\n")
+        self.assertEqual(self.check_files({"tracked.md": text}), [])
+
+    def test_a_personal_path_fails_in_tracked_and_untracked_files(self):
+        # Built from parts so this file doesn't trip the check itself.
+        home = "/Users" + "/alice/auto-dev"
+        errors = self.check_files({
+            "tracked.md": "ln -s ~" + "/Dev/auto-dev/agents ~/.claude/agents\n",
+            "docs/new.md": "x\nclone into /home" + "/bob/src\n",
+            "a.py": f"ROOT = '{home}'\nWIN = r'C:\\Users" + "\\carol'\n"
+                    "FWD = 'C:/Users" + "/dan'\nENV = '$HOME" + "/src'\n",
+        })
+        self.assertEqual(len(errors), 6, errors)
+        self.assertIn("names /Users" + "/alice,", errors[0])
+        for where in ("tracked.md:1:", "docs/new.md:2:", "a.py:1:", "a.py:2:", "a.py:3:",
+                      "a.py:4:"):
+            self.assertTrue(any(e.startswith(where) for e in errors), (where, errors))
+
+    def test_an_ignored_file_is_not_checked(self):
+        errors = self.check_files({".gitignore": "*.local.md\n",
+                                   "plan.local.md": "/Users" + "/alice\n"})
+        self.assertEqual(errors, [])
+
     def check_frontmatter(self, frontmatter):
         tool = load_tool()
         with tempfile.TemporaryDirectory() as tmp:
