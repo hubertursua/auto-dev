@@ -9,6 +9,7 @@ in TypeScript, as CLAUDE.md asks.
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1273,7 +1274,7 @@ class PublishTest(NextCase):
     def test_a_refresh_keeps_a_checklist_a_person_edited_on_github(self):
         cmd_pr = self.cmd_pr()
         from lib.cmd_ship import lint_body
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         (tmp / "pull_request_template.md").write_text("## Checklist\n- [ ] Docs updated\n")
         live = "## Summary\nx\n\n## Checklist\n- [x] Docs updated in the wiki\n"
@@ -1428,7 +1429,7 @@ class TemplateTest(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, str(SCRIPTS))
         self.cmd_pr = import_module("lib.cmd_pr")
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def write(self, rel, text):
@@ -1535,7 +1536,7 @@ class ReviewFindingsTest(unittest.TestCase):
     def test_open_and_advisory_rows_are_posted_fixed_ones_are_not(self):
         sys.path.insert(0, str(SCRIPTS))
         cmd_pr = import_module("lib.cmd_pr")
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         code = OPEN_REVIEW.replace(
             "| open |\n",
@@ -1554,7 +1555,7 @@ class ReviewFindingsTest(unittest.TestCase):
     def test_a_finding_is_posted_in_its_plain_words(self):
         sys.path.insert(0, str(SCRIPTS))
         cmd_pr = import_module("lib.cmd_pr")
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         review = OPEN_REVIEW.replace("## Pending re-vote", (
             "### C1 — null due date crashes sort\n"
@@ -1567,7 +1568,7 @@ class ReviewFindingsTest(unittest.TestCase):
     def test_others_sent_to_a_separate_pr_are_posted(self):
         sys.path.insert(0, str(SCRIPTS))
         cmd_pr = import_module("lib.cmd_pr")
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         rows = "".join(f"| S{i} | old issue {i} | `src/old{i}.ts:{i}` | pre-existing | Medium "
                        "| confirmed | for the user | — |\n" for i in range(5, 9))
@@ -1580,7 +1581,7 @@ class ReviewFindingsTest(unittest.TestCase):
     def test_a_template_hint_cannot_end_the_write_comment(self):
         sys.path.insert(0, str(SCRIPTS))
         cmd_pr = import_module("lib.cmd_pr")
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(os.path.realpath(tempfile.mkdtemp()))
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         (tmp / "pull_request_template.md").write_text("## Rollout\n<!-- flag a--b -->\n")
         line = cmd_pr.template_sections(cmd_pr.find_template(tmp))[1]
