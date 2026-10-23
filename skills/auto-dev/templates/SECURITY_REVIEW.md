@@ -2,7 +2,7 @@
 # Security review — <branch>
 
 **Overall confidence: <High | Medium | Low>** — <finished: yes | no; coverage: full | partial; High/Medium verified: <n>/<n>>
-Run <n> — reviewer: <security-reviewer | security-reviewer-sensitive> — scope: the whole change since `<merge-base>`
+Run <n> — reviewer: <security-reviewer | security-reviewer-sensitive> — scope: <the whole change since `<merge-base>` | a focused re-check of <the brief's focus>; the rest carried from run <n-1>>
 Tree: <hash from check-fresh.py --print-tree for this run>
 Must-fix: <open> open · <fixed> fixed   ·   For the user (pre-existing): <n>   ·   Advisory: <n>
 

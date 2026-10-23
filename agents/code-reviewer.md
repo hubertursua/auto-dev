@@ -1,6 +1,6 @@
 ---
 name: auto-dev-code-reviewer
-description: auto-dev pipeline only — Phase 6a code-review panelist (one of three). Runs /code-review xhigh on the uncommitted change and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6a code-review panelist (one of three). Runs /code-review xhigh on the uncommitted change (not on a correction's re-review) and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: xhigh
 tools: Read, Grep, Glob, Bash, Write, Skill
@@ -46,9 +46,13 @@ Assume there ARE bugs and go looking for them.
 
 Scope: the scope `{{scope}}` names (Scopes, below).
 
-1. Run the /code-review skill with the Skill tool at effort xhigh on that scope:
-   args `xhigh` for the uncommitted working tree, or `xhigh <path> …` for a list
-   of files. Its findings are your starting point, not your answer.
+1. In scope `first` or `outside`, run the /code-review skill with the Skill
+   tool at effort xhigh on that scope: args `xhigh` for the uncommitted working
+   tree, or `xhigh <path> …` for a list of files. Its findings are your
+   starting point, not your answer. In scope `review-fix` or `after-commit`
+   (a correction's re-review), skip the skill and review the correction
+   yourself in step 2, following what it changed downstream: every caller
+   and every use of the values it changed, however few lines it touched.
 2. Then go further yourself. Read the changed files and their tests,
    {{artifact_dir}}/SPEC.md, {{artifact_dir}}/IMPLEMENTATION.md, and the binding rules
    ({{binding_rules}}). Try to break the change:

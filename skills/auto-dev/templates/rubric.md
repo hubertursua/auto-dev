@@ -94,7 +94,7 @@ report's silence is worth.
 | Report | High | Medium | Low |
 |---|---|---|---|
 | **Code review** | All 3 reviewers finished, the scope was fully covered, and no must-fix finding was decided 2 votes to 1 | One reviewer failed and the panel rests on 2; or some files were only partly covered; or a must-fix finding was decided 2 votes to 1 | Fewer than 2 reviewers finished |
-| **Security review** | The reviewer finished, the whole change was covered, and every High or Medium finding was verified | Some files were only partly covered, or a verification could not run | The reviewer could not finish |
+| **Security review** | The reviewer finished, the whole change was covered (a correction's focused re-check counts when earlier runs covered the rest), and every High or Medium finding was verified | Some files were only partly covered, or a verification could not run | The reviewer could not finish |
 
 A **Low** overall confidence is a warning at the PR gate, never a clean pass.
 The summary says what failed.

@@ -1276,7 +1276,17 @@ def start_pass(c, scope, files, rule, since=None):
     jobs = [("code-reviewer", "review", reviewer_sets(scope, files, slot, since))
             for slot in SLOTS]
     return spawn_security(c, jobs, panel_leads(c), rule + "; the security review runs "
-                          "alongside the panel, on the same tree")
+                          "alongside the panel, on the same tree", focus=focus_text(p))
+
+
+def focus_text(p):
+    """The security reviewer's focus: what a re-review pass's correction changed,
+    or `none` (the whole change, with /security-review) on a first or outside pass."""
+    if p["scope"] == "review-fix":
+        return "the files a correction changed: " + (", ".join(p["files"]) or "none")
+    if p["scope"] == "after-commit":
+        return "the uncommitted correction (the working tree against HEAD)"
+    return "none"
 
 
 def reviewer_sets(scope, files, slot, since=None):
@@ -1312,7 +1322,8 @@ def review_step(c, p):
         return spawn_security(c, jobs, leads or "none",
                               "a code reviewer or the security reviewer failed: it gets "
                               "one re-spawn" if secs or jobs else
-                              "the security review covers the whole change")
+                              "the security review covers the whole change",
+                              focus=focus_text(p))
     if jobs:
         return spawn_many(c, jobs, "a code reviewer failed: it gets one re-spawn")
     sec = secs[-1]
@@ -1349,7 +1360,7 @@ def review_step(c, p):
     leads = unreviewed_leads(c, p)
     if leads:
         return spawn_security(c, [], leads, "the panel passed the security review leads "
-                              "it had not seen: it checks them")
+                              "it had not seen: it checks them", focus=focus_text(p))
     return None
 
 
@@ -1426,10 +1437,12 @@ def refuted_security(c):
     return {r["ID"].strip() for r in rows if r["Verified"].strip().lower() == "refuted"}
 
 
-def spawn_security(c, jobs, leads, rule):
-    """Spawn `jobs` and the security reviewer, given `leads`, in one message."""
+def spawn_security(c, jobs, leads, rule, focus="none"):
+    """Spawn `jobs` and the security reviewer, given `leads` and `focus`, in one
+    message."""
     agent = cmd_checks.security_agent(c.ad)
-    jobs = jobs + [(agent.split(":", 1)[1], None, {"leads": leads}, agent)]
+    jobs = jobs + [(agent.split(":", 1)[1], None, {"leads": leads, "focus": focus},
+                    agent)]
     result = spawn_many(c, jobs, rule)
     c.p6["security_run"] = c.p6.get("security_run", 0) + 1
     return result

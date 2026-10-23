@@ -207,7 +207,14 @@ uncommitted working tree, and you have seen the results:
    security run of its own.
 
 When both reviews leave must-fix findings open, one correction fixes them all,
-for one round of the budget, and the next pass reviews it.
+for one round of the budget, and the next pass reviews it. That re-review
+runs the full panel, whatever the correction's size: a one-line change can
+alter everything downstream of it. But it skips the nested skills. The code
+reviewers review the correction themselves, without `/code-review`, following
+every caller and use of what it changed. The security reviewer skips
+`/security-review` and re-checks the correction and everything downstream of
+it, carrying its earlier findings forward. The first pass, and a pass over
+changes made outside the pipeline, still run both skills on the whole change.
 
 A **rubric** decides what must be fixed and what is noise:
 
@@ -719,6 +726,18 @@ titles `<type>: <summary>`, with types `feat`, `fix`, `docs`, `refactor`, `test`
 one language: stack-specific commands and syntax belong in the run's profile, never in this repo. PR
 conventions, the full README checklist, the language-agnostic rules and the
 rules for changing a script are in `CLAUDE.md`.
+
+## Upgrading from 4.4
+
+- **A correction's re-review skips the nested skills.** A pass that reviews a
+  correction used to run `/code-review` in each of the three reviewers and
+  `/security-review` in the security reviewer. Now the three code reviewers
+  review the correction and everything downstream of it themselves, and the
+  security reviewer gets a `focus` naming the correction, re-checks it and what
+  it reaches, and carries its earlier findings forward. The panel stays at
+  three reviewers.
+- **A run in flight resumes.** A reviewer briefed before 4.5 has no `focus` and
+  runs as before. Every pass started on 4.5 uses the new briefs.
 
 ## Upgrading from 4.3
 
