@@ -10,8 +10,9 @@ can resume on the new one. Newest first. The current version is in
   tester used to write every check to a new `*.acceptance.*` test file, so each
   PR added test files no developer would have made. Now it adds a check to the
   test file the code it drives already has, and writes a new test file only for
-  code that has none, named by the repo's conventions with no `acceptance`
-  marker. A check in an existing file may only add lines to it.
+  code that has none, with no `acceptance` marker: at the path the plan's
+  test plan names for that code, or else named and placed like its sibling
+  modules' tests. A check in an existing file may only add lines to it.
 - **Checks are merged back in.** After the build, `install-checks` puts each
   check's added lines into its file among the coder's own changes, and the
   audit checks those lines are unchanged rather than the whole file. When a

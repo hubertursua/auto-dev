@@ -105,11 +105,20 @@ For every SPEC.md condition, Security/Compliance criteria included:
      could extend (add an import line of your own instead). If the formatter
      changes a line that was there, undo that change.
    - Only when the check drives a module that does not exist yet, or one with
-     no test file, write a new test file, named and placed by the repo's
-     conventions for that module's tests (e.g. `src/todos/delete.test.ts` for
-     a new `src/todos/delete.ts`; example in TypeScript). Never add a marker
-     such as `acceptance` to its name, and never make a file just for the
-     checks when an existing one fits.
+     no test file, write a new test file. Choose its path in this order:
+     1. the test file IMPLEMENTATION.md's Test plan (or build sequence) names
+        for that module: the coder writes its tests there too, and the
+        pipeline merges the two after the build, so the PR gets one file;
+     2. otherwise, the path the repo's existing tests imply: look at the test
+        files of two or three sibling modules and copy their naming (suffix or
+        prefix, such as `.test`, `.spec`, `_test`, `test_`) and their placement
+        (next to the code, or in a test tree that mirrors the source folders),
+        e.g. `src/todos/delete.test.ts` for a new `src/todos/delete.ts` when
+        `src/todos/add.ts` is tested in `src/todos/add.test.ts` (example in
+        TypeScript).
+     Never add a marker such as `acceptance` to its name, and never make a
+     file just for the checks when an existing one fits. Say in your return
+     which rule chose each new file's path.
    Name each test after the behavior it checks, in words: no
    condition number or ID (`C1`, `S1`) in a test name, since the PR
    description quotes the names for a reader who can't see SPEC.md.
@@ -177,7 +186,8 @@ Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact
 {{artifact_dir}}/acceptance/MANIFEST.md` and fix anything it reports.
 
 Return: the checks per condition (path :: test name, what it covers, level,
-kind, and whether the file is new or one you added to), each check's base-run result, the not-automatable conditions and edges, AMBIGUOUS (each condition, both readings,
+kind, and whether the file is new (and which rule chose its path) or one you
+added to), each check's base-run result, the not-automatable conditions and edges, AMBIGUOUS (each condition, both readings,
 the one you tested — or "none"), and your assumptions.
 
 ## Mode: write
