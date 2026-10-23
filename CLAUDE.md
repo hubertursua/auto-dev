@@ -238,6 +238,13 @@ body is the PR's Summary, not a list of the branch's commits.
 **One topic per PR.** Unrelated fixes go in separate PRs, even small ones,
 because a squash merge can't be partly reverted.
 
+**A fresh agent reviews before the PR opens.** After a change that touches
+several files, start a new agent, one that didn't make the edits, and have it
+review the branch's diff against this file before you open the PR. The author
+reads its own change the way it meant to write it; a fresh reader catches what
+the author's own tests missed. Fix what it finds in new commits, and say in
+the PR's *Testing* section that the review ran.
+
 **PR bodies** follow `.github/pull_request_template.md`: *Summary* (what and
 why), *Testing* (what you ran and saw, before and after for a fix, and what was
 not tested), *Docs*, and *Not included* when something is left for later.
