@@ -7,10 +7,10 @@ brief lookup --out <dir> --set worktree=<repo> --set question="<question>"
     worker's agent file (agents/<worker>.md) uses in that mode. It fills what it
     can from state.json and the artifacts (paths, base, the task (the ticket's
     text, verbatim, when `init --ticket-text-file` stored it), the profile's
-    test command and gate, the acceptance check paths, the last survivors, the
-    next review pass, the result file) and takes the rest from --set. The review
-    judge's `tree` is the tree the panel reviewed, so the caller passes it
-    (`--set tree=<hash noted before the panel>`). `--retry N` marks the brief
+    test command and gate, the acceptance checks' files and test names, the
+    last survivors, the next review pass, the result file) and takes the rest
+    from --set. The review judge's `tree` is the tree the panel reviewed, so
+    the caller passes it (`--set tree=<hash noted before the panel>`). `--retry N` marks the brief
     as a re-spawn of job <worker>-N, which `record` refused: its
     `previous_issues` slot carries the issues saved for that job (--set
     overrides), and job N is marked replaced, so `next` never re-spawns it
@@ -33,7 +33,10 @@ record <worker> <n>
     `next`, must-fix and re-vote counts against CODE_REVIEW.md; the cleanup
     agent's GREEN against the lint reports; the triager's class and counts
     against its triage files (blockers in `triage_file`, held-out check
-    comments in `checks_file`); the lookup's answer at lookups/<n>.md. A
+    comments in `checks_file`); the lookup's answer at lookups/<n>.md; for
+    the acceptance tester, that each sealed copy of a file that exists only
+    adds lines to it (before the build is installed, a sealed copy with no
+    files/<path>.base gets one first: the file at HEAD, when it is there). A
     required-changes file that reaches the coder unedited (the verifier's, the
     judge's, the triager's) must not copy SPEC.md's wording (`spec-overlap`),
     nor may the planner's IMPLEMENTATION.md, the coder's other brief from a
@@ -79,7 +82,7 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import briefs
+from . import briefs, cmd_checks, sealed
 from . import state as st
 from .cmd_checks import FIX_RE, overlaps, rederive_risk
 from .cmd_review import pending_rows
@@ -131,13 +134,65 @@ def next_number(directory, worker):
     return max(taken, default=0) + 1
 
 
+def seal_bases(state, ad):
+    """Give each sealed copy of a file that exists at HEAD its base (that file),
+    before the build is installed; after it, refuse a new check in a file the
+    repo had at the cut that holds none, and refresh the snapshot of each
+    shared file whose checks are whole. Check every sealed copy with a base
+    only adds lines to it. Returns the issues."""
+    wt = state["worktree"]
+    installed = cmd_checks.installed(ad)
+    cut = None
+    issues = []
+    for rel in sealed.sealed_files(ad):
+        base = sealed.base_path(ad, rel)
+        if not base.exists() and not installed:
+            r = subprocess.run(["git", "-C", wt, "show", f"HEAD:{rel}"],
+                               capture_output=True, check=False)
+            if r.returncode == 0:
+                base.write_bytes(r.stdout)
+        elif not base.exists():
+            # After the build, a check with no base must be a new file: one the
+            # repo had at the cut would swallow the coder's lines in it.
+            cut = cut or cut_commit(wt, state["repo"]["base"])
+            r = subprocess.run(["git", "-C", wt, "cat-file", "-e", f"{cut}:{rel}"],
+                               capture_output=True, check=False)
+            if r.returncode == 0:
+                issues.append(f"files/{rel}.sealed adds checks to {rel}, which holds no "
+                              "check yet; after the build, add a check only to a file "
+                              "that holds one, or to a new file")
+                continue
+        try:
+            why = sealed.adds_only(ad, rel)
+            current = sealed.read(Path(wt) / rel)
+            if not why and installed and base.exists() and \
+                    sealed.intact(ad, rel, current):
+                sealed.snapshot(ad, rel, current)  # the checks as repaired or folded
+        except sealed.SealError as exc:
+            raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
+        if why:
+            issues.append(why)
+    return issues
+
+
 def acceptance_paths(ad):
+    """Each file that holds acceptance checks, with the checks' test names: a
+    file can hold the coder's own tests too."""
     try:
         rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
     except art.ArtifactError:
         return "none"
-    paths = sorted({p for r in rows if (p := art.check_path(r["Check (path :: test name)"]))})
-    return ", ".join(paths) or "none"
+    names = {}
+    for r in rows:
+        cell = r["Check (path :: test name)"]
+        path = art.check_path(cell)
+        if path:
+            name = cell.split("::", 1)[-1].strip().strip('"') if "::" in cell else ""
+            names.setdefault(path, [])
+            if name and name not in names[path]:
+                names[path].append(name)
+    return "; ".join(f"{p} (tests: " + ", ".join(f'"{n}"' for n in names[p]) + ")"
+                     if names[p] else p for p in sorted(names)) or "none"
 
 
 def survivors(ad):
@@ -521,9 +576,10 @@ def result_issues(worker, data, ad, state, n):
             issues.append(f"fix_file {fix} does not exist")
     elif worker == "planner" and nxt in ("WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST"):
         issues += [f"IMPLEMENTATION.md: {p}" for p in check_file(ad / "IMPLEMENTATION.md")]
-    elif worker == "acceptance-tester" and nxt in ("SEALED", "REPAIRED"):
+    elif worker == "acceptance-tester" and nxt in ("SEALED", "REPAIRED", "FOLDED"):
         # Gaps are not a disagreement: `next` re-spawns the tester for them.
         art.manifest(ad / "acceptance" / "MANIFEST.md")
+        issues += seal_bases(state, ad)
     elif worker == "coder":
         if (nxt == "BLOCKED") != (as_int(data, "blocked") > 0):
             issues.append(f"next is {nxt} but blocked is {data.get('blocked')}")

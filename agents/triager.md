@@ -86,7 +86,8 @@ Sort each comment or review thread as one of:
 - ADDRESSED — already resolved by the current code, by a later reply, or by an
   earlier round of this run (below).
 - ACCEPTANCE_CHECK — says a held-out acceptance check (a test added before the
-  code) is wrong.
+  code: one {{artifact_dir}}/acceptance/MANIFEST.md names) is wrong. A comment
+  on another test in the same file is not one.
 Earlier rounds: {{earlier}}. When set, each line names an earlier triage of this
 PR, when it ran, the files it wrote, and what the run did with them. Read those
 files before you sort:

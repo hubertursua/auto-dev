@@ -73,7 +73,8 @@ against origin/{{base}} directly — it moves when anything fetches.
    start anything while it runs. Exit 4: STOP and return MUTATION LEFT CHANGES.
 1. Integrity, then install. Paths below are absolute.
    Each sealed check {{artifact_dir}}/acceptance/files/<path>.sealed installs at
-   {{worktree}}/<path>.
+   {{worktree}}/<path>: a new file whole, or, when it added tests to a file the
+   repo already had, its added lines among the lines there now.
    Never copy them by hand or in a shell loop: one command does it.
    - FIRST PASS, when {{artifact_dir}}/acceptance/INSTALLED exists: the
      pipeline installed the checks before the cleanup agent ran, so for this
@@ -82,16 +83,23 @@ against origin/{{base}} directly — it moves when anything fetches.
      other step still runs as a first pass.
    - FIRST PASS otherwise: run `python3 {{skill_dir}}/scripts/autodev.py install-checks
      --dir {{artifact_dir}}`. It leaves a check already installed (a resumed
-     pass) alone. Exit 1 (CONFLICT) means a path holds a file that is not
-     yours, and nothing was installed: write
+     pass) alone. Exit 1 (CONFLICT) means a check can't go into a path (the
+     code made a file there, deleted it, or rewrote the lines next to an added
+     test), and nothing was installed: write
      {{artifact_dir}}/evidence/corrections.md in the shape of
      `{{skill_dir}}/templates/corrections.md` with one entry per `conflict:`
-     path ("move `<path>`; an acceptance check installs there"), and return
+     path ("`<path>`: a held-out acceptance check goes into this file and
+     can't be merged with the change to it; if the change deleted, moved or
+     recreated the file, put it back, and undo any rewrite of its existing
+     lines the task doesn't need"), and return
      INSTALL CONFLICT with every such path; nothing below applies. On exit 0,
      run the audit (below).
    - RE-CHECK: run the audit first, then the same command with `--recheck`,
-     which copies every sealed check over its path (this undoes any edit; the
-     audit has already recorded it).
+     which puts every edited check back (a new file is copied over; in a shared
+     file only the edits that touched the check are undone; the audit has
+     already recorded them). Exit 1 there: the `conflict:` paths could not be
+     put back; treat them as on a first pass (corrections.md, INSTALL
+     CONFLICT).
    Audit: python3 {{skill_dir}}/scripts/check-tests.py {{worktree}} --base {{cut}} --acceptance {{artifact_dir}}/acceptance
    Exit 0 clean, 1 findings, 3 an acceptance check missing or modified, 2 an
    error (report it; do not guess). Save its output to {{artifact_dir}}/evidence/integrity.txt.

@@ -42,7 +42,8 @@ was refused for these reasons: fix each one this time.
 You are the SIMPLIFY + QUALITY-GATE phase. Work inside the worktree at {{worktree}}.
 
 Step 1 — Simplify: run /simplify over the scope `{{scope}}` names (Scopes, below). Never
-simplify, reformat or otherwise edit an acceptance check ({{acceptance_paths}}),
+simplify, reformat or otherwise edit an acceptance check (these tests, by
+file: {{acceptance_paths}}; other tests in those files are like any test),
 whatever the scope says. Apply
 behavior-preserving simplifications only
 (clarity, DRY, remove dead/over-built code). Do NOT change what the code does.
@@ -60,11 +61,13 @@ How you fix a failure depends on what caused it:
 - Failure that was already there before Step 1, or that Step 1 merely surfaced —
   fix it forward.
 Never make a test pass by deleting it, skipping it, or changing what it asserts,
-and never touch the acceptance checks ({{acceptance_paths}}). An edit
+and never touch the acceptance checks' lines: a formatter you run on a file
+that holds them must leave them as they are, or it is the acceptance check
+rule below. An edit
 to a test file is limited to formatting, lint and compile warnings. A failing test
 that would need more than that is a design-level failure: leave its report at
 fail and say why. (Every test change is audited afterwards.) If a check fails
-ONLY because of an acceptance check file, leave its report at fail and return
+ONLY because of an acceptance check's lines, leave its report at fail and return
 `ACCEPTANCE_CHECK_FAILS_GATE` with the file and the error: the orchestrator
 has it repaired.
 
@@ -77,8 +80,8 @@ failed test or error); and the tool checked every file rather than stopping
 at its first problem. If you can't confirm all three, the check fails. When
 you can, write the report at pass, with one line under Fixed to get here:
 "flagged only pipeline files under {{artifact_dir}}/ (<n>), which are not
-committed". If a check fails only on those files plus an acceptance check
-file, follow the acceptance check rule above. Never edit or reformat a file
+committed". If a check fails only on those files plus an acceptance check's
+lines, follow the acceptance check rule above. Never edit or reformat a file
 under {{artifact_dir}}/, never add it to the repo's ignore files or config,
 and never change the command to hide it: those edits would ship in the PR.
 
@@ -110,7 +113,7 @@ Return: what you simplified, **any simplification you reverted and which check
 forced it**, the files Step 1 touched, and the final status of each `gate` command.
 Your result's `next` is `GREEN` (every check passes), `RED` (one can't be made
 green; say why), or `ACCEPTANCE_CHECK_FAILS_GATE` (a check fails only because
-of an acceptance check file; name the file and the error).
+of an acceptance check's lines; name the file and the error).
 
 ## Scopes
 

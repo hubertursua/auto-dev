@@ -58,7 +58,8 @@ test change and runs checks you have not seen:
 - Never make a test pass by special-casing its inputs, detecting the test
   environment, hard-coding the expected value, or mocking out the very behavior
   the test names. Every test you add must fail if that behavior breaks.
-- Never modify a file this brief names as an acceptance check.
+- Never modify a test this brief names as an acceptance check. A file that
+  holds one may hold other tests too: you may edit those, and add your own.
 If the plan conflicts with the code as you find it, or a step can only be made
 green by breaking one of these rules, STOP that step — do not force it. Report it
 under BLOCKED and carry on with the steps it does not affect.
@@ -92,8 +93,9 @@ You are applying a correction. Work inside the worktree at {{worktree}}. The cha
 Make each one, with the test it names, and run the relevant tests green. An
 entry's `Test:` line can list several cases: add a test for each one.
 
-These files are held-out acceptance checks: {{acceptance_paths}}.
-Do NOT modify them; make the code satisfy them. The rules on keeping tests honest
+These tests are held-out acceptance checks, by file: {{acceptance_paths}}.
+Do NOT modify, move or remove them, or edit the lines right around them; make
+the code satisfy them. Other tests in the same files are like any test. The rules on keeping tests honest
 in the task above still apply, and so does BLOCKED: if a change cannot be
 made honestly, stop and say why.
 

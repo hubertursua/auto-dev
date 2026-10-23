@@ -84,6 +84,24 @@ class CheckManifestTest(ArtifactCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("OK: 3 condition(s)", r.stdout)
 
+    def test_a_check_added_to_an_existing_file_only_adds_lines(self):
+        files = self.dir / "acceptance" / "files" / "src"
+        (files / "due.acceptance.test.ts.base").write_text("old line\n")
+        (files / "due.acceptance.test.ts.sealed").write_text("old line\ntest\n")
+        (self.tmp / "src").mkdir()
+        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\n")
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\ntest\n")
+        r = self.cmd("check-manifest")  # the tester left its test in the file
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("still differs from HEAD", r.stdout)
+        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\n")
+        (files / "due.acceptance.test.ts.sealed").write_text("changed line\ntest\n")
+        r = self.cmd("check-manifest")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("may only add lines", r.stdout)
+
     def test_each_gap_is_named(self):
         manifest = MANIFEST.replace(
             '| 1 | due date shown | `src/due.acceptance.test.ts` :: "rejects an invalid date" '

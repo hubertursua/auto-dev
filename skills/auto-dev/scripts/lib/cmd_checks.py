@@ -12,9 +12,11 @@ check-manifest
     condition's Verify by (unless the Level cell says why); every condition with
     checks has base-run/C<n>.txt with a Result for each check that fits its
     kind (pass-to-pass passed, fail-to-pass failed, a repair `not re-run
-    (repair)`); every check has its sealed copy under files/ and none is left in
-    the worktree. A check's Result is the base-run line for its exact test
-    name, else the one line whose name contains it.
+    (repair)`); every check has its sealed copy under files/, a sealed copy
+    of a file that exists (it has a files/<path>.base) only adds lines to it,
+    and, before the build is installed, no check is left in the worktree. A
+    check's Result is the base-run line for its exact test name, else the one
+    line whose name contains it.
     Prints `OK: <n> condition(s) covered`, or `GAPS: <n> condition(s) with
     gaps` with a `gap: <condition>: <why>` line for each gap and `respawn:
     <conditions>` naming what to re-spawn the tester for (Scope "ONLY
@@ -85,15 +87,21 @@ security-reviewer
 
 install-checks [--recheck]
     Installs each sealed acceptance check, acceptance/files/<path>.sealed, at
-    <worktree>/<path>, so the verifier needs no shell loop to do it. A file
-    already there and byte-identical is left alone. Without --recheck (a first
-    pass), a file there with other content is not the pipeline's: nothing is
-    installed, and each such path is printed as a `conflict:` line. With
-    --recheck, every sealed check is copied over its path, undoing any edit
-    (run the audit first, so it records the edit).
-    Prints `INSTALLED: <n> check(s)` (or `CONFLICT: <n> path(s)`) and the
+    <worktree>/<path>, so the verifier needs no shell loop to do it. A check in
+    a new file is copied in. A check that adds tests to an existing file (it has
+    a files/<path>.base, the file it added to) has its added lines put in among
+    the lines now there, each next to the line it followed, so the coder's
+    edits to that file stay. A check already in is left alone. Without
+    --recheck (a first pass), a path where a check can't go in (the coder made
+    a file there, deleted the file, or rewrote the lines around an added test)
+    is printed as a `conflict:` line and nothing is installed. With --recheck,
+    a check that was edited is put back: a new file is copied over, and in a
+    shared file the edits that touched the check are undone and the rest kept
+    (run the audit first, so it records the edit); a check that can't be put
+    back is a `conflict:` line, and the others are still installed.
+    Prints `INSTALLED: <n> check(s)` (or `CONFLICT: <n> path(s) …`) and the
     paths it wrote as `installed:` lines.
-    Exit: 0 installed; 1 a conflict (first pass only); 2 no sealed checks dir.
+    Exit: 0 installed; 1 a conflict; 2 no sealed checks dir, or git can't diff.
 
 All exit 2 when they could not run (a file missing, unreadable) — never a pass.
 """
@@ -104,6 +112,7 @@ import tempfile
 from pathlib import Path
 
 from . import artifacts as art
+from . import sealed
 from . import state as st
 from .output import CANNOT_RUN, FAILED, Fail, emit
 
@@ -156,35 +165,52 @@ def sealed_pairs(ad, wt):
     if not files.is_dir():
         raise Fail(f"{files} does not exist: no sealed checks to install", CANNOT_RUN,
                    "ERROR")
-    return [(s, Path(wt) / s.relative_to(files).with_suffix(""))
-            for s in sorted(files.rglob("*.sealed"))]
+    return [(s, Path(wt) / rel) for rel, s in sealed.sealed_files(ad).items()]
 
 
-def install_sealed(ad, wt, recheck=False):
-    """Install the sealed checks; returns (installed paths, conflict paths)."""
-    pairs = sealed_pairs(ad, wt)
-    rel = [str(t.relative_to(wt)) for _, t in pairs]
-    conflicts = [r for (s, t), r in zip(pairs, rel)
-                 if not recheck and t.exists() and t.read_bytes() != s.read_bytes()]
-    if conflicts:
+def install_sealed(ad, wt, recheck=False, dry=False):
+    """Install the sealed checks; returns (installed paths, conflict paths).
+
+    A new file is copied in. A check that adds to a file goes in among the lines
+    already there (lib/sealed.py). On a first pass, any conflict installs
+    nothing; with `recheck`, every check that can go back in does. `dry` only
+    reports the conflicts."""
+    sealed_pairs(ad, wt)  # fails when there is no files/ directory
+    plans, conflicts = [], []
+    for rel in sealed.sealed_files(ad):
+        target = Path(wt) / rel
+        current = sealed.read(target)
+        try:
+            body, conflict = sealed.installed_text(ad, rel, current, recheck)
+        except sealed.SealError as exc:
+            raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
+        if conflict:
+            conflicts.append(rel)
+        else:
+            plans.append((rel, target, current, body))
+    if dry or (conflicts and not recheck):
         return [], conflicts
     written = []
-    for (s, t), r in zip(pairs, rel):
-        data = s.read_bytes()
-        if t.exists() and t.read_bytes() == data:
-            continue
-        t.parent.mkdir(parents=True, exist_ok=True)
-        t.write_bytes(data)
-        written.append(r)
-    return written, []
+    for rel, target, current, body in plans:
+        if body is not None:
+            if sealed.base_of(ad, rel) is None:  # a new file: copied as sealed
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(sealed.sealed_files(ad)[rel].read_bytes())
+            else:
+                sealed.write(target, body, current)
+            written.append(rel)
+        if sealed.base_of(ad, rel):  # a shared file: remember it whole
+            sealed.snapshot(ad, rel, sealed.read(target))
+    return written, conflicts
 
 
 def install_checks(args):
     wt = worktree_of(args)
     written, conflicts = install_sealed(args.dir, wt, args.recheck)
     if conflicts:
-        emit(args.json, "CONFLICT", f"{len(conflicts)} path(s) hold another file; "
-             "nothing installed", conflict=conflicts)
+        emit(args.json, "CONFLICT", f"{len(conflicts)} path(s) where a check can't go "
+             "in" + ("" if args.recheck else "; nothing installed"),
+             conflict=conflicts, installed=written)
         return FAILED
     emit(args.json, "INSTALLED", f"{len(sealed_pairs(args.dir, wt))} check(s)",
          installed=written)
@@ -204,7 +230,8 @@ def check_manifest(args):
     gaps = {}
 
     def gap(cid, why):
-        gaps.setdefault(cid, []).append(why)
+        if why not in gaps.setdefault(cid, []):
+            gaps[cid].append(why)
 
     na_ids = {r.get("#", "").strip() for r in na_rows}
     by_id = {}
@@ -237,8 +264,14 @@ def check_manifest(args):
                 continue
             if not (ad / "acceptance" / "files" / f"{path}.sealed").exists():
                 gap(cid, f"no sealed copy files/{path}.sealed")
-            if (worktree / path).exists() and not installed(ad):
-                gap(cid, f"{path} is still in the worktree; seal it")
+                continue
+            why = sealed.adds_only(ad, path)
+            if why:
+                gap(cid, why)
+            if not installed(ad):
+                left = left_in(ad, worktree, path)
+                if left:
+                    gap(cid, left)
     if gaps:
         ids = sorted(gaps, key=sort_key)
         emit(args.json, "GAPS", f"{len(ids)} condition(s) with gaps",
@@ -247,6 +280,18 @@ def check_manifest(args):
         return FAILED
     emit(args.json, "OK", f"{len(conditions)} condition(s) covered")
     return 0
+
+
+def left_in(ad, worktree, path):
+    """Why the worktree still holds a sealed check, or None."""
+    current = sealed.read(worktree / path)
+    base = sealed.base_of(ad, path)
+    if base is None:
+        return f"{path} is still in the worktree; seal it" if current is not None else None
+    if sealed.lines(current) != base:
+        return (f"{path} still differs from HEAD; seal your tests and restore the file "
+                "(`git -C <worktree> checkout -- <path>`)")
+    return None
 
 
 def installed(ad):
@@ -310,8 +355,9 @@ def eval_status(args):
     return 0
 
 
-INSTALL_CONFLICT = ("install conflict: the coder wrote a file at an acceptance check's "
-                    "path; move it, then re-run the verifier's first pass")
+INSTALL_CONFLICT = ("install conflict: an acceptance check can't go into the paths "
+                    "evidence/corrections.md names (the coder made, deleted or rewrote "
+                    "them); make the change it asks for, then re-run the verifier")
 
 
 def eval_decision(ad, install_conflict=False, mutation_left_changes=False):

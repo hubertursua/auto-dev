@@ -86,7 +86,7 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import cmd_checks, cmd_review, cmd_work
+from . import cmd_checks, cmd_review, cmd_work, sealed
 from . import state as st
 from .cmd_ship import changed_paths
 from .cmd_state import ON_EXHAUSTED, spend_round
@@ -267,6 +267,8 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
             n = c.peek(worker)
             path = c.ad / "briefs" / f"{worker}-{n}.md"
         else:
+            if worker == "acceptance-tester" and mode == "repair":
+                rebase_installed(c)
             path, _ = cmd_work.write_brief(c.state, c.ad, worker, mode, dict(sets))
             c.dirty = True
             n = int(path.stem.rsplit("-", 1)[1])
@@ -276,6 +278,19 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
         after.append(c.cmd("record", worker, n))
         efforts.append(effort_for(c, worker))
     return spawn_lines(agents, briefs_, prompts, after, rule, budget, efforts)
+
+
+def rebase_installed(c):
+    """Before a repair in place, make each shared test file's own lines (the file
+    without the checks in it) its base and the file its sealed copy, so the
+    coder's edits to that file since the checks went in aren't read as the
+    tester's, whether or not the repair touches it."""
+    if not cmd_checks.installed(c.ad):
+        return
+    wt = Path(c.state["worktree"])
+    for rel in sealed.sealed_files(c.ad):
+        if sealed.base_of(c.ad, rel) is not None:
+            sealed.rebase(c.ad, rel, sealed.read(wt / rel))
 
 
 def spawn_lines(agents, briefs_, prompts, after, rule, budget=None, efforts=None):
@@ -862,6 +877,8 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
         coder = c.last("coder", after=start, before=latest["seq"])
         return blocked_step(c, coder, consumer)
     if worker == "acceptance-tester":
+        if latest.get("mode") == "fold" and first is not None:
+            return first()  # install the rest, then cleanup
         trigger = next((r for r in reversed(recs[:-1])
                         if r["worker"] != "acceptance-tester"), None)
         if trigger and trigger["worker"] == "planner":
@@ -907,7 +924,7 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
             return exhausted(c, consumer, "no round left for an acceptance-check repair")
         return spawn(c, "acceptance-tester", "repair", {
             "scope": "ONLY the conditions whose checks fail the quality gate",
-            "report": f"the quality gate fails on an acceptance check file: see the "
+            "report": f"the quality gate fails on an acceptance check's lines: see the "
                       f"cleanup agent's reports in {c.ad}/lint/"},
             rule="an acceptance check fails the quality gate: the tester repairs it",
             budget=budget)
@@ -1046,21 +1063,41 @@ def verifier_first(c, rule):
     return spawn(c, "verifier", sets={"mode": "first pass"}, rule=rule)
 
 
+def fold_spawn(c, conflicts):
+    """The coder's file is where a sealed check goes, and the lines can't be
+    merged mechanically (the coder made the same new test file, or rewrote the
+    lines around an added test). The tester adds its tests to the coder's file:
+    that file, as it is now, becomes the check's base."""
+    c.would("make the coder's files the base of the checks that go into them",
+            "the tester folds its tests into the coder's version of those files")
+    wt = Path(c.state["worktree"])
+    again = any(b["worker"] == "acceptance-tester" and b.get("mode") == "fold"
+                for b in c.state.get("briefs", []))
+    for rel in conflicts if not again else ():  # a re-spawn: the file may hold its tests
+        current = sealed.read(wt / rel)
+        sealed.write(sealed.base_path(c.ad, rel), sealed.lines(current or ""), current)
+    return spawn(c, "acceptance-tester", "fold", {
+        "files": ", ".join(conflicts),
+        "scope": "ONLY the checks in the files the fold names; no condition is rewritten"},
+                 rule="a sealed check can't be merged into the coder's file: the tester "
+                      "adds its tests to that file (no round)")
+
+
 def install_checks(c):
     """Install every sealed acceptance check at its path in the worktree, so the
     cleanup agent's quality gate runs on them before the verifier's first pass.
 
-    Returns the paths already there with other content: then nothing is
-    installed and the verifier goes first, as before 4.1, to report the
-    conflict. Writes acceptance/INSTALLED (the paths, one per line), which
-    tells the verifier the checks went in before cleanup."""
+    Returns the paths where a check can't go in (lib/sealed.py): then nothing
+    is installed, and the tester folds its tests into those files once; if one
+    still can't go in, the verifier goes first, as before 4.1, to report it.
+    Writes acceptance/INSTALLED (the paths, one per line), which tells the
+    verifier the checks went in before cleanup."""
     marker = c.ad / "acceptance" / "INSTALLED"
     if marker.exists():  # installed already: a change since is an edit the audit records
         return []
     wt = c.state["worktree"]
     pairs = cmd_checks.sealed_pairs(c.ad, wt)
-    conflicts = [str(t.relative_to(wt)) for s, t in pairs
-                 if t.exists() and t.read_bytes() != s.read_bytes()]
+    _none, conflicts = cmd_checks.install_sealed(c.ad, wt, dry=True)
     if conflicts:
         return conflicts
     c.would("install the sealed acceptance checks in the worktree",
@@ -1075,9 +1112,15 @@ def install_checks(c):
 def phase5_first(c):
     """Phase 5 runs cleanup before the verifier's first pass, so the happy path
     verifies once, on the code that ships."""
-    if install_checks(c):
-        return verifier_first(c, "a sealed check's path holds another file: the "
-                              "verifier's first pass goes first and reports it")
+    conflicts = install_checks(c)
+    if conflicts:
+        folded = [r for r in c.recs("acceptance-tester", after=c.start(5), mode="fold")
+                  if r.get("status") == "ok"]
+        if not folded:
+            return fold_spawn(c, conflicts)
+        return verifier_first(c, "a sealed check still can't go in after the tester "
+                              "folded it: the verifier's first pass goes first and "
+                              "reports it")
     return cleanup_spawn(c, "phase5", None, "the code is built and the sealed checks are "
                          "installed: the cleanup agent simplifies it and runs the quality "
                          "gate before the verifier's first pass (no round)")

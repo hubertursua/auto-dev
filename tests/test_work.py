@@ -81,8 +81,11 @@ class BriefTest(WorkCase):
                      f"corrections_file={self.dir}/evidence/corrections.md")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         values = self.brief_values(self.dir / "briefs" / "coder-1.md")
+        # A file can hold the coder's tests too, so the brief names the checks.
         self.assertEqual(values["acceptance_paths"],
-                         "src/due.acceptance.test.ts, src/sort.acceptance.test.ts")
+                         'src/due.acceptance.test.ts (tests: "shows the due date", '
+                         '"rejects an invalid date", "owner only"); '
+                         'src/sort.acceptance.test.ts (tests: "sorts earliest first")')
 
     def test_missing_caller_slots_are_refused(self):
         r = self.cmd("brief", "code-reviewer", "--mode", "review")
@@ -661,6 +664,104 @@ class RecordTest(WorkCase):
         r = self.cmd("install-checks", "--recheck")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(due.read_text(), "due\n")
+
+    SHARED_BASE = ('import { one } from "./one";\n\ndescribe("todos", () => {\n'
+                   '  it("adds", () => {\n    expect(one).toBe(1);\n  });\n});\n')
+    SHARED_SEALED = ('import { one } from "./one";\nimport { due } from "./due";\n\n'
+                     'describe("todos", () => {\n  it("adds", () => {\n'
+                     '    expect(one).toBe(1);\n  });\n  it("shows the due date", () => {\n'
+                     '    expect(due()).toBe("2026-01-01");\n  });\n});\n')
+
+    def shared_check(self):
+        """A sealed check that adds a test to src/todos.test.ts, which the coder
+        has also edited: a changed import and a test of its own."""
+        self.write("acceptance/files/src/todos.test.ts.sealed", self.SHARED_SEALED)
+        self.write("acceptance/files/src/todos.test.ts.base", self.SHARED_BASE)
+        target = self.worktree / "src" / "todos.test.ts"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(self.SHARED_BASE.replace("{ one }", "{ one, two }").replace(
+            "  });\n});", '  });\n  it("adds two", () => {\n    expect(two).toBe(2);\n'
+            "  });\n});"))
+        return target
+
+    def test_install_checks_adds_a_check_among_the_coders_lines(self):
+        target = self.shared_check()
+        r = self.cmd("install-checks")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("installed: src/todos.test.ts", r.stdout)
+        self.assertEqual(target.read_text(), (
+            'import { one, two } from "./one";\nimport { due } from "./due";\n\n'
+            'describe("todos", () => {\n  it("adds", () => {\n    expect(one).toBe(1);\n'
+            '  });\n  it("shows the due date", () => {\n'
+            '    expect(due()).toBe("2026-01-01");\n  });\n  it("adds two", () => {\n'
+            "    expect(two).toBe(2);\n  });\n});\n"))
+        r = self.cmd("install-checks")  # in already: nothing to write
+        self.assertNotIn("installed:", r.stdout)
+
+    def test_install_checks_conflicts_when_the_lines_around_a_check_changed(self):
+        target = self.shared_check()
+        target.write_text(target.read_text().replace(
+            'import { one, two } from "./one";\n\ndescribe', 'describe'))
+        r = self.cmd("install-checks")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("conflict: src/todos.test.ts", r.stdout)
+        self.assertNotIn("due()", target.read_text())
+
+    def test_recheck_undoes_only_the_edits_that_touched_a_shared_check(self):
+        target = self.shared_check()
+        self.assertEqual(self.cmd("install-checks").returncode, 0)
+        good = target.read_text()
+        target.write_text("// the coder's comment\n" + good.replace(
+            '"2026-01-01"', '"anything"'))
+        r = self.cmd("install-checks", "--recheck")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(target.read_text(), "// the coder's comment\n" + good)
+
+    def test_recheck_without_a_snapshot_is_a_conflict(self):
+        target = self.shared_check()
+        self.assertEqual(self.cmd("install-checks").returncode, 0)
+        (self.dir / "acceptance/files/src/todos.test.ts.installed").unlink()
+        target.write_text(target.read_text().replace('"2026-01-01"', '"anything"'))
+        r = self.cmd("install-checks", "--recheck")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("conflict: src/todos.test.ts", r.stdout)
+
+    def test_a_check_is_not_anchored_on_punctuation_alone(self):
+        # The coder rewrote everything around the check but a closing line:
+        # splicing it in there would land inside the coder's code.
+        self.write("acceptance/files/src/x.test.ts.base", "a();\n});\nb();\n")
+        self.write("acceptance/files/src/x.test.ts.sealed", "a();\n});\ncheck();\nb();\n")
+        target = self.worktree / "src" / "x.test.ts"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("c();\n});\nd();\n")
+        r = self.cmd("install-checks")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("conflict: src/x.test.ts", r.stdout)
+
+    def test_after_the_build_a_check_cant_claim_a_file_that_holds_none(self):
+        state = self.state()
+        state["phases"]["4"]["status"] = "done"
+        self.write_state(state)
+        self.write("acceptance/files/app.ts.sealed", "export const one = 1;\ncheck\n")
+        self.returned("acceptance-tester", 1, next="REPAIRED", checks="1", ambiguous="none")
+        r = self.cmd("record", "acceptance-tester", 1)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("holds no check yet", r.stdout)
+
+    def test_record_gives_a_sealed_copy_its_base_and_refuses_a_changed_line(self):
+        self.write("acceptance/files/app.ts.sealed",
+                   "export const one = 1;\nexport const two = 2;\n")
+        self.write("acceptance/files/src/new.test.ts.sealed", "a new file\n")
+        self.returned("acceptance-tester", 1, next="SEALED", checks="2", ambiguous="none")
+        self.assertEqual(self.cmd("record", "acceptance-tester", 1).returncode, 0)
+        base = self.dir / "acceptance" / "files" / "app.ts.base"
+        self.assertEqual(base.read_text(), "export const one = 1;\n")  # app.ts at HEAD
+        self.assertFalse((self.dir / "acceptance/files/src/new.test.ts.base").exists())
+        self.write("acceptance/files/app.ts.sealed", "export const one = 2;\n")
+        self.returned("acceptance-tester", 2, next="SEALED", checks="2", ambiguous="none")
+        r = self.cmd("record", "acceptance-tester", 2)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("may only add lines", r.stdout)
 
     def test_apply_fix_reports_applied_when_the_new_spec_is_malformed(self):
         self.state_size("FITS")

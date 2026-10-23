@@ -566,16 +566,46 @@ class BuildTest(NextCase):
         self.assertEqual([b["worker"] for b in self.state()["briefs"]
                           if b["worker"] in ("cleanup", "verifier")], ["cleanup", "verifier"])
 
-    def test_a_sealed_path_holding_another_file_sends_the_verifier_first(self):
+    def test_a_check_that_cant_go_in_is_folded_by_the_tester(self):
+        # The coder made the test file a sealed check is: the tester adds its
+        # tests to the coder's file, which becomes the check's base.
         self.plan_session()
         self.resume()
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
         theirs = self.worktree / "src" / "due.acceptance.test.ts"
         theirs.parent.mkdir(parents=True, exist_ok=True)
-        theirs.write_text("someone else's file")
+        theirs.write_text("the coder's test\n")
+        _, jobs = self.expect("acceptance-tester")
+        brief = self.state()["briefs"][-1]
+        self.assertEqual(brief["mode"], "fold")
+        self.assertEqual(brief["sets"]["files"], "src/due.acceptance.test.ts")
+        files = self.dir / "acceptance" / "files" / "src"
+        self.assertEqual((files / "due.acceptance.test.ts.base").read_text(),
+                         "the coder's test\n")
+        self.assertFalse((self.worktree / "src" / "sort.acceptance.test.ts").exists())
+        theirs.write_text("the coder's test\ntest\n")  # the tester folds its test in
+        (files / "due.acceptance.test.ts.sealed").write_text("the coder's test\ntest\n")
+        self.answer(*jobs[0], "FOLDED", checks="1", ambiguous="none")
+        self.first_pass()  # the rest go in, then cleanup and the verifier
+        self.assertEqual(theirs.read_text(), "the coder's test\ntest\n")
+        self.assertEqual((self.worktree / "src" / "sort.acceptance.test.ts").read_text(),
+                         "test")
+
+    def test_a_fold_that_does_not_settle_it_sends_the_verifier_first(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        theirs = self.worktree / "src" / "due.acceptance.test.ts"
+        theirs.parent.mkdir(parents=True, exist_ok=True)
+        theirs.write_text("someone else's file\n")
+        _, jobs = self.expect("acceptance-tester")
+        sealed = self.dir / "acceptance" / "files" / "src" / "due.acceptance.test.ts.sealed"
+        sealed.write_text("someone else's file\ntest\n")
+        theirs.unlink()  # the file it went into is gone again
+        self.answer(*jobs[0], "FOLDED", checks="1", ambiguous="none")
         _, jobs = self.expect("verifier")
         self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
-        self.assertEqual(theirs.read_text(), "someone else's file")
+        self.assertFalse(theirs.exists())
         self.assertFalse((self.worktree / "src" / "sort.acceptance.test.ts").exists())
         self.assertFalse((self.dir / "acceptance" / "INSTALLED").exists())
 
@@ -595,6 +625,29 @@ class BuildTest(NextCase):
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
         self.next(6)
+
+    def test_a_repair_rebases_every_shared_file_the_coder_edited(self):
+        # The coder added its own test to a file that holds a check. A repair of
+        # another check must not leave that file's sealed copy stale.
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        files = self.dir / "acceptance" / "files" / "src"
+        (files / "list.test.ts.base").write_text("describe list\nend\n")
+        (files / "list.test.ts.sealed").write_text("describe list\ncheck\nend\n")
+        shared = self.worktree / "src" / "list.test.ts"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_text("describe list\nend\n")
+        _, jobs = self.first_pass()
+        self.assertEqual(shared.read_text(), "describe list\ncheck\nend\n")
+        shared.write_text("describe list\ncheck\nthe coder's test\nend\n")
+        self.spec_eval(v1="partial",
+                       defective='`src/due.acceptance.test.ts` :: "shows the due date"')
+        self.answer(*jobs[0], "REPAIR", tree="x", corrections="0")
+        self.expect("acceptance-tester", "REPAIRED", checks="1", ambiguous="none")
+        self.assertEqual((files / "list.test.ts.base").read_text(),
+                         "describe list\nthe coder's test\nend\n")
+        self.assertEqual((files / "list.test.ts.sealed").read_text(), shared.read_text())
 
     def test_a_failed_first_pass_is_spawned_again_as_a_first_pass(self):
         self.plan_session()

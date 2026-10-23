@@ -365,6 +365,25 @@ class CheckTestsTest(GitRepoCase):
         self.assertIn("ACCEPTANCE_MODIFIED", r.stdout)
 
 
+    def test_acceptance_tests_added_to_an_existing_file(self):
+        # The check added a test to tests/test_app.py; the coder added another.
+        acceptance = self.tmp / "acceptance"
+        files = acceptance / "files/tests"
+        files.mkdir(parents=True)
+        base = (self.repo / "tests/test_app.py").read_text()
+        added = "\n\ndef test_add_negative():\n    assert add(-1, -2) == -3\n"
+        (files / "test_app.py.base").write_text(base)
+        (files / "test_app.py.sealed").write_text(base + added)
+        coder = "\n\ndef test_add_zero():\n    assert add(0, 0) == 0\n"
+        self.write("tests/test_app.py", base + added + coder)
+        r = self.audit("--acceptance", acceptance)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.write("tests/test_app.py", base + added.replace("-3", "-4") + coder)
+        r = self.audit("--acceptance", acceptance)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("ACCEPTANCE_MODIFIED\ttests/test_app.py", r.stdout)
+
+
 class MutateTest(GitRepoCase):
     CMD = f"{sys.executable} -c \"from src.app import add; assert add(1, 2) == 3\""
 

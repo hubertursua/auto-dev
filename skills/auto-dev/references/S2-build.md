@@ -18,14 +18,17 @@ see in S2, in order:
    - It may return `BLOCKED`: `next` sends the `planner` in blocked mode, then
      the coder again (a round), or the acceptance tester first when the plan's
      entry points changed.
-2. `next` installs the sealed checks in the worktree itself, then `cleanup`
+2. `next` installs the sealed checks in the worktree itself (a check that
+   adds tests to an existing file goes in among the coder's lines; if one
+   can't, the `acceptance-tester` in fold mode adds its tests to the coder's
+   file first, no round spent), then `cleanup`
    simplifies the change and runs the quality gate to green. A check that
    fails the gate goes to the `acceptance-tester` in repair mode, then cleanup
    again.
 3. `verifier`, first pass, on the cleaned code: it runs the sealed checks
    against the spec and writes its verdicts and, if anything is open,
-   `evidence/corrections.md`. (If a sealed check's path already holds another
-   file, `next` installs nothing and the verifier goes first, to report it.)
+   `evidence/corrections.md`. (If a sealed check still can't go in after the
+   fold, `next` installs nothing and the verifier goes first, to report it.)
 4. While something is open: the `coder` in correction mode with that file
    (each one spends a round; `BUDGET:` shows what's left), then `cleanup`, then
    a `verifier` re-check. Defective checks go to the `acceptance-tester` first, in repair
