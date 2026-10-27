@@ -75,25 +75,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib import sealed as sealed_lib
+from lib.testfiles import SKIP, TEST_CONFIG, code, is_test_file
 
-CODE_EXT = {
-    ".ex", ".exs", ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".rb",
-    ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
-    ".erl", ".clj", ".cljs", ".dart", ".c", ".cc", ".cpp", ".h", ".hpp",
-}
-TEST_DIRS = {"test", "tests", "spec", "specs", "__tests__"}
-TEST_NAME = re.compile(
-    r"(_test\.\w+$|^test_.*\.py$|\.test\.\w+$|\.spec\.\w+$|_spec\.rb$"
-    r"|Tests?\.(java|kt|scala|cs|swift|php)$)"
-)
-# Runner configs and shared helpers that can exclude, skip or focus tests.
-TEST_CONFIG = re.compile(
-    r"(^|/)(test_helper\.exs|conftest\.py|pytest\.ini|tox\.ini|setup\.cfg"
-    r"|(jest|vitest|playwright|karma|cypress)\.config\.\w+|\.mocharc(\.\w+)?"
-    r"|phpunit\.xml(\.dist)?|\.rspec|spec_helper\.rb|rails_helper\.rb"
-    r"|pyproject\.toml|package\.json|mix\.exs|Cargo\.toml|vitest\.workspace\.\w+)$"
-)
-COMMENT_ONLY = re.compile(r"^\s*(#(?![\[!])|//|--|%|/\*|\*|;)")
 ASSERTION = re.compile(
     r"(\bassert(_\w+|[A-Z]\w*|!|\b)|\brefute(_\w+|\b)|\bexpect\s*[({]"
     r"|\.should\b|\bshould\s*\(|\bt\.(Error|Errorf|Fatal|Fatalf|Fail|FailNow)\b"
@@ -104,16 +87,6 @@ TEST_DEF = re.compile(
     r"(\btest\s+[\"']|\bdescribe\s*[\"'(]|\bit\s*[\"'(]|\bdef\s+test_?\w*"
     r"|\bfunc\s+Test\w+|@Test\b|#\[test\]|\btest\s*\(|\bproperty\s+[\"'])"
 )
-SKIP = re.compile(
-    r"(@(module)?tag\s+:?(skip|focus)\b|@tag\s+(skip|focus):"
-    r"|@pytest\.mark\.(skip|skipif|xfail)\b|\bpytestmark\s*=.*\b(skip|xfail)"
-    r"|@unittest\.(skip|expectedFailure)\b|\bpytest\.(skip|xfail)\("
-    r"|\b(it|describe|test|context)\.(skip|todo|only)\b"
-    r"|\b[xf](it|describe|test|context)\s*[(\"']|\bt\.Skip(Now|f)?\("
-    r"|@(Disabled|Ignore)\b|#\[ignore\]|\bmarkTestSkipped\("
-    r"|ExUnit\.(configure|start)\(.*\b(exclude|only)\b"
-    r"|^\s*(skip|pending)(\s*\(|\s+[\"']))"
-)
 HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
@@ -122,19 +95,6 @@ def git(worktree, *args):
     if r.returncode != 0:
         raise RuntimeError(r.stderr.decode("utf-8", "replace").strip() or "git failed")
     return r.stdout.decode("utf-8", "replace")
-
-
-def is_test_file(path):
-    base = os.path.basename(path)
-    if TEST_NAME.search(base):
-        return True
-    ext = os.path.splitext(base)[1]
-    return ext in CODE_EXT and any(p in TEST_DIRS for p in path.split("/")[:-1])
-
-
-def code(line):
-    """The line, or '' when it is only a comment."""
-    return "" if COMMENT_ONLY.match(line) else line
 
 
 def read(path):

@@ -31,14 +31,14 @@ are rows in this table — never a separate pass.
 <"None." when the audit is clean and the diff shows no gaming>
 
 ## Mutation
-<n> mutants (cap <n> | off): <n> killed · <n> timeout (counted caught) · <n> survived · <n> invalid (`evidence/mutants.json.results.json`)
+<n> mutants (cap <n> | off): <n> killed · <n> timeout (counted caught) · <n> survived · <n> invalid · <n> carried forward (`evidence/mutation-record.json`)
 
 | Mutant | Location | Change | Condition | Judgment |
 |--------|----------|--------|-----------|----------|
 | M4 | `src/todos/todos.ts:58` | `n <= 10` → `n < 10` | 2 | Test gap — no test accepts exactly 10; condition 2 partial |
 | M7 | `src/todos/todos.ts:71` | `items.sort(byDue)` → `items.sort((a, b) => byDue(b, a))` | — | Equivalent — the list has at most one element here |
 
-<list survivors only; "None survived." when none did>
+<this pass's survivors only: a carried-forward mutant was caught, so it is never listed; "None survived." when none did>
 
 ## Defective acceptance checks
 <each check that asserts something SPEC.md does not say, or is too weak for

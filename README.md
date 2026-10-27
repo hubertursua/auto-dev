@@ -143,7 +143,14 @@ weakening them. Verification is built around that:
   changed lines with `scripts/mutate.py`, which restores every file afterwards.
   A planted bug no test catches, on a line a condition depends on, is a test gap
   and goes back to the coder. At most 20 mutants per pass; `mutation.max` in
-  `.auto-dev.yml` changes that (`0` turns it off).
+  `.auto-dev.yml` changes that (`0` turns it off). The planted bugs are chosen
+  once and kept for every pass. A re-check runs again only the ones no test
+  caught, the ones in files changed since the last finished pass, and new ones;
+  the rest keep their earlier result (`autodev.py mutants select` picks them,
+  from the code the last finished pass tested). An edited or deleted line in an
+  existing test file, a deleted or renamed test file, an added skip or focus
+  marker, or a changed test-runner config makes it run them all, and so does a
+  missing record.
 - **Re-checked after every change.** Cleanup (`/simplify` and the quality gate)
   runs before the verifier, so the verifier checks the code that ships, and
   both run again after every fix.
@@ -472,7 +479,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `acceptance/` | Phase 3 | the sealed held-out checks (`files/<path>.sealed`, with `<path>.base`, the file a check adds to, and `<path>.installed`, that file as it was with the check whole), their `MANIFEST.md`, and their runs on the old code |
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
 | `lint/` | Phase 5 | one report per quality-gate check |
-| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran, and its required changes (`evidence/corrections.md`) |
+| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran, its required changes (`evidence/corrections.md`), the mutants it keeps across passes (`evidence/mutation-set.json`) and the last finished pass's tree and mutant results (`evidence/mutation-record.json`), plus each re-check's mutant pick (`evidence/mutation-select.txt`) |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports, the judge's code review, the security review, and the review's required changes for the coder |
 | `pr-body.md`, `pr-output-comment.md` | Phase 6 | the generated PR description, and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments |
