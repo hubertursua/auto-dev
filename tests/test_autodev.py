@@ -1147,6 +1147,872 @@ class ShipTest(RunCase):
         self.assertFalse(self.worktree.exists())
 
 
+# ------------------------------------------------------------------ mutants
+# `autodev.py mutants select` names which mutants a verifier re-check runs
+# again; `autodev.py mutants record` saves a finished pass as the next one's
+# baseline. The throwaway repo's code is an example in TypeScript, with one
+# Python and one Ruby test file for the cross-stack cases.
+
+def numbered(count, special, name):
+    """`count` lines, each ending in a newline; `special` maps a 1-based line
+    number to its text."""
+    return "".join(special.get(i, f"export const {name}{i} = {i};") + "\n"
+                   for i in range(1, count + 1))
+
+
+MUT_FILES = {
+    "src/a.ts": numbered(20, {10: "  return total > 0;", 14: "  return count + 1;"}, "a"),
+    "src/b.ts": numbered(45, {10: "  if (limit < 5) return;", 20: "  return limit * 2;",
+                              40: '  const label = "b";'}, "b"),
+    "src/c.ts": numbered(5, {3: "  while (busy) wait();"}, "c"),
+    "src/notes.ts": numbered(4, {}, "note"),
+    "src/due_check.ts": numbered(6, {3: '  expect(due("2024-01-02")).toBe(true);'}, "due"),
+    "src/total.test.ts": numbered(6, {3: "  expect(total([1, 2])).toBe(3);"}, "t"),
+    "tests/a.test.ts": ('import { total } from "../src/a";\n\n'
+                        'it("totals", () => {\n  expect(total([1])).toBe(true);\n});\n'),
+    "tests/b.test.ts": ('import { sum } from "../src/b";\n\ndescribe("sum", () => {\n'
+                        'it("adds", () => {\n  const total = sum([4, 6]);\n  log(total);\n'
+                        "  check(total);\n\n  // totals\n  note(total);\n  keep(total);\n"
+                        "  expect(total).toBe(10);\n});\n});\n// end of the sum tests\n"),
+    "tests/fixtures/totals.json": '{"total": 10}\n',
+    "tests/test_b.py": ("from b import total_of\n\n\ndef test_total():\n"
+                        "    total = total_of([4, 6])\n    a = 1\n    b = 2\n    c = 3\n"
+                        "    d = 4\n    e = 5\n    f = 6\n    assert total == 10\n"),
+    "spec/b_spec.rb": ('require "b"\n\nRSpec.describe "sum" do\n  it "adds" do\n'
+                       "    total = sum([4, 6])\n    a = 1\n    b = 2\n    c = 3\n"
+                       "    d = 4\n    e = 5\n    f = 6\n    expect(total).to eq(10)\n"
+                       "  end\nend\n"),
+    "package.json": '{"name": "app", "scripts": {"test": "jest"}}\n',
+    "README.md": "# app\n\nSums things.\n",
+}
+MUT_SET = [
+    {"id": "M1", "file": "src/a.ts", "line": 10, "find": "total > 0",
+     "replace": "total >= 0", "condition": "1"},
+    {"id": "M2", "file": "src/a.ts", "line": 14, "find": "count + 1",
+     "replace": "count - 1", "condition": "1"},
+    {"id": "M3", "file": "src/b.ts", "line": 10, "find": "limit < 5",
+     "replace": "limit <= 5", "condition": "2"},
+    {"id": "M4", "file": "src/c.ts", "line": 3, "find": "while (busy)",
+     "replace": "while (true)", "condition": "3"},
+]
+M5_AT_20 = {"id": "M5", "file": "src/b.ts", "line": 20, "find": "limit * 2",
+            "replace": "limit * 3", "condition": "2"}
+MUT_STATUSES = {"M1": "killed", "M2": "survived", "M3": "killed", "M4": "timeout"}
+NEW_TS_TEST = 'it("adds zero", () => {\n  expect(sum([0])).toBe(0);\n});\n'
+NEW_PY_TEST = "\n\ndef test_zero():\n    assert total_of([0]) == 0\n"
+EVERY_MUTANT = ["M1", "M2", "M3", "M4"]
+
+
+class MutantsCase(unittest.TestCase):
+    """A committed throwaway repo, its git-ignored .auto-dev/ with a mutation
+    set M1-M4, and src/due_check.ts installed as a sealed acceptance check."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wt = self.tmp / "app"
+        self.ad = self.wt / ".auto-dev"
+        self.evidence = self.ad / "evidence"
+        self.cwd = self.tmp / "cwd"
+        self.cwd.mkdir()
+        self.wt.mkdir()
+        self.git("init", "-q", "-b", "main")
+        for rel, text in MUT_FILES.items():
+            self.write(rel, text)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "init")
+        self.write(".auto-dev/.gitignore", "*\n")
+        self.write(".auto-dev/acceptance/files/src/due_check.ts.sealed",
+                   MUT_FILES["src/due_check.ts"])
+        self.evidence.mkdir(parents=True)
+        self.set_mutants(MUT_SET)
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.wt), *args], env=BASE_ENV,
+                              capture_output=True, text=True, check=True).stdout
+
+    def write(self, rel, text):
+        path = self.wt / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def read(self, rel):
+        return (self.wt / rel).read_text()
+
+    def edit_line(self, rel, n, text):
+        lines = self.read(rel).split("\n")
+        lines[n - 1] = text
+        self.write(rel, "\n".join(lines))
+
+    def delete_line(self, rel, n):
+        lines = self.read(rel).split("\n")
+        del lines[n - 1]
+        self.write(rel, "\n".join(lines))
+
+    def append(self, rel, text):
+        self.write(rel, self.read(rel) + text)
+
+    def set_mutants(self, entries):
+        (self.evidence / "mutation-set.json").write_text(json.dumps(entries, indent=2))
+
+    def add_mutant(self, entry):
+        entries = json.loads((self.evidence / "mutation-set.json").read_text())
+        self.set_mutants([*entries, entry])
+
+    @property
+    def record_file(self):
+        return self.evidence / "mutation-record.json"
+
+    def tree(self):
+        return subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"), "--print-tree",
+                               str(self.wt)], env=BASE_ENV, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def write_record(self, statuses=None, tree=None, results=None):
+        """A record as `mutants record` leaves it, at `tree` (default: now)."""
+        statuses = statuses or MUT_STATUSES
+        if results is None:
+            results = [{**m, "status": statuses[m["id"]]} for m in MUT_SET
+                       if m["id"] in statuses]
+        self.record_file.write_text(json.dumps(
+            {"tree": self.tree() if tree is None else tree, "results": results}))
+
+    def change_result(self, mid, **fields):
+        record = json.loads(self.record_file.read_text())
+        for result in record["results"]:
+            if result["id"] == mid:
+                result.update(fields)
+        self.record_file.write_text(json.dumps(record))
+
+    def mutants(self, *args, ad=None):
+        return subprocess.run([sys.executable, str(AUTODEV), "mutants", *args, "--dir",
+                               str(ad or self.ad)], env=BASE_ENV, capture_output=True,
+                              text=True, cwd=self.cwd, check=False)
+
+    def pick(self):
+        r = self.mutants("select", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout)
+
+    def rerun_ids(self, out):
+        return [m["id"] for m in out["rerun"]]
+
+    def carried(self, out):
+        return {m["id"]: m["status"] for m in out["carried"]}
+
+    def reset(self):
+        """The committed files, the set M1-M4, and no record or run files."""
+        self.git("checkout", "-q", "--", ".")
+        self.git("clean", "-qfd", "-e", ".auto-dev")
+        for name in ("mutation-record.json", "mutants.json.results.json", "mutate.exit"):
+            (self.evidence / name).unlink(missing_ok=True)
+        self.set_mutants(MUT_SET)
+
+    def run_results(self, results, code):
+        """What mutate.py leaves: its results file and, unless `code` is None,
+        its exit file."""
+        (self.evidence / "mutants.json.results.json").write_text(json.dumps(
+            [{"output": "1 test ran", **r} for r in results], indent=2))
+        if code is not None:
+            (self.evidence / "mutate.exit").write_text(f"{code}\n")
+
+    def ran(self, statuses, lines=None):
+        """The set's entries for `statuses`, as mutate.py reports them."""
+        lines = lines or {}
+        entries = json.loads((self.evidence / "mutation-set.json").read_text())
+        return [{**m, "line": lines.get(m["id"], m["line"]), "status": statuses[m["id"]]}
+                for m in entries if m["id"] in statuses]
+
+    def rec(self, *extra):
+        r = self.mutants("record", "--json", *extra)
+        return r.returncode, json.loads(r.stdout) if r.stdout.strip() else {"stderr": r.stderr}
+
+    def first_pass(self, statuses=None, code=1):
+        """Pass 1 ran every mutant and recorded its results at the tree now."""
+        self.run_results(self.ran(statuses or MUT_STATUSES), code)
+        code_, out = self.rec("--tree", self.tree())
+        self.assertEqual(code_, 0, out)
+        for name in ("mutants.json.results.json", "mutate.exit"):
+            (self.evidence / name).unlink(missing_ok=True)
+        return out
+
+
+class MutantSelectTest(MutantsCase):
+    def test_reruns_uncaught_touched_and_added_and_carries_the_rest(self):
+        self.write_record()
+        self.edit_line("src/b.ts", 12, "export const b12 = 120;")
+        self.append("tests/b.test.ts", NEW_TS_TEST)
+        self.append("src/b.ts", "  return limit + 7;\n")
+        self.add_mutant({"id": "M5", "file": "src/b.ts", "line": 46, "find": "limit + 7",
+                         "replace": "limit - 7", "condition": "2"})
+        out = self.pick()
+        self.assertEqual(out["result"], "RERUN", out)
+        self.assertEqual(self.rerun_ids(out), ["M2", "M3", "M5"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M4": "timeout"}, out)
+        self.assertIsNone(out["reason"], out)
+
+    def test_text_output_names_each_mutant_and_why(self):
+        self.write_record()
+        base = self.tree()
+        self.edit_line("src/b.ts", 40, '  const label = "bee";')
+        self.add_mutant(M5_AT_20)
+        r = self.mutants("select")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = [line.strip() for line in r.stdout.splitlines()]
+        self.assertEqual(lines[0], "RERUN: 3 to re-run, 2 carried forward")
+        self.assertIn("rerun: M2 src/a.ts:14 — survived last pass", lines)
+        self.assertIn("rerun: M3 src/b.ts:10 — src/b.ts changed since the last pass", lines)
+        self.assertIn("rerun: M5 src/b.ts:20 — new since the last pass", lines)
+        self.assertIn("carried: M1 src/a.ts:10 killed", lines)
+        self.assertIn("carried: M4 src/c.ts:3 timeout", lines)
+        self.assertIn(f"base: {base}", lines)
+        self.assertIn(f"tree: {self.tree()}", lines)
+
+    def test_any_edit_in_a_file_reruns_every_mutant_in_it(self):
+        self.write_record()
+        self.edit_line("src/b.ts", 40, '  const label = "bee";')  # M3 is on line 10
+        out = self.pick()
+        self.assertEqual(self.rerun_ids(out), ["M2", "M3"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M4": "timeout"}, out)
+
+    def test_file_put_back_byte_for_byte_keeps_its_kills(self):
+        self.write_record()
+        self.edit_line("src/a.ts", 10, "  return total > 1;")
+        self.git("commit", "-q", "-am", "change a")
+        self.write("src/a.ts", MUT_FILES["src/a.ts"])
+        out = self.pick()
+        self.assertEqual(self.rerun_ids(out), ["M2"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M3": "killed", "M4": "timeout"})
+
+    def test_mutant_missing_from_the_record_runs_alone(self):
+        self.write_record()
+        self.add_mutant(M5_AT_20)
+        out = self.pick()
+        self.assertEqual(self.rerun_ids(out), ["M2", "M5"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M3": "killed", "M4": "timeout"})
+        why = {m["id"]: m["why"] for m in out["rerun"]}
+        self.assertEqual(why["M5"], "new since the last pass")
+
+    def test_result_not_matching_its_set_entry_reruns_that_one(self):
+        for field, value in (("find", "total >= 1"), ("replace", "total < 0"),
+                             ("file", "src/other.ts")):
+            with self.subTest(differs=field):
+                self.reset()
+                self.write_record()
+                self.change_result("M1", **{field: value})
+                out = self.pick()
+                self.assertEqual(self.rerun_ids(out), ["M1", "M2"], out)
+                self.assertEqual(self.carried(out), {"M3": "killed", "M4": "timeout"}, out)
+                why = {m["id"]: m["why"] for m in out["rerun"]}
+                self.assertEqual(why["M1"],
+                                 "its recorded file, find or replace differs from the set")
+
+    def test_recorded_line_is_not_compared(self):
+        self.write_record()
+        self.change_result("M1", line=12)
+        out = self.pick()
+        self.assertEqual(self.carried(out).get("M1"), "killed", out)
+        self.assertEqual(self.rerun_ids(out), ["M2"], out)
+        line = {m["id"]: m["line"] for m in out["carried"]}
+        self.assertEqual(line["M1"], 12)  # its latest known line
+
+    def test_result_for_a_mutant_gone_from_the_set_is_ignored(self):
+        self.write_record(results=[{**m, "status": MUT_STATUSES[m["id"]]} for m in MUT_SET]
+                          + [{"id": "M9", "file": "src/c.ts", "line": 1, "find": "c1",
+                              "replace": "c2", "status": "killed"}])
+        out = self.pick()
+        self.assertNotIn("M9", json.dumps(out))
+        self.assertEqual(self.rerun_ids(out), ["M2"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M3": "killed", "M4": "timeout"})
+
+    def test_docs_and_new_tests_rerun_only_the_uncaught(self):
+        self.write_record()
+        self.append("tests/a.test.ts", NEW_TS_TEST)
+        self.append("README.md", "\nMore about sums.\n")
+        out = self.pick()
+        self.assertEqual(self.rerun_ids(out), ["M2"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M3": "killed", "M4": "timeout"})
+
+    def test_unchanged_tree_reruns_only_the_uncaught(self):
+        for status in ("survived", "invalid"):
+            with self.subTest(m2=status):
+                self.reset()
+                self.write_record({**MUT_STATUSES, "M2": status})
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN", out)
+                self.assertEqual(self.rerun_ids(out), ["M2"], out)
+                self.assertEqual(out["rerun"][0]["why"], f"{status} last pass")
+                self.assertEqual(self.carried(out),
+                                 {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_all_caught_and_tests_only_added_runs_nothing(self):
+        self.write_record({**MUT_STATUSES, "M2": "killed"})
+        self.append("tests/b.test.ts", NEW_TS_TEST)
+        out = self.pick()
+        self.assertEqual(out["result"], "CARRY_ALL", out)
+        self.assertEqual(out["rerun"], [], out)
+        self.assertEqual(len(out["carried"]), 4, out)
+        r = self.mutants("select")
+        self.assertTrue(r.stdout.startswith("CARRY_ALL: nothing to re-run, 4 carried forward"),
+                        r.stdout)
+
+    def test_test_changes_force_every_mutant(self):
+        def rename(old, new):
+            (self.wt / old).rename(self.wt / new)
+
+        cases = [
+            ("changed test line", lambda: self.edit_line(
+                "tests/b.test.ts", 12, "  expect(total).toBeDefined();"),
+             "tests/b.test.ts:12 — an existing test line was changed or removed"),
+            ("deleted test line", lambda: self.delete_line("tests/b.test.ts", 5),
+             "tests/b.test.ts:5 — "),
+            ("changed blank line", lambda: self.edit_line("tests/b.test.ts", 8, "  // why"),
+             "tests/b.test.ts:8 — "),
+            ("changed comment line", lambda: self.edit_line("tests/b.test.ts", 9, "  // sums"),
+             "tests/b.test.ts:9 — "),
+            ("deleted test file", lambda: (self.wt / "tests/a.test.ts").unlink(),
+             "tests/a.test.ts — a test file was deleted or renamed"),
+            ("renamed test file", lambda: rename("tests/a.test.ts", "tests/a2.test.ts"),
+             "tests/a.test.ts — a test file was deleted or renamed"),
+            ("added skip marker", lambda: self.append(
+                "tests/b.test.ts", 'it.skip("later", () => {});\n'),
+             "tests/b.test.ts:16 — a skip or focus marker was added"),
+            ("added focus marker", lambda: self.append(
+                "tests/b.test.ts", NEW_TS_TEST + 'it.only("now", () => {});\n'),
+             "tests/b.test.ts:19 — a skip or focus marker was added"),
+            ("edited package.json", lambda: self.write(
+                "package.json", '{"name": "app", "scripts": {"test": "jest --bail"}}\n'),
+             "package.json — a test-runner config file changed"),
+            ("new runner config", lambda: self.write(
+                "jest.config.ts", "export default { testPathIgnorePatterns: [] };\n"),
+             "jest.config.ts — a test-runner config file changed"),
+            ("edited fixture data", lambda: self.write(
+                "tests/fixtures/totals.json", '{"total": 11}\n'),
+             "tests/fixtures/totals.json:1 — "),
+            ("edited acceptance check", lambda: self.edit_line(
+                "src/due_check.ts", 3, '  expect(due("2024-01-02")).toBeDefined();'),
+             "src/due_check.ts:3 — "),
+            ("python test line", lambda: self.edit_line(
+                "tests/test_b.py", 12, "    assert total"), "tests/test_b.py:12 — "),
+            ("ruby spec line", lambda: self.edit_line(
+                "spec/b_spec.rb", 12, "    expect(total).to be_truthy"),
+             "spec/b_spec.rb:12 — "),
+            ("test named by its file name", lambda: self.edit_line(
+                "src/total.test.ts", 3, "  expect(total([1, 2])).toBeDefined();"),
+             "src/total.test.ts:3 — "),
+        ]
+        for name, change, reason in cases:
+            with self.subTest(change=name):
+                self.reset()
+                self.write_record()
+                change()
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN_ALL", out)
+                self.assertEqual(self.rerun_ids(out), EVERY_MUTANT, out)
+                self.assertEqual(out["carried"], [], out)
+                self.assertTrue((out["reason"] or "").startswith(reason), out)
+        with self.subTest(change="the same edit to a file that is no test"):
+            self.reset()
+            self.write_record()
+            self.edit_line("src/notes.ts", 2, "export const note = 0;")
+            out = self.pick()
+            self.assertEqual(out["result"], "RERUN", out)
+            self.assertEqual(self.carried(out).get("M1"), "killed", out)
+
+    def test_tests_only_appended_keep_the_kills(self):
+        for rel, text in (("tests/b.test.ts", NEW_TS_TEST), ("tests/test_b.py", NEW_PY_TEST)):
+            with self.subTest(appended=rel):
+                self.reset()
+                self.write_record()
+                self.append(rel, text)
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN", out)
+                self.assertEqual(self.rerun_ids(out), ["M2"], out)
+                self.assertEqual(self.carried(out),
+                                 {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_a_new_test_file_with_a_skip_or_focus_marker_forces_every_mutant(self):
+        cases = (
+            ("focus marker", "tests/c.test.ts", 'it.only("now", () => {});\n',
+             'it("now", () => {});\n'),
+            ("skip marker", "tests/c.test.ts", 'it.skip("later", () => {});\n',
+             'it("later", () => {});\n'),
+            ("python skip marker", "tests/test_c.py",
+             "@pytest.mark.skip\ndef test_later():\n    pass\n",
+             "def test_later():\n    pass\n"),
+        )
+        for name, rel, marked, plain in cases:
+            with self.subTest(new_file=name):
+                self.reset()
+                self.first_pass()
+                self.write(rel, marked)
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN_ALL", out)
+                self.assertEqual(self.rerun_ids(out), EVERY_MUTANT, out)
+                self.assertEqual(out["carried"], [], out)
+                self.assertEqual(out["reason"], f"{rel}:1 — a skip or focus marker was added")
+            with self.subTest(new_file=f"{name}, the control without it"):
+                self.reset()
+                self.first_pass()
+                self.write(rel, plain)
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN", out)
+                self.assertEqual(self.carried(out),
+                                 {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_a_test_file_replaced_by_a_symlink_forces_every_mutant(self):
+        self.first_pass()
+        self.assertEqual(self.carried(self.pick()).get("M1"), "killed")  # the control
+        (self.wt / "tests/a.test.ts").unlink()
+        os.symlink("b.test.ts", self.wt / "tests/a.test.ts")
+        out = self.pick()
+        self.assertEqual(out["result"], "RERUN_ALL", out)
+        self.assertEqual(self.rerun_ids(out), EVERY_MUTANT, out)
+        self.assertEqual(out["carried"], [], out)
+        self.assertEqual(out["reason"],
+                         "tests/a.test.ts — a test file was replaced by another kind of file")
+
+    def test_appending_to_a_test_file_without_a_final_newline_keeps_the_kills(self):
+        old = MUT_FILES["tests/a.test.ts"].rstrip("\n")  # its last line, 5, is "});"
+        for name, new in (("new file ends in a newline", old + "\n" + NEW_TS_TEST),
+                          ("new file ends without one", old + "\n" + NEW_TS_TEST.rstrip("\n"))):
+            with self.subTest(append=name):
+                self.reset()
+                self.write("tests/a.test.ts", old)
+                self.first_pass()
+                self.write("tests/a.test.ts", new)
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN", out)
+                self.assertEqual(self.rerun_ids(out), ["M2"], out)
+                self.assertEqual(self.carried(out),
+                                 {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+        with self.subTest(append="the control: the old last line's text changes too"):
+            self.reset()
+            self.write("tests/a.test.ts", old)
+            self.first_pass()
+            self.write("tests/a.test.ts", old[:-len("});")] + "}); // done\n" + NEW_TS_TEST)
+            out = self.pick()
+            self.assertEqual(out["result"], "RERUN_ALL", out)
+            self.assertEqual(out["carried"], [], out)
+            self.assertEqual(out["reason"],
+                             "tests/a.test.ts:5 — an existing test line was changed or removed")
+
+    def test_a_caught_mutant_at_a_path_git_does_not_list_reruns(self):
+        os.symlink("src", self.wt / "lib")
+        self.git("add", "lib")
+        self.git("commit", "-q", "-m", "lib")
+        via_link = {**MUT_SET[0], "id": "M6", "file": "lib/a.ts"}
+        self.add_mutant(via_link)
+        self.write_record(results=[{**m, "status": MUT_STATUSES[m["id"]]} for m in MUT_SET]
+                          + [{**via_link, "status": "killed"}])
+        out = self.pick()
+        why = {m["id"]: m["why"] for m in out["rerun"]}
+        self.assertEqual(why.get("M6"), "lib/a.ts is not in the tree now", out)
+        self.assertNotIn("M6", self.carried(out), out)
+        self.assertEqual(self.carried(out).get("M1"), "killed", out)  # same code, via src/
+
+    def test_no_record_means_every_mutant_runs(self):
+        out = self.pick()  # a run started on 4.7: a set but no record
+        self.assertEqual(out["result"], "RERUN_ALL", out)
+        self.assertEqual(self.rerun_ids(out), EVERY_MUTANT, out)
+        self.assertIn("no previous results were recorded", out["reason"], out)
+        self.assertEqual(out["carried"], [], out)
+        self.write_record()  # the control: with a record, the same set carries M1
+        self.assertEqual(self.carried(self.pick()).get("M1"), "killed")
+
+    def test_recorded_tree_must_be_a_tree_object_here(self):
+        head = self.git("rev-parse", "HEAD").strip()
+        for name, tree in (("unknown hash", "0" * 40), ("a commit id", head),
+                           ("HEAD", "HEAD"), ("an option", "--output=x"), ("no tree", None)):
+            with self.subTest(tree=name):
+                self.reset()
+                self.write_record()
+                record = json.loads(self.record_file.read_text())
+                if tree is None:
+                    del record["tree"]
+                else:
+                    record["tree"] = tree
+                self.record_file.write_text(json.dumps(record))
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN_ALL", out)
+                self.assertEqual(self.rerun_ids(out), EVERY_MUTANT, out)
+                self.assertEqual(out["carried"], [], out)
+                self.assertIn("is not a tree in this repository", out["reason"], out)
+                for where in (self.wt, self.tmp, self.cwd, Path.cwd()):
+                    self.assertFalse((where / "x").exists(), where)
+
+    def test_recorded_tree_must_be_a_full_tree_hash(self):
+        # Both name the recorded tree to git, so only the hash pattern refuses them.
+        for name in ("HEAD^{tree}", "a 12-character prefix"):
+            with self.subTest(tree=name):
+                self.reset()
+                self.write_record()
+                record = json.loads(self.record_file.read_text())
+                record["tree"] = (name if name == "HEAD^{tree}"
+                                  else record["tree"][:12])
+                self.record_file.write_text(json.dumps(record))
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN_ALL", out)
+                self.assertEqual(self.rerun_ids(out), EVERY_MUTANT, out)
+                self.assertEqual(out["carried"], [], out)
+        with self.subTest(tree="the full hash, the control"):
+            self.reset()
+            self.write_record()
+            self.assertEqual(self.carried(self.pick()).get("M1"), "killed")
+
+    def test_an_edited_binary_test_file_forces_every_mutant(self):
+        path = self.wt / "tests/__snapshots__/a.png"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x01")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "snapshot")
+        self.first_pass()
+        path.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x02")
+        out = self.pick()
+        self.assertEqual(out["result"], "RERUN_ALL", out)
+        self.assertEqual(self.rerun_ids(out), EVERY_MUTANT, out)
+        self.assertEqual(out["carried"], [], out)
+        self.assertIn("tests/__snapshots__/a.png", out["reason"] or "", out)
+
+    def test_unusable_record_means_every_mutant_runs(self):
+        good = [{**m, "status": MUT_STATUSES[m["id"]]} for m in MUT_SET]
+        cases = (
+            ("not JSON", "{not json"),
+            ("a list", json.dumps(good)),
+            ("results not a list", json.dumps({"tree": "x", "results": {"M1": "killed"}})),
+            ("no status", [{k: v for k, v in good[0].items() if k != "status"}] + good[1:]),
+            ("status passed", [{**good[0], "status": "passed"}] + good[1:]),
+            ("bad status, id not in the set",
+             good + [{"id": "M9", "file": "src/c.ts", "find": "x", "replace": "y",
+                      "status": "passed"}]),
+            ("two results for M1", good + [good[0]]),
+            ("an id that is a list", good + [{**good[1], "id": ["M2"]}]),
+        )
+        for name, body in cases:
+            with self.subTest(record=name):
+                self.reset()
+                if isinstance(body, list):
+                    self.write_record(results=body)
+                else:
+                    self.record_file.write_text(body)
+                out = self.pick()
+                self.assertEqual(out["result"], "RERUN_ALL", out)
+                self.assertEqual(self.rerun_ids(out), EVERY_MUTANT, out)
+                self.assertEqual(out["carried"], [], out)
+                self.assertIn("mutation-record.json", out["reason"], out)
+                self.assertNotIn("\n", out["reason"], out)
+
+    def test_unreadable_set_or_plain_folder_cannot_run(self):
+        self.write_record()
+        no_find = [{k: v for k, v in MUT_SET[0].items() if k != "find"}, *MUT_SET[1:]]
+        for name, body in (("not JSON", "[{"), ("missing", None),
+                           ("an entry without find", json.dumps(no_find))):
+            with self.subTest(set=name):
+                path = self.evidence / "mutation-set.json"
+                if body is None:
+                    path.unlink()
+                else:
+                    path.write_text(body)
+                r = self.mutants("select")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("ERROR:", r.stderr)
+                self.assertIn("mutation-set.json", r.stderr)
+                self.assertNotIn("rerun:", r.stdout)
+                self.set_mutants(MUT_SET)
+        with self.subTest(set="in a folder outside git"):
+            plain = self.tmp / "plain" / ".auto-dev"
+            (plain / "evidence").mkdir(parents=True)
+            (plain / "evidence" / "mutation-set.json").write_text(json.dumps(MUT_SET))
+            r = self.mutants("select", ad=plain)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("ERROR:", r.stderr)
+            self.assertIn("check-fresh.py", r.stderr)
+            self.assertNotIn("rerun:", r.stdout)
+
+    def test_each_malformed_set_cannot_run(self):
+        self.write_record()
+        m1 = MUT_SET[0]
+        cases = (
+            ("not a list", {}, "is not a JSON list"),
+            ("an entry that is no object", [1], "entry 1 is not an object"),
+            ("an empty id", [{**m1, "id": ""}], "entry 1 has no id"),
+            ("no id", [{k: v for k, v in m1.items() if k != "id"}], "entry 1 has no id"),
+            ("no file", [{k: v for k, v in m1.items() if k != "file"}],
+             "entry 1 (M1) has no file"),
+            ("a replace that is no string", [{**m1, "replace": None}],
+             "entry 1 (M1) has no string replace"),
+            ("two entries with one id", [m1, *MUT_SET[1:], {**MUT_SET[1], "id": "M1"}],
+             "two entries for M1"),
+        )
+        for name, body, problem in cases:
+            with self.subTest(set=name):
+                (self.evidence / "mutation-set.json").write_text(json.dumps(body))
+                r = self.mutants("select")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("ERROR: evidence/mutation-set.json", r.stderr)
+                self.assertIn(problem, r.stderr)
+                self.assertNotIn("rerun:", r.stdout)
+                self.assertNotIn("carried:", r.stdout)
+
+    def test_pick_leaves_status_index_branch_and_untracked_files_alone(self):
+        self.write_record()
+        self.edit_line("src/b.ts", 40, '  const label = "bee";')
+        self.write("src/d.ts", "  return d > 1;\n")
+        self.add_mutant({"id": "M6", "file": "src/d.ts", "line": 1, "find": "d > 1",
+                         "replace": "d >= 1", "condition": "2"})
+
+        def snapshot():
+            return [self.git(*args) for args in (
+                ("status", "--porcelain", "--untracked-files=all"), ("diff",),
+                ("diff", "--cached"), ("ls-files", "--stage"),
+                ("ls-files", "--others", "--exclude-standard"), ("rev-parse", "HEAD"),
+                ("symbolic-ref", "HEAD"))]
+
+        before = snapshot()
+        out = self.pick()
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(self.git("ls-files", "--", "src/d.ts"), "")
+        self.assertIn("M6", self.rerun_ids(out), out)
+        self.assertIn("M3", self.rerun_ids(out), out)
+        self.assertEqual(self.carried(out).get("M1"), "killed", out)
+
+
+class MutantRecordTest(MutantsCase):
+    def test_first_pass_records_every_result(self):
+        t1 = self.tree()
+        self.run_results(self.ran(MUT_STATUSES), 1)
+        code, out = self.rec("--tree", t1)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["result"], "RECORDED", out)
+        self.assertEqual(out["summary"], "4 mutants: 2 killed · 1 timeout · 1 survived "
+                                         "· 0 invalid · 0 carried forward")
+        self.assertEqual(out["survived"], ["M2 src/a.ts:14"])
+        record = json.loads(self.record_file.read_text())
+        self.assertEqual(record["tree"], t1)
+        self.assertEqual({r["id"]: r["status"] for r in record["results"]}, MUT_STATUSES)
+        self.assertNotIn("output", json.dumps(record))
+
+    def test_recorded_pass_becomes_the_next_baseline(self):
+        self.first_pass()
+        lines = self.read("src/a.ts").split("\n")  # correction 1: M1 moves to line 12
+        self.write("src/a.ts", "\n".join([*lines[:9], "  // guard", "  // more", *lines[9:]]))
+        self.assertEqual(self.rerun_ids(self.pick()), ["M1", "M2"])
+        t2 = self.tree()
+        self.run_results(self.ran({"M1": "killed", "M2": "killed"}, {"M1": 12, "M2": 16}), 0)
+        code, out = self.rec("--tree", t2)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(self.record_file.read_text())["tree"], t2)
+        self.edit_line("src/b.ts", 40, '  const label = "bee";')  # correction 2
+        out = self.pick()
+        self.assertEqual(self.rerun_ids(out), ["M3"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M2": "killed", "M4": "timeout"})
+        self.assertEqual({m["id"]: m["line"] for m in out["carried"]}["M1"], 12)
+
+    def test_unfinished_pass_keeps_the_old_record(self):
+        def interrupted():
+            self.run_results(self.ran({"M1": "killed", "M2": "killed"}), 6)
+
+        def never_ended():
+            self.run_results(self.ran({"M1": "killed", "M2": "killed"}), None)
+
+        def no_results():
+            (self.evidence / "mutate.exit").write_text("0\n")
+
+        for name, run in (("exit 6", interrupted), ("no exit file", never_ended),
+                          ("no results file", no_results)):
+            with self.subTest(run=name):
+                self.reset()
+                self.first_pass()
+                kept = self.record_file.read_bytes()
+                self.edit_line("src/a.ts", 3, "export const a3 = 33;")  # correction 1
+                run()
+                code, out = self.rec("--tree", self.tree())
+                self.assertEqual(code, 3, out)
+                self.assertEqual(out["result"], "KEPT", out)
+                self.assertEqual(self.record_file.read_bytes(), kept)
+                self.edit_line("src/b.ts", 40, '  const label = "bee";')  # correction 2
+                out = self.pick()  # still compared with pass 1
+                self.assertEqual(self.rerun_ids(out), ["M1", "M2", "M3"], out)
+                self.assertEqual(self.carried(out), {"M4": "timeout"}, out)
+
+    def test_a_re_check_whose_named_mutants_were_all_invalid_records(self):
+        # mutate.py writes every result, then exits 8 when none was applied.
+        self.first_pass({**MUT_STATUSES, "M2": "invalid"}, code=0)
+        self.append("tests/a.test.ts", NEW_TS_TEST)  # a correction only adds a test
+        out = self.pick()
+        self.assertEqual(self.rerun_ids(out), ["M2"], out)
+        self.run_results(self.ran({"M2": "invalid"}), 8)
+        t2 = self.tree()
+        code, out = self.rec("--tree", t2)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["result"], "RECORDED", out)
+        self.assertEqual(out["summary"], "4 mutants: 2 killed · 1 timeout · 0 survived "
+                                         "· 1 invalid · 3 carried forward")
+        self.assertEqual(out["survived"], [], out)
+        record = json.loads(self.record_file.read_text())
+        self.assertEqual(record["tree"], t2)
+        self.assertEqual({r["id"]: r["status"] for r in record["results"]},
+                         {**MUT_STATUSES, "M2": "invalid"})
+        for name in ("mutants.json.results.json", "mutate.exit"):
+            (self.evidence / name).unlink()
+        out = self.pick()
+        self.assertEqual(out["base"], t2, out)
+        self.assertEqual(self.rerun_ids(out), ["M2"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M3": "killed", "M4": "timeout"})
+
+    def test_a_pass_that_cannot_be_recorded_keeps_whatever_record_there_is(self):
+        with self.subTest(record="none", run="the scoped tests failed unmutated"):
+            self.reset()
+            (self.evidence / "mutate.exit").write_text("3\n")
+            code, out = self.rec("--tree", self.tree())
+            self.assertEqual(code, 3, out)
+            self.assertEqual(out["result"], "KEPT", out)
+            self.assertIn("(there is none)", out["message"])
+            self.assertFalse(self.record_file.exists())
+        with self.subTest(record="none", run="the code changed during the pass"):
+            self.reset()
+            noted = self.tree()
+            self.run_results(self.ran(MUT_STATUSES), 1)
+            self.edit_line("src/notes.ts", 2, "export const note = 0;")
+            code, out = self.rec("--tree", noted)
+            self.assertEqual(code, 3, out)
+            self.assertEqual(out["result"], "KEPT", out)
+            self.assertIn("(there is none)", out["message"])
+            self.assertIn("the code changed during the pass", out["message"])
+            self.assertFalse(self.record_file.exists())
+        with self.subTest(record="unusable", run="interrupted"):
+            self.reset()
+            self.record_file.write_text("{not json")
+            self.run_results(self.ran(MUT_STATUSES), 6)
+            code, out = self.rec("--tree", self.tree())
+            self.assertEqual(code, 3, out)
+            self.assertEqual(out["result"], "KEPT", out)
+            self.assertIn("(it is unusable)", out["message"])
+            self.assertEqual(self.record_file.read_bytes(), b"{not json")
+
+    def test_any_id_the_set_accepts_records_and_prints(self):
+        self.set_mutants([{**MUT_SET[0], "id": "M 1"}, *MUT_SET[1:]])
+        self.run_results(self.ran({"M 1": "survived", "M2": "survived", "M3": "killed",
+                                   "M4": "killed"}), 1)
+        r = self.mutants("record", "--tree", self.tree())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = [line.strip() for line in r.stdout.splitlines()]
+        self.assertTrue(lines[0].startswith("RECORDED: 4 result(s)"), r.stdout)
+        self.assertEqual([ln for ln in lines if ln.startswith("survived:")],
+                         ["survived: M 1 src/a.ts:10", "survived: M2 src/a.ts:14"])
+        ids = [x["id"] for x in json.loads(self.record_file.read_text())["results"]]
+        self.assertEqual(ids, ["M 1", "M2", "M3", "M4"])
+
+    def test_the_only_named_mutant_leaving_the_set_records_the_carried_ones(self):
+        self.first_pass({**MUT_STATUSES, "M2": "killed", "M4": "survived"})
+        (self.wt / "src/c.ts").unlink()  # M4's file is gone
+        self.assertEqual(self.rerun_ids(self.pick()), ["M4"])
+        self.set_mutants([m for m in MUT_SET if m["id"] != "M4"])
+        self.assertFalse((self.evidence / "mutate.exit").exists())  # mutate.py never ran
+        t2 = self.tree()
+        code, out = self.rec("--tree", t2)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["result"], "RECORDED", out)
+        self.assertEqual(out["summary"], "3 mutants: 3 killed · 0 timeout · 0 survived "
+                                         "· 0 invalid · 3 carried forward")
+        record = json.loads(self.record_file.read_text())
+        self.assertEqual(record["tree"], t2)
+        self.assertEqual([x["id"] for x in record["results"]], ["M1", "M2", "M3"])
+
+    def test_a_carried_mutant_that_ran_this_pass_takes_this_run_s_result(self):
+        self.first_pass()
+        self.assertEqual(self.rerun_ids(self.pick()), ["M2"])
+        # The whole set ran (after a repaired set, say): M1 survived this time;
+        # M3's result is for other code, so it is no result of M3's.
+        m3_elsewhere = {**MUT_SET[2], "find": "limit < 6", "status": "survived"}
+        self.run_results(self.ran({"M1": "survived", "M2": "killed"}) + [m3_elsewhere], 1)
+        code, out = self.rec("--tree", self.tree())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["summary"], "4 mutants: 2 killed · 1 timeout · 1 survived "
+                                         "· 0 invalid · 2 carried forward")
+        self.assertEqual(out["survived"], ["M1 src/a.ts:10"])
+        record = json.loads(self.record_file.read_text())
+        self.assertEqual({x["id"]: x["status"] for x in record["results"]},
+                         {"M1": "survived", "M2": "killed", "M3": "killed", "M4": "timeout"})
+        for name in ("mutants.json.results.json", "mutate.exit"):
+            (self.evidence / name).unlink()
+        self.assertEqual(self.rerun_ids(self.pick()), ["M1"])
+
+    def test_code_moving_under_the_pass_keeps_the_old_record(self):
+        self.first_pass()
+        kept = self.record_file.read_bytes()
+        self.edit_line("src/a.ts", 3, "export const a3 = 33;")
+        t2 = self.tree()
+        self.run_results(self.ran({"M1": "killed", "M2": "killed"}), 0)
+        self.edit_line("src/notes.ts", 2, "export const note = 0;")  # after T2 was noted
+        for tree in (t2, "changed during the run"):
+            with self.subTest(tree=tree):
+                code, out = self.rec("--tree", tree)
+                self.assertEqual(code, 3, out)
+                self.assertEqual(out["result"], "KEPT", out)
+                self.assertIn("the code changed during the pass", out["message"])
+                self.assertEqual(self.record_file.read_bytes(), kept)
+
+    def test_named_mutant_without_a_result_is_refused(self):
+        self.first_pass()
+        kept = self.record_file.read_bytes()
+        self.edit_line("src/a.ts", 3, "export const a3 = 33;")
+        self.assertEqual(self.rerun_ids(self.pick()), ["M1", "M2"])
+        self.run_results(self.ran({"M1": "killed"}), 1)
+        code, out = self.rec("--tree", self.tree())
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out["result"], "INCOMPLETE", out)
+        self.assertEqual(out["missing"], ["M2"], out)
+        self.assertEqual(self.record_file.read_bytes(), kept)
+
+    def test_nothing_to_run_still_records_the_carried_results(self):
+        self.first_pass({**MUT_STATUSES, "M2": "killed"}, code=0)
+        self.append("tests/b.test.ts", NEW_TS_TEST)
+        self.assertEqual(self.rerun_ids(self.pick()), [])
+        # A results file left from an earlier run must not count.
+        self.run_results(self.ran({"M1": "survived"}), 1)
+        t2 = self.tree()
+        code, out = self.rec("--tree", t2)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["summary"], "4 mutants: 3 killed · 1 timeout · 0 survived "
+                                         "· 0 invalid · 4 carried forward")
+        record = json.loads(self.record_file.read_text())
+        self.assertEqual(record["tree"], t2)
+        self.assertEqual({r["id"]: r["status"] for r in record["results"]},
+                         {**MUT_STATUSES, "M2": "killed"})
+
+    def test_summary_counts_each_mutant_once(self):
+        self.write_record({"M1": "killed", "M2": "survived", "M3": "killed", "M4": "killed"})
+        self.add_mutant(M5_AT_20)
+        out = self.pick()
+        self.assertEqual(self.rerun_ids(out), ["M2", "M5"], out)
+        self.run_results(self.ran({"M2": "killed", "M5": "survived"}), 1)
+        code, out = self.rec("--tree", self.tree())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["summary"], "5 mutants: 4 killed · 0 timeout · 1 survived "
+                                         "· 0 invalid · 3 carried forward")
+        self.assertEqual(out["survived"], ["M5 src/b.ts:20"])
+        self.assertEqual(len(json.loads(self.record_file.read_text())["results"]), 5)
+
+    def test_mutant_removed_from_the_set_is_not_recorded(self):
+        self.first_pass()
+        self.delete_line("src/a.ts", 14)  # M2's code is gone
+        self.set_mutants([m for m in MUT_SET if m["id"] != "M2"])
+        self.run_results(self.ran({"M1": "killed"}), 0)
+        code, out = self.rec("--tree", self.tree())
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out["summary"].startswith("3 mutants: "), out)
+        ids = [r["id"] for r in json.loads(self.record_file.read_text())["results"]]
+        self.assertEqual(ids, ["M1", "M3", "M4"])
+
+    def test_record_without_a_tree_cannot_run(self):
+        self.run_results(self.ran(MUT_STATUSES), 1)
+        r = self.mutants("record")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("mutants record needs --tree", r.stderr)
+        self.assertFalse(self.record_file.exists())
+
+
 class CliTest(unittest.TestCase):
     def test_missing_state_cannot_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1158,6 +2024,625 @@ class CliTest(unittest.TestCase):
         r = subprocess.run([sys.executable, str(AUTODEV), "phase", "9", "done"],
                            capture_output=True, text=True, check=False)
         self.assertEqual(r.returncode, 2)
+
+
+# ------------------------------------------------------------------ mutants
+# A verifier re-check runs again only the mutants whose earlier result may be
+# stale (`autodev.py mutants select`), and each finished pass is recorded as the
+# next pass's baseline (`autodev.py mutants record`). The throwaway repo's
+# source and tests are an example in TypeScript, with one Python and one Ruby
+# test file for the cross-stack cases.
+
+def stale_lines(count, special, prefix):
+    """`count` lines ending in a newline; `special` maps a 1-based line to its text."""
+    return "".join(special.get(i, f"{prefix}{i};") + "\n" for i in range(1, count + 1))
+
+
+STALE_FILES = {
+    "src/a.ts": stale_lines(20, {10: "  return total > 0;", 14: "  return count + 1;"},
+                            "export const a"),
+    "src/b.ts": stale_lines(45, {10: "  if (limit < 5) return;", 20: "  return limit * 2;",
+                                 40: '  const label = "b";'}, "export const b"),
+    "src/c.ts": stale_lines(5, {3: "  while (busy) wait();"}, "export const c"),
+    "src/notes.ts": stale_lines(4, {}, "export const note"),
+    "src/due_check.ts": stale_lines(6, {3: '  expect(due("2024-01-02")).toBe(true);'},
+                                    "export const dueCheck"),
+    "src/total.test.ts": stale_lines(6, {3: "  expect(total([1, 2])).toBe(3);"},
+                                     "export const totalTest"),
+    "tests/a.test.ts": ('import { total } from "../src/a";\n\n'
+                        'it("totals", () => {\n  expect(total([1])).toBe(true);\n});\n'),
+    "tests/b.test.ts": ('import { sum } from "../src/b";\n\ndescribe("sum", () => {\n'
+                        '  it("adds", () => {\n    const total = sum([4, 6]);\n'
+                        "    log(total);\n    check(total);\n\n    // totals\n"
+                        "    note(total);\n    keep(total);\n"
+                        "    expect(total).toBe(10);\n  });\n});\n// end of the sum tests\n"),
+    "tests/fixtures/totals.json": '{"total": 10}\n',
+    "tests/test_b.py": ("from b import total_of\n\n\ndef test_total():\n"
+                        "    total = total_of([4, 6])\n    a = 1\n    b = 2\n    c = 3\n"
+                        "    d = 4\n    e = 5\n    f = 6\n    assert total == 10\n"),
+    "spec/b_spec.rb": ('require "b"\n\nRSpec.describe "sum" do\n  it "adds" do\n'
+                       "    total = sum([4, 6])\n    a = 1\n    b = 2\n    c = 3\n"
+                       "    d = 4\n    e = 5\n    f = 6\n    expect(total).to eq(10)\n"
+                       "  end\nend\n"),
+    "package.json": '{"name": "app", "scripts": {"test": "jest"}}\n',
+    "README.md": "# app\n\nSums things.\n",
+}
+
+STALE_SET = [
+    {"id": "M1", "file": "src/a.ts", "line": 10, "find": "total > 0",
+     "replace": "total >= 0", "condition": "1"},
+    {"id": "M2", "file": "src/a.ts", "line": 14, "find": "count + 1",
+     "replace": "count - 1", "condition": "1"},
+    {"id": "M3", "file": "src/b.ts", "line": 10, "find": "limit < 5",
+     "replace": "limit <= 5", "condition": "2"},
+    {"id": "M4", "file": "src/c.ts", "line": 3, "find": "while (busy)",
+     "replace": "while (true)", "condition": "3"},
+]
+STALE_M5_LINE20 = {"id": "M5", "file": "src/b.ts", "line": 20, "find": "limit * 2",
+                   "replace": "limit * 3", "condition": "2"}
+APPENDED_TS_TEST = ('describe("sum again", () => {\n  it("adds zero", () => {\n'
+                    "    expect(sum([0])).toBe(0);\n  });\n});\n")
+FIRST_PASS = {"M1": "killed", "M2": "survived", "M3": "killed", "M4": "timeout"}
+
+
+class StaleMutantRepoCase(unittest.TestCase):
+    """A committed throwaway repo with its .auto-dev/ (git-ignored), an installed
+    acceptance check at src/due_check.ts, and a mutation set M1 to M4."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wt = self.tmp / "app"
+        self.ad = self.wt / ".auto-dev"
+        self.evidence = self.ad / "evidence"
+        self.cwd = self.tmp / "cwd"
+        self.cwd.mkdir()
+        self.wt.mkdir()
+        self.git("init", "-q", "-b", "main")
+        for rel, text in STALE_FILES.items():
+            self.write(rel, text)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "init")
+        self.prepare_artifacts()
+
+    def prepare_artifacts(self, mutants=STALE_SET):
+        self.write(".auto-dev/.gitignore", "*\n")
+        self.write(".auto-dev/acceptance/files/src/due_check.ts.sealed",
+                   STALE_FILES["src/due_check.ts"])
+        self.write(".auto-dev/acceptance/INSTALLED", "src/due_check.ts\n")
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        self.set_mutants(mutants)
+
+    def reset(self, mutants=STALE_SET):
+        """Back to the committed tree, with no record and a fresh set."""
+        self.git("reset", "-q", "--hard")
+        self.git("clean", "-qfd")
+        shutil.rmtree(self.evidence, ignore_errors=True)
+        self.prepare_artifacts(mutants)
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.wt), *args], env=BASE_ENV,
+                              capture_output=True, text=True, check=True).stdout
+
+    def write(self, rel, text):
+        path = self.wt / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def read(self, rel):
+        return (self.wt / rel).read_text()
+
+    def edit_line(self, rel, n, text):
+        lines = self.read(rel).split("\n")
+        lines[n - 1] = text
+        self.write(rel, "\n".join(lines))
+
+    def delete_line(self, rel, n):
+        lines = self.read(rel).split("\n")
+        del lines[n - 1]
+        self.write(rel, "\n".join(lines))
+
+    def append(self, rel, text):
+        self.write(rel, self.read(rel) + text)
+
+    def set_mutants(self, mutants):
+        (self.evidence / "mutation-set.json").write_text(json.dumps(mutants, indent=2))
+
+    def mutants(self):
+        return json.loads((self.evidence / "mutation-set.json").read_text())
+
+    def add_mutant(self, entry):
+        self.set_mutants([*self.mutants(), entry])
+
+    def record_path(self):
+        return self.evidence / "mutation-record.json"
+
+    def edit_record(self, change):
+        record = json.loads(self.record_path().read_text())
+        change(record)
+        self.record_path().write_text(json.dumps(record))
+
+    def tree(self):
+        return subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"),
+                               "--print-tree", str(self.wt)], env=BASE_ENV,
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    def mutants_cmd(self, *args, ad=None):
+        return subprocess.run([sys.executable, str(AUTODEV), "mutants", *args, "--dir",
+                               str(ad or self.ad)], env=BASE_ENV, capture_output=True,
+                              text=True, cwd=self.cwd, check=False)
+
+    def pick(self):
+        """Run the selection as the verifier does; returns its JSON."""
+        r = self.mutants_cmd("select", "--json")
+        self.assertEqual(r.returncode, 0, f"mutants select:\n{r.stdout}{r.stderr}")
+        return json.loads(r.stdout)
+
+    def rerun(self, out):
+        return sorted(m["id"] for m in out["rerun"])
+
+    def carried(self, out):
+        return {m["id"]: m["status"] for m in out["carried"]}
+
+    def run_results(self, statuses, code, lines=None):
+        """What one mutate.py run leaves: the mutants it ran, their results and
+        its exit file (`code` None: no exit file, as when it never ended)."""
+        lines = lines or {}
+        ran = [{**m, "line": lines.get(m["id"], m["line"])} for m in self.mutants()
+               if m["id"] in statuses]
+        (self.evidence / "mutants.json").write_text(json.dumps(ran, indent=2))
+        (self.evidence / "mutants.json.results.json").write_text(json.dumps(
+            [{**m, "status": statuses[m["id"]], "output": "tests ran"} for m in ran],
+            indent=2))
+        if code is not None:
+            (self.evidence / "mutate.exit").write_text(f"{code}\n")
+
+    def clear_run(self):
+        """The verifier deletes the last run's files before the next one."""
+        for name in ("mutants.json", "mutants.json.results.json", "mutate.exit"):
+            (self.evidence / name).unlink(missing_ok=True)
+
+    def record(self, tree):
+        return self.mutants_cmd("record", "--tree", tree)
+
+    def finish_pass(self, statuses, code, lines=None):
+        """A pass that ran `statuses` and finished: record it at the tree now."""
+        self.run_results(statuses, code, lines)
+        r = self.record(self.tree())
+        self.assertEqual(r.returncode, 0, f"mutants record:\n{r.stdout}{r.stderr}")
+        self.clear_run()
+        return r
+
+    def first_pass(self, statuses=None):
+        statuses = statuses or FIRST_PASS
+        self.finish_pass(statuses, 1 if "survived" in statuses.values() else 0)
+
+    def has_count(self, text, n, word):
+        return f" {n} {word}" in " " + text.replace("\n", " ")
+
+
+class StaleMutantSelectionTest(StaleMutantRepoCase):
+    def test_a_re_check_reruns_survivors_changed_files_and_new_mutants_and_carries_the_rest(self):
+        self.first_pass()
+        self.append("src/b.ts", "  return limit + 7;\n")
+        self.append("tests/b.test.ts", APPENDED_TS_TEST)
+        self.add_mutant({"id": "M5", "file": "src/b.ts", "line": 46, "find": "limit + 7",
+                         "replace": "limit - 7", "condition": "2"})
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M2", "M3", "M5"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M4": "timeout"}, out)
+
+    def test_any_edit_to_a_mutant_s_file_reruns_every_mutant_in_it(self):
+        self.first_pass()
+        self.edit_line("src/b.ts", 40, '  const label = "bee";')  # M3 is on line 10
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M2", "M3"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M4": "timeout"}, out)
+
+    def test_a_file_put_back_to_its_verified_content_keeps_its_caught_mutants(self):
+        self.first_pass()
+        self.edit_line("src/a.ts", 10, "  return total > 1;")
+        self.git("commit", "-q", "-am", "change a")
+        self.write("src/a.ts", STALE_FILES["src/a.ts"])
+        self.git("commit", "-q", "-am", "put a back")
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M2"], out)
+        self.assertEqual(self.carried(out),
+                         {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_an_unchanged_tree_reruns_each_mutant_without_a_catch(self):
+        for status in ("survived", "invalid"):
+            with self.subTest(m2=status):
+                self.reset()
+                self.first_pass({**FIRST_PASS, "M2": status})
+                out = self.pick()
+                self.assertEqual(self.rerun(out), ["M2"], out)
+                self.assertEqual(self.carried(out),
+                                 {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_an_edited_test_line_reruns_every_mutant_and_names_the_line(self):
+        self.first_pass()
+        self.add_mutant(STALE_M5_LINE20)
+        before = self.pick()  # the control: with no test edit, the kills carry
+        self.assertIn("M1", self.carried(before), before)
+        self.edit_line("tests/b.test.ts", 12, "    expect(total).toBeDefined();")
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M1", "M2", "M3", "M4", "M5"], out)
+        self.assertEqual(self.carried(out), {}, out)
+        self.assertIn("tests/b.test.ts:12", out["reason"] or "", out)
+
+    def test_each_kind_of_test_change_reruns_every_mutant(self):
+        def rename(old, new):
+            (self.wt / old).rename(self.wt / new)
+
+        cases = [
+            ("changed test line", lambda: self.edit_line(
+                "tests/b.test.ts", 12, "    expect(total).toBeDefined();"),
+             ["tests/b.test.ts:12"]),
+            ("deleted test line", lambda: self.delete_line("tests/b.test.ts", 5),
+             ["tests/b.test.ts:5"]),
+            ("changed blank line", lambda: self.edit_line(
+                "tests/b.test.ts", 8, "    // a note"), ["tests/b.test.ts:8"]),
+            ("changed comment line", lambda: self.edit_line(
+                "tests/b.test.ts", 9, "    // sums"), ["tests/b.test.ts:9"]),
+            ("deleted test file", lambda: (self.wt / "tests/a.test.ts").unlink(),
+             ["tests/a.test.ts"]),
+            ("renamed test file", lambda: rename("tests/a.test.ts", "tests/a2.test.ts"),
+             ["tests/a.test.ts", "tests/a2.test.ts"]),
+            ("added skip marker", lambda: self.append(
+                "tests/b.test.ts", 'it.skip("later", () => {});\n'),
+             ["tests/b.test.ts:16"]),
+            ("added focus marker", lambda: self.append(
+                "tests/b.test.ts", 'it.only("now", () => {});\n'),
+             ["tests/b.test.ts:16"]),
+            ("added python skip marker", lambda: self.append(
+                "tests/test_b.py", "\n\n@pytest.mark.skip\ndef test_later():\n    pass\n"),
+             ["tests/test_b.py:15"]),
+            ("edited package.json", lambda: self.write(
+                "package.json", '{"name": "app", "scripts": {"test": "jest --bail"}}\n'),
+             ["package.json"]),
+            ("new runner config", lambda: self.write(
+                "jest.config.ts", "export default { testPathIgnorePatterns: [] };\n"),
+             ["jest.config.ts"]),
+            ("new shared test helper", lambda: self.write(
+                "conftest.py", "collect_ignore = []\n"), ["conftest.py"]),
+            ("edited fixture data", lambda: self.write(
+                "tests/fixtures/totals.json", '{"total": 11}\n'),
+             ["tests/fixtures/totals.json"]),
+            ("edited acceptance check", lambda: self.edit_line(
+                "src/due_check.ts", 3, '  expect(due("2024-01-02")).toBeDefined();'),
+             ["src/due_check.ts"]),
+            ("python test line", lambda: self.edit_line(
+                "tests/test_b.py", 12, "    assert total"), ["tests/test_b.py:12"]),
+            ("ruby spec line", lambda: self.edit_line(
+                "spec/b_spec.rb", 12, "    expect(total).to be_truthy"),
+             ["spec/b_spec.rb:12"]),
+            ("test named by its file name", lambda: self.edit_line(
+                "src/total.test.ts", 3, "  expect(total([1, 2])).toBeDefined();"),
+             ["src/total.test.ts:3"]),
+        ]
+        for name, change, causes in cases:
+            with self.subTest(change=name):
+                self.reset()
+                self.first_pass()
+                change()
+                out = self.pick()
+                self.assertEqual(self.rerun(out), ["M1", "M2", "M3", "M4"], out)
+                self.assertEqual(self.carried(out), {}, out)
+                reason = out["reason"] or ""
+                self.assertTrue(any(c in reason for c in causes), out)
+        with self.subTest(change="the same edit to a source file with no mutant"):
+            self.reset()
+            self.first_pass()
+            self.edit_line("src/notes.ts", 2, "export const note = 0;")
+            out = self.pick()
+            self.assertEqual(self.rerun(out), ["M2"], out)
+            self.assertEqual(self.carried(out),
+                             {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_tests_only_added_rerun_only_the_survivors(self):
+        cases = [
+            ("a test appended in TypeScript", "tests/b.test.ts", APPENDED_TS_TEST),
+            ("a test appended in Python", "tests/test_b.py",
+             "\n\ndef test_zero():\n    assert total_of([0]) == 0\n"),
+            ("a test appended in Ruby", "spec/b_spec.rb",
+             ('\nRSpec.describe "zero" do\n  it "adds" do\n'
+              "    expect(sum([0])).to eq(0)\n  end\nend\n")),
+        ]
+        for name, rel, text in cases:
+            with self.subTest(change=name):
+                self.reset()
+                self.first_pass()
+                self.append(rel, text)
+                out = self.pick()
+                self.assertEqual(self.rerun(out), ["M2"], out)
+                self.assertEqual(self.carried(out),
+                                 {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+        with self.subTest(change="a new test file"):
+            self.reset()
+            self.first_pass()
+            self.write("tests/c.test.ts", 'it("waits", () => {\n  expect(1).toBe(1);\n});\n')
+            out = self.pick()
+            self.assertEqual(self.rerun(out), ["M2"], out)
+            self.assertEqual(self.carried(out),
+                             {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_a_new_test_and_a_docs_edit_rerun_only_the_survivor(self):
+        self.first_pass()
+        self.append("tests/a.test.ts", APPENDED_TS_TEST)
+        self.append("README.md", "\nMore about sums.\n")
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M2"], out)
+        self.assertEqual(self.carried(out),
+                         {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_no_survivors_and_only_a_new_test_runs_nothing_and_reports_every_mutant(self):
+        self.first_pass({**FIRST_PASS, "M2": "killed"})
+        self.append("tests/b.test.ts", APPENDED_TS_TEST)
+        out = self.pick()
+        self.assertEqual(self.rerun(out), [], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M2": "killed",
+                                             "M3": "killed", "M4": "timeout"}, out)
+        r = self.record(self.tree())  # nothing ran: no results and no exit file
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for n, word in ((4, "mutants"), (3, "killed"), (1, "timeout"), (0, "survived"),
+                        (0, "invalid"), (4, "carried forward")):
+            self.assertTrue(self.has_count(r.stdout, n, word), f"{n} {word}:\n{r.stdout}")
+
+    def test_without_a_previous_record_every_mutant_reruns_and_says_why(self):
+        out = self.pick()  # a run started on 4.7: a set, no recorded tree or results
+        self.assertEqual(self.rerun(out), ["M1", "M2", "M3", "M4"], out)
+        self.assertEqual(self.carried(out), {}, out)
+        self.assertIn("no previous results were recorded", out["reason"] or "", out)
+        self.first_pass()  # the control: once a pass is recorded, the kills carry
+        self.assertIn("M1", self.carried(self.pick()))
+
+    def test_a_recorded_tree_that_is_not_a_tree_here_reruns_every_mutant(self):
+        self.first_pass()
+        good = json.loads(self.record_path().read_text())["tree"]
+        self.assertIn("M1", self.carried(self.pick()))  # the control
+        head = self.git("rev-parse", "HEAD").strip()
+
+        def set_tree(value):
+            def change(record):
+                record["tree"] = value
+            return change
+
+        def drop_tree(record):
+            record.pop("tree", None)
+
+        for name, change in (("a hash git can't find", set_tree("0" * 40)),
+                             ("a commit id", set_tree(head)), ("HEAD", set_tree("HEAD")),
+                             ("an option", set_tree("--output=x")),
+                             ("no tree at all", drop_tree)):
+            with self.subTest(tree=name):
+                self.edit_record(change)
+                out = self.pick()
+                self.assertEqual(self.rerun(out), ["M1", "M2", "M3", "M4"], out)
+                self.assertEqual(self.carried(out), {}, out)
+                self.assertTrue(out["reason"], out)
+                for where in (self.wt, self.cwd, self.ad, self.evidence, self.tmp):
+                    self.assertFalse((where / "x").exists(), where)
+                self.edit_record(set_tree(good))
+
+    def test_an_unusable_record_reruns_every_mutant_and_says_why(self):
+        def status(value):
+            def change(record):
+                for result in record["results"]:
+                    if result["id"] == "M1":
+                        if value is None:
+                            result.pop("status", None)
+                        else:
+                            result["status"] = value
+            return change
+
+        for name, change in (("not JSON", None), ("a result with no status", status(None)),
+                             ("a result with an unknown status", status("passed"))):
+            with self.subTest(record=name):
+                self.reset()
+                self.first_pass()
+                self.assertIn("M3", self.carried(self.pick()))  # the control
+                if change is None:
+                    self.record_path().write_text("{not json")
+                else:
+                    self.edit_record(change)
+                out = self.pick()
+                self.assertEqual(self.rerun(out), ["M1", "M2", "M3", "M4"], out)
+                self.assertEqual(self.carried(out), {}, out)
+                reason = out["reason"] or ""
+                self.assertTrue(reason.strip(), out)
+                self.assertNotIn("\n", reason.strip(), out)
+
+    def test_a_mutant_with_no_recorded_result_reruns_alone(self):
+        self.first_pass()
+        self.add_mutant(STALE_M5_LINE20)
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M2", "M5"], out)
+        self.assertEqual(self.carried(out),
+                         {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_a_recorded_result_unlike_its_set_entry_reruns_only_that_mutant(self):
+        for field, value in (("file", "src/other.ts"), ("find", "total >= 1"),
+                             ("replace", "total < 0")):
+            with self.subTest(differs=field):
+                self.reset()
+                self.first_pass()
+
+                def change(record, field=field, value=value):
+                    for result in record["results"]:
+                        if result["id"] == "M1":
+                            result[field] = value
+                self.edit_record(change)
+                out = self.pick()
+                self.assertEqual(self.rerun(out), ["M1", "M2"], out)
+                self.assertEqual(self.carried(out), {"M3": "killed", "M4": "timeout"}, out)
+
+    def test_a_recorded_line_unlike_the_set_s_line_still_carries(self):
+        self.first_pass()
+
+        def change(record):
+            for result in record["results"]:
+                if result["id"] == "M1":
+                    result["line"] = 12  # where an earlier pass found it
+        self.edit_record(change)
+        out = self.pick()
+        self.assertEqual(self.carried(out).get("M1"), "killed", out)
+        self.assertEqual(self.rerun(out), ["M2"], out)
+
+    def test_a_recorded_result_for_a_mutant_no_longer_in_the_set_is_ignored(self):
+        self.first_pass()
+
+        def change(record):
+            record["results"].append({"id": "M9", "file": "src/c.ts", "line": 1,
+                                      "find": "c1", "replace": "c2", "condition": "3",
+                                      "status": "killed"})
+        self.edit_record(change)
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M2"], out)
+        self.assertEqual(self.carried(out),
+                         {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_an_unreadable_set_or_a_folder_outside_git_cannot_run(self):
+        self.first_pass()
+        self.assertIn("M1", self.carried(self.pick()))  # the control: a good set runs
+        (self.evidence / "mutation-set.json").write_text("[{")
+        r = self.mutants_cmd("select")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR:", r.stdout + r.stderr)
+        self.assertNotIn("M1", r.stdout)
+        plain = self.tmp / "plain" / ".auto-dev"
+        (plain / "evidence").mkdir(parents=True)
+        (plain / "evidence" / "mutation-set.json").write_text(json.dumps(STALE_SET))
+        r = self.mutants_cmd("select", ad=plain)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR:", r.stdout + r.stderr)
+        self.assertNotIn("M1", r.stdout)
+
+    def test_the_selection_leaves_the_worktree_as_it_found_it(self):
+        self.first_pass()
+        self.edit_line("src/b.ts", 40, '  const label = "bee";')
+        self.write("src/d.ts", "  return d > 1;\n")
+        self.add_mutant({"id": "M6", "file": "src/d.ts", "line": 1, "find": "d > 1",
+                         "replace": "d >= 1", "condition": "2"})
+
+        def snapshot():
+            return [self.git(*args) for args in (
+                ("status", "--porcelain", "--untracked-files=all"), ("diff",),
+                ("diff", "--cached"), ("ls-files", "--stage"),
+                ("ls-files", "--others", "--exclude-standard"), ("rev-parse", "HEAD"),
+                ("symbolic-ref", "HEAD"))] + [self.read("src/b.ts"), self.read("src/d.ts")]
+
+        before = snapshot()
+        out = self.pick()
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(self.git("ls-files", "--", "src/d.ts"), "")  # still untracked
+        self.assertIn("M6", self.rerun(out), out)
+        self.assertIn("M3", self.rerun(out), out)
+        self.assertEqual(self.carried(out).get("M1"), "killed", out)
+
+
+class StaleMutantRecordTest(StaleMutantRepoCase):
+    def test_a_recorded_re_check_counts_carried_and_rerun_mutants_once(self):
+        self.first_pass({"M1": "killed", "M2": "survived", "M3": "killed", "M4": "killed"})
+        self.add_mutant(STALE_M5_LINE20)
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M2", "M5"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M3": "killed",
+                                             "M4": "killed"}, out)
+        r = self.finish_pass({"M2": "killed", "M5": "survived"}, 1)
+        for n, word in ((5, "mutants"), (4, "killed"), (0, "timeout"), (1, "survived"),
+                        (0, "invalid"), (3, "carried forward")):
+            self.assertTrue(self.has_count(r.stdout, n, word), f"{n} {word}:\n{r.stdout}")
+        named = [line.split() for line in r.stdout.splitlines() if "surviv" in line]
+        self.assertIn("M5", [w for words in named for w in words], r.stdout)
+        self.assertNotIn("M2", [w for words in named for w in words], r.stdout)
+        out = self.pick()  # M2 was caught this time: it carries, never a survivor
+        self.assertEqual(self.rerun(out), ["M5"], out)
+        self.assertEqual(self.carried(out), {"M1": "killed", "M2": "killed",
+                                             "M3": "killed", "M4": "killed"}, out)
+
+    def test_a_mutant_whose_code_is_gone_leaves_the_count_and_the_record(self):
+        self.first_pass()
+        self.delete_line("src/a.ts", 14)  # M2's code is gone
+        self.set_mutants([m for m in STALE_SET if m["id"] != "M2"])
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M1"], out)
+        r = self.finish_pass({"M1": "killed"}, 0)
+        self.assertTrue(self.has_count(r.stdout, 3, "mutants"), r.stdout)
+        self.assertFalse(self.has_count(r.stdout, 4, "mutants"), r.stdout)
+        out = self.pick()
+        self.assertEqual(self.rerun(out), [], out)
+        self.assertEqual(self.carried(out),
+                         {"M1": "killed", "M3": "killed", "M4": "timeout"}, out)
+
+    def test_each_finished_pass_becomes_the_baseline_for_the_next(self):
+        self.add_mutant(STALE_M5_LINE20)
+        self.first_pass({**FIRST_PASS, "M5": "killed"})
+        lines = self.read("src/a.ts").split("\n")  # correction 1: M1 moves to line 12
+        self.write("src/a.ts", "\n".join([*lines[:9], "  // guard", "  // more", *lines[9:]]))
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M1", "M2"], out)
+        self.finish_pass({"M1": "killed", "M2": "killed"}, 0, lines={"M1": 12, "M2": 16})
+        self.edit_line("src/b.ts", 40, '  const label = "bee";')  # correction 2
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M3", "M5"], out)
+        self.assertEqual(self.carried(out),
+                         {"M1": "killed", "M2": "killed", "M4": "timeout"}, out)
+
+    def test_an_unfinished_or_moved_pass_leaves_the_earlier_baseline(self):
+        def correction_1():
+            self.edit_line("src/a.ts", 3, "export const a3 = 33;")
+
+        def interrupted():
+            self.run_results({"M1": "killed", "M2": "killed"}, 6)
+            self.record(self.tree())
+
+        def never_ended():
+            self.run_results({"M1": "killed", "M2": "killed"}, None)
+            self.record(self.tree())
+
+        def no_results():
+            (self.evidence / "mutate.exit").write_text("0\n")
+            self.record(self.tree())
+
+        def code_moved():
+            noted = self.tree()
+            self.run_results({"M1": "killed", "M2": "killed"}, 0)
+            self.edit_line("src/notes.ts", 2, "export const note = 0;")
+            self.record(noted)
+
+        def changed_during_the_run():
+            self.run_results({"M1": "killed", "M2": "killed"}, 0)
+            self.record("changed during the run")
+
+        for name, pass_2 in (("interrupted", interrupted), ("no exit file", never_ended),
+                             ("no results", no_results), ("code moved", code_moved),
+                             ("changed during the run", changed_during_the_run)):
+            with self.subTest(pass_2=name):
+                self.reset()
+                self.first_pass()
+                correction_1()
+                self.assertEqual(self.rerun(self.pick()), ["M1", "M2"])
+                pass_2()
+                self.clear_run()
+                self.edit_line("src/b.ts", 40, '  const label = "bee";')  # correction 2
+                out = self.pick()  # still compared with pass 1: src/a.ts changed
+                self.assertEqual(self.rerun(out), ["M1", "M2", "M3"], out)
+                self.assertEqual(self.carried(out), {"M4": "timeout"}, out)
+
+    def test_a_pass_with_nothing_to_rerun_still_becomes_the_baseline(self):
+        self.first_pass({**FIRST_PASS, "M2": "killed"})
+        self.append("tests/a.test.ts", APPENDED_TS_TEST)
+        self.assertEqual(self.rerun(self.pick()), [])
+        r = self.record(self.tree())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Taking the new test out again edits a test line of the recorded tree,
+        # though the tree is now what pass 1 tested.
+        self.write("tests/a.test.ts", STALE_FILES["tests/a.test.ts"])
+        out = self.pick()
+        self.assertEqual(self.rerun(out), ["M1", "M2", "M3", "M4"], out)
+        self.assertEqual(self.carried(out), {}, out)
+        self.assertIn("tests/a.test.ts", out["reason"] or "", out)
 
 
 if __name__ == "__main__":

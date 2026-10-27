@@ -37,6 +37,7 @@ Subcommands:
     brief              write a worker's brief file and print the prompt to spawn it with
     record             check a worker's result against its artifacts; update state
     check-artifact     check an artifact against its template before returning it
+    mutants   pick which mutants a verifier re-check runs again; record a finished pass
     next      print the pipeline's one next action (the orchestrator's loop)
 
 Every subcommand takes --json. Exit codes, the same for all:
@@ -57,6 +58,7 @@ from lib import (
     cmd_checks,
     cmd_handoff,
     cmd_init,
+    cmd_mutants,
     cmd_next,
     cmd_pr,
     cmd_resume,
@@ -97,6 +99,7 @@ COMMANDS = {
     "brief": (cmd_work, cmd_work.brief),
     "record": (cmd_work, cmd_work.record),
     "check-artifact": (cmd_work, cmd_work.check_artifact),
+    "mutants": (cmd_mutants, cmd_mutants.main),
     "next": (cmd_next, cmd_next.main),
     "pr": (cmd_pr, cmd_pr.main),
 }

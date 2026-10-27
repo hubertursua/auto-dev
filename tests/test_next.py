@@ -820,6 +820,26 @@ class ShipTest(NextCase):
         self.assertEqual(self.state()["phase6"]["pr"], 12)
         return sha, url
 
+    def test_planted_bug_count_spans_carried_and_rerun_mutants(self):
+        # A re-check's Mutation line counts the whole set once, run again or
+        # carried forward; the carried count must not be added to the total.
+        write = self.spec_eval
+
+        def spec_eval(**kw):
+            write(**kw)
+            path = self.dir / "SPEC_EVAL.md"
+            path.write_text(path.read_text().replace(
+                "4 mutants (cap 20): 3 killed · 0 timeout (counted caught) · 1 survived "
+                "· 0 invalid",
+                "5 mutants (cap 20): 4 killed · 0 timeout (counted caught) · 1 survived "
+                "· 0 invalid · 3 carried forward (`evidence/mutation-record.json`)").replace(
+                "| M2 | `src/sort.ts:4` |", "| M5 | `src/sort.ts:4` |"))
+        self.spec_eval = spec_eval
+        self.to_body()
+        text = (self.dir / "pr-body.md").read_text()
+        self.assertIn("We put 5 small deliberate bugs", text)
+        self.assertIn("They caught 4.", text)
+
     def test_no_budget_for_a_review_fix_goes_to_the_pr_gate(self):
         self.ship_ready()
         state = self.state()
@@ -1322,6 +1342,27 @@ class ShipTest(NextCase):
         self.assertIn("held", " ".join(out["REPORT"]))
         self.resume()
         self.assertIn("pr gate", self.next(5)["QUESTION"])
+
+    def test_the_planted_bug_count_covers_carried_and_rerun_mutants_once(self):
+        # A re-check's Mutation line counts every mutant of the set, carried
+        # forward or run again, and says how many were carried forward.
+        write = self.spec_eval
+
+        def spec_eval(**kw):
+            write(**kw)
+            path = self.dir / "SPEC_EVAL.md"
+            path.write_text(path.read_text().replace(
+                "4 mutants (cap 20): 3 killed · 0 timeout (counted caught) · 1 survived "
+                "· 0 invalid",
+                "5 mutants (cap 20): 4 killed · 0 timeout (counted caught) · 1 survived "
+                "· 0 invalid · 3 carried forward (`evidence/mutation-record.json`)").replace(
+                "| M2 | `src/sort.ts:4` |", "| M5 | `src/sort.ts:4` |"))
+        self.spec_eval = spec_eval
+        _sha, _url, _out, body = self.to_body()
+        self.assertIn("3 carried forward", (self.dir / "SPEC_EVAL.md").read_text())
+        text = body.read_text()
+        self.assertIn("We put 5 small deliberate bugs", text)
+        self.assertIn("They caught 4.", text)
 
 
 class PublishTest(NextCase):

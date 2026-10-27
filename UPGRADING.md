@@ -4,6 +4,25 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.7
+
+- **A re-check re-runs only the mutants that may have changed.** The verifier
+  used to run every mutant of its fixed set again on each re-check, one test
+  run each. Now `autodev.py mutants select` compares the code with the tree the
+  last finished pass tested and names the uncaught mutants, those in a file
+  whose content changed and those added since; the others keep their caught
+  result. An edited or deleted line in an existing test file (comments, blank
+  lines, fixtures and installed acceptance checks included), a deleted or
+  renamed test file, an added skip or focus marker, a changed test-runner
+  config, or a missing or unusable record runs them all. `autodev.py mutants
+  record` saves the tree and every result in `evidence/mutation-record.json`
+  after each finished pass. SPEC_EVAL.md's Mutation line counts the whole set
+  and says how many were carried forward.
+- **A run in flight resumes.** A run started on 4.7 has no
+  `evidence/mutation-record.json`, so its first re-check on 4.8 runs every
+  mutant, as before, and records the result; later re-checks run only the
+  stale ones.
+
 ## Upgrading from 4.6
 
 - **Acceptance checks go where the repo's tests already are.** The acceptance
