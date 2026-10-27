@@ -184,7 +184,7 @@ class CheckFreshTest(GitRepoCase):
         self.assertIn("?? src/new.py", before)
 
     def test_print_tree_works_when_the_repo_ignores_auto_dev(self):
-        # git refuses an exclude pathspec that names an ignored path.
+        # git 2.50 refuses an exclude pathspec that names an ignored path.
         self.write(".gitignore", ".auto-dev/\n")
         self.git("add", ".gitignore")
         self.git("commit", "-q", "-m", "ignore .auto-dev/")
