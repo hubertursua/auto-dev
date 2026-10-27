@@ -111,7 +111,10 @@ def working_tree_hash(top):
         if index.exists():
             shutil.copy2(index, temp_index)
         env = {**os.environ, "GIT_INDEX_FILE": str(temp_index)}
-        git(top, "add", "-A", "--", ".", f":(exclude){ARTIFACTS_DIR}/", env=env)
+        # No exclude pathspec for .auto-dev/: git refuses one that names an
+        # ignored path, and .auto-dev/ is ignored (by the repo or by its own
+        # .gitignore), so `add -A` skips it anyway.
+        git(top, "add", "-A", "--", ".", env=env)
         # Drop anything under .auto-dev/ the real index somehow held.
         git(top, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--",
             f"{ARTIFACTS_DIR}/", env=env)
