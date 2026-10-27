@@ -113,10 +113,11 @@ allow rules say.
 The saved profile lives outside the working directory, so Claude Code asks
 before reading or writing it, and the Bash sandbox (when the user has turned it
 on) blocks writes outside the working directory. A run also runs the helper
-scripts and the profile's commands through Bash, and each new command can
-prompt. Show the user the guidance below at the profile confirmation, and again
-whenever a read or write of the saved profile is denied. Fill in the real
-`<profiles-dir>`, `<skill-dir>` and commands. **Never edit the user's settings
+scripts and the profile's commands through Bash, in a worktree outside the
+working directory, and each new command or path can prompt. Show the user the
+guidance below at the profile confirmation, and again whenever a read or write
+of the saved profile is denied. Fill in the real `<profiles-dir>`,
+`<skill-dir>` and commands. **Never edit the user's settings
 files yourself**: the user decides what to allow.
 
 Guidance to show (adapt the paths):
@@ -148,16 +149,51 @@ Guidance to show (adapt the paths):
 >   `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }`, so a
 >   shell command can write there too.
 >
-> **Let the run's commands go without asking.** Add rules for the helper
-> scripts and for this repo's setup and quality-gate commands, in the main
-> checkout's `.claude/settings.local.json` (not committed; it applies only to
-> this repo):
+> **Let the run's scripts and files go without asking.** Add these to the same
+> `~/.claude/settings.json`. Replace `<home>` with the absolute home folder (a
+> Bash rule matches the command's text, so `~` does not work there). Use the
+> real `<skill-dir>` path for a plugin install; `*` stands for the version:
 >
 > ```json
 > {
 >   "permissions": {
 >     "allow": [
->       "Bash(python3 <skill-dir>/scripts/*)",
+>       "Read(~/.claude/plugins/cache/auto-dev-marketplace/auto-dev/**)",
+>       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/autodev.py *)",
+>       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/profile-path.py *)",
+>       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/validate-config.py *)",
+>       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-fresh.py *)",
+>       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-tests.py *)",
+>       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/mutate.py *)"
+>     ]
+>   }
+> }
+> ```
+>
+> - One rule per script, so any can be left out. `mutate.py` edits the run's
+>   worktree to plant bugs and restores every file; mutation is on by default,
+>   so without its rule the verifier waits on a prompt. `mutation.max: 0` turns
+>   mutation off; leave the rule out to approve each run.
+> - The `*` for the version survives upgrades but also matches `..` and spaces.
+>   Pin the version for a strict rule, and redo it after an upgrade. Never
+>   start a rule with `*`: it allows any folder.
+> - Without the plugin, the scripts are at
+>   `<home>/.claude/skills/auto-dev/scripts/<name>.py`.
+> - The run works in a worktree beside the main checkout, outside the folder
+>   Claude Code started in. Add `Read(//<parent>/<repo>-*/**)` and
+>   `Edit(//<parent>/<repo>-*/**)`, with `<parent>` the absolute path of the
+>   folder that holds the repo (for a worktree the user made, allow its own
+>   path instead). With the Bash sandbox on, add that folder to `allowWrite`
+>   too.
+>
+> **Let this repo's own commands go without asking.** Add its setup and
+> quality-gate commands to the main checkout's `.claude/settings.local.json`
+> (not committed; it applies only to this repo):
+>
+> ```json
+> {
+>   "permissions": {
+>     "allow": [
 >       "Bash(npm ci *)",
 >       "Bash(npm test *)"
 >     ]
@@ -167,9 +203,14 @@ Guidance to show (adapt the paths):
 >
 > A rule matches the command's text, so use the commands exactly as the profile
 > lists them; a trailing ` *` also allows extra arguments. Allow only commands
-> you trust to run unattended.
+> you trust to run unattended. Optional: `Bash(gh run list *)`,
+> `Bash(gh run view *)`, `Bash(gh pr view *)` and `Bash(gh repo view *)` for
+> the CI and PR lookups (`gh api` can also write, so allow it only if you
+> accept that); the Jira tools, if a ticket is used
+> (`mcp__<server>__getJiraIssue` and the transition tools); and
+> `Skill(simplify)`, `Skill(code-review)` and `Skill(security-review)`.
 
-The commands in the second snippet are an example in TypeScript; list this run's
+The commands in the last snippet are an example in TypeScript; list this run's
 `setup` and `gate` commands there. Rules in `.claude/settings.json` or
 `.claude/settings.local.json` apply in the directory Claude Code was started
 in: the main checkout, also when the run works in a worktree `init` made, or
