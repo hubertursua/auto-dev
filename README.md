@@ -36,7 +36,9 @@ echo ".auto-dev/" >> .gitignore
 ```
 
 To keep a run from stopping on permission prompts, add the rules in
-[*Permissions for unattended runs*](#permissions-for-unattended-runs).
+[*Permissions for unattended runs*](#permissions-for-unattended-runs): the
+profile folder, the plugin's files and scripts, the run's worktree and your
+repo's own commands.
 
 ### Install without the plugin
 
@@ -352,15 +354,51 @@ these rules to `~/.claude/settings.json` (or run `/permissions`):
 - The directory is deliberately not under `~/.claude/`: Claude Code protects
   that folder, and every write there prompts whatever your rules say.
 
-The run also runs the helper scripts and the profile's commands through Bash.
-To let those run without prompts, add `Bash(...)` rules for them to the main
-checkout's `.claude/settings.local.json`. Example in TypeScript:
+A plugin install keeps its files under `~/.claude/plugins/cache/`, and a run
+works in a worktree next to your repo, so both need rules too. Add these to
+`~/.claude/settings.json`, replacing `<home>` with your absolute home folder
+(a Bash rule matches the command's text, so `~` does not work there):
 
 ```json
 {
   "permissions": {
     "allow": [
-      "Bash(python3 /path/to/auto-dev/skills/auto-dev/scripts/*)",
+      "Read(~/.claude/plugins/cache/auto-dev-marketplace/auto-dev/**)",
+      "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/autodev.py *)",
+      "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/profile-path.py *)",
+      "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/validate-config.py *)",
+      "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-fresh.py *)",
+      "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-tests.py *)",
+      "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/mutate.py *)"
+    ]
+  }
+}
+```
+
+- One rule per script, not `scripts/*`, so you can leave one out. `mutate.py`
+  edits files in the run's worktree to plant bugs and restores them; mutation
+  is on by default, so without that rule the verifier waits on a prompt. Drop
+  `mutation.max: 0` turns mutation off; drop the rule to approve each run.
+- The `*` for the version survives plugin upgrades. It also matches `..` and
+  spaces, so pin the version (`auto-dev/<version>/skills/…`) to be strict, and
+  redo the rules after each upgrade. Never start a rule with `*`: it allows
+  any folder.
+- Installed without the plugin? Use `<home>/.claude/skills/auto-dev/scripts/<name>.py *`.
+- Each run works in a worktree beside the main checkout
+  (`../<repo>-<slug>`), outside the folder Claude Code started in. Add
+  `Read(//<parent>/<repo>-*/**)` and `Edit(//<parent>/<repo>-*/**)`, where
+  `<parent>` is the absolute path of the folder holding your repo (for a
+  worktree you made yourself, allow its own path instead). With the
+  Bash sandbox on, also add that parent folder to `allowWrite`.
+
+Then add the profile's own commands to the main checkout's
+`.claude/settings.local.json`, which applies to that repo only. Example in
+TypeScript:
+
+```json
+{
+  "permissions": {
+    "allow": [
       "Bash(npm ci *)",
       "Bash(npm test *)"
     ]
@@ -369,9 +407,14 @@ checkout's `.claude/settings.local.json`. Example in TypeScript:
 ```
 
 A rule matches the command's text, so copy the commands exactly as the profile
-lists them. At the profile confirmation the orchestrator prints these snippets
-filled in with your real paths and commands. It never edits your settings
-itself.
+lists them. Optional: `Bash(gh run list *)`, `Bash(gh run view *)`,
+`Bash(gh pr view *)` and `Bash(gh repo view *)` for the CI and PR lookups
+(`gh api` can also write, so allow it only if you accept that), the Jira tools
+if you use a ticket (`mcp__<server>__getJiraIssue` and the transition tools),
+and `Skill(simplify)`, `Skill(code-review)` and `Skill(security-review)` for
+the cleanup and review workers. At the profile confirmation the orchestrator
+prints these snippets filled in with your real paths and commands. It never
+edits your settings itself.
 
 ### `.auto-dev.yml`
 
