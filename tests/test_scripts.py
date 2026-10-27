@@ -183,6 +183,17 @@ class CheckFreshTest(GitRepoCase):
         self.assertEqual(self.git("status", "--porcelain"), before)
         self.assertIn("?? src/new.py", before)
 
+    def test_print_tree_works_when_the_repo_ignores_auto_dev(self):
+        # git refuses an exclude pathspec that names an ignored path.
+        self.write(".gitignore", ".auto-dev/\n")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore .auto-dev/")
+        (self.artifacts / "SPEC.md").write_text("spec\n")
+        tree = self.tree()
+        listing = self.git("ls-tree", "-r", "--name-only", tree)
+        self.assertNotIn(".auto-dev", listing)
+        self.assertIn("src/app.py", listing)
+
     def test_edited_file_is_stale(self):
         self.stamp()
         self.write("src/app.py", "def add(a, b):\n    return a - b\n")
