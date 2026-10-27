@@ -54,8 +54,9 @@ the sealed checks under {{artifact_dir}}/acceptance/files/ and their runs on the
 untouched tree under {{artifact_dir}}/acceptance/base-run/, {{artifact_dir}}/profile.md
 (test command, test_notes), and the binding rules ({{binding_rules}}). Do NOT read
 IMPLEMENTATION.md or any other file under {{artifact_dir}}, except what you write
-under evidence/ — including evidence/mutation-set.json and
-evidence/mutation-base.diff from earlier passes (step 7).
+under evidence/ — including evidence/mutation-set.json,
+evidence/mutation-base.diff and evidence/mutation-record.json from earlier
+passes (step 7).
 
 Mode: {{mode}} (first pass, or re-check after {{what_changed}}). On a
 re-check, do NOT read the existing SPEC_EVAL.md: judge from scratch and overwrite
@@ -195,19 +196,41 @@ against origin/{{base}} directly — it moves when anything fetches.
    Verify by, is not defective: it only keeps its condition from Strong.
 7. Mutation check (cap: {{mutation_cap}}).
    Passing tests show the code works; mutants show the tests would notice if it
-   stopped working. Start by deleting {{artifact_dir}}/evidence/mutants.json and
-   its .results.json from any earlier pass. At cap 0, write "off" and stop here.
+   stopped working. Start by deleting {{artifact_dir}}/evidence/mutants.json,
+   its .results.json and evidence/mutate.exit from any earlier pass. At cap 0,
+   write "off" and stop here.
    The set of mutants is FIXED across passes, so the loop converges instead of
-   finding new gaps by resampling:
+   finding new gaps by resampling. The whole set, old and new mutants alike,
+   stays within the cap:
    - FIRST PASS (or no evidence/mutation-set.json yet): choose the set as below,
      then save it as evidence/mutation-set.json and save `git -C {{worktree}} diff {{cut}}`
-     as evidence/mutation-base.diff.
-   - RE-CHECK: re-create every entry of evidence/mutation-set.json at its current
-     line (find the code again — it may have moved; drop an entry whose code is
-     gone). Add new mutants ONLY on changed source lines that are not in
-     evidence/mutation-base.diff — code written since the set was chosen — within
-     the cap. Then append them to mutation-set.json and overwrite
-     mutation-base.diff with the current diff.
+     as evidence/mutation-base.diff. Every mutant in it runs.
+   - RE-CHECK: first, add new mutants ONLY on changed source lines that are not
+     in evidence/mutation-base.diff — code written since the set was chosen —
+     within the cap; append them to mutation-set.json and overwrite
+     mutation-base.diff with the current diff. Then run
+     `python3 {{skill_dir}}/scripts/autodev.py mutants select --dir {{artifact_dir}}`
+     and save its output to {{artifact_dir}}/evidence/mutation-select.txt. It
+     compares the code now with the tree the last finished pass tested, and
+     prints one token:
+     `RERUN_ALL` — run the whole set, as a first pass does. Its `reason:` line
+     says why: an existing test line was changed or removed, a test file was
+     deleted, renamed or replaced, a skip or focus marker was added, a test-runner config
+     changed, or there is no usable record of the last pass.
+     `RERUN` — run only its `rerun:` mutants. Each `carried:` mutant keeps its
+     earlier killed or timeout result and is not run.
+     `CARRY_ALL` — every mutant keeps its earlier result: do not run mutate.py.
+     Exit 2 — when its `ERROR:` line names a problem in mutation-set.json
+     that you can repair (for example two entries for one id: rename the newer
+     one), repair it, run `select` again and follow its new token, so that
+     `record` later repeats the selection that ran. When the set can't be
+     repaired, write the mutation check as "not run" with that line. On any
+     other exit 2, carry nothing forward: run the whole set.
+     Find each mutant you run at its current line (its code may have moved).
+     One whose code is gone leaves the set: delete its entry from
+     mutation-set.json, and do not run, count or carry it. If that leaves no
+     mutant to run (of a `RERUN` list, or of an `INCOMPLETE` retry below), do
+     not run mutate.py: go straight to `record`, as for `CARRY_ALL`.
    Previous survivors: {{survivors}}
    Keep a previous Equivalent judgment unless that code changed.
    Choose mutants on CHANGED SOURCE lines the conditions depend on — never tests,
@@ -217,9 +240,12 @@ against origin/{{base}} directly — it moves when anything fetches.
    plausible wrong value, remove a call that has an effect. Tag each with the
    condition it threatens. Line numbers are grep -n's. Before every run, first
    pass and re-run alike, delete {{artifact_dir}}/evidence/mutate.exit and
-   mutate.log, so a stale exit file is never read as this run's. Write them to
-   {{artifact_dir}}/evidence/mutants.json (a JSON list of {"id", "file", "line",
-   "find", "replace", "condition"}), save `git -C {{worktree}} status --porcelain` and
+   mutate.log, so a stale exit file is never read as this run's. Write the
+   mutants to run to {{artifact_dir}}/evidence/mutants.json (a JSON list of
+   {"id", "file", "line", "find", "replace", "condition"}): the whole set on a
+   first pass or after `RERUN_ALL`, else only the `rerun:` ones, each at its
+   current line. Give them all to one mutate.py run (each run overwrites the
+   results file). Save `git -C {{worktree}} status --porcelain` and
    `git -C {{worktree}} diff {{cut}} | sha256sum`, then run:
      python3 {{skill_dir}}/scripts/mutate.py {{worktree}} --mutants {{artifact_dir}}/evidence/mutants.json --max <cap> --timeout <about 3× one COLD scoped run, in seconds: touch one changed source file, then time the scoped command, since every mutant forces a rebuild> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>" --exit-file {{artifact_dir}}/evidence/mutate.exit > {{artifact_dir}}/evidence/mutate.log 2>&1
    The whole run can take longer than 5 minutes (one test run per mutant), so
@@ -242,13 +268,39 @@ against origin/{{base}} directly — it moves when anything fetches.
    write the mutation check as "not run" with the reason; 7 an I/O error such as a full disk — report
    it, do not retry; 8 every mutant was invalid (lines moved or `find` text
    wrong) — re-read the lines and re-write them, and if a second run is still
-   all invalid, write the mutation check as "not run" with the reason; 4, or
+   all invalid, run `record` as below: when the selection carried no mutant
+   forward (a first pass or `RERUN_ALL`), write the mutation check as "not
+   run" with the reason; otherwise copy `record`'s summary, which counts the
+   carried mutants and these as invalid; 4, or
    9 another run is still alive — do as step 0 says; 10 or any other code (a crash),
    STOP and return MUTATION LEFT CHANGES. Afterwards both saved values must be unchanged; if they are not (the
    test command itself may have written files), return MUTATION LEFT CHANGES
    with the paths. Never commit, stage or keep a mutant.
+   Once mutate.py (if it ran) has ended and every file is restored, on every
+   pass with a cap above 0 (`CARRY_ALL` included), run
+   `python3 {{skill_dir}}/scripts/autodev.py mutants record --dir {{artifact_dir}} --tree <the hash you noted in step 1>`.
+   Exit 0 `RECORDED`: copy its `summary:` counts to the Mutation line (it counts
+   every mutant in the set once, this run's and the carried ones, and says how
+   many were carried forward); its `survived:` lines are this pass's survivors.
+   A run that exited 8 (all invalid) is recorded too.
+   Exit 1 `INCOMPLETE`: first delete from the set any `missing:` mutant whose
+   code is gone. Then write all the selection's `rerun:` mutants still in the
+   set to mutants.json (the ones that already have a result as well as the
+   missing ones), start one new mutate.py run on them as above (none left: no
+   run), and run `record` again. Never run the missing ones by themselves: each mutate.py run
+   replaces the whole results file, so the mutants run before would then be
+   missing and `record` would refuse again, forever.
+   Exit 3 `KEPT`: nothing was recorded, and the next pass compares with the
+   earlier record. If the run did not finish, write the mutation check as "not
+   run" with the reason; if the code changed during the pass, the Tree line
+   will say so — count this run's results plus the selection's `carried:` lines
+   yourself.
+   Exit 2: nothing was recorded. Report its `ERROR:` line, and count the
+   Mutation line yourself from this run's results plus the selection's
+   `carried:` lines (none when the whole set ran), as for a changed tree.
    Judge each survivor: Equivalent (no input can tell the mutant from the code —
-   say why) or a Test gap. A timeout counts as caught: the mutant made the code
+   say why) or a Test gap. A carried-forward mutant was caught: it is never a
+   survivor or a Test gap. A timeout counts as caught: the mutant made the code
    hang, and the run noticed. A Test gap on a line a condition depends on makes
    that condition `partial` (evidence: the mutant survived); any other Test gap
    is advisory.
