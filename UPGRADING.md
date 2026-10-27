@@ -4,6 +4,37 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.8
+
+- **A mutation run that fits now runs as one blocking call.** The verifier
+  used to start every `mutate.py` run in the background and look every few
+  minutes, so it sat idle after short runs. Now a run whose mutants × cold-run
+  time is 540 seconds or less runs in one call with the Bash tool's 10-minute
+  maximum, and the result is read at once. A longer one still runs in the
+  background; the verifier waits for it with one looping call at a time, each
+  ending by itself after about a tenth of its estimate (30 seconds to 5
+  minutes) and made again while the run is going, never a bare sleep, which
+  the Bash tool refuses, and never a call the tool moves to the background. A
+  blocking run the tool cuts off is restored, then run again once in the
+  background.
+- **The cold-run time is measured once per mutant set.** The first pass writes
+  it to `evidence/mutation-cold-run.txt`, and re-checks reuse it for the
+  per-mutant timeout and the blocking-or-background choice. A time is saved
+  only from a timed run that passed; a failing one is reported as a failing
+  test. A pass with no usable saved value measures one first. Any pass then
+  re-times it at most once more, when its run shows a timeout that was too
+  short: the saved value makes `mutate.py`'s unmutated baseline time out (no
+  longer reported as a failing test), more than half of the mutants time out,
+  a mutant that survived the last pass times out, or, on a pass that reused a
+  saved value, a mutant the last pass did not record as a timeout times out.
+  So one pass times the cold run at most twice. Only the re-time's re-run gets
+  a longer timeout: at least twice that of the run that timed out.
+- **A run in flight resumes.** A run started on 4.8 has no
+  `evidence/mutation-cold-run.txt`, so the first re-check that runs mutants
+  measures a cold run, as 4.8 did on every pass, saves it, and later
+  re-checks reuse it; like any pass, that re-check may re-time once more when
+  its run shows a timeout that was too short. No `.auto-dev.yml` key changes.
+
 ## Upgrading from 4.7
 
 - **A re-check re-runs only the mutants that may have changed.** The verifier

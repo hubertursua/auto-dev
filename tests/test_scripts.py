@@ -10,9 +10,11 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -450,6 +452,167 @@ class MutateTest(GitRepoCase):
         r, _ = self.mutate([], "--timeout", "nope", "--exit-file", exit_file)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # a usage error
         self.assertEqual(exit_file.read_text(), "2\n")
+
+    def start_run_held_on_a_mutant(self, name):
+        """Start mutate.py on one mutant of src/app.py with a test command that
+        passes at once on the original but hangs while the mutant is in place;
+        return once the mutant is in the tree and its test run has started."""
+        probe = self.tmp / "hang_on_mutant.py"
+        probe.write_text(
+            "import os\nimport sys\nimport time\nfrom pathlib import Path\n\n"
+            "if 'a - b' in Path('src/app.py').read_text():\n"
+            "    marker = Path(sys.argv[1])\n"
+            "    part = marker.with_name(marker.name + '.part')\n"
+            "    part.write_text(str(os.getpid()))\n"
+            "    os.replace(part, marker)\n"
+            "    time.sleep(120)\n")
+        mutants = self.tmp / f"mutants-{name}.json"
+        mutants.write_text(json.dumps([{"id": "M1", "file": "src/app.py", "line": 2,
+                                        "find": "a + b", "replace": "a - b",
+                                        "condition": "1"}]))
+        marker = self.tmp / f"hanging-{name}.pid"
+        exit_file = self.tmp / f"mutate-{name}.exit"
+        proc = subprocess.Popen(
+            [sys.executable, str(SCRIPTS / "mutate.py"), str(self.repo), "--mutants",
+             str(mutants), "--cmd", f'"{sys.executable}" "{probe}" "{marker}"',
+             "--timeout", "300", "--exit-file", str(exit_file)],
+            env=GIT_ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.stop_held_run, proc, marker)
+        deadline = time.monotonic() + 60
+        while not marker.exists():
+            if proc.poll() is not None:
+                self.fail(f"mutate.py ended (exit {proc.returncode}) before the mutant ran")
+            if time.monotonic() > deadline:
+                self.fail("the mutant's test run never started")
+            time.sleep(0.05)
+        return proc, mutants, exit_file
+
+    def stop_held_run(self, proc, marker):
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        try:
+            os.kill(int(marker.read_text()), signal.SIGKILL)
+        except (OSError, ValueError):
+            pass
+
+    def test_a_run_stopped_by_a_signal_mid_mutant_restores_the_file_and_writes_6(self):
+        original = (self.repo / "src/app.py").read_bytes()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(signal=sig.name):
+                (self.repo / "src/app.py").write_bytes(original)
+                proc, _, exit_file = self.start_run_held_on_a_mutant(sig.name)
+                self.assertIn(b"a - b", (self.repo / "src/app.py").read_bytes())
+                proc.send_signal(sig)
+                self.assertEqual(proc.wait(timeout=60), 6)
+                self.assertEqual((self.repo / "src/app.py").read_bytes(), original)
+                self.assertEqual(exit_file.read_text().strip(), "6")
+                self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_a_run_killed_hard_mid_mutant_is_put_back_by_restore_once_it_is_dead(self):
+        original = (self.repo / "src/app.py").read_bytes()
+        proc, mutants, _ = self.start_run_held_on_a_mutant("SIGKILL")
+        alive = run("mutate.py", self.repo, "--restore", "--mutants", mutants)
+        self.assertEqual(alive.returncode, 9, alive.stdout + alive.stderr)  # still running
+        self.assertIn(b"a - b", (self.repo / "src/app.py").read_bytes())
+        proc.kill()
+        proc.wait(timeout=60)
+        self.assertIn(b"a - b", (self.repo / "src/app.py").read_bytes())  # left behind
+        r = run("mutate.py", self.repo, "--restore", "--mutants", mutants)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.repo / "src/app.py").read_bytes(), original)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    # A probe test command: on the unmutated file it passes at once; with the
+    # mutant `a - b` in place it writes its pid to the marker (via a rename, so
+    # the marker is never read half-written) and hangs, holding the run
+    # mid-mutant until the test stops it.
+    PROBE = (
+        "import os, sys, time\n"
+        "if 'a - b' in open('src/app.py').read():\n"
+        "    tmp = sys.argv[1] + '.tmp'\n"
+        "    with open(tmp, 'w') as f:\n"
+        "        f.write(str(os.getpid()))\n"
+        "    os.replace(tmp, sys.argv[1])\n"
+        "    time.sleep(120)\n"
+    )
+
+    def start_hanging_mutant(self, name):
+        """Start mutate.py on one mutant whose test run hangs; return once the
+        mutant is in place and its test is running. Each caller's files are
+        named after `name`, so what one round leaves cannot touch another."""
+        probe = self.tmp / "probe.py"
+        probe.write_text(self.PROBE)
+        path = self.tmp / f"mutants-{name}.json"
+        path.write_text(json.dumps([{"id": "M1", "file": "src/app.py", "line": 2,
+                                     "find": "a + b", "replace": "a - b"}]))
+        marker = self.tmp / f"probe-{name}.pid"
+        exit_file = self.tmp / f"mutate-{name}.exit"
+        proc = subprocess.Popen(
+            [sys.executable, str(SCRIPTS / "mutate.py"), str(self.repo), "--mutants", str(path),
+             "--cmd", f'"{sys.executable}" "{probe}" "{marker}"', "--timeout", "300",
+             "--exit-file", str(exit_file)],
+            env=GIT_ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self.kill_if_alive, proc)
+        self.addCleanup(self.kill_probe, marker)
+        deadline = time.monotonic() + 60
+        while not marker.exists():
+            if proc.poll() is not None:
+                self.fail(f"mutate.py ended ({proc.returncode}) before the mutant's test ran")
+            if time.monotonic() > deadline:
+                self.fail("the mutant's test run never started")
+            time.sleep(0.05)
+        return proc, path, marker, exit_file
+
+    @staticmethod
+    def kill_if_alive(proc):
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+    @staticmethod
+    def kill_probe(marker):
+        try:
+            os.kill(int(marker.read_text()), signal.SIGKILL)
+        except (OSError, ValueError):  # already gone, or no marker
+            pass
+
+    def test_a_signal_during_a_mutant_s_test_run_restores_the_file_and_writes_6(self):
+        # A tool that times out a blocking call signals it; the tree must come
+        # back clean, with 6 in the exit file.
+        src = self.repo / "src/app.py"
+        before = src.read_bytes()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(signal=sig.name):
+                src.write_bytes(before)
+                proc, path, _, exit_file = self.start_hanging_mutant(sig.name)
+                proc.send_signal(sig)
+                self.assertEqual(proc.wait(timeout=60), 6)
+                self.assertEqual(exit_file.read_text(), "6\n")
+                self.assertEqual(src.read_bytes(), before)
+                self.assertFalse(Path(str(path) + ".backup").exists())
+                self.assertFalse(Path(str(path) + ".lock").exists())
+                self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_a_hard_kill_mid_mutant_leaves_backups_that_restore_puts_back(self):
+        src = self.repo / "src/app.py"
+        before = src.read_bytes()
+        proc, path, marker, exit_file = self.start_hanging_mutant("SIGKILL")
+        proc.kill()
+        proc.wait()  # reaped, so the pid in the lock reads as dead
+        self.kill_probe(marker)  # in its own session, it outlives its parent
+        self.assertIn("a - b", src.read_text())
+        self.assertTrue(Path(str(path) + ".backup").is_dir())
+        self.assertTrue(Path(str(path) + ".lock").exists())
+        self.assertFalse(exit_file.exists())
+        r = run("mutate.py", self.repo, "--mutants", path, "--cmd", self.CMD)
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        r = run("mutate.py", self.repo, "--restore", "--mutants", path)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("RESTORED", r.stdout)
+        self.assertEqual(src.read_bytes(), before)
+        self.assertFalse(Path(str(path) + ".backup").exists())
+        self.assertFalse(Path(str(path) + ".lock").exists())
 
 
 @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")

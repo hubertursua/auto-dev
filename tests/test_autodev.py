@@ -2012,6 +2012,90 @@ class MutantRecordTest(MutantsCase):
         self.assertIn("mutants record needs --tree", r.stderr)
         self.assertFalse(self.record_file.exists())
 
+    def select_and_record_with_saved_cold_run(self, saved):
+        """The last pass killed M1 and M2 and saw M3 survive; select, re-run M3
+        (killed), record. `saved` is the saved cold-run time's text beside the
+        set, or None for a set as 4.8.0 left it, with no saved time."""
+        self.reset()
+        self.set_mutants(MUT_SET[:3])
+        cold = self.evidence / "mutation-cold-run.txt"
+        if saved is None:
+            cold.unlink(missing_ok=True)
+        else:
+            cold.write_text(saved)
+        last = {"M1": "killed", "M2": "killed", "M3": "survived"}
+        self.write_record(results=[{**m, "status": last[m["id"]]} for m in MUT_SET[:3]])
+        text = self.mutants("select")
+        picked = self.mutants("select", "--json")
+        self.run_results(self.ran({"M3": "killed"}), 0)
+        recorded = self.mutants("record", "--json", "--tree", self.tree())
+        return [(r.returncode, r.stdout, r.stderr) for r in (text, picked, recorded)]
+
+    def test_a_saved_cold_run_time_changes_nothing_select_and_record_report(self):
+        without = self.select_and_record_with_saved_cold_run(None)
+        saved = self.select_and_record_with_saved_cold_run("42\n")
+        (code, text, err), (_, picked, _), (rcode, recorded, rerr) = saved
+        self.assertEqual(code, 0, text + err)
+        self.assertEqual(text.splitlines()[0].strip(), "RERUN: 1 to re-run, 2 carried forward")
+        self.assertEqual([m["id"] for m in json.loads(picked)["rerun"]], ["M3"], picked)
+        self.assertEqual(rcode, 0, recorded + rerr)
+        self.assertEqual(json.loads(recorded)["result"], "RECORDED", recorded)
+        self.assertEqual(saved, without)
+
+    def test_a_set_without_a_usable_saved_cold_run_time_selects_and_records_as_before(self):
+        before = self.select_and_record_with_saved_cold_run(None)  # a set 4.8.0 wrote
+        for code, out, err in before:
+            self.assertEqual(code, 0, out + err)
+        self.assertEqual(before[0][1].splitlines()[0].strip(),
+                         "RERUN: 1 to re-run, 2 carried forward")
+        for saved in ("abc\n", "0\n", "-5\n", "-0.5\n", ""):
+            with self.subTest(saved=saved):
+                self.assertEqual(self.select_and_record_with_saved_cold_run(saved), before)
+
+
+
+class MutantColdRunFileTest(MutantsCase):
+    """The verifier keeps its cold test-run time in evidence/mutation-cold-run.txt,
+    beside the set. `mutants select` and `mutants record` never read it."""
+
+    def outcome(self, stored):
+        """Each command's (code, stdout, stderr) with `stored` as the timing
+        file's text (None: no file), and the file's text afterwards."""
+        self.reset()
+        self.set_mutants(MUT_SET[:3])
+        cold = self.evidence / "mutation-cold-run.txt"
+        if stored is None:
+            cold.unlink(missing_ok=True)
+        else:
+            cold.write_text(stored)
+        statuses = {"M1": "killed", "M2": "killed", "M3": "survived"}
+        self.write_record(results=[{**m, "status": statuses[m["id"]]} for m in MUT_SET[:3]])
+        calls = [self.mutants("select"), self.mutants("select", "--json")]
+        self.run_results(self.ran({"M3": "killed"}), 0)
+        calls.append(self.mutants("record", "--json", "--tree", self.tree()))
+        return ([(r.returncode, r.stdout, r.stderr) for r in calls],
+                cold.read_text() if cold.exists() else None)
+
+    def test_a_stored_cold_time_leaves_select_and_record_output_unchanged(self):
+        baseline, left = self.outcome(None)  # a set as 4.8 left it
+        self.assertIsNone(left)
+        (code, text, _), (jcode, js, _), (rcode, rec, _) = baseline
+        self.assertEqual(code, 0, text)
+        self.assertEqual(text.splitlines()[0], "RERUN: 1 to re-run, 2 carried forward", text)
+        self.assertEqual(jcode, 0, js)
+        picked = json.loads(js)
+        self.assertEqual(self.rerun_ids(picked), ["M3"])
+        self.assertEqual(self.carried(picked), {"M1": "killed", "M2": "killed"})
+        self.assertEqual(rcode, 0, rec)
+        recorded = json.loads(rec)
+        self.assertEqual(recorded["result"], "RECORDED")
+        self.assertEqual(recorded["summary"], "3 mutants: 3 killed · 0 timeout · 0 survived "
+                                              "· 0 invalid · 2 carried forward")
+        for stored in ("42\n", "abc\n", "0\n", "-5\n", ""):
+            with self.subTest(stored=stored):
+                calls, left = self.outcome(stored)
+                self.assertEqual(calls, baseline)
+                self.assertEqual(left, stored)
 
 class CliTest(unittest.TestCase):
     def test_missing_state_cannot_run(self):

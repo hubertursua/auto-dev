@@ -152,7 +152,22 @@ weakening them. Verification is built around that:
   from the code the last finished pass tested). An edited or deleted line in an
   existing test file, a deleted or renamed test file, an added skip or focus
   marker, or a changed test-runner config makes it run them all, and so does a
-  missing record.
+  missing record. Each pass sizes its run by one cold scoped test run, timed
+  when the set is chosen and kept in `evidence/mutation-cold-run.txt` for later
+  passes; a pass with no usable saved time measures one first. Any pass then
+  re-times it at most once more when its run shows a timeout that was too
+  short: the saved time makes the unchanged tests time out, most mutants time
+  out, an earlier survivor times out, or, on a pass that reused a saved time,
+  a mutant not caught by a timeout last time now times out. So one pass times
+  the cold run at most twice, and only the re-time's re-run gets a longer
+  timeout, at least twice the first. A time is saved only from a timed run
+  that passed; a failing one is reported as a failing test. When the mutants
+  to run × that time come to 540 seconds or less, the verifier runs them in
+  one blocking call and reads the result at once; a longer run goes to the
+  background, and the verifier waits for it with calls that each end by
+  themselves after about a tenth of its estimate (30 seconds to 5 minutes),
+  repeated until the run is done. The detail is in step 7 of
+  `agents/verifier.md`.
 - **Re-checked after every change.** Cleanup (`/simplify` and the quality gate)
   runs before the verifier, so the verifier checks the code that ships, and
   both run again after every fix.
@@ -522,7 +537,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `acceptance/` | Phase 3 | the sealed held-out checks (`files/<path>.sealed`, with `<path>.base`, the file a check adds to, and `<path>.installed`, that file as it was with the check whole), their `MANIFEST.md`, and their runs on the old code |
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
 | `lint/` | Phase 5 | one report per quality-gate check |
-| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran, its required changes (`evidence/corrections.md`), the mutants it keeps across passes (`evidence/mutation-set.json`) and the last finished pass's tree and mutant results (`evidence/mutation-record.json`), plus each re-check's mutant pick (`evidence/mutation-select.txt`) |
+| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran, its required changes (`evidence/corrections.md`), the mutants it keeps across passes (`evidence/mutation-set.json`) and the last finished pass's tree and mutant results (`evidence/mutation-record.json`), plus each re-check's mutant pick (`evidence/mutation-select.txt`) and the cold test-run time it sizes mutant runs by (`evidence/mutation-cold-run.txt`) |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports, the judge's code review, the security review, and the review's required changes for the coder |
 | `pr-body.md`, `pr-output-comment.md` | Phase 6 | the generated PR description, and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments |
