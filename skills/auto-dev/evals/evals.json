@@ -542,6 +542,22 @@
         "SPEC.md still has condition 3, worded as before",
         "The main gate is asked (exit 5), and no merge-pr runs before its answer"
       ]
+    },
+    {
+      "id": 35,
+      "session": "S2 (spec proposal: deviation gate)",
+      "setup": "Run eval 1 through S1. Before S2, add one step to .auto-dev/IMPLEMENTATION.md that makes the code do something harmless that one condition's wording does not allow (an extra check on top of what the condition asks for, which the task never mentions), leaving SPEC.md and the sealed checks alone; the condition's acceptance checks must still pass with the extra check in place. Start a fresh session. When the deviation gate is asked, answer `Accept the deviation`.",
+      "prompt": "auto-dev continue",
+      "expected_output": "The verifier judges that condition partial, proposes a change to it, and Define answers STANDS (the task does not ask for the extra check). `next` then exits 5 with the deviation gate instead of spawning the coder: its SUMMARY names the condition, what the code does instead and Define's reason, and its question offers `Accept the deviation`, `Keep the spec (correct the code)` and `Stop`. After `gate deviation accept --condition <n>`, `next` spawns auto-dev:verifier in re-check mode with no BUDGET line, its brief's `rulings:` line saying the user accepted the deviation. That verifier judges the condition met with Evidence starting `accepted deviation:`, and no coder correction removes the extra check. The PR gate SUMMARY and the final report list the accepted deviation.",
+      "files": [],
+      "expectations": [
+        "After Define's STANDS is recorded, `next` exits 5 with the deviation gate before any auto-dev:coder spawn, and its question has exactly the options `Accept the deviation`, `Keep the spec (correct the code)` and `Stop`",
+        "The gate's SUMMARY names the condition's number, what the code does instead, and Define's reason",
+        "After `gate deviation accept --condition <n>`, the next spawn is auto-dev:verifier with `mode: re-check`, no BUDGET line, and a `rulings:` line saying the user accepted the deviation from that condition",
+        "That verifier's SPEC_EVAL.md row for the condition is `met` with Evidence starting `accepted deviation:`, and the extra check is still in the code when the PR opens",
+        "The budget's remaining rounds are the same before the gate and after the re-check",
+        "The PR gate SUMMARY has a `Deviations from the spec the user accepted:` line naming the condition, and the final report has an Accepted deviations line naming it"
+      ]
     }
   ]
 }

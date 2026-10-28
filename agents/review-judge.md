@@ -60,6 +60,9 @@ Read every one. <Pass 2 or later: also read the previous
      conventions, style). The rubric says when a broken binding rule is
      correctness instead.
    - noise: path refuted, or the code already handles it. Give the reason.
+     A finding that asks to undo an accepted deviation is noise too.
+     Accepted deviations: {{deviations}}. When set, the user accepted that the
+     code deviates from these SPEC.md conditions, for the reason given.
    - dropped: pre-existing and not security. Add it to the count only.
    - Security concerns get no verdict. List them under "Security leads". The
      security review ran alongside the panel, on the same tree: read

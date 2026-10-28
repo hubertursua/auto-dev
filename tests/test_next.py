@@ -2583,6 +2583,7 @@ class SpecProposalRulingTest(NextCase):
         self.file_from_verifier(job)
         _, define, _ = self.define_job()
         self.answer_define(define, "STANDS", ("stands", "the ticket names the list only"))
+        self.after(self.next(5), "Keep the spec (correct the code)")
         out, jobs = self.expect("coder")
         self.assertEqual(self.sets(*jobs[0])["corrections_file"],
                          f"{self.dir}/evidence/corrections.md")
@@ -2623,6 +2624,7 @@ class SpecProposalRulingTest(NextCase):
         self.assertIn("- Target: condition 1\n", batch)
         self.assertIn("part of this proposal was not sent", batch)
         self.answer_define(define, "STANDS", ("stands", "the list only"))
+        self.after(self.next(5), "Keep the spec (correct the code)")  # condition 1 unmet
         _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
         self.lint()
         self.expect("cleanup", "GREEN")
@@ -3680,6 +3682,7 @@ class SpecProposalTest(NextCase):
         _, jobs = self.expect("define")
         left = self.state()["budget"]["remaining"]
         self.define_stands(jobs[0][1])
+        self.after(self.next(5), "Keep the spec (correct the code)")
         out, jobs = self.expect("coder")
         self.assertEqual(self.sets(*jobs[0])["corrections_file"],
                          f"{self.dir}/evidence/corrections.md")
@@ -3700,6 +3703,160 @@ class SpecProposalTest(NextCase):
         self.assertEqual(len(self.briefs_of("coder")), 1)
         self.assertEqual(len(self.briefs_of("cleanup")), 1)
         self.assertEqual(self.state()["phases"]["5"]["status"], "done")
+
+    # -------------------------------------------------------------- the deviation gate
+
+    STOOD = "the condition is right as written: the extra guard is not needed"
+
+    def deviation_gate(self, verdict="partial"):
+        """The verifier files on condition 4 (judged `verdict`), the Define
+        agent answers STANDS, and `next` asks the deviation gate."""
+        job = self.verifier_files()
+        if verdict != "partial":
+            self.spec_eval(verdicts={"4": verdict})
+        _, jobs = self.expect("define")
+        self.define_stands(jobs[0][1])
+        return job, self.next(5)
+
+    def options(self, out):
+        return [o["label"] for o in json.loads(out["QUESTION"])["questions"][0]["options"]]
+
+    def test_a_standing_proposal_on_a_partial_condition_asks_the_deviation_gate(self):
+        _, out = self.deviation_gate()
+        left = self.state()["budget"]["remaining"]
+        self.assertEqual(self.options(out), ["Accept the deviation",
+                                             "Keep the spec (correct the code)", "Stop"])
+        summary = "\n".join(out["SUMMARY"])
+        for part in ("Condition 4", "refused with status 400", "partial", WHY, self.STOOD):
+            self.assertIn(part, summary)
+        self.assertIn("--condition 4", " ".join(out["AFTER"]))
+        self.assertEqual(len(self.briefs_of("coder")), 1)  # no correction yet
+        self.resume()  # still asked in a new session
+        self.assertEqual(self.options(self.next(5))[0], "Accept the deviation")
+        self.assertEqual(self.state()["budget"]["remaining"], left)
+
+    def test_accepting_re_checks_with_no_round_and_tells_the_verifier(self):
+        _, out = self.deviation_gate()
+        left = self.state()["budget"]["remaining"]
+        self.after(out, "Accept the deviation")
+        out, jobs = self.expect("verifier")
+        self.assertNotIn("BUDGET", out)
+        sets = self.sets(*jobs[0])
+        self.assertEqual(sets["mode"], "re-check")
+        self.assertRegex(sets["rulings"], r"condition 4: the user accepted the code's deviation")
+        self.assertIn(WHY, sets["rulings"])
+        self.assertEqual(len(self.briefs_of("coder")), 1)
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0", proposals="0")
+        out = self.next(6)  # every condition met: Phase 5 ends, no correction
+        self.assertEqual(len(self.briefs_of("coder")), 1)
+        self.assertEqual(self.state()["budget"]["remaining"], left)
+        self.after(out)
+        self.resume()
+        self.review_clean()
+        for worker in ("code-reviewer", "review-judge"):  # the review is told, too
+            self.assertIn("condition 4", self.briefs_of(worker)[-1]["sets"]["deviations"])
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertIn(f"Deviations from the spec the user accepted: condition 4 (the "
+                      f"verifier's reason: {WHY})", out["SUMMARY"])
+
+    def test_after_accepting_another_open_condition_is_corrected_on_the_paid_round(self):
+        _, out = self.deviation_gate()
+        left = self.state()["budget"]["remaining"]
+        self.after(out, "Accept the deviation")
+        _, jobs = self.expect("verifier")
+        self.spec_eval(verdicts={"3": "partial"})
+        self.corrections("Mark a past-due todo as overdue in src/list.ts")
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1", proposals="0")
+        out, jobs = self.expect("coder")
+        self.assertIn("already spent `verifier-1`", self.budget_text(out))
+        self.assertEqual(self.state()["budget"]["remaining"], left)
+        given = self.given(*jobs[0])
+        self.assertIn("overdue", given)
+        self.assertNotIn("retry guard", given)
+
+    def test_explain_at_the_gate_and_after_accepting_writes_nothing(self):
+        _, out = self.deviation_gate()
+        state = (self.dir / "state.json").read_text()
+        r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertEqual((self.dir / "state.json").read_text(), state)
+        self.after(out, "Accept the deviation")
+        state = (self.dir / "state.json").read_text()
+        r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("verifier", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), state)
+        self.assertEqual(len(self.briefs_of("verifier")), 1)
+
+    def test_several_deviations_are_asked_one_at_a_time(self):
+        self.verifier_files(blocks=[proposal_block(1, "condition 4", NEW_4),
+                            proposal_block(2, "condition 3", NEW_3)])
+        self.spec_eval(verdicts={"3": "partial", "4": "partial"})
+        _, jobs = self.expect("define")
+        r = self.define_answers(jobs[0][1], PROPOSAL_SPEC, [
+            ("stands", self.STOOD), ("stands", "overdue is marked, nothing more")], "STANDS")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(5)
+        self.assertIn("Condition 4:", out["QUESTION"])
+        self.after(out, "Accept the deviation")
+        out = self.next(5)
+        self.assertIn("Condition 3:", out["QUESTION"])
+        self.assertIn("overdue is marked, nothing more", "\n".join(out["SUMMARY"]))
+        self.after(out, "Keep the spec (correct the code)")
+        _, jobs = self.expect("verifier")  # 4 was accepted: the re-check first
+        rulings = self.sets(*jobs[0])["rulings"]
+        self.assertIn("condition 4: the user accepted", rulings)
+        self.assertIn("condition 3 stands as written", rulings)
+        self.assertIn("the user chose to keep it", rulings)
+
+    def test_an_unmet_condition_can_t_be_accepted(self):
+        _, out = self.deviation_gate("unmet")
+        self.assertEqual(self.options(out), ["Keep the spec (correct the code)", "Stop"])
+        self.assertRegex("\n".join(out["SUMMARY"]), r"acceptance check[^\n]*fails")
+
+    def test_stop_at_the_deviation_gate_ends_the_run(self):
+        _, out = self.deviation_gate()
+        self.after(out, "Stop")
+        self.next(4)
+        self.assertEqual(len(self.briefs_of("coder")), 1)
+
+    def test_a_kept_condition_is_corrected_and_never_asked_again(self):
+        _, out = self.deviation_gate()
+        self.after(out, "Keep the spec (correct the code)")
+        _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        self.expect("cleanup", "GREEN")
+        out, jobs = self.expect("verifier")
+        self.assertIn("the user chose to keep it", self.sets(*jobs[0])["rulings"])
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        self.file_proposals(*jobs[0], proposal_block(1, "condition 4", NEW_4))
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1", proposals="1")
+        self.expect("coder")  # no second gate, no Define brief
+        self.assertEqual(len(self.briefs_of("define")), 2)
+
+    def test_a_review_proposal_that_stood_reaches_the_gate_when_the_code_deviates(self):
+        before = self.stood_on_4_then_judge_files()  # the judge files nothing
+        _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 3;\n")
+        self.lint()
+        self.expect("cleanup", "GREEN")
+        _, jobs = self.expect("verifier")
+        self.assertRegex(self.sets(*jobs[0])["rulings"], r"propose it again: it goes to the user")
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        self.file_proposals(*jobs[0], proposal_block(1, "condition 4", NEW_4_AGAIN))
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1", proposals="1")
+        out = self.next(5)
+        self.assertEqual(self.options(out)[0], "Accept the deviation")
+        self.assertEqual(len(self.briefs_of("define")), before)
+        self.after(out, "Stop")
+        self.next(4)
+        self.assertEqual(self.state()["phases"]["6"]["status"], "stopped")
 
     # -------------------------------------------------------------- condition 6
 

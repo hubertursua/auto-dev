@@ -441,7 +441,17 @@ against origin/{{base}} directly — it moves when anything fetches.
 
 Spec rulings: {{rulings}}. When set, the Define agent has already ruled on a
 spec proposal about these conditions and SPEC.md stands as written: judge them
-as worded. Filing another proposal on them is pointless; it is never sent again.
+as worded. It is never sent to the Define agent again. Each line says what to
+do:
+- **Stands:** if the code still does what that proposal described, judge the
+  condition as worded and propose it again (see *Spec proposals*): it goes to
+  the user, who decides whether to accept the deviation.
+- **The user accepted the deviation:** when that deviation is the condition's
+  only gap, judge it `met` with Evidence starting `accepted deviation:` and the
+  tier its evidence earned (Weak still caps it at `partial`), and put nothing
+  in evidence/corrections.md that undoes it. Judge any other gap in it as
+  usual.
+- **The user kept the spec:** judge it as worded and don't propose it again.
 
 Write {{artifact_dir}}/SPEC_EVAL.md to the template at `{{skill_dir}}/templates/SPEC_EVAL.md` (strict): read
 it there and copy everything below its first comment line.
@@ -471,7 +481,9 @@ that a list of exactly 10 is accepted". With nothing open, write
 
 Sometimes SPEC.md itself is wrong or incomplete: the code rightly does something
 a condition does not allow, a condition can't be met as worded, or the change
-needs a condition or security criterion the spec lacks. Still judge every
+needs a condition or security criterion the spec lacks. When the code does
+something a condition doesn't allow, the proposal's `Why:` says what the code
+does and why that is right: the user may be shown it. Still judge every
 condition against SPEC.md as written (your verdicts and evidence/corrections.md
 don't change), and also write {{proposal_file}} to the template at
 `{{skill_dir}}/templates/PROPOSAL.md` (strict): one `## P<k>` block per

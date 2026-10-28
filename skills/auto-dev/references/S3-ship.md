@@ -28,7 +28,9 @@ see in S3, in order:
    findings, and a security run on any lead the panel passed on. Then they go
    to the `define` agent in one brief, before any correction, for the round
    that correction would spend. `STANDS` leaves the pass to go on as if there
-   were none. An applied change runs the redo as in S2 (planner, the changed
+   were none; if a later verifier finds the code doing what the stood proposal
+   described, the deviation gate asks the user (`references/S2-build.md`,
+   step 4). An applied change runs the redo as in S2 (planner, the changed
    conditions' checks, then a correction with the plan's change and the
    pass's own fixes, cleanup, a verifier first pass), then a review pass on
    what the redo changed (none when it changed no file) and the PR gate again,
@@ -156,6 +158,8 @@ printed. Then run its `AFTER` line.
 - **Iteration budget:** <remaining>/<total>
 
 **Assumptions:** <the ones a reviewer should know about>
+
+**Accepted deviations:** <each condition the user let the code deviate from at the deviation gate, and what the code does instead (the `Deviations from the spec the user accepted` line of the gate summaries) — or "none">
 
 **Unresolved / skipped:** <unmet conditions, open findings, skipped steps — or "none">
 

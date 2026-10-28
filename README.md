@@ -178,7 +178,10 @@ weakening them. Verification is built around that:
   answers STANDS with its reason, and `record` checks `SPEC.md` against each
   answer. A STANDS holds for the rest of the run (the proposal is never sent
   again, and every later verifier pass is told the ruling), and the result is
-  acted on as if it carried no proposal. An applied change is redone before
+  acted on as if it carried no proposal, unless a verifier (on that result or
+  a later one) finds the code doing what the stood proposal described: then the
+  *deviation gate* asks you before the correction would undo it (see *Human
+  gates & integrations*). An applied change is redone before
   anything relies on it: the planner revises the plan for the changed
   conditions, the acceptance tester rewrites only their checks (the others are
   held as they are), the coder gets the plan's change (only when the plan
@@ -294,10 +297,10 @@ Planning and build run unattended. The pipeline pauses for approval:
 - plus an optional **post-plan gate** (on for high-risk tasks, or with
   `gates.post_plan`).
 
-Three more pauses fire only when their situation arises: the **profile
+Four more pauses fire only when their situation arises: the **profile
 confirmation** (a repo with no saved profile), the **Jira In Progress
-confirmation** (only with a ticket, once the size check says the task fits), and the **worktree
-cleanup offer** (after the merge).
+confirmation** (only with a ticket, once the size check says the task fits), the
+**deviation gate** (below), and the **worktree cleanup offer** (after the merge).
 
 Declining is safe at every gate: `Stop` ends the run; `Hold`, at the PR and
 main gates, pauses it so you can resume later. Both leave the branch, the worktree and every artifact on
@@ -327,6 +330,15 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   ruled to stand and any no round was left to send. After a spec change from a
   PR comment, the redo is committed and the main gate is asked again before
   any merge.
+- **The deviation gate** fires when a spec proposal was ruled to stand but the
+  verifier finds the code still doing what it described (the condition partial
+  or unmet), whoever first proposed it. For that one condition you choose
+  `Accept the deviation` (the verifier re-checks, told so; the reviewers are
+  told too, and nothing undoes it; no round is spent), `Keep the spec (correct
+  the code)` or `Stop`. Accept is not offered for an unmet condition, whose
+  acceptance check may fail the quality gate, and a Security/Compliance
+  criterion is never deviated from. Accepted deviations are listed in the PR
+  and main gate summaries and the final report.
 
 ## Stack profiles
 
@@ -584,6 +596,8 @@ Autonomous but bounded:
   marked as a claim to check (CI logs never reach it); a spec change after the
   PR opens is committed and shown at the main gate before any merge; a
   proposal with no round left is named in the stop report or gate summary.
+  Code that deviates from a condition ruled to stand ships only if you accept
+  that deviation at the deviation gate, one condition at a time.
   A spec redo whose rewritten checks still have gaps after its one free tester
   re-spawn, or that needs a second ambiguity ruling, stops the run instead of
   looping.

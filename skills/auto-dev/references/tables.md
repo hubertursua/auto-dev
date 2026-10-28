@@ -107,6 +107,9 @@ what they said, then run `next`.
 | Main (Phase 6, once CI and human comments are settled) | Merge PR to main | `gate main proceed` | `merge-pr`, then Jira Done and the final report |
 | | Hold | `gate main hold --reason "<why>"` | the run is held at the main gate |
 | | Stop | `gate main stop --reason "<why>"` | the run stops; the PR stays open |
+| Deviation (Phases 5–6, when a verifier shows the code doing what a spec proposal that stood described; one condition at a time) | Accept the deviation | `gate deviation accept --condition <n>` | the verifier re-checks, told the deviation is accepted (no round); it writes no correction to undo it, and any other open item is corrected on the round already paid; later review passes are told not to undo it. Not offered when the condition is unmet (its acceptance check may fail, which fails the quality gate) |
+| | Keep the spec (correct the code) | `gate deviation keep --condition <n>` | the correction goes ahead, as after any `STANDS` |
+| | Stop | `gate deviation stop --condition <n>` | the run stops |
 | Worktree (after the final report) | Remove it / Keep it | `gate cleanup proceed` / `keep` | the worktree (and `.auto-dev/`) is removed or kept |
 
 The PR gate may add a question per pre-existing security finding (the two most
@@ -116,6 +119,11 @@ answer's `AFTER` line is `autodev.py mark triage-<ID> --value separate|ignore`:
 run the one for each answer the user gave. A `separate` finding is listed in
 the PR body and the final report as a follow-up for its own PR; the pipeline
 doesn't open that PR.
+
+Each deviation answer holds for the rest of the run, and a deviation from a
+security criterion is never accepted: a proposal can't name an existing S row,
+and `gate deviation accept` refuses an `S<n>`. Accepted deviations are listed
+in the PR and main gate summaries and the final report.
 
 The profile confirmation (Phase 1) has its own options: `S1-plan.md`, step 4.
 

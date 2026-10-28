@@ -632,6 +632,25 @@ class StateCommandsTest(RunCase):
         self.assertEqual(r.returncode, 1)
         self.assertEqual(self.state()["gates"], [])
 
+    def test_the_deviation_gate_needs_a_condition_and_never_accepts_a_criterion(self):
+        for args in (("accept",), ("accept", "--condition", "S1"),
+                     ("accept", "--condition", "four"), ("proceed", "--condition", "4")):
+            with self.subTest(args):
+                self.assertEqual(self.cmd("gate", "deviation", *args).returncode, 1)
+        self.assertEqual(self.cmd("gate", "pr", "proceed", "--condition", "4").returncode, 1)
+        self.assertEqual(self.state()["gates"], [])
+        r = self.cmd("gate", "deviation", "keep", "--condition", "S1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.cmd("gate", "deviation", "accept", "--condition", "4")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([(g["choice"], g["condition"]) for g in self.state()["gates"]],
+                         [("keep", "S1"), ("accept", "4")])
+        self.assertIn("condition 4: the user accepted", (self.dir / "WORK_LOG.md").read_text())
+        first_open = next(n for n in "123456"
+                          if self.state()["phases"][n]["status"] not in ("done", "n/a"))
+        self.cmd("gate", "deviation", "stop", "--condition", "4")
+        self.assertEqual(self.state()["phases"][first_open]["status"], "stopped")
+
     def test_the_staging_gate_and_mark_are_gone(self):
         r = self.cmd("gate", "staging", "proceed")
         self.assertNotEqual(r.returncode, 0)
