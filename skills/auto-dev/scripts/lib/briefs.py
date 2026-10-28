@@ -16,7 +16,10 @@ with `--retry <n>` fills it from the issues `record` saved when it refused job
 
 Each worker ends its reply with an `auto-dev-result` block and writes the same
 keys to returns/<worker>-<n>.json. RESULTS lists the `next` tokens each may
-return; `autodev.py record` checks the return against the artifacts.
+return; `autodev.py record` checks the return against the artifacts. Every key
+of the block is required, except those in LENIENT_KEYS, which a return may
+leave out (read as none): a key added later, so a worker briefed before it
+existed can still be recorded.
 """
 
 import re
@@ -30,11 +33,12 @@ AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "tick
         "binding_rules", "test_command", "test_notes", "mutation_cap",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
         "symbol_lookup", "pass", "tree", "cut", "run", "pr", "triage_file", "checks_file",
-        "answer_file", "blocked_file"}
+        "answer_file", "blocked_file", "proposal_file"}
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
           "report", "blocked", "failing", "question", "corrections_file", "leads"}
 OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
-            "previous_issues", "earlier", "focus"}
+            "previous_issues", "earlier", "focus", "proposals", "rulings_file",
+            "spec_change", "rulings"}
 # fix_file is AUTO for the reviewers, who write it; OPTIONAL for the authors.
 AUTO_FOR = {"fix_file": {"define-reviewer", "plan-reviewer"}}
 # tree is AUTO (the tree at spawn time) for the security reviewers; the judge
@@ -43,7 +47,7 @@ CALLER_FOR = {"tree": {"review-judge"}}
 
 RESULTS = {
     "profiler": {"CONFIRM"},
-    "define": {"FITS", "OVERSIZED", "REVISED"},
+    "define": {"FITS", "OVERSIZED", "REVISED", "STANDS"},
     "define-reviewer": {"CLEAN", "BLOCKERS"},
     "planner": {"WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST", "SPEC_IMPOSSIBLE"},
     "plan-reviewer": {"CLEAN", "BLOCKERS"},
@@ -60,6 +64,9 @@ RESULTS = {
     "lookup": {"ANSWERED", "OUT_OF_SCOPE"},
 }
 STATUSES = {"ok", "blocked", "failed"}
+# Result keys a return may leave out: `proposals` (the spec proposals a filer
+# wrote) came in 4.10, and a worker briefed before it never writes it.
+LENIENT_KEYS = {"proposals"}
 
 
 class BriefError(Exception):

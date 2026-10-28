@@ -201,11 +201,11 @@ class NextCase(RunCase):
         self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
         return out, jobs
 
-    def reviewers(self, security=None, count=3):
+    def reviewers(self, security=None, count=3, proposal=None):
         """The panel (`count` code reviewers) and the security reviewer, spawned
         in one message: answer the security reviewer with `security` (text,
-        next, must_fix, pre_existing; clean by default) and return the panel's
-        jobs."""
+        next, must_fix, pre_existing; clean by default), filing `proposal` (a
+        spec proposal file's text) when given, and return the panel's jobs."""
         out = self.next(0)
         jobs = self.spawned(out)
         sec = [j for j in jobs if j[0].startswith("security-reviewer")]
@@ -215,7 +215,13 @@ class NextCase(RunCase):
         self.security_job = sec[0]
         text, nxt, must_fix, pre = security or (SECURITY_REVIEW, "CLEAN", "0", "0")
         (self.dir / "SECURITY_REVIEW.md").write_text(text.format(tree=self.tree()))
-        self.answer(*sec[0], nxt, must_fix=must_fix, pre_existing=pre)
+        extra = {}
+        if proposal is not None:
+            path = self.dir / "proposals" / f"{sec[0][0]}-{sec[0][1]}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(proposal)
+            extra["proposals"] = str(proposal.count("\n## P"))
+        self.answer(*sec[0], nxt, must_fix=must_fix, pre_existing=pre, **extra)
         return out, panel
 
     def mode(self, worker, n):
@@ -2422,6 +2428,724 @@ class ReviewEffortTest(NextCase):
         self.assertEqual(self.next(0)["EFFORT"], ["high"] * 3)
 
 
+PROPOSAL_ON_1 = """# Spec proposals
+
+## P1
+- Target: condition 1
+- Why: the ticket asks for the date in the detail view as well as in the list
+- Comment: none
+- New text:
+1. A todo can carry a due date that both the list and its detail view show
+   - Example: Given todo 7, when its due date is set to 2026-01-02, then the list and
+     the detail view show 2026-01-02.
+   - Edge: an invalid date is rejected → 400
+   - Verify by: integration
+"""
+PROPOSAL_ON_2 = """# Spec proposals
+
+## P1
+- Target: condition 2
+- Why: the ticket asks for the latest date first
+- Comment: none
+- New text:
+2. The list sorts todos by due date with the latest first
+   - Example: Given two todos, when listed, then the later one is first.
+   - Edge: none — every todo has a place in the order
+   - Verify by: unit
+"""
+PROPOSAL_ON_1_AND_2 = PROPOSAL_ON_1.replace("- Target: condition 1",
+                                            "- Target: conditions 1, 2") + \
+    "\n".join(PROPOSAL_ON_2.split("- New text:\n")[1:])
+OLD_1 = "A todo can carry a due date that the list shows next to its title"
+NEW_1 = "A todo can carry a due date that both the list and its detail view show"
+
+
+class SpecProposalRulingTest(NextCase):
+    """Later workers' spec proposals: Define rules, `next` redoes what relied on them."""
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    open_pr = ShipTest.open_pr
+
+    # -------------------------------------------------------------- helpers
+
+    def propose(self, worker, n, text):
+        path = self.dir / "proposals" / f"{worker}-{n}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def rule(self, k, *answers):
+        text = "# Rulings\n"
+        for i, (answer, reason) in enumerate(answers, 1):
+            text += f"\n## P{i}\n- Answer: {answer}\n- Reason: {reason}\n"
+        (self.dir / "proposals" / f"batch-{k}-rulings.md").write_text(text)
+
+    def revise_spec(self, old=OLD_1, new=NEW_1):
+        spec = self.dir / "SPEC.md"
+        self.assertIn(old, spec.read_text())
+        spec.write_text(spec.read_text().replace(old, new))
+
+    def to_first_pass(self, remaining=None):
+        self.plan_session()
+        if remaining is not None:
+            state = self.state()
+            state["budget"]["remaining"] = remaining
+            self.write_state(state)
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.first_pass()
+        return jobs[0]
+
+    def file_from_verifier(self, job, text=PROPOSAL_ON_1, nxt="CORRECT"):
+        self.propose(*job, text)
+        if nxt == "CORRECT":
+            self.spec_eval(v1="unmet")
+            (self.dir / "evidence").mkdir(exist_ok=True)
+            (self.dir / "evidence" / "corrections.md").write_text(
+                "# Required changes\n1. Show the due date in src/view.ts as well\n")
+            self.answer(*job, "CORRECT", tree="x", corrections="1", proposals="1")
+        else:
+            self.spec_eval()
+            self.answer(*job, nxt, tree="x", corrections="0", proposals="1")
+
+    def define_job(self):
+        out, jobs = self.expect("define")
+        sets = self.sets(*jobs[0])
+        self.assertEqual(self.mode(*jobs[0]), "revise")
+        return out, jobs[0], sets
+
+    def answer_define(self, job, nxt, *answers):
+        k = len(self.state()["proposals"]["batches"])
+        self.rule(k, *answers)
+        self.answer(*job, nxt, high_risk="yes", reading="none")
+
+    def redo_to_coder(self, plan_change=True, entry_points="no"):
+        """The planner and the tester of a redo of condition 1; returns the next
+        output (the coder's or cleanup's spawn)."""
+        out, jobs = self.expect("planner")
+        self.assertEqual(self.mode(*jobs[0]), "revise")
+        self.assertIn("condition 1 reads differently", self.sets(*jobs[0])["spec_change"])
+        self.assertNotIn("BUDGET", out)
+        if plan_change:
+            (self.dir / "IMPLEMENTATION.md").write_text(self.plan_text.replace(
+                "1. add the field", "1. add the field\n2. show it in the detail view too"))
+        self.answer(*jobs[0], "REVISED", entry_points_changed=entry_points)
+        out, jobs = self.expect("acceptance-tester")
+        self.assertEqual(self.mode(*jobs[0]), "write")
+        self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 1:"),
+                        self.sets(*jobs[0]))
+        self.assertNotIn("BUDGET", out)
+        self.answer(*jobs[0], "SEALED", checks="2", ambiguous="none")
+        return self.next(0)
+
+    # -------------------------------------------------------------- C1, C7
+
+    def test_a_verifier_filing_goes_to_define_before_any_coder(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        out, _, sets = self.define_job()
+        batch = Path(sets["proposals"].split("\n")[0])
+        self.assertEqual(batch, self.dir / "proposals" / "batch-1.md")
+        self.assertIn(NEW_1, batch.read_text())
+        self.assertIn("the verifier (verifier-1", batch.read_text().replace(" #", "-"))
+        self.assertIn("verifier-1", out["BUDGET"])
+        self.assertTrue(sets["rulings_file"].endswith("proposals/batch-1-rulings.md"))
+        out = self.next(0)  # Define has not answered: the same spawn again
+        self.assertEqual([w for w, _ in self.spawned(out)], ["define"])
+        self.assertFalse(any(b["worker"] == "coder" and b["n"] > 1
+                             for b in self.state()["briefs"]))
+
+    def test_the_mutation_stop_names_a_proposal_it_did_not_send(self):
+        job = self.to_first_pass()
+        self.propose(*job, PROPOSAL_ON_1)
+        self.answer(*job, "MUTATION_LEFT_CHANGES", tree="x", corrections="0",
+                    proposals="1")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("mutation step", report)
+        self.assertIn("condition 1", report)
+        self.assertFalse(any(b["worker"] == "define" and b["n"] > 1
+                             for b in self.state()["briefs"]))
+
+    def test_no_round_left_means_no_define_and_a_named_proposal(self):
+        job = self.to_first_pass(remaining=0)
+        self.file_from_verifier(job, PROPOSAL_ON_2)  # condition 1 is the open item
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("budget is used up", report)
+        self.assertIn("condition 2 (the verifier)", report)
+        self.assertFalse(any(b["worker"] == "define" and b["n"] > 1
+                             for b in self.state()["briefs"]))
+
+    # -------------------------------------------------------------- C5, C4
+
+    def test_a_standing_proposal_leaves_the_verifier_result_in_charge(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.answer_define(define, "STANDS", ("stands", "the ticket names the list only"))
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/evidence/corrections.md")
+        self.assertIn("already spent", out["BUDGET"])
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        self.expect("cleanup", "GREEN")
+        _, jobs = self.expect("verifier")
+        sets = self.sets(*jobs[0])
+        self.assertEqual(sets["mode"], "re-check")
+        self.assertIn("condition 1 stands as written", sets["rulings"])
+        self.assertIn("the ticket names the list only", sets["rulings"])
+        state = self.state()
+        self.assertEqual(state["budget"]["remaining"], state["budget"]["total"] - 1)
+
+    def test_stands_on_an_all_met_result_ends_phase_5(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job, nxt="ALL_MET")
+        _, define, _ = self.define_job()
+        self.answer_define(define, "STANDS", ("stands", "the ticket names the list only"))
+        self.next(6)
+        self.assertEqual([b["worker"] for b in self.state()["briefs"]].count("cleanup"), 1)
+
+    def test_a_stood_condition_is_never_offered_again(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job, PROPOSAL_ON_2)
+        _, define, _ = self.define_job()
+        self.answer_define(define, "STANDS", ("stands", "earliest first is the ask"))
+        _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        self.expect("cleanup", "GREEN")
+        _, jobs = self.expect("verifier")
+        self.file_from_verifier(jobs[0], PROPOSAL_ON_1_AND_2)
+        out, define, sets = self.define_job()
+        batch = Path(sets["proposals"].split("\n")[0]).read_text()
+        self.assertIn(NEW_1, batch)
+        self.assertNotIn("latest first", batch)
+        self.assertIn("- Target: condition 1\n", batch)
+        self.assertIn("part of this proposal was not sent", batch)
+        self.answer_define(define, "STANDS", ("stands", "the list only"))
+        _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        self.expect("cleanup", "GREEN")
+        _, jobs = self.expect("verifier")
+        self.file_from_verifier(jobs[0], PROPOSAL_ON_2)
+        out, jobs = self.expect("coder")  # condition 2 stood: no Define brief
+        self.assertIn("verifier-3", out["BUDGET"])
+        self.assertEqual(len(self.state()["proposals"]["batches"]), 2)
+
+    # -------------------------------------------------------------- C6, C3, S4, C7
+
+    def test_an_applied_change_runs_the_redo_in_order(self):
+        job = self.to_first_pass(remaining=2)
+        self.file_from_verifier(job)
+        out, define, _ = self.define_job()
+        self.assertIn("1 of 4 left", out["BUDGET"])
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        out = self.redo_to_coder()
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["coder"], out)
+        self.assertNotIn("BUDGET", out)
+        corrections = self.sets(*jobs[0])["corrections_file"]
+        self.assertEqual(corrections, f"{self.dir}/redo/plan-change-1.md")
+        brief = (self.dir / "briefs" / f"coder-{jobs[0][1]}.md").read_text()
+        self.assertNotIn("proposal", brief.lower())
+        self.assertNotIn("evidence/corrections.md", brief)
+        change = Path(corrections).read_text()
+        self.assertIn("show it in the detail view too", change)
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        out, jobs = self.expect("cleanup", "GREEN")
+        self.assertNotIn("BUDGET", out)
+        out, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        self.assertNotIn("BUDGET", out)
+        self.assertEqual(self.state()["budget"]["remaining"], 1)
+        # The first pass finds an open item: a new round, like any other.
+        self.spec_eval(v1="unmet")
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1", proposals="0")
+        out, jobs = self.expect("coder")
+        self.assertIn("spent `verifier-", out["BUDGET"])
+        self.assertIn("0 of 4 left", out["BUDGET"])
+
+    def test_an_unchanged_plan_goes_straight_to_cleanup(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        out = self.redo_to_coder(plan_change=False)
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["cleanup"], out)
+        self.assertEqual(self.sets(*jobs[0])["scope"], "phase5")
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0", proposals="0")
+        self.next(6)
+
+    def test_changed_entry_points_add_one_free_repair_before_the_coder(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        out = self.redo_to_coder(entry_points="yes")
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["acceptance-tester"], out)
+        self.assertEqual(self.mode(*jobs[0]), "repair")
+        self.assertIn("entry point", self.sets(*jobs[0])["scope"])
+        self.assertNotIn("BUDGET", out)
+        self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
+        self.expect("coder")
+
+    def test_a_rewrite_that_touches_another_conditions_file_is_refused(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        _, jobs = self.expect("planner", "REVISED", entry_points_changed="no")
+        _, jobs = self.expect("acceptance-tester")
+        sealed = self.dir / "acceptance" / "files" / "src" / "sort.acceptance.test.ts.sealed"
+        sealed.write_text("test\n// rewritten\n")
+        self.write_return("acceptance-tester", jobs[0][1],
+                          {"next": "SEALED", "checks": "2", "ambiguous": "none"})
+        r = self.autodev("record", "acceptance-tester", jobs[0][1], "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("src/sort.acceptance.test.ts.sealed changed", r.stdout)
+        sealed.write_text("test")
+        _, jobs = self.expect("acceptance-tester")  # re-briefed with the issue
+        brief = (self.dir / "briefs" / f"acceptance-tester-{jobs[0][1]}.md").read_text()
+        self.assertIn("sort.acceptance.test.ts.sealed changed", brief)
+        self.answer(*jobs[0], "SEALED", checks="2", ambiguous="none")
+
+    def test_a_redo_plan_that_quotes_the_new_statement_is_refused(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        _, jobs = self.expect("planner")
+        (self.dir / "IMPLEMENTATION.md").write_text(self.plan_text.replace(
+            "1. add the field", "1. " + NEW_1.lower()))
+        self.write_return("planner", jobs[0][1],
+                          {"next": "REVISED", "entry_points_changed": "no"})
+        r = self.autodev("record", "planner", jobs[0][1], "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("copies SPEC.md's wording", r.stdout)
+
+    def test_a_refused_define_answer_blocks_every_later_step(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.revise_spec("Only the owner can set", "Anyone can set")
+        self.rule(1, ("applied", "none"))
+        self.write_return("define", define[1], {"next": "REVISED", "high_risk": "yes",
+                                                "reading": "none"})
+        r = self.autodev("record", "define", define[1], "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("security criterion S1 changed", r.stdout)
+        _, jobs = self.expect("define")
+        self.assertIn("S1", self.sets(*jobs[0]).get("previous_issues", "") or
+                      (self.dir / "briefs" / f"define-{jobs[0][1]}.md").read_text())
+        self.revise_spec("Anyone can set", "Only the owner can set")
+        self.answer_define(jobs[0], "REVISED", ("applied", "none"))
+        self.expect("planner")
+
+    def test_one_round_covers_the_filing_and_the_whole_redo(self):
+        job = self.to_first_pass(remaining=2)
+        self.file_from_verifier(job)
+        out, define, _ = self.define_job()
+        self.assertIn("spent `verifier-1`", out["BUDGET"])
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        out = self.redo_to_coder()
+        self.assertNotIn("BUDGET", out)
+        self.assertEqual(self.state()["budget"]["remaining"], 1)
+
+    # -------------------------------------------------------------- C9
+
+    def test_a_checkpoint_before_define_resumes_with_define(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1
+        self.write_state(state)
+        out = self.next(6)
+        self.after(out)
+        self.assertFalse((self.dir / "proposals" / "batch-1.md").exists())
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 80
+        self.write_state(state)
+        self.resume()
+        _, _, sets = self.define_job()
+        self.assertIn("batch-1.md", sets["proposals"])
+
+    def test_a_resume_after_the_plan_revision_goes_on_to_the_tester(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        self.expect("planner", "REVISED", entry_points_changed="no")
+        left = self.state()["budget"]["remaining"]
+        self.resume()
+        _, jobs = self.expect("acceptance-tester")
+        self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 1:"))
+        briefs = [b["worker"] for b in self.state()["briefs"]]
+        self.assertEqual((briefs.count("define"), briefs.count("planner")), (2, 2))
+        self.assertEqual(self.state()["budget"]["remaining"], left)
+
+    # -------------------------------------------------------------- Phase 6
+
+    def judge_files(self, review=OPEN_REVIEW, proposal=PROPOSAL_ON_1, security_proposal=None,
+                    judged="MUST_FIX", corrections=None):
+        """S3's first pass: the panel, the security review (filing
+        `security_proposal`), then the judge filing `proposal`."""
+        self.ship_ready()
+        _, jobs = self.reviewers(proposal=security_proposal)
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(review.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
+            "missing due date\n" if judged == "MUST_FIX" and corrections is None
+            else "# Required changes\nNone.\n")
+        _, jobs = self.expect("review-judge")  # never Define before the pass settles
+        self.propose(*jobs[0], proposal)
+        self.answer(*jobs[0], judged, must_fix_open=str(int(judged == "MUST_FIX")),
+                    revote="0", proposals="1")
+        return jobs[0]
+
+    def test_a_judge_filing_with_a_must_fix_is_accepted_and_sent(self):
+        self.judge_files()
+        out, _, sets = self.define_job()
+        self.assertIn("pass-1-c4", out["BUDGET"])
+        batch = Path(sets["proposals"].split("\n")[0]).read_text()
+        self.assertIn("the code review (review-judge", batch)
+        self.assertIn(NEW_1, batch)
+
+    def test_a_pass_settles_before_its_proposals_go_out_together(self):
+        criterion = ("# Spec proposals\n\n## P1\n- Target: new security criterion\n"
+                     "- Why: the due date is visible to anyone who knows the id\n"
+                     "- Comment: none\n- New text:\nS2. Only the owner can read a todo's "
+                     "due date\n   - Example: Given user B, when B reads A's todo, then it "
+                     "is refused with 404.\n   - Verify by: integration\n")
+        self.judge_files(security_proposal=criterion)
+        _, _, sets = self.define_job()
+        batch = Path(sets["proposals"].split("\n")[0]).read_text()
+        self.assertIn("## P1\n- Target: condition 1", batch)
+        self.assertIn("## P2\n- Target: new security criterion", batch)
+        self.assertIn("the security review (security-reviewer", batch)
+        self.assertEqual(len(self.state()["proposals"]["batches"]), 1)
+
+    def test_an_applied_review_proposal_is_reviewed_and_named_at_the_pr_gate(self):
+        self.judge_files()
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        out = self.redo_to_coder()
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["coder"], out)
+        self.assertNotIn("BUDGET", out)
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/redo/plan-change-1.md and "
+                         f"{self.dir}/review/pass-1/corrections.md")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        _, jobs = self.expect("cleanup", "GREEN")
+        self.assertEqual(self.sets(*jobs[0])["scope"], "review-fix")
+        _, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0", proposals="0")
+        self.review_clean()  # a new pass on what the redo changed
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], "review-fix")
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        summary = " ".join(out["SUMMARY"])
+        self.assertIn("Spec changed during the run: condition 1 (proposed by the code "
+                      "review)", summary)
+        self.assertEqual(self.state()["budget"]["remaining"],
+                         self.state()["budget"]["total"] - 1)
+
+    def test_a_review_redo_that_touched_no_file_skips_the_extra_pass(self):
+        self.judge_files(review=CLEAN_REVIEW, judged="CLEAN")
+        out, define, _ = self.define_job()
+        self.assertIn("spec-pass-1-c4", out["BUDGET"])
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        out = self.redo_to_coder(plan_change=False)
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["cleanup"], out)
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0", proposals="0")
+        out = self.next(5)  # no second review pass
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertEqual(len(self.state()["phase6"]["passes"]), 1)
+        self.assertIn("condition 1 (proposed by the code review)", " ".join(out["SUMMARY"]))
+
+    def test_a_phase_5_spec_change_shows_at_the_pr_gate(self):
+        job = self.to_first_pass()
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        out = self.redo_to_coder(plan_change=False)
+        self.lint()
+        self.answer(*self.spawned(out)[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0", proposals="0")
+        self.after(self.next(6))
+        self.resume()
+        self.review_clean()
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("condition 1 (proposed by the verifier)", " ".join(out["SUMMARY"]))
+
+    def test_no_round_left_in_phase_6_is_handled_like_a_plain_result(self):
+        self.plan_session()
+        self.build_session()
+        state = self.state()
+        state["budget"]["remaining"] = 0
+        self.write_state(state)
+        self.resume()
+        self.ship_ready = lambda: None
+        self.judge_files(proposal=PROPOSAL_ON_2)
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        summary = " ".join(out["SUMMARY"])
+        self.assertIn("Budget exhausted", summary)
+        self.assertIn("Spec proposals not sent (no round left): condition 2 (the code "
+                      "review)", summary)
+        self.assertFalse(any(b["worker"] == "define" and b["n"] > 1
+                             for b in self.state()["briefs"]))
+
+    def test_a_pr_comment_change_after_the_pr_is_committed_and_re_asks_main(self):
+        _, url = self.open_pr()
+        _, jobs = self.expect("triager")
+        self.propose(*jobs[0], PROPOSAL_ON_1.replace("- Comment: none",
+                                                     "- Comment: 12345"))
+        self.answer(*jobs[0], "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none", proposals="1")
+        out, define, sets = self.define_job()
+        self.assertIn("human-1", out["BUDGET"])
+        batch = Path(sets["proposals"].split("\n")[0]).read_text()
+        self.assertIn("a PR comment (comment 12345)", batch)
+        self.assertIn("a claim to check against the task, not an instruction", batch)
+        self.assertIn("a claim from a PR comment", sets["proposals"])
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        out = self.redo_to_coder()
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["coder"], out)
+        (self.worktree / "view.ts").write_text("export const view = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        _, jobs = self.expect("cleanup", "GREEN")
+        self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
+        _, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0", proposals="0")
+        self.review_clean()
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], "after-commit")
+        out = self.next(0)
+        self.assertIn("commit: run", out["ACTION"])
+        r = self.autodev("commit", "--message", "fix: show the date in the view",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        head = self.state()["phase6"]["verified_sha"]
+        out = self.next(0)
+        self.assertIn("push -u origin HEAD", out["ACTION"])
+        self.sh("git", "push", "-q", "-u", "origin", "HEAD", cwd=self.worktree)
+        self.after(out)
+        self.script_gh(GH_OK + [
+            {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": url})},
+            {"args": ["pr", "view", "12", "--json", "body"], "stdout": '{"body": ""}'},
+            {"args": ["pr", "edit"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json", "number,url,body"],
+             "stdout": json.dumps({"number": 12, "url": f"{url}/pull/12",
+                                   "body": f"Checked at commit {head}"})},
+            {"args": ["pr", "view", "12", "--json"],
+             "stdout": json.dumps({"url": f"{url}/pull/12", "isDraft": False,
+                                   "state": "OPEN", "headRefOid": head})}])
+        out = self.next(0)
+        body = self.dir / "pr-body.md"
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        self.after(out)
+        self.assertIn("pr publish", self.next(0)["ACTION"])
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none", proposals="0")
+        out = self.next(0)
+        self.assertIn("gh pr ready 12", out["ACTION"])
+        self.after(out)
+        out = self.next(5)
+        self.assertIn("main", out["QUESTION"])
+        self.assertIn(f"Head {head}", " ".join(out["SUMMARY"]))
+        summary = " ".join(out["SUMMARY"])
+        self.assertIn("condition 1 (proposed by a PR comment (comment 12345, via the "
+                      "triager))", summary)
+        self.assertNotIn("merge-pr", json.dumps(out))
+
+    def test_a_triager_that_edits_the_spec_does_not_reach_define(self):
+        self.open_pr()
+        _, jobs = self.expect("triager")
+        spec = self.dir / "SPEC.md"
+        spec.write_text(spec.read_text().split("2. The list sorts")[0] + "\n## Assumptions"
+                        + spec.read_text().split("## Assumptions")[1])
+        self.write_return("triager", jobs[0][1], {
+            "next": "TRIAGED", "blockers": "0", "acceptance_checks": "0",
+            "triage_file": "none", "checks_file": "none", "proposals": "0"})
+        r = self.autodev("record", "triager", jobs[0][1], "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("may only propose", r.stdout)
+        self.expect("triager")  # re-briefed with the issue, never Define
+        self.assertFalse(any(b["worker"] == "define" and b["n"] > 1
+                             for b in self.state()["briefs"]))
+
+    def test_an_unknown_condition_rebriefs_the_verifier_not_define(self):
+        job = self.to_first_pass()
+        self.propose(*job, PROPOSAL_ON_1.replace("condition 1", "condition 9").replace(
+            "\n1. A todo", "\n9. A todo"))
+        self.spec_eval(v1="unmet")
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "corrections.md").write_text(
+            "# Required changes\n1. Show the due date in src/view.ts as well\n")
+        self.write_return("verifier", job[1], {"next": "CORRECT", "tree": "x",
+                                               "corrections": "1", "proposals": "1"})
+        r = self.autodev("record", "verifier", job[1], "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("condition 9", r.stdout)
+        _, jobs = self.expect("verifier")
+        brief = (self.dir / "briefs" / f"verifier-{jobs[0][1]}.md").read_text()
+        self.assertIn("condition 9", brief)
+        self.assertFalse(any(b["worker"] == "define" and b["n"] > 1
+                             for b in self.state()["briefs"]))
+
+    def test_no_round_left_on_an_all_met_result_ends_phase_5_and_names_it(self):
+        job = self.to_first_pass(remaining=0)
+        self.file_from_verifier(job, nxt="ALL_MET")
+        self.after(self.next(6))
+        self.resume()
+        self.review_clean()
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("Spec proposals not sent (no round left): condition 1 (the "
+                      "verifier)", " ".join(out["SUMMARY"]))
+
+    def test_no_round_left_after_the_commit_stops_and_names_the_comment_s_proposal(self):
+        self.open_pr()
+        state = self.state()
+        state["budget"]["remaining"] = 0
+        self.write_state(state)
+        _, jobs = self.expect("triager")
+        (self.dir / "triage" / "human-1.md").write_text(
+            "# Required changes\n1. c-77: keep the field name when it is empty\n")
+        self.propose(*jobs[0], PROPOSAL_ON_2.replace("- Comment: none", "- Comment: 777"))
+        self.answer(*jobs[0], "TRIAGED", blockers="1", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "human-1.md"),
+                    checks_file="none", proposals="1")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("budget is used up", report)
+        self.assertIn("condition 2 (a PR comment (comment 777, via the triager))", report)
+
+    def applied_redo_of_1(self, job):
+        self.file_from_verifier(job)
+        _, define, _ = self.define_job()
+        self.revise_spec()
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        self.expect("planner", "REVISED", entry_points_changed="no")
+        _, jobs = self.expect("acceptance-tester")
+        return jobs[0]
+
+    def test_a_redo_whose_rewrite_keeps_gaps_stops(self):
+        tester = self.applied_redo_of_1(self.to_first_pass())
+        base_run = self.dir / "acceptance" / "base-run" / "C1.txt"
+        base_run.unlink()  # the rewrite left condition 1 without its base run
+        self.answer(*tester, "SEALED", checks="2", ambiguous="none")
+        out, jobs = self.expect("acceptance-tester")
+        self.assertNotIn("BUDGET", out)
+        self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 1:"))
+        self.assertIn("no base-run/C1.txt", self.sets(*jobs[0])["scope"])
+        self.answer(*jobs[0], "SEALED", checks="2", ambiguous="none")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("still left gaps", report)
+        self.assertIn("no base-run/C1.txt", report)
+
+    def test_a_redo_ambiguity_gets_one_free_ruling(self):
+        tester = self.applied_redo_of_1(self.to_first_pass())
+        self.answer(*tester, "SEALED", checks="2", ambiguous="1")
+        out, jobs = self.expect("define")
+        self.assertNotIn("BUDGET", out)
+        self.assertIn("conditions 1", self.sets(*jobs[0])["ambiguous"])
+        self.answer(*jobs[0], "REVISED", high_risk="yes", reading="other")
+        out, jobs = self.expect("acceptance-tester")
+        self.assertNotIn("BUDGET", out)
+        self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 1:"))
+        self.answer(*jobs[0], "SEALED", checks="2", ambiguous="1")
+        out = self.next(4)
+        self.assertIn("still read two ways", " ".join(out["REPORT"]))
+        self.assertEqual([b["worker"] for b in self.state()["briefs"]].count("define"), 3)
+
+    def test_a_tester_ruling_lapses_once_its_condition_is_rewritten(self):
+        job = self.to_first_pass()
+        defective = '`src/due.acceptance.test.ts` :: "shows the due date"'
+        self.spec_eval(v1="partial", defective=defective)
+        self.answer(*job, "REPAIR", tree="x", corrections="0")
+        self.expect("acceptance-tester", "STANDS", checks="0", ambiguous="none")
+        _, jobs = self.expect("verifier")
+        tester = self.applied_redo_of_1(jobs[0])
+        self.answer(*tester, "SEALED", checks="2", ambiguous="none")
+        _, jobs = self.expect("cleanup")  # the plan did not change
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        self.spec_eval(v1="partial", defective=defective)
+        self.answer(*jobs[0], "REPAIR", tree="x", corrections="0", proposals="0")
+        _, jobs = self.expect("acceptance-tester")  # not the disagreement stop
+        self.assertEqual(self.mode(*jobs[0]), "repair")
+
+    def test_a_check_finding_on_an_unchanged_condition_joins_the_redo_repair(self):
+        self.judge_files(review=CHECK_REVIEW, proposal=PROPOSAL_ON_2, corrections="none")
+        _, define, _ = self.define_job()
+        self.revise_spec("earliest first", "latest first")
+        self.answer_define(define, "REVISED", ("applied", "none"))
+        self.expect("planner", "REVISED", entry_points_changed="no")
+        out, jobs = self.expect("acceptance-tester")
+        self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 2:"))
+        self.answer(*jobs[0], "SEALED", checks="1", ambiguous="none")
+        out, jobs = self.expect("acceptance-tester")
+        self.assertEqual(self.mode(*jobs[0]), "repair")
+        self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 1, S1:"))
+        self.assertNotIn("BUDGET", out)
+        self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
+        self.expect("cleanup")  # nothing for the coder: no file was carried
+
+
 class QuoteTest(RunCase):
     def test_printed_commands_survive_a_path_with_spaces(self):
         self.repo = self.tmp / "my app"
@@ -2452,3 +3176,944 @@ class TextOutputTest(NextCase):
         self.assertFalse(any(ln.startswith("RULE:") for ln in lines))
         r = self.autodev("next", "--dir", self.dir, "--explain")
         self.assertIn("RULE: a brief was issued", r.stdout)
+
+
+# A spec with five conditions and S1, for the spec-proposal path. Condition 2's
+# checks are alone in one file, condition 4's in another, and the rest share a
+# third. Examples are in TypeScript.
+PROPOSAL_SPEC = """\
+# Spec — due dates
+
+## Context
+Todos have no due dates.
+
+## Conditions
+1. A todo can carry a due date that the list shows next to its title
+   - Example: Given todo 7, when its due date is set to 2026-01-02, then the list shows 2026-01-02.
+   - Edge: none — a todo with no date shows no date
+   - Verify by: integration
+2. The list sorts todos by due date with the earliest first
+   - Example: Given two todos, when listed, then the earlier one is first.
+   - Edge: none — every todo has a place in the order
+   - Verify by: integration
+3. A todo whose due date has passed is marked overdue in the list
+   - Example: Given todo 7 due 2020-01-01, when listed on 2026-01-02, then it is marked overdue.
+   - Edge: none — a date is either past or not
+   - Verify by: integration
+4. Setting a due date in the past is refused with status 400
+   - Example: Given todo 7, when its due date is set to 2020-01-01, then it is refused with 400.
+   - Edge: none — every past date is refused alike
+   - Verify by: integration
+5. Clearing a due date moves the todo to the end of the list
+   - Example: Given three dated todos, when the first one's date is cleared, then it is listed last.
+   - Edge: none — a cleared todo sorts like an undated one
+   - Verify by: integration
+
+## Assumptions
+- none
+
+## Security/Compliance criteria
+S1. Every query is parameterized
+   - Example: Given a title with a quote, when the todo is saved, then it is a query parameter.
+   - Verify by: integration
+"""
+PROPOSAL_CHECKS = {  # condition: (file, test name, base-run failure)
+    "1": ("src/due.acceptance.test.ts", "shows the due date", "no field"),
+    "2": ("src/two.acceptance.test.ts", "sorts earliest first", "unsorted"),
+    "3": ("src/due.acceptance.test.ts", "marks a past due date overdue", "no mark"),
+    "4": ("src/four.acceptance.test.ts", "refuses a past due date", "got 200"),
+    "5": ("src/due.acceptance.test.ts", "puts a cleared todo last", "unsorted"),
+    "S1": ("src/due.acceptance.test.ts", "sends the title as a parameter", "inlined"),
+}
+PROPOSAL_MANIFEST = (
+    "# Acceptance checks — due dates\n\n"
+    "| # | Condition | Check (path :: test name) | Covers | Level | Kind | Base run |\n"
+    "|---|-----------|---------------------------|--------|-------|------|----------|\n"
+    + "".join(f"| {cid} | condition {cid} | `{path}` :: \"{name}\" | Example | integration "
+              f"| fail-to-pass | failed: {why} |\n"
+              for cid, (path, name, why) in PROPOSAL_CHECKS.items())
+    + "\n## Not automatable\nNone.\n\n## Assumptions\n- none\n")
+EXAMPLE_4 = ("   - Example: Given todo 7, when its due date is set to 2020-01-01, then it "
+             "is refused with 400.\n"
+             "   - Edge: none — every past date is refused alike\n"
+             "   - Verify by: integration\n")
+# A proposal's new text, each with words no other file holds, to trace it by.
+NEW_4 = ("4. Setting a due date in the past is refused with status 400, and repeated "
+         "refusals from one client are slowed by a quiet backoff window\n" + EXAMPLE_4)
+NEW_4_AGAIN = ("4. Setting a due date in the past is refused with status 400 and a polite "
+               "retry hint naming the earliest allowed date\n" + EXAMPLE_4)
+NEW_3 = ("3. A todo whose due date has passed is marked overdue in the list, with the "
+         "count of days late printed beside the marker\n"
+         "   - Example: Given todo 7 due 2020-01-01, when listed on 2026-01-02, then it is "
+         "marked overdue.\n"
+         "   - Edge: none — a date is either past or not\n"
+         "   - Verify by: integration\n")
+NEW_S2 = ("S2. Each due-date write is logged together with the acting user's account "
+          "number\n"
+          "   - Example: Given user A, when A sets a due date, then the audit log holds "
+          "A's account number.\n"
+          "   - Verify by: integration\n")
+MARK_4, MARK_4_AGAIN, MARK_3, MARK_S2 = ("quiet backoff window", "polite retry hint",
+                                         "count of days late", "acting user's account")
+WHY = "the code rightly does more than the condition allows, and the review asked for it"
+
+
+def proposal_block(k, target, new_text, why=WHY, comment="none"):
+    """One proposal, in the shape templates/PROPOSAL.md gives."""
+    lines = [f"## P{k}", f"- Target: {target}"]
+    if why is not None:
+        lines.append(f"- Why: {why}")
+    lines += [f"- Comment: {comment}", "- New text:", new_text]
+    return "\n".join(lines) + "\n"
+
+
+def proposals(*blocks):
+    return "# Spec proposals\n\n" + "\n".join(blocks)
+
+
+class SpecProposalTest(NextCase):
+    """Later workers propose changes to SPEC.md; the Define agent applies each
+    one or answers STANDS, and `next` acts on its answer."""
+
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    open_pr = ShipTest.open_pr
+
+    def setUp(self):
+        super().setUp()
+        acc = self.dir / "acceptance"
+        (self.dir / "SPEC.md").write_text(PROPOSAL_SPEC)
+        (acc / "MANIFEST.md").write_text(PROPOSAL_MANIFEST)
+        shutil.rmtree(acc / "files")
+        shutil.rmtree(acc / "base-run")
+        (acc / "base-run").mkdir()
+        for cid, (path, name, why) in PROPOSAL_CHECKS.items():
+            (acc / "base-run" / f"C{cid}.txt").write_text(
+                f"Commit: abc\nCommand: npx vitest run\nResult: {name}: failed: {why}\n"
+                "Output:\n x\n")
+            sealed = acc / "files" / f"{path}.sealed"
+            sealed.parent.mkdir(parents=True, exist_ok=True)
+            with sealed.open("a") as f:
+                f.write(f"test('{name}')\n")
+
+    def spec_eval(self, v1="met", defective="None.", verdicts=None):
+        """SPEC_EVAL.md for the five conditions and S1 (each met unless
+        `verdicts` says otherwise)."""
+        verdicts = {"1": v1, **(verdicts or {})}
+        rows = "".join(
+            f"| {cid} | condition {cid} | {verdicts.get(cid, 'met')} | Strong | "
+            + ("the code does more than the condition allows" if verdicts.get(cid, "met")
+               != "met" else f"acceptance passed (`evidence/C{cid}.txt`)") + " |\n"
+            for cid in PROPOSAL_CHECKS)
+        text = SPEC_EVAL.format(tree=self.tree(), v1="met", v2="met", e2="ran the sort",
+                                judgment="Justified", defective=defective)
+        head, rest = text.split("|---|-----------|---------|------|----------|\n", 1)
+        rest = rest.split("\n\n", 1)[1]
+        (self.dir / "SPEC_EVAL.md").write_text(
+            head + "|---|-----------|---------|------|----------|\n" + rows + "\n" + rest)
+
+    # -------------------------------------------------------------- helpers
+
+    def brief_text(self, worker, n):
+        return (self.dir / "briefs" / f"{worker}-{n}.md").read_text()
+
+    def given(self, worker, n):
+        """What a worker is given: its brief and every file the brief names."""
+        brief = self.brief_text(worker, n)
+        texts = [brief]
+        for token in re.findall(r"/[^\s`'\"]+", brief):
+            path = Path(token.rstrip(".,;:)"))
+            if path.is_file():
+                texts.append(path.read_text(errors="replace"))
+        return "\n".join(texts)
+
+    def proposal_path(self, worker, n):
+        """Where job <worker>-<n> writes its proposals: the path its brief
+        names, else proposals/<worker>-<n>.md."""
+        match = re.search(r"^proposal_file: (\S+)", self.brief_text(worker, n), re.M)
+        if match and match.group(1) != "none":
+            return Path(match.group(1))
+        return self.dir / "proposals" / f"{worker}-{n}.md"
+
+    def file_proposals(self, worker, n, *blocks):
+        path = self.proposal_path(worker, n)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(proposals(*blocks))
+
+    def record(self, worker, n, nxt, **data):
+        """Record job <worker>-<n> without asserting the outcome."""
+        self.write_return(worker, n, {"next": nxt, **data})
+        return self.autodev("record", worker, n, "--dir", self.dir)
+
+    def corrections(self, text="Let a past date through the retry guard in src/due.ts"):
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "corrections.md").write_text(
+            f"# Required changes\n1. {text}\n")
+
+    def briefs_of(self, worker):
+        return [b for b in self.state()["briefs"] if b["worker"] == worker]
+
+    def budget_text(self, out):
+        budget = out.get("BUDGET", "")
+        return " ".join(budget) if isinstance(budget, list) else budget
+
+    def to_first_pass(self):
+        """Plan and build, then the verifier's first pass is spawned."""
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        _, jobs = self.first_pass()
+        return jobs[0]
+
+    def verifier_files(self, nxt="CORRECT", blocks=None):
+        """The first pass returns `nxt` with condition 4 partial (or every
+        condition met for ALL_MET) and files `blocks` (a proposal on
+        condition 4 by default). Returns the verifier's job."""
+        job = self.to_first_pass()
+        self.spec_eval(verdicts={"4": "partial"} if nxt == "CORRECT" else None)
+        if nxt == "CORRECT":
+            self.corrections()
+        self.file_proposals(*job, *(blocks or [proposal_block(1, "condition 4", NEW_4)]))
+        self.answer(*job, nxt, tree="x", corrections="1" if nxt == "CORRECT" else "0",
+                    proposals=str(len(blocks or [1])))
+        return job
+
+    # -------------------------------------------------------------- condition 1
+
+    def test_a_verifier_proposal_goes_to_the_define_agent_before_any_coder(self):
+        self.verifier_files()
+        out, jobs = self.expect("define")
+        self.assertEqual(self.mode(*jobs[0]), "revise")
+        self.assertIn(MARK_4, self.given(*jobs[0]))
+        self.assertEqual(self.briefs_of("coder")[-1]["n"], 1)
+        out = self.next(0)  # Define's answer is not recorded yet: still no coder
+        self.assertEqual([w for w, _ in self.spawned(out)], ["define"])
+        self.assertEqual(len(self.briefs_of("coder")), 1)
+
+    def test_a_proposal_on_a_condition_the_spec_lacks_is_refused_and_the_filer_rebriefed(self):
+        job = self.to_first_pass()
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        new_9 = NEW_4.replace("4. Setting", "9. Setting", 1)
+        self.file_proposals(*job, proposal_block(1, "condition 9", new_9))
+        r = self.record(*job, "CORRECT", tree="x", corrections="1", proposals="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"\b9\b")
+        out = self.next(0)
+        self.assertEqual([w for w, _ in self.spawned(out)], ["verifier"])
+        retry = self.spawned(out)[0]
+        self.assertRegex(self.brief_text(*retry), r"\b9\b")
+        self.assertEqual(self.briefs_of("define")[-1]["n"], 1)  # only Phase 2's
+
+    def test_a_security_proposal_waits_for_the_judge_and_goes_out_with_its_proposal(self):
+        self.ship_ready()
+        jobs = self.spawned(self.next(0))
+        sec = next(j for j in jobs if j[0].startswith("security-reviewer"))
+        panel = [j for j in jobs if j[0] == "code-reviewer"]
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.file_proposals(*sec, proposal_block(1, "new security criterion", NEW_S2))
+        self.answer(*sec, "CLEAN", must_fix="0", pre_existing="0", proposals="1")
+        self.assertNotIn("define", [w for w, _ in self.spawned(self.next(0))])
+        for w, n in panel:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        out = self.next(0)
+        self.assertEqual({w for w, _ in self.spawned(out)}, {"review-judge"})  # judge first
+        judge = next(j for j in self.spawned(out) if self.mode(*j) == "consolidate")
+        self.file_proposals(*judge, proposal_block(1, "condition 4", NEW_4))
+        self.answer(*judge, "CLEAN", must_fix_open="0", revote="0", proposals="1")
+        _, jobs = self.expect("define")
+        self.assertEqual(len(jobs), 1)
+        given = self.given(*jobs[0])
+        self.assertIn(MARK_4, given)
+        self.assertIn(MARK_S2, given)
+
+    def test_a_mutation_stop_still_stops_and_names_the_unsent_proposal(self):
+        job = self.to_first_pass()
+        self.file_proposals(*job, proposal_block(1, "condition 4", NEW_4))
+        self.answer(*job, "MUTATION_LEFT_CHANGES", tree="x", corrections="0", proposals="1")
+        out = self.next(4)
+        self.assertRegex(" ".join(out["REPORT"]), r"(?i)condition 4\b")
+        self.assertEqual(len(self.briefs_of("define")), 1)
+
+    # -------------------------------------------------------------- condition 2
+
+    def review_with_must_fix(self):
+        """S3's first review pass, whose panel found one must-fix and whose
+        security review is clean; returns the consolidating judge's job, not
+        answered."""
+        self.ship_ready()
+        return self.review_with_must_fix_after_build()
+
+    def test_a_judge_must_fix_with_a_proposal_is_recorded_and_sent_to_define(self):
+        judge = self.review_with_must_fix()
+        self.file_proposals(*judge, proposal_block(1, "condition 4", NEW_4))
+        r = self.record(*judge, "MUST_FIX", must_fix_open="1", revote="0", proposals="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("define")
+        self.assertIn(MARK_4, self.given(*jobs[0]))
+
+    def test_a_coder_or_cleanup_result_carrying_a_proposal_is_refused(self):
+        self.plan_session()
+        self.resume()
+        _, jobs = self.expect("coder")
+        self.file_proposals(*jobs[0], proposal_block(1, "condition 4", NEW_4))
+        r = self.record(*jobs[0], "BUILT", blocked="0", test_changes="none", proposals="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.strip())
+        _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")  # re-briefed
+        self.proposal_path("coder", jobs[0][1] - 1).unlink()
+        _, jobs = self.expect("cleanup")
+        self.lint()
+        self.file_proposals(*jobs[0], proposal_block(1, "condition 4", NEW_4))
+        r = self.record(*jobs[0], "GREEN", proposals="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.strip())
+        self.assertNotIn("define", [w for w, _ in self.spawned(self.next(0))])
+        self.assertEqual(len(self.briefs_of("define")), 1)
+
+    def test_a_judge_checking_security_findings_may_not_file_a_proposal(self):
+        self.ship_ready()
+        jobs = self.panel(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
+        self.assertEqual(len(jobs), 1)  # the judge's security-verify job
+        (self.dir / "review" / "security-corrections.md").write_text(
+            "# Required changes\n1. S3: in src/due.ts, check that the caller owns the todo "
+            "before its date is stored\n")
+        self.file_proposals(*jobs[0], proposal_block(1, "condition 4", NEW_4))
+        r = self.record(*jobs[0], "VERIFIED", must_fix_open="1", revote="0", proposals="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.strip())
+        self.assertNotIn("define", [w for w, _ in self.spawned(self.next(0))])
+        self.assertEqual(len(self.briefs_of("define")), 1)
+
+    def test_a_ci_triager_may_not_file_a_proposal(self):
+        state = self.state()
+        state["settings"]["ci"] = "github"
+        self.write_state(state)
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        _, jobs = self.expect("triager")
+        self.assertEqual(self.mode(*jobs[0]), "ci")
+        (self.dir / "triage" / "ci-1.md").write_text(
+            "# Required changes\n1. Handle a missing due date in src/sort.ts\n")
+        self.file_proposals(*jobs[0], proposal_block(1, "condition 4", NEW_4))
+        r = self.record(*jobs[0], "CODE", blockers="0", acceptance_checks="0",
+                        triage_file=str(self.dir / "triage" / "ci-1.md"),
+                        checks_file="none", proposals="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.strip())
+        self.assertNotIn("define", [w for w, _ in self.spawned(self.next(0))])
+        self.assertEqual(len(self.briefs_of("define")), 1)
+
+    def test_a_proposal_with_no_reason_or_that_deletes_a_condition_is_refused(self):
+        job = self.to_first_pass()
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        cases = {
+            "no reason": proposal_block(1, "condition 4", NEW_4, why=None),
+            "deletes condition 3": proposal_block(1, "delete condition 3", "3. (removed)\n"),
+        }
+        for name, block in cases.items():
+            with self.subTest(name):
+                self.file_proposals(*job, block)
+                r = self.record(*job, "CORRECT", tree="x", corrections="1", proposals="1")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertTrue(r.stdout.strip())
+        self.assertEqual([w for w, _ in self.spawned(self.next(0))], ["verifier"])
+        self.assertEqual(len(self.briefs_of("define")), 1)
+
+    # -------------------------------------------------------------- condition 3
+
+    def rule(self, n, answers):
+        """Define job n's rulings: one (answer, reason) per proposal, P1 first;
+        a reason of None leaves the Reason line out."""
+        blocks = []
+        for k, (answer, reason) in enumerate(answers, 1):
+            lines = [f"## P{k}", f"- Answer: {answer}"]
+            if reason is not None:
+                lines.append(f"- Reason: {reason}")
+            blocks.append("\n".join(lines) + "\n")
+        Path(self.sets("define", n)["rulings_file"]).write_text(
+            "# Rulings\n\n" + "\n".join(blocks))
+
+    def spec_with(self, **items):
+        """PROPOSAL_SPEC with whole items replaced (`c4=NEW_4`), or removed
+        (`c4=""`)."""
+        text = PROPOSAL_SPEC
+        for key, new in items.items():
+            cid = key[1:]
+            start = text.index(f"\n{cid}. ") + 1
+            nxt = re.search(r"\n(?:S?\d+\. |\n)", text[start:])
+            end = start + nxt.start() + 1
+            text = text[:start] + new + text[end:]
+        return text
+
+    def define_answers(self, n, spec, answers, nxt):
+        (self.dir / "SPEC.md").write_text(spec)
+        self.rule(n, answers)
+        self.write_return("define", n, {"next": nxt, "high_risk": "yes", "reading": "none"})
+        return self.autodev("record", "define", n, "--dir", self.dir)
+
+    def define_applies(self, n, spec=None):
+        r = self.define_answers(n, spec or self.spec_with(c4=NEW_4), [("applied", "none")],
+                                "REVISED")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def define_stands(self, n):
+        r = self.define_answers(n, PROPOSAL_SPEC, [(
+            "stands", "the condition is right as written: the extra guard is not needed")],
+            "STANDS")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_an_applied_answer_that_changed_only_its_condition_starts_the_plan_revision(self):
+        self.verifier_files()
+        _, jobs = self.expect("define")
+        self.define_applies(jobs[0][1])
+        _, jobs = self.expect("planner")
+        self.assertEqual(self.mode(*jobs[0]), "revise")
+        self.assertRegex(self.brief_text(*jobs[0]), r"(?i)condition[^\n]*\b4\b")
+
+    def test_an_answer_the_spec_does_not_bear_out_is_refused_and_define_rebriefed(self):
+        self.verifier_files()
+        _, jobs = self.expect("define")
+        n = jobs[0][1]
+        renumbered = self.spec_with(c4=NEW_4).replace("\n5. Clearing", "\n6. Clearing")
+        cases = [  # (name, SPEC.md, answer, next, a pattern the refusal shows)
+            ("applied, only Context changed",
+             PROPOSAL_SPEC.replace("Todos have no due dates.", "Todos have no dates."),
+             "applied", "REVISED", r"(?i)condition[^\n]*\b4\b"),
+            ("stands, condition 4 changed", self.spec_with(c4=NEW_4), "stands", "STANDS",
+             r"(?i)condition[^\n]*\b4\b"),
+            ("stands with no reason", PROPOSAL_SPEC, "stands", "STANDS", r"(?i)reason"),
+            ("applied, condition 2 edited too", self.spec_with(c4=NEW_4).replace(
+                "with the earliest first", "with the latest first"), "applied", "REVISED",
+             r"(?i)condition[^\n]*\b2\b"),
+            ("applied by deleting condition 4", self.spec_with(c4=""), "applied", "REVISED",
+             r"(?i)condition[^\n]*\b4\b"),
+            ("applied, condition 5 renumbered", renumbered, "applied", "REVISED",
+             r"(?i)condition[^\n]*\b[56]\b"),
+        ]
+        for name, spec, answer, nxt, pattern in cases:
+            with self.subTest(name):
+                reason = None if name == "stands with no reason" else (
+                    "none" if answer == "applied" else "right as written")
+                r = self.define_answers(n, spec, [(answer, reason)], nxt)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertRegex(r.stdout, pattern)
+        (self.dir / "SPEC.md").write_text(PROPOSAL_SPEC)
+        out = self.next(0)
+        self.assertEqual([w for w, _ in self.spawned(out)], ["define"])
+        self.assertRegex(self.brief_text(*self.spawned(out)[0]),
+                         r"(?i)condition[^\n]*\b[56]\b")
+        self.assertEqual(self.briefs_of("planner")[-1]["n"], 1)
+
+    # -------------------------------------------------------------- condition 4
+
+    def stood_on_4_then_judge_files(self, *blocks):
+        """Phase 5: an ALL_MET first pass files on condition 4 and the Define
+        agent answers STANDS; then S3's review pass, whose judge returns a
+        must-fix and `blocks`. Returns the define briefs before the judge."""
+        self.verifier_files("ALL_MET")
+        _, jobs = self.expect("define")
+        self.define_stands(jobs[0][1])
+        out = self.next(6)
+        self.after(out)
+        self.resume()
+        judge = self.review_with_must_fix_after_build()
+        self.file_proposals(*judge, *blocks)
+        self.answer(*judge, "MUST_FIX", must_fix_open="1", revote="0",
+                    proposals=str(len(blocks)))
+        return len(self.briefs_of("define"))
+
+    def review_with_must_fix_after_build(self):
+        """The same pass, once S3 has started."""
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a missing "
+            "due date\n")
+        _, jobs = self.expect("review-judge")
+        self.assertEqual([self.mode(*j) for j in jobs], ["consolidate"])
+        return jobs[0]
+
+    def test_a_proposal_on_a_condition_that_stood_is_not_sent_again(self):
+        before = self.stood_on_4_then_judge_files(
+            proposal_block(1, "condition 4", NEW_4_AGAIN))
+        _, jobs = self.expect("coder")
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/review/pass-1/corrections.md")
+        self.assertEqual(len(self.briefs_of("define")), before)
+
+    def test_a_later_proposal_on_another_condition_goes_to_define(self):
+        self.stood_on_4_then_judge_files(proposal_block(1, "condition 3", NEW_3))
+        _, jobs = self.expect("define")
+        self.assertIn(MARK_3, self.given(*jobs[0]))
+
+    def test_only_the_part_of_a_proposal_on_a_new_condition_is_sent(self):
+        self.stood_on_4_then_judge_files(
+            proposal_block(1, "conditions 3, 4", NEW_3 + NEW_4_AGAIN))
+        _, jobs = self.expect("define")
+        given = self.given(*jobs[0])
+        self.assertIn(MARK_3, given)
+        self.assertNotIn(MARK_4_AGAIN, given)
+        r = self.define_answers(jobs[0][1], PROPOSAL_SPEC, [(
+            "stands", "condition 3 is right as written")], "STANDS")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")  # the must-fix goes on as if no proposal
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/review/pass-1/corrections.md")
+
+    # -------------------------------------------------------------- condition 5
+
+    def test_after_stands_the_coder_gets_the_corrections_and_the_re_check_the_ruling(self):
+        self.verifier_files()
+        _, jobs = self.expect("define")
+        left = self.state()["budget"]["remaining"]
+        self.define_stands(jobs[0][1])
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/evidence/corrections.md")
+        self.assertEqual(self.state()["budget"]["remaining"], left)
+        self.assertNotRegex(self.budget_text(out), r"^spent")
+        (self.worktree / "due.ts").write_text("export const due = 2;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        self.expect("cleanup", "GREEN")
+        _, jobs = self.expect("verifier")
+        self.assertRegex(self.brief_text(*jobs[0]), r"(?i)condition 4\b[^\n]*stand")
+
+    def test_stands_on_an_all_met_result_ends_phase_5(self):
+        self.verifier_files("ALL_MET")
+        _, jobs = self.expect("define")
+        self.define_stands(jobs[0][1])
+        self.next(6)
+        self.assertEqual(len(self.briefs_of("coder")), 1)
+        self.assertEqual(len(self.briefs_of("cleanup")), 1)
+        self.assertEqual(self.state()["phases"]["5"]["status"], "done")
+
+    # -------------------------------------------------------------- condition 6
+
+    def rewrite_check_4(self, also=()):
+        """The tester's rewrite of condition 4's check, in place and sealed;
+        `also` names other installed check files it changes too."""
+        for rel in ("src/four.acceptance.test.ts", *also):
+            installed = self.worktree / rel
+            text = installed.read_text() + "test('slows repeated refusals')\n"
+            installed.write_text(text)
+            (self.dir / "acceptance" / "files" / f"{rel}.sealed").write_text(text)
+
+    def scope_ids(self, job):
+        match = re.match(r"ONLY conditions? ([^:]+):", self.sets(*job)["scope"])
+        self.assertTrue(match, self.sets(*job)["scope"])
+        return [x.strip() for x in match.group(1).split(",")]
+
+    def redo(self, plan=True, entry_points="no", code=True, verify=True):
+        """The redo after an applied proposal on condition 4, up to the
+        verifier's pass (answered ALL_MET when `verify`). Returns every
+        action's output."""
+        outs = []
+        out, jobs = self.expect("planner")
+        outs.append(out)
+        self.assertEqual(self.mode(*jobs[0]), "revise")
+        if plan:
+            (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION.replace(
+                "1. add the field\n", "1. add the field\n2. add a backoff counter beside "
+                                      "the date check in src/due.ts\n"))
+        self.answer(*jobs[0], "REVISED", entry_points_changed=entry_points)
+        out, jobs = self.expect("acceptance-tester")
+        outs.append(out)
+        self.assertEqual(self.mode(*jobs[0]), "write")
+        self.assertEqual(self.scope_ids(jobs[0]), ["4"])
+        self.rewrite_check_4()
+        self.answer(*jobs[0], "SEALED", checks="1", ambiguous="none")
+        if entry_points == "yes":
+            out, jobs = self.expect("acceptance-tester")
+            outs.append(out)
+            self.assertEqual(self.mode(*jobs[0]), "repair")
+            self.assertIn("entry point", self.sets(*jobs[0])["scope"])
+            self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
+        if plan or code:
+            out, jobs = self.expect("coder")
+            outs.append(out)
+            given = self.given(*jobs[0])
+            if plan:
+                self.assertIn("add a backoff counter beside the date check", given)
+            self.assertNotIn("evidence/corrections.md", self.sets(*jobs[0])["corrections_file"])
+            (self.worktree / "due.ts").write_text("export const due = 3;\n")
+            self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.lint()
+        out, _ = self.expect("cleanup", "GREEN")
+        outs.append(out)
+        out, jobs = self.expect("verifier")
+        outs.append(out)
+        self.assertEqual(self.sets(*jobs[0])["mode"], "first pass")
+        if verify:
+            self.spec_eval()
+            self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        return outs
+
+    def apply_on_4(self):
+        self.verifier_files()
+        out, jobs = self.expect("define")
+        self.define_applies(jobs[0][1])
+        return out
+
+    def test_an_applied_change_redoes_the_plan_the_changed_checks_the_code_and_the_pass(self):
+        files = self.dir / "acceptance" / "files" / "src"
+        unchanged = {name: (files / name).read_text()
+                     for name in ("due.acceptance.test.ts.sealed",
+                                  "two.acceptance.test.ts.sealed")}
+        self.apply_on_4()
+        self.redo()
+        self.next(6)
+        self.assertEqual(len(self.briefs_of("coder")), 2)  # the build and the redo
+        self.assertEqual({name: (files / name).read_text() for name in unchanged}, unchanged)
+
+    def test_a_redo_rewrite_that_changes_another_condition_s_file_is_refused(self):
+        self.apply_on_4()
+        _, jobs = self.expect("planner")
+        self.answer(*jobs[0], "REVISED", entry_points_changed="no")
+        _, jobs = self.expect("acceptance-tester")
+        self.rewrite_check_4(also=("src/two.acceptance.test.ts",))
+        r = self.record(*jobs[0], "SEALED", checks="1", ambiguous="none")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("src/two.acceptance.test.ts", r.stdout)
+
+    def test_a_plan_left_as_it_was_skips_the_coder(self):
+        self.apply_on_4()
+        self.redo(plan=False, code=False)
+        self.assertEqual(len(self.briefs_of("coder")), 1)
+
+    def test_changed_entry_points_add_one_free_repair_before_the_coder(self):
+        self.apply_on_4()
+        left = self.state()["budget"]["remaining"]
+        outs = self.redo(entry_points="yes")
+        self.assertNotIn("BUDGET", outs[2])  # the repair
+        self.assertEqual(self.state()["budget"]["remaining"], left)
+
+    # -------------------------------------------------------------- condition 7
+
+    def test_one_round_pays_for_the_proposal_and_its_whole_redo(self):
+        self.verifier_files()
+        state = self.state()
+        state["budget"].update(total=4, remaining=2)
+        self.write_state(state)
+        out, jobs = self.expect("define")
+        self.assertRegex(self.budget_text(out), r"\b1 (of 4 )?left")
+        self.assertEqual(self.state()["budget"]["remaining"], 1)
+        self.define_applies(jobs[0][1])
+        for out in self.redo():
+            self.assertNotRegex(self.budget_text(out), r"^spent")
+            self.assertEqual(self.state()["budget"]["remaining"], 1)
+        self.next(6)
+        self.assertEqual(self.state()["budget"]["remaining"], 1)
+
+    def no_round_left(self):
+        state = self.state()
+        state["budget"]["remaining"] = 0
+        self.write_state(state)
+
+    def test_with_no_round_left_a_correction_stops_and_names_the_unsent_proposal(self):
+        self.verifier_files(blocks=[proposal_block(1, "condition 3", NEW_3)])
+        self.no_round_left()
+        out = self.next(4)  # condition 4 is the open item; the proposal is on 3
+        self.assertRegex(" ".join(out["REPORT"]), r"(?i)condition 3\b")
+        self.assertEqual(len(self.briefs_of("define")), 1)
+
+    def test_with_no_round_left_all_met_ends_phase_5_and_the_pr_gate_names_the_proposal(self):
+        self.verifier_files("ALL_MET")
+        self.no_round_left()
+        out = self.next(6)
+        self.assertEqual(len(self.briefs_of("define")), 1)
+        self.after(out)
+        self.resume()
+        self.review_clean()
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertRegex(" ".join(out["SUMMARY"]), r"(?i)condition 4\b")
+
+    def test_with_no_round_left_a_review_proposal_goes_to_the_pr_gate_named(self):
+        judge = self.review_with_must_fix()
+        self.no_round_left()
+        self.file_proposals(*judge, proposal_block(1, "condition 4", NEW_4))
+        self.answer(*judge, "MUST_FIX", must_fix_open="1", revote="0", proposals="1")
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertRegex(" ".join(out["SUMMARY"]), r"(?i)condition 4\b")
+        self.assertEqual(len(self.briefs_of("define")), 1)
+
+    def test_with_no_round_left_after_the_commit_a_pr_comment_proposal_stops_named(self):
+        self.open_pr()
+        _, jobs = self.expect("triager")
+        triage = self.dir / "triage" / "human-1.md"
+        triage.write_text("# Required changes\n1. In src/sort.ts, keep todos with no date "
+                          "at the end\n")
+        self.file_proposals(*jobs[0], proposal_block(1, "condition 4", NEW_4,
+                                                     comment="12345"))
+        self.no_round_left()
+        self.answer(*jobs[0], "TRIAGED", blockers="1", acceptance_checks="0",
+                    triage_file=str(triage), checks_file="none", proposals="1")
+        out = self.next(4)
+        self.assertRegex(" ".join(out["REPORT"]), r"(?i)condition 4\b")
+        self.assertEqual(len(self.briefs_of("define")), 1)
+
+    # -------------------------------------------------------------- condition 8
+
+    def test_an_applied_review_proposal_is_reviewed_again_and_named_at_the_pr_gate(self):
+        self.ship_ready()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        _, jobs = self.expect("review-judge")
+        self.file_proposals(*jobs[0], proposal_block(1, "condition 4", NEW_4))
+        self.answer(*jobs[0], "CLEAN", must_fix_open="0", revote="0", proposals="1")
+        _, jobs = self.expect("define")
+        self.define_applies(jobs[0][1])
+        self.redo()
+        passes = len(self.state()["phase6"]["passes"])
+        self.review_clean()  # a new pass on what the redo changed
+        self.assertEqual(len(self.state()["phase6"]["passes"]), passes + 1)
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertTrue(any(re.search(r"(?i)condition 4\b", ln) and
+                            re.search(r"(?i)review", ln) for ln in out["SUMMARY"]),
+                        out["SUMMARY"])
+
+    def test_a_phase_5_spec_change_is_named_at_the_pr_gate(self):
+        self.apply_on_4()
+        self.redo()
+        out = self.next(6)
+        self.after(out)
+        self.resume()
+        self.review_clean()
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertTrue(any(re.search(r"(?i)condition 4\b", ln) and
+                            re.search(r"(?i)verifier", ln) for ln in out["SUMMARY"]),
+                        out["SUMMARY"])
+
+    def test_a_pr_comment_spec_change_is_committed_and_the_main_gate_asked_again(self):
+        _, url = self.open_pr()
+        _, jobs = self.expect("triager")
+        self.file_proposals(*jobs[0], proposal_block(
+            1, "condition 4", NEW_4, comment="12345",
+            why="a reviewer on the PR says past dates need a slower retry path"))
+        self.answer(*jobs[0], "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none", proposals="1")
+        outs = []
+        _, jobs = self.expect("define")
+        self.define_applies(jobs[0][1])
+        outs += self.redo()
+        self.review_clean()
+        out = self.next(0)
+        outs.append(out)
+        self.assertIn("commit: run", out["ACTION"])
+        old = self.state()["phase6"]["verified_sha"]
+        r = self.autodev("commit", "--message", "feat: slow repeated refusals", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        head = self.state()["phase6"]["verified_sha"]
+        self.assertNotEqual(head, old)  # the redo ends in a new commit
+        out = self.next(0)
+        outs.append(out)
+        self.assertIn("push", out["ACTION"])
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.after(out)
+        self.script_gh(GH_OK + [
+            {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": url})},
+            {"args": ["pr", "view", "12", "--json", "body"], "stdout": '{"body": ""}'},
+            {"args": ["pr", "edit"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json", "number,url,body"],
+             "stdout": json.dumps({"number": 12, "url": f"{url}/pull/12",
+                                   "body": f"Checked at commit {head}"})},
+            {"args": ["pr", "ready"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json"],
+             "stdout": json.dumps({"url": f"{url}/pull/12", "isDraft": False,
+                                   "state": "OPEN", "headRefOid": head})}])
+        out = None
+        for _ in range(8):  # publish, triage the refreshed PR, mark it ready
+            out = self.next()
+            outs.append(out)
+            if out["exit"] != 0:
+                break
+            if "pr publish" in out["ACTION"]:
+                body = self.dir / "pr-body.md"
+                body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                                       body.read_text()))
+                r = self.autodev("pr", "publish", "--dir", self.dir)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            elif self.spawned(out):
+                self.assertEqual([w for w, _ in self.spawned(out)], ["triager"])
+                for w, n in self.spawned(out):
+                    self.answer(w, n, "TRIAGED", blockers="0", acceptance_checks="0",
+                                triage_file="none", checks_file="none")
+            else:
+                self.after(out)
+        self.assertEqual(out["exit"], 5, json.dumps(out, indent=2))
+        self.assertIn("main", out["QUESTION"])
+        self.assertTrue(any(re.search(r"(?i)condition 4\b", ln) and
+                            re.search(r"(?i)PR comment", ln) for ln in out["SUMMARY"]),
+                        out["SUMMARY"])
+        self.assertNotIn("merge-pr", json.dumps(outs))
+
+    # -------------------------------------------------------------- condition 9
+
+    def checkpoint_now(self):
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # due at the next clean point
+        self.write_state(state)
+
+    def resume_after_checkpoint(self):
+        out = self.next(6)
+        self.assertIn("--checkpoint", out["AFTER"][0])
+        self.after(out)
+        self.resume()
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1000
+        self.write_state(state)
+
+    def test_a_proposal_open_at_a_checkpoint_goes_to_define_first_on_resume(self):
+        self.verifier_files()
+        self.checkpoint_now()
+        self.resume_after_checkpoint()
+        self.assertEqual(len(self.briefs_of("define")), 1)  # not spawned before the end
+        _, jobs = self.expect("define")
+        self.assertIn(MARK_4, self.given(*jobs[0]))
+
+    def test_a_redo_cut_by_a_checkpoint_resumes_with_the_tester(self):
+        self.apply_on_4()
+        _, jobs = self.expect("planner")
+        self.answer(*jobs[0], "REVISED", entry_points_changed="no")
+        defines, planners = len(self.briefs_of("define")), len(self.briefs_of("planner"))
+        left = self.state()["budget"]["remaining"]
+        self.checkpoint_now()
+        self.resume_after_checkpoint()
+        out, jobs = self.expect("acceptance-tester")
+        self.assertEqual(self.scope_ids(jobs[0]), ["4"])
+        self.assertNotIn("BUDGET", out)
+        self.assertEqual((len(self.briefs_of("define")), len(self.briefs_of("planner")),
+                          self.state()["budget"]["remaining"]), (defines, planners, left))
+
+    # -------------------------------------------------------------- S1
+
+    def test_a_proposal_to_reword_a_security_criterion_is_refused(self):
+        self.ship_ready()
+        jobs = self.spawned(self.next(0))
+        sec = next(j for j in jobs if j[0].startswith("security-reviewer"))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.file_proposals(*sec, proposal_block(
+            1, "S1", "S1. Every query is parameterized or escaped by a vetted helper\n"
+                     "   - Example: Given a title holding a quote, when the todo is saved, "
+                     "then the title is escaped.\n   - Verify by: integration\n"))
+        r = self.record(*sec, "CLEAN", must_fix="0", pre_existing="0", proposals="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("S1", r.stdout)
+
+    def test_define_may_not_reword_or_delete_a_security_criterion(self):
+        self.verifier_files()
+        _, jobs = self.expect("define")
+        n = jobs[0][1]
+        reworded = self.spec_with(c4=NEW_4).replace("Every query is parameterized",
+                                                    "Most queries are parameterized")
+        deleted = self.spec_with(c4=NEW_4).split("S1. ")[0]
+        for name, spec in (("reworded", reworded), ("deleted", deleted)):
+            with self.subTest(name):
+                r = self.define_answers(n, spec, [("applied", "none")], "REVISED")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("S1", r.stdout)
+        (self.dir / "SPEC.md").write_text(PROPOSAL_SPEC)
+        out = self.next(0)
+        self.assertEqual([w for w, _ in self.spawned(out)], ["define"])  # no later step
+        retry = self.spawned(out)[0]
+        self.assertIn("S1", self.brief_text(*retry))
+        self.define_applies(retry[1])
+        self.expect("planner")
+
+    # -------------------------------------------------------------- S2
+
+    def test_define_sees_a_pr_comment_proposal_as_a_claim_without_its_text(self):
+        self.open_pr()
+        _, jobs = self.expect("triager")
+        self.assertEqual(self.mode(*jobs[0]), "human")
+        self.file_proposals(*jobs[0], proposal_block(
+            1, "condition 4", NEW_4, comment="12345",
+            why="a PR comment argues that past dates need a slower retry path"))
+        self.answer(*jobs[0], "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none", proposals="1")
+        _, jobs = self.expect("define")
+        given = self.given(*jobs[0])
+        self.assertIn("12345", given)
+        self.assertRegex(given, r"(?i)claim")
+        self.assertNotIn("ignore your brief", given)
+
+    # -------------------------------------------------------------- S4
+
+    def test_a_correction_that_copies_its_proposal_s_new_text_is_refused(self):
+        judge = self.review_with_must_fix()
+        self.file_proposals(*judge, proposal_block(1, "condition 4", NEW_4))
+        corrections = self.dir / "review" / "pass-1" / "corrections.md"
+        corrections.write_text(
+            "# Required changes\n1. C1: in src/due.ts make sure repeated refusals from one "
+            "client are slowed by a quiet backoff window\n")
+        r = self.record(*judge, "MUST_FIX", must_fix_open="1", revote="0", proposals="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"(?i)propos")
+        corrections.write_text("# Required changes\n1. C1: guard the sort in src/sort.ts "
+                               "against a missing due date\n")
+        r = self.record(*judge, "MUST_FIX", must_fix_open="1", revote="0", proposals="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_the_redo_s_coder_sees_no_proposal_and_a_plan_quoting_it_is_refused(self):
+        self.apply_on_4()
+        _, jobs = self.expect("planner")
+        plan = self.dir / "IMPLEMENTATION.md"
+        plan.write_text(IMPLEMENTATION.replace(
+            "1. add the field\n", "1. add the field\n2. make sure repeated refusals from one "
+                                  "client are slowed by a quiet backoff window\n"))
+        r = self.record(*jobs[0], "REVISED", entry_points_changed="no")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        plan.write_text(IMPLEMENTATION.replace(
+            "1. add the field\n", "1. add the field\n2. add a backoff counter beside the "
+                                  "date check in src/due.ts\n"))
+        r = self.record(*jobs[0], "REVISED", entry_points_changed="no")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("acceptance-tester")
+        self.rewrite_check_4()
+        self.answer(*jobs[0], "SEALED", checks="1", ambiguous="none")
+        _, jobs = self.expect("coder")
+        self.assertNotIn("proposals/", self.brief_text(*jobs[0]))
+        self.assertNotIn(MARK_4, self.given(*jobs[0]))
+
+    # -------------------------------------------------------------- S5
+
+    def test_a_triager_that_edits_the_spec_itself_is_refused(self):
+        self.open_pr()
+        _, jobs = self.expect("triager")
+        (self.dir / "SPEC.md").write_text(self.spec_with(c3=""))
+        r = self.record(*jobs[0], "TRIAGED", blockers="0", acceptance_checks="0",
+                        triage_file="none", checks_file="none")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"(?i)propos")
+        self.assertNotIn("define", [w for w, _ in self.spawned(self.next(0))])
+        self.assertEqual(len(self.briefs_of("define")), 1)

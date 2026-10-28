@@ -82,6 +82,13 @@ not be applied as written. Make the change each block intends.
 When `{{direction}}` is set: the user asked for this change at the post-plan
 gate, in their words:
 {{direction}}
+When `{{spec_change}}` is set: SPEC.md changed after the code was built (the
+Define agent applied a spec proposal). It names the conditions that changed or
+were added:
+{{spec_change}}
+Re-read SPEC.md and revise the plan for those items only; keep every other step
+as it is. Never copy SPEC.md's wording: the coder gets the revised parts of the
+plan. Report `entry_points_changed` as usual.
 Say what you changed.
 
 ## Mode: blocked

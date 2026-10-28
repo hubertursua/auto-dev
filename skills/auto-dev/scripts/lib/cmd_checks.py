@@ -540,19 +540,28 @@ def overlaps(path, spec, n=6, quoted=None, text=None):
     text = art.read(path) if text is None else text
     if quoted is None:
         quoted = not is_corrections(path)
+    sources = [(f"condition {c['id']}", c["text"]) for c in art.spec_conditions(spec)]
+    return [f"{label}: \"{phrase}\"" for label, phrase in
+            phrase_hits(text, sources, n, quoted)]
+
+
+def phrase_hits(text, sources, n=6, quoted=False):
+    """[(label, phrase)]: for each (label, wording) in `sources`, the first run
+    of `n` of its words (fewer for a short one, never under 4) that `text`
+    repeats. Quoted spans in `text` count only when `quoted` is true."""
     # A phrase may not run across a left-out span: each piece is matched alone.
     pieces = QUOTED_RE.split(text) if not quoted else [text]
     joined = " " + " | ".join(" ".join(words(p)) for p in pieces) + " "
     hits = []
-    for cond in art.spec_conditions(spec):
-        cw = words(cond["text"])
+    for label, wording in sources:
+        cw = words(wording)
         size = min(n, len(cw))
         if size < 4:
             continue
         for i in range(len(cw) - size + 1):
             phrase = " ".join(cw[i:i + size])
             if f" {phrase} " in joined:
-                hits.append(f"condition {cond['id']}: \"{phrase}\"")
+                hits.append((label, phrase))
                 break
     return hits
 

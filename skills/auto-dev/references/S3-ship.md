@@ -22,6 +22,17 @@ see in S3, in order:
    acceptance check is wrong goes to the `acceptance-tester` in repair mode,
    never the coder; it may fix the check or answer `STANDS` with its reason,
    and a check that stands is not sent back a second time.
+   A pass's **spec proposals** (the judge files for the panel; the security
+   reviewer files its own, most often a new security criterion) wait until the
+   pass has settled: consolidation, re-votes, the check of the security
+   findings, and a security run on any lead the panel passed on. Then they go
+   to the `define` agent in one brief, before any correction, for the round
+   that correction would spend. `STANDS` leaves the pass to go on as if there
+   were none. An applied change runs the redo as in S2 (planner, the changed
+   conditions' checks, then a correction with the plan's change and the
+   pass's own fixes, cleanup, a verifier first pass), then a review pass on
+   what the redo changed (none when it changed no file) and the PR gate again,
+   whose summary names each spec change and who proposed it.
 2. The PR gate (exit 5). With pre-existing security findings it asks one more
    question per finding (_What each gate option does_ in
    `references/tables.md`): run the `mark triage-<ID>` line for each answer.
@@ -39,6 +50,12 @@ see in S3, in order:
    goes to the coder; a comment saying a held-out check is wrong goes to the
    acceptance tester's repair mode (the triager writes it to
    `triage/human-<n>-checks.md`). When both come back, the tester goes first.
+   A comment that says the spec itself is wrong may become the triager's spec
+   proposal, in its own words, naming the comment's id: the `define` agent gets
+   it marked as a claim to check against the ticket (CI mode never files). An
+   applied one runs the redo, a review, a new commit, and the main gate is
+   asked again, its summary naming the change and that a PR comment prompted
+   it; nothing merges before that answer.
 6. CI on the base branch, Jira Done, the final report, the worktree question.
 
 ## 3. Commit

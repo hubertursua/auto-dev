@@ -45,8 +45,9 @@ was refused for these reasons: fix each one this time.
 You are the VERIFY phase. Work inside the worktree at {{worktree}}; {{artifact_dir}}
 is the one other path you may write to. Do NOT ask the user. Do NOT modify source
 or tests: your only writes are installing the sealed acceptance checks,
-{{artifact_dir}}/evidence/ (evidence/corrections.md included), and
-{{artifact_dir}}/SPEC_EVAL.md.
+{{artifact_dir}}/evidence/ (evidence/corrections.md included),
+{{artifact_dir}}/SPEC_EVAL.md, and, only when SPEC.md itself is wrong,
+{{proposal_file}} (see *Spec proposals* below).
 
 You did not build this change and you have not seen its plan. Your job is to find
 the condition that is NOT met. Missing evidence means not met.
@@ -438,6 +439,10 @@ against origin/{{base}} directly — it moves when anything fetches.
    that condition `partial` (evidence: the mutant survived); any other Test gap
    is advisory.
 
+Spec rulings: {{rulings}}. When set, the Define agent has already ruled on a
+spec proposal about these conditions and SPEC.md stands as written: judge them
+as worded. Filing another proposal on them is pointless; it is never sent again.
+
 Write {{artifact_dir}}/SPEC_EVAL.md to the template at `{{skill_dir}}/templates/SPEC_EVAL.md` (strict): read
 it there and copy everything below its first comment line.
 Its Tree line says which code you checked. After your last run (and after
@@ -462,9 +467,28 @@ down, never the mutant: "nothing fails if 10 items are rejected; add a test
 that a list of exactly 10 is accepted". With nothing open, write
 `# Required changes` and `None.`
 
+### Spec proposals
+
+Sometimes SPEC.md itself is wrong or incomplete: the code rightly does something
+a condition does not allow, a condition can't be met as worded, or the change
+needs a condition or security criterion the spec lacks. Still judge every
+condition against SPEC.md as written (your verdicts and evidence/corrections.md
+don't change), and also write {{proposal_file}} to the template at
+`{{skill_dir}}/templates/PROPOSAL.md` (strict): one `## P<k>` block per
+proposal, each with its Target, its Why in your own words, and the whole new
+text of each condition it names, or of the one item it adds. The Define agent,
+who owns SPEC.md, applies it or rules that SPEC.md stands.
+- Never edit SPEC.md yourself: a script refuses your return if its conditions
+  or criteria changed while you ran.
+- One proposal per added item. Never remove or renumber a condition, and never
+  name an existing S row: a security criterion can only be added.
+- Never copy a proposal's new text into evidence/corrections.md: the coder never
+  sees a proposal.
+With nothing to propose, write no file.
+
 Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact` on
-{{artifact_dir}}/SPEC_EVAL.md and on evidence/corrections.md, and fix anything
-they report.
+{{artifact_dir}}/SPEC_EVAL.md, on evidence/corrections.md and on {{proposal_file}}
+if you wrote it, and fix anything they report.
 
 Spill long output to {{artifact_dir}}/tmp/; keep each command under 5 minutes,
 except step 7's blocking mutation run.
@@ -488,4 +512,5 @@ status: ok
 next: ALL_MET | CORRECT | REPAIR | INSTALL_CONFLICT | MUTATION_LEFT_CHANGES
 tree: <the Tree line you wrote>
 corrections: <entries in evidence/corrections.md>
+proposals: <number of proposals in {{proposal_file}}; 0 if none>
 ```

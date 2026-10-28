@@ -37,6 +37,19 @@ see in S2, in order:
    then judges those checks as written. A check that stands is never sent back
    on the same condition; if the verifier and the tester still disagree, `next`
    stops and reports both sides.
+   - A verifier result may carry a **spec proposal** (`proposals/verifier-<n>.md`:
+     SPEC.md itself is wrong). `next` sends it to the `define` agent in revise
+     mode first, spending the round the result's correction would (`BUDGET:`).
+     On `STANDS`, the result is acted on as if it carried no proposal, and
+     every later verifier is told the ruling; a proposal on a condition that
+     stood is never sent again. On an applied change, `next` runs the redo,
+     spending nothing more: the `planner` in revise mode, the
+     `acceptance-tester` in write mode for only the changed conditions' checks
+     (rewritten in place), a free `acceptance-tester` repair when the plan's
+     entry points changed, the `coder` with the plan's change when the plan
+     changed (else straight to `cleanup`), `cleanup`, then a `verifier` first
+     pass. The verifier's earlier corrections are dropped. With no round left,
+     nothing is sent and the stop report names the proposal.
 5. Exit 6: run its `AFTER` command exactly as printed (`handoff` at the end of the
    session, `handoff --checkpoint` at a checkpoint), give the user its message,
    stop.
@@ -55,4 +68,8 @@ Every stop is exit 4 with its reason in `REPORT`
 - the quality gate can't go green (#10);
 - the spec can't be met as written (#9);
 - the mutation step may have left a change in the source (#11): tell the user
-  not to build on the tree until they've checked the paths named.
+  not to build on the tree until they've checked the paths named (a spec
+  proposal the verifier filed with it is named, not sent);
+- a spec redo's rewritten checks still have gaps after the tester's one free
+  re-spawn, or a condition still reads two ways after the Define agent's one
+  ruling (#21).

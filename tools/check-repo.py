@@ -167,7 +167,8 @@ def check_paths():
 # Templates a script reads by name (scripts/lib/artifacts.py and cmd_*.py).
 PARSED_TEMPLATES = ("SPEC.md", "IMPLEMENTATION.md", "MANIFEST.md", "SPEC_EVAL.md",
                     "R.md", "VOTES.md", "CODE_REVIEW.md", "SECURITY_REVIEW.md", "lint.md",
-                    "corrections.md", "fix.md", "pr-body.md", "rubric.md")
+                    "corrections.md", "fix.md", "pr-body.md", "rubric.md", "PROPOSAL.md",
+                    "RULINGS.md")
 TEMPLATE_REF = re.compile(r"templates/([\w.-]+\.md)")
 NEXT_LINE = re.compile(r"^next: (.+)$", re.MULTILINE)
 
@@ -178,9 +179,9 @@ def load_briefs():
     return briefs
 
 
-def check_briefs():
+def check_briefs(agents_dir=ROOT / "agents"):
     briefs = load_briefs()
-    agents = {p.stem: p.read_text(encoding="utf-8") for p in (ROOT / "agents").glob("*.md")}
+    agents = {p.stem: p.read_text(encoding="utf-8") for p in Path(agents_dir).glob("*.md")}
     for worker in sorted(set(briefs.RESULTS) - set(agents)):
         fail(f"scripts/lib/briefs.py: RESULTS names {worker}, which has no agents/ file")
     for worker, text in sorted(agents.items()):

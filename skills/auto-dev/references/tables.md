@@ -23,13 +23,17 @@ default 4. `next` spends a round before the action that needs it and prints a
 |---|---|---|
 | 1 | a Define re-review after its FIX blocks applied | stop; report the Define review's open blockers one by one |
 | 2 | a plan re-review, or re-spawning the acceptance tester for gaps | stop; report the plan review's open blockers or the gaps one by one |
-| 3 | a correction after verification, a re-dispatched `BLOCKED` step, an acceptance-check repair | stop; report each unmet condition by name and what was tried; no cleanup, no Phase 6 |
-| 4 | a correction for a review finding or a human reviewer's blocker | before the commit: `next` goes on to the PR gate, whose summary names every open must-fix finding. After it: stop; report every open must-fix finding by name |
+| 3 | a correction after verification, a re-dispatched `BLOCKED` step, an acceptance-check repair, a batch of the verifier's spec proposals sent to the Define agent (the same round its correction would spend) | stop; report each unmet condition by name and what was tried, and each spec proposal not sent; no cleanup, no Phase 6 |
+| 4 | a correction for a review finding or a human reviewer's blocker, a batch of a review pass's or a PR comment's spec proposals sent to the Define agent (the same round its correction would spend, or one when it asks for none) | before the commit: `next` goes on to the PR gate, whose summary names every open must-fix finding and each spec proposal not sent. After it: stop; report every open must-fix finding and each unsent proposal by name |
 | 5 | a correction for red CI caused by the code | stop; report each red check. Never merge over it |
 
 Free (no round): the first review of anything, every verifier re-check, every
-cleanup run, a user's "Revise plan" at the post-plan gate, and a re-spawn after
-a worker failed once.
+cleanup run, a user's "Revise plan" at the post-plan gate, a re-spawn after
+a worker failed once, and a spec redo after the Define agent applied a
+proposal (the planner's revision, the tester's rewrite with one re-spawn for
+gaps and one ambiguity ruling, one repair, the hand-off, cleanup and the
+verifier's first pass). Open items that first pass finds are a new correction,
+paid as usual.
 
 ## Stop conditions
 
@@ -58,6 +62,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 18 | CI is red at the main gate | `next` |
 | 19 | GitHub refused or only queued the merge | `merge-pr` exit 3 or 4, then `next` |
 | 20 | the user chose Stop at a gate or pause | `gate … stop` |
+| 21 | the tester could not settle a spec redo's rewritten checks: gaps after its one free re-spawn, or a condition that reads two ways after the Define agent's one ruling | `next` |
 
 ## Hold and Stop
 

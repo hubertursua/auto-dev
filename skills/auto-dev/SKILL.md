@@ -144,7 +144,7 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Worker | Agent type | Model · effort |
 | ------ | ---------- | -------------- |
 | Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · medium |
-| Define agent (Phase 2) | `auto-dev:define` | `opus` · high |
+| Define agent (Phase 2; rules on spec proposals in Phases 5–6) | `auto-dev:define` | `opus` · high |
 | Define reviewer (Phase 2) | `auto-dev:define-reviewer` | `opus` · high |
 | Planner (Phase 3) | `auto-dev:planner` | `opus` · xhigh |
 | Plan reviewer (Phase 3) | `auto-dev:plan-reviewer` | `opus` · high |
