@@ -4,6 +4,37 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.10
+
+- **The deviation gate.** When a verifier proposes a change to a condition the
+  Define agent already ruled stands, and judges that condition partial or
+  unmet, the code does what the proposal described. Before the correction
+  would undo it, `next` exits 5 and asks you, one condition at a time:
+  `Accept the deviation`, `Keep the spec (correct the code)` or `Stop`. This
+  applies whoever first proposed the change: a stood review or PR-comment
+  proposal reaches the gate once the code deviates. The answer is recorded
+  with the new `gate deviation <accept|keep|stop> --condition <n>`; it holds
+  for the rest of the run.
+- **Accepting costs no round.** The verifier re-checks, told the deviation is
+  accepted (a new line in `{{rulings}}`): it judges the condition met when the
+  deviation is its only gap, writing `accepted deviation:` in the Evidence, and
+  writes no correction to undo it. Any other open item is corrected on the
+  round the first result already paid.
+- **What can't be accepted.** An unmet condition (one whose acceptance check
+  fails, which would fail the quality gate) is offered only Keep and Stop. A
+  security criterion is never deviated from: proposals can't name an existing
+  S row, and `gate deviation accept` refuses an `S<n>`.
+- **Where accepted deviations show.** The PR and main gate summaries, and a new
+  *Accepted deviations* line in the final report. The PR body is unchanged.
+- **The verifier is told to propose again.** After a STANDS, a verifier that
+  finds the code still doing what the proposal described proposes it again;
+  that proposal goes to the gate, never to the Define agent.
+- **A run in flight resumes.** No `.auto-dev.yml` key changes and the state
+  needs no migration: `state.json`'s `proposals` gains a `deviations` key, and
+  a verifier brief a `paid_by` key, on first use. A run that is in the middle of
+  a correction after a STANDS goes on as before; the gate is asked at the next
+  verifier result that shows a deviation.
+
 ## Upgrading from 4.9
 
 - **A later step can propose a change to `SPEC.md`.** The verifier, the review

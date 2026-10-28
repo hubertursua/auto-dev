@@ -11,9 +11,16 @@ proposals/batch-<k>-rulings.md (templates/RULINGS.md): `applied` or `stands`.
 `record` then holds SPEC.md to those answers, diffing it against the copy of
 SPEC.md taken when Define was briefed (proposals/spec-<sha>.md).
 
+When the verifier files on a condition that already stood, with that condition
+partial or unmet, the code does what the proposal described and SPEC.md does
+not allow: `next` asks the user the deviation gate for it (accept the
+deviation, keep the spec, or stop), never the Define agent again. What it asks
+is kept in state["proposals"]["deviations"]; the answer is a `deviation` gate.
+
 This module holds everything but the routing: who may file, the checks
 `record` runs, the snapshots, the batch file, the plan's change for the coder,
-and the lines the gate summaries, stop reports and verifier briefs show.
+the deviations, and the lines the gate summaries, stop reports and verifier
+briefs show.
 """
 
 import difflib
@@ -538,8 +545,8 @@ def _ruling(batch, item):
 
 
 def summary_lines(state):
-    """Up to three lines for a gate summary: what changed, what stood, what
-    was never sent."""
+    """Up to four lines for a gate summary: what changed, what stood, the
+    deviations the user accepted, what was never sent."""
     applied, stood = [], []
     for b in _batches(state):
         for item in b.get("items", []):
@@ -554,7 +561,7 @@ def summary_lines(state):
         lines.append("Spec changed during the run: " + "; ".join(applied))
     if stood:
         lines.append("Spec proposals ruled to stand: " + "; ".join(stood))
-    return lines + unsent_lines(state)
+    return lines + deviation_lines(state) + unsent_lines(state)
 
 
 def unsent_lines(state):
@@ -593,8 +600,46 @@ def job_unsent_line(ad, worker, n):
         f"{target_label(i)} ({filer_label(i)})" for i in items)
 
 
+def stood_reason(state, cid):
+    """(Define's reason, the filer's label) for the latest proposal on condition
+    `cid` that stood, or (None, None)."""
+    found = (None, None)
+    for b in _batches(state):
+        for item in b.get("items", []):
+            if item.get("kind") == "change" and cid in item.get("targets", []) and \
+                    _ruling(b, item).get("answer") == "stands":
+                found = (_ruling(b, item).get("reason", ""), filer_label(item))
+    return found
+
+
+def deviation_answer(state, cid):
+    """The user's latest answer at the deviation gate for condition `cid`
+    (the gate entry), or None."""
+    found = [g for g in state.get("gates", [])
+             if g["gate"] == "deviation" and g.get("condition") == cid]
+    return found[-1] if found else None
+
+
+def deviations(state):
+    """[(condition, its deviation record)] the user accepted, in order."""
+    asked = (state.get("proposals") or {}).get("deviations") or {}
+    return [(cid, asked.get(cid, {})) for cid in _sort(asked)
+            if (deviation_answer(state, cid) or {}).get("choice") == "accept"]
+
+
+def deviation_lines(state):
+    """`Deviations from the spec the user accepted: …` for a summary or report."""
+    found = deviations(state)
+    if not found:
+        return []
+    return ["Deviations from the spec the user accepted: " + "; ".join(
+        f"condition {cid} (what the code does instead: {d.get('why', '')})"
+        for cid, d in found)]
+
+
 def rulings_text(state):
-    """What every later verifier pass is told about the stood proposals, or None."""
+    """What every later verifier pass is told about the stood proposals and
+    the user's deviation answers, or None."""
     lines = []
     for b in _batches(state):
         applied = {t for item in b.get("items", [])
@@ -607,9 +652,26 @@ def rulings_text(state):
             reason = ruling.get("reason", "")
             if item.get("kind") == "change":
                 for cid in item.get("targets", []):
-                    if cid not in applied:
+                    if cid in applied:
+                        continue
+                    answer = (deviation_answer(state, cid) or {}).get("choice")
+                    if answer == "accept":
+                        why = (((state.get("proposals") or {}).get("deviations") or {})
+                               .get(cid) or {}).get("why", "")
+                        lines.append(f"condition {cid}: the user accepted the code's "
+                                     f"deviation from it ({why}); when that deviation is "
+                                     "its only gap, judge it met with Evidence starting "
+                                     "`accepted deviation:`, and write no correction to "
+                                     "undo it; judge any other gap as usual")
+                    elif answer == "keep":
                         lines.append(f"condition {cid} stands as written (the Define "
-                                     f"agent: {reason})")
+                                     f"agent: {reason}), and the user chose to keep it: "
+                                     "judge it as worded and do not propose it again")
+                    else:
+                        lines.append(f"condition {cid} stands as written (the Define "
+                                     f"agent: {reason}); if the code still does what that "
+                                     "proposal described, propose it again: it goes to "
+                                     "the user, not to the Define agent")
             else:
                 what = ("new condition" if item.get("kind") == "add-condition"
                         else "new security criterion")

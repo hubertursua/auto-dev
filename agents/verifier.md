@@ -441,7 +441,16 @@ against origin/{{base}} directly — it moves when anything fetches.
 
 Spec rulings: {{rulings}}. When set, the Define agent has already ruled on a
 spec proposal about these conditions and SPEC.md stands as written: judge them
-as worded. Filing another proposal on them is pointless; it is never sent again.
+as worded. It is never sent to the Define agent again. Each line says what to
+do:
+- **Stands:** if the code still does what that proposal described, judge the
+  condition as worded and propose it again (see *Spec proposals*): it goes to
+  the user, who decides whether to accept the deviation.
+- **The user accepted the deviation:** when that deviation is the condition's
+  only gap, judge it `met` with Evidence starting `accepted deviation:`, and
+  put nothing in evidence/corrections.md that undoes it. Judge any other gap in
+  it as usual.
+- **The user kept the spec:** judge it as worded and don't propose it again.
 
 Write {{artifact_dir}}/SPEC_EVAL.md to the template at `{{skill_dir}}/templates/SPEC_EVAL.md` (strict): read
 it there and copy everything below its first comment line.

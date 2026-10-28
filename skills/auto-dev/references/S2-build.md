@@ -42,7 +42,13 @@ see in S2, in order:
      mode first, spending the round the result's correction would (`BUDGET:`).
      On `STANDS`, the result is acted on as if it carried no proposal, and
      every later verifier is told the ruling; a proposal on a condition that
-     stood is never sent again. On an applied change, `next` runs the redo,
+     stood is never sent again. When a verifier proposes on a condition that
+     stood (in this result or a later one) and judges it partial or unmet, the
+     code does what the proposal described: before the correction would undo
+     it, `next` asks the **deviation gate** (exit 5, one condition at a time;
+     _What each gate option does_ in `references/tables.md`). Accepting costs no
+     round: the verifier re-checks, told the deviation is accepted. An unmet
+     condition (a failing acceptance check) can't be accepted. On an applied change, `next` runs the redo,
      spending nothing more: the `planner` in revise mode, the
      `acceptance-tester` in write mode for only the changed conditions' checks
      (rewritten in place), a free `acceptance-tester` repair when the plan's

@@ -19,7 +19,11 @@ A later worker's spec proposals (the verifier's, the review judge's, the
 security reviewer's, the triager's from a PR comment) go to the Define agent in
 one batch file before their result is acted on, paid by the round the result's
 own correction would spend; a proposal on a condition already ruled to stand
-is not sent again. After STANDS the result is acted on as if it carried none.
+is not sent again. After STANDS the result is acted on as if it carried none,
+except when a verifier result proposes on a condition that stood and judges it
+partial or unmet: then the deviation gate asks the user first (accept the
+deviation: a re-check told so, on the round already paid; keep the spec: the
+correction; or stop).
 After an applied change, `next` runs the redo at no further cost: the planner
 revises the plan, the tester rewrites only the changed conditions' checks, the
 coder gets the plan's change (and what the result carried for it), then
@@ -967,6 +971,10 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
             return DONE_MARK
         return cleanup_spawn(c, scope, files, "every condition is met: the cleanup agent "
                              "simplifies and runs the quality gate (no round)")
+    if nxt != "INSTALL_CONFLICT":
+        result = deviation_step(c, latest)
+        if result is not None:
+            return result
     _token, fields = cmd_checks.eval_decision(
         c.ad, install_conflict=nxt == "INSTALL_CONFLICT")
     repair = [x.strip() for x in fields.get("repair", "").split(",") if x.strip()]
@@ -981,7 +989,7 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
                          "tester's reply. No round is spent on it.")],
                         "the verifier and the acceptance tester disagree about a check")
         fields["repair"] = ", ".join(x for x in repair if x not in again)
-    budget = c.spend(consumer, f"verifier-{n}", "correction after verification")
+    budget = c.spend(consumer, verifier_spend_id(c, n), "correction after verification")
     if budget is None:
         return exhausted_loop(c, consumer, fields)
     if fields.get("repair") and c.last("acceptance-tester", after=latest["seq"]) is None:
@@ -1491,10 +1499,124 @@ def spec_loop_step(c, start, consumer, scope, files=None):
     job = ["verifier", latest["n"]]
     if batch_for(c, job) or unsent_for(c, job):
         return None
-    return open_batch(c, [job], consumer, f"verifier-{latest['n']}", "loop",
+    return open_batch(c, [job], consumer, verifier_spend_id(c, latest["n"]), "loop",
                       {"files": [], "checks": None},
                       f"the verifier's result carries spec proposals: the Define agent "
                       f"rules on them first (consumer {consumer})")
+
+
+# ---------------------------------------------------------------- deviations
+#
+# A verifier result that files a proposal on a condition the Define agent
+# already ruled stands, with that condition partial or unmet, shows the code
+# doing what the proposal described and SPEC.md not allowing it. Before the
+# correction would undo it, the user answers the deviation gate, one condition
+# at a time: accept the deviation (the verifier re-checks, told so; no round),
+# keep the spec (the correction goes ahead) or stop. A condition whose
+# acceptance check fails (unmet) can't be accepted: the check would fail the
+# quality gate. Each answer holds for the rest of the run.
+
+def verifier_spend_id(c, n):
+    """The spend id verifier result n's correction pays with: a re-check
+    after an accepted deviation (or a retry of one) pays with the round of
+    the result it re-checked, so accepting costs no round."""
+    seen, m = set(), n
+    while m is not None and m not in seen:
+        entry = brief_entry(c, "verifier", m)
+        if entry is None:
+            break
+        if entry.get("paid_by"):
+            return entry["paid_by"]
+        seen.add(m)
+        m = entry.get("retry")
+    return f"verifier-{n}"
+
+
+def deviations_shown(c, latest):
+    """[(condition, verdict, why)] for each condition verifier result `latest`
+    proposes on that already stood, judged partial or unmet."""
+    if not filed(latest):
+        return []
+    text = _read(proposals.file_of(c.ad, "verifier", latest["n"]))
+    try:
+        blocks = art.proposal_blocks(text) if text else []
+    except art.ArtifactError:
+        return []
+    stood = stood_targets(c)
+    verdicts = {r["#"].strip(): r["Verdict"].strip().lower()
+                for r in art.spec_eval(c.ad / "SPEC_EVAL.md")["rows"]}
+    shown = []
+    for block in blocks:
+        kind, ids, problem = proposals.parse_target(block["target"])
+        if problem or kind != "change":
+            continue
+        for cid in ids:
+            if cid in stood and verdicts.get(cid) in ("partial", "unmet") and \
+                    cid not in [x[0] for x in shown]:
+                shown.append((cid, verdicts[cid], block["why"]))
+    return shown
+
+
+def deviation_step(c, latest):
+    """The deviation gate for verifier result `latest`, or the re-check after
+    an accepted deviation; None once each deviation it shows is answered and
+    none was accepted since it ran."""
+    shown = deviations_shown(c, latest)
+    for cid, verdict, why in shown:
+        if proposals.deviation_answer(c.state, cid) is None:
+            return deviation_gate(c, latest, cid, verdict, why)
+    accepted = [cid for cid, _, _ in shown
+                if proposals.deviation_answer(c.state, cid)["choice"] == "accept"
+                and proposals.deviation_answer(c.state, cid)["seq"] > latest["seq"]]
+    if not accepted:
+        return None
+    which = ", ".join(accepted)
+    result = spawn(c, "verifier", sets=with_rulings(c, {
+        "mode": "re-check",
+        "what_changed": f"nothing in the code: the user accepted the deviation from "
+                        f"condition(s) {which}"}),
+        rule="the user accepted a deviation: the verifier re-checks, told so, before any "
+             "correction (no round)")
+    if not c.readonly:
+        c.state["briefs"][-1]["paid_by"] = verifier_spend_id(c, latest["n"])
+        c.dirty = True
+    return result
+
+
+def deviation_gate(c, latest, cid, verdict, why):
+    reason, filer = proposals.stood_reason(c.state, cid)
+    if not c.readonly:
+        props(c).setdefault("deviations", {})[cid] = {
+            "why": why, "reason": reason, "verdict": verdict,
+            "filer": ["verifier", latest["n"]], "seq": c.seq()}
+        c.dirty = True
+    try:
+        statement = proposals.spec_now(c.ad)[cid]["statement"]
+    except (art.ArtifactError, KeyError):
+        statement = "(see SPEC.md)"
+    summary = [f"Condition {cid} says: {statement}",
+               (f"The verifier judged it {verdict}: the code does what a spec proposal "
+                f"described, which SPEC.md does not allow. What the code does instead "
+                f"(the verifier's words): {why}"),
+               (f"The Define agent ruled SPEC.md stands ({filer} proposed the change): "
+                f"{reason}")]
+    labels = ["Accept the deviation", "Keep the spec (correct the code)", "Stop"]
+    if verdict == "unmet":
+        labels = labels[1:]
+        summary.append(f"An acceptance check of condition {cid} fails, so the deviation "
+                       "can't be accepted: that check would fail the quality gate. Keep the "
+                       "spec, or stop.")
+    commands = {"Accept the deviation": c.cmd("gate", "deviation", "accept",
+                                              "--condition", cid),
+                "Keep the spec (correct the code)": c.cmd("gate", "deviation", "keep",
+                                                          "--condition", cid),
+                "Stop": c.cmd("gate", "deviation", "stop", "--condition", cid)}
+    return ask(c, "the deviation gate", summary,
+               [cmd_review.question("Deviation", f"Condition {cid}: accept the code's "
+                                    "deviation from the spec?", labels)],
+               [(label, commands[label]) for label in labels],
+               f"the verifier shows the code deviating from condition {cid}, whose spec "
+               "proposal stood: the user decides before any correction")
 
 
 def redo_first_due(c, start):

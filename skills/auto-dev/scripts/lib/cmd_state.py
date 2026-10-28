@@ -7,7 +7,7 @@ Usage (each takes `--dir <artifact-dir>`, default `./.auto-dev`, and `--json`):
     autodev.py size <FITS|OVERSIZED> --high-risk <yes|no>
     autodev.py budget show
     autodev.py budget spend --consumer <1-5> --id <correction-id> [--what TEXT]
-    autodev.py gate <gate> <choice> [--reason TEXT]
+    autodev.py gate <gate> <choice> [--reason TEXT] [--condition <n>]
     autodev.py mark <step> [--value TEXT]
 
 Only these commands (and init) write state.json; WORK_LOG.md is regenerated on
@@ -33,15 +33,20 @@ the PR gate for a pre-existing security finding, `triage-Others` for the
 grouped rest: --value separate or ignore; it is also noted in WORK_LOG.md).
 
 `gate` records a gate decision. Gates: post-plan, pr, main, profile, jira,
-cleanup. Choices: proceed, hold, stop, revise (post-plan only), leave (jira
-only: start work but leave Jira alone), keep (cleanup only: keep the worktree).
-`hold` marks the gate's phase held (resuming re-fires the gate); `stop` marks it
-stopped (the run ends).
+cleanup, deviation. Choices: proceed, hold, stop, revise (post-plan only), leave
+(jira only: start work but leave Jira alone), keep (cleanup only: keep the
+worktree; deviation: keep the spec and correct the code), accept (deviation
+only: accept the code's deviation from the condition). `deviation` takes
+`--condition <n>`, the condition it answers for; a security criterion (`S<n>`)
+can't be accepted. `hold` marks the gate's phase held (resuming re-fires the
+gate); `stop` marks it stopped (the run ends).
 
 Exit codes:
     0  done (and for `budget spend`, a round was spent or was already spent)
     1  refused: a bad value, a choice the gate doesn't offer, or a `mark` step
-       that is not one of those above (or a triage answer not separate/ignore)
+       that is not one of those above (or a triage answer not separate/ignore),
+       or a deviation gate with no condition or accepting one on a security
+       criterion
     2  could not run (no state.json, unreadable) — not a pass
     3  `budget spend` only: the budget is exhausted; nothing was spent
 """
@@ -53,14 +58,17 @@ from .output import FAILED, Fail, emit
 
 EXIT_EXHAUSTED = 3
 
+# The deviation gate is asked in Phase 5 or 6: its phase is the run's open one.
 GATE_PHASE = {"post-plan": 3, "pr": 6, "main": 6, "profile": 1, "jira": 2,
-              "cleanup": 6}
+              "cleanup": 6, "deviation": None}
 GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "pr": {"proceed", "hold", "stop"},
                 "main": {"proceed", "hold", "stop"},
                 "profile": {"proceed", "stop"},
                 "jira": {"proceed", "leave", "stop"},
-                "cleanup": {"proceed", "keep"}}
+                "cleanup": {"proceed", "keep"},
+                "deviation": {"accept", "keep", "stop"}}
+CONDITION_RE = re.compile(r"S?\d+")
 MARKS = ("jira-in-progress", "jira-in-review", "jira-done", "pushed", "pr-ready",
          "final-report", "main-ci")
 TRIAGE_RE = re.compile(r"triage-[A-Za-z0-9]+")
@@ -107,6 +115,7 @@ def add_arguments(parser, name):
         parser.add_argument("gate", choices=sorted(GATE_PHASE))
         parser.add_argument("choice")
         parser.add_argument("--reason", default="")
+        parser.add_argument("--condition", help="deviation only: the condition it answers for")
 
 
 def load(args):
@@ -226,9 +235,22 @@ def gate(args):
     if choice not in GATE_CHOICES[args.gate]:
         raise Fail(f"gate {args.gate} offers {', '.join(sorted(GATE_CHOICES[args.gate]))}, "
                    f"not {args.choice!r}", FAILED, "ERROR")
-    state["gates"].append({"gate": args.gate, "choice": choice,
-                           "reason": args.reason, "at": st.now(), "seq": st.seq(state)})
+    entry = {"gate": args.gate, "choice": choice, "reason": args.reason, "at": st.now(),
+             "seq": st.seq(state)}
     number = GATE_PHASE[args.gate]
+    if args.gate == "deviation":
+        cid = str(args.condition or "").strip().upper()
+        if not CONDITION_RE.fullmatch(cid):
+            raise Fail("gate deviation needs --condition <n>, the condition it answers for",
+                       FAILED, "ERROR")
+        if cid.startswith("S") and choice == "accept":
+            raise Fail(f"{cid} is a security criterion: a deviation from one can't be "
+                       "accepted", FAILED, "ERROR")
+        entry["condition"] = cid
+        number = (st.first_open_phase(state) or (6, None))[0]
+    elif args.condition:
+        raise Fail("--condition is for the deviation gate only", FAILED, "ERROR")
+    state["gates"].append(entry)
     after = "continue"
     if choice == "hold":
         st.set_phase(state, number, "held", f"held at the {args.gate} gate: "
@@ -243,6 +265,10 @@ def gate(args):
                  "then ask this gate again (no round is spent)")
     elif choice == "leave":
         after = "start work without moving Jira"
+    elif args.gate == "deviation":
+        st.add_note(state, f"deviation gate, condition {entry['condition']}: " + (
+            "the user accepted the code's deviation" if choice == "accept" else
+            "the user kept the spec: the code is corrected"))
     elif st.phase(state, number)["status"] == "held":
         st.set_phase(state, number, "in-progress")
     st.save(args.dir, state)
