@@ -18,6 +18,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_autodev import AUTODEV, SCRIPTS, RunCase
 
+sys.path.insert(0, str(SCRIPTS))
+from lib import artifacts as art
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "parsers"
 
 SPEC = (FIXTURES / "SPEC.md").read_text()
@@ -710,6 +713,70 @@ class ReviewAndGateTest(RunCase):
         r = self.cmd("gate-summary", "main", "--pr", "7")
         self.assertEqual(r.returncode, 1)
         self.assertIn("draft", r.stderr)
+
+
+class ProposalParserTest(unittest.TestCase):
+    """The whole-item SPEC.md parser and the proposal and rulings parsers."""
+
+    def test_items_keep_wrapped_lines_and_ignore_spacing(self):
+        items = art.spec_items(SPEC)
+        self.assertEqual(list(items), ["1", "2", "S1"])
+        one = items["1"]
+        self.assertEqual(one["statement"],
+                         "A todo can carry a due date that the list shows next to its title")
+        self.assertEqual(one["edge"], "an invalid date is rejected → 400")
+        self.assertEqual(one["verify"], "integration")
+        rewrapped = SPEC.replace("A todo can carry a due date that the list shows next to "
+                                 "its title", "A todo can carry a due date\n   that the "
+                                 "list shows  next to its title")
+        again = art.spec_items(rewrapped)
+        self.assertEqual(again["1"]["words"], one["words"])
+        self.assertEqual(again["1"]["statement"], one["statement"])
+        changed = art.spec_items(SPEC.replace("earliest first", "latest first"))
+        self.assertNotEqual(changed["2"]["words"], items["2"]["words"])
+        # Prose after the last item is not part of it.
+        tail = art.spec_items(SPEC + "Every criterion holds for the API too.\n")
+        self.assertNotIn("API", tail["S1"]["words"])
+        self.assertNotIn("Assumptions", items["2"]["words"])
+        with self.assertRaises(art.ArtifactError):
+            art.spec_items("## Context\nx\n")
+        with self.assertRaises(art.ArtifactError):
+            art.spec_items("## Conditions\n1. a\n1. b\n")
+
+    def test_proposal_blocks_read_each_field_and_the_new_items(self):
+        text = ("# Spec proposals\n\n## P1\n- Target: condition 1\n"
+                "- Why: the list also shows the date\n  in the detail view\n"
+                "- Comment: none\n- From: the verifier (verifier #3)\n- New text:\n"
+                "1. A todo can carry a due date that the list and detail view show\n"
+                "   - Example: Given todo 7, when set, then both show it.\n"
+                "   - Edge: an invalid date is rejected → 400\n"
+                "   - Verify by: integration\n\n"
+                "## P2\n- Target: new condition\n- Why: undated todos\n- Comment: 12345\n"
+                "- New text:\n3. Undated todos sort last\n   - Example: Given one undated, "
+                "then it is last.\n   - Edge: none\n   - Verify by: unit\n")
+        blocks = art.proposal_blocks(text)
+        self.assertEqual([b["pid"] for b in blocks], ["P1", "P2"])
+        p1, p2 = blocks
+        self.assertEqual(p1["target"], "condition 1")
+        self.assertEqual(p1["why"], "the list also shows the date in the detail view")
+        self.assertEqual(p1["from"], "the verifier (verifier #3)")
+        self.assertEqual([i["id"] for i in p1["items"]], ["1"])
+        self.assertEqual(p1["items"][0]["verify"], "integration")
+        self.assertEqual((p2["target"], p2["comment"]), ("new condition", "12345"))
+        self.assertEqual([i["id"] for i in p2["items"]], ["3"])
+        self.assertEqual(art.proposal_blocks("# Spec proposals\n\nnone\n"), [])
+        missing = art.proposal_blocks("## P1\n- Target: condition 2\n")[0]
+        self.assertEqual((missing["why"], missing["items"]), ("", []))
+
+    def test_rulings_read_answer_and_reason(self):
+        text = ("# Rulings\n\n## P1\n- Answer: `Applied`\n- Reason: none\n\n"
+                "## P2\n- Answer: stands\n- Reason: the ticket asks for the earliest\n"
+                "  first, as written\n")
+        self.assertEqual(art.rulings(text), {
+            "P1": {"answer": "applied", "reason": ""},
+            "P2": {"answer": "stands",
+                   "reason": "the ticket asks for the earliest first, as written"}})
+        self.assertEqual(art.rulings("## P1\n- Answer: stands\n")["P1"]["reason"], "")
 
 
 if __name__ == "__main__":

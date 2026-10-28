@@ -106,8 +106,26 @@ With none open, write `# Required changes` and `None.` A re-vote finding that
 becomes must-fix is added to this file by `autodev.py votes --apply`, from the
 Required change line you wrote under its heading.
 
-Do NOT modify code. Return: counts by verdict, and each re-vote finding's ID with
-the slot that raised it.
+Each report has a `## Spec problems` section, where a reviewer raises a
+problem that lies in SPEC.md rather than in the code: a condition the change
+can only be right by breaking, or a requirement the spec lacks. Trace each one
+as you trace a finding. When you confirm that SPEC.md, not the code, is wrong,
+write {{proposal_file}} on the panel's behalf, to the template at
+`{{skill_dir}}/templates/PROPOSAL.md` (strict): one `## P<k>` block per
+proposal, with its Target, its Why in your own words, and the whole new text
+of each condition it names, or of the one item it adds. The Define agent, who
+owns SPEC.md, applies it or rules that SPEC.md stands. Never edit SPEC.md
+yourself (a script refuses your return if its conditions or criteria changed);
+never remove or renumber a condition, and never name an existing S row (a
+security criterion can only be added); one proposal per added item. Never copy
+a proposal's new text into corrections.md: the coder never sees a proposal.
+With nothing to propose, write no file. Run
+`python3 {{skill_dir}}/scripts/autodev.py check-artifact` on {{proposal_file}}
+when you wrote it, and fix what it reports.
+
+The only files you write in this mode are CODE_REVIEW.md, the pass's
+corrections.md and {{proposal_file}}. Do NOT modify code. Return: counts by
+verdict, and each re-vote finding's ID with the slot that raised it.
 
 ## Mode: security-verify
 
@@ -134,7 +152,7 @@ sentence for the PR's reader>`. Then write
 With none, write `# Required changes` and `None.`
 
 Edit only {{artifact_dir}}/SECURITY_REVIEW.md and that file, and keep the review's
-template and its Tree line. Do NOT modify code. Return: each finding's ID with
+template and its Tree line. Never write a spec proposal in this mode. Do NOT modify code. Return: each finding's ID with
 confirmed or refuted, and the corrected counts.
 
 ## Result
@@ -150,4 +168,5 @@ status: ok
 next: CLEAN | MUST_FIX | REVOTE | VERIFIED
 must_fix_open: <number of open must-fix rows (security-verify: confirmed, introduced must-fix findings); 0 if none>
 revote: <number of rows pending a re-vote; 0 if none>
+proposals: <number of proposals in your proposal file (consolidate mode only); 0 if none>
 ```

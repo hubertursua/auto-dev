@@ -151,6 +151,140 @@ def spec_conditions(path):
     return items
 
 
+def _collapse(parts):
+    return " ".join(" ".join(parts).split())
+
+
+def numbered_items(body):
+    """The numbered items (`1.`, `S1.`) in `body`, each whole: [{id, lines,
+    statement, example, edge, verify, words}], in order.
+
+    An item runs from its numbered line over every following line that is
+    blank or indented; the first other line ends it, so prose after the last
+    item is not part of it. `statement` is the numbered line and its
+    continuation lines before the first `- Example:/Edge:/Verify by:` sub-line;
+    each sub-line's text takes its own continuation lines. `words` is the whole
+    item with every whitespace run collapsed, so re-wrapping or re-indenting it
+    changes nothing. A repeated id is an ArtifactError."""
+    items, current, field = [], None, None
+    for line in (body or "").splitlines():
+        match = SPEC_ITEM_RE.match(line)
+        if match:
+            if any(i["id"] == match.group(1) for i in items):
+                raise ArtifactError(f"item {match.group(1)} is numbered twice")
+            current = {"id": match.group(1), "lines": [line],
+                       "_parts": {"statement": [match.group(2)], "example": [],
+                                  "edge": [], "verify": []}}
+            items.append(current)
+            field = "statement"
+            continue
+        if current is None:
+            continue
+        if line.strip() and not line[:1].isspace():
+            current, field = None, None
+            continue
+        current["lines"].append(line)
+        sub = SUB_LINE_RE.match(line)
+        if sub:
+            field = {"example": "example", "edge": "edge",
+                     "verify by": "verify"}[sub.group(1).lower()]
+            current["_parts"][field].append(sub.group(2))
+        elif line.strip():
+            current["_parts"][field].append(line)
+    for item in items:
+        parts = item.pop("_parts")
+        for key, value in parts.items():
+            item[key] = _collapse(value)
+        item["words"] = _collapse(item["lines"])
+    return items
+
+
+def spec_items(text, where="SPEC.md"):
+    """{id: item} for SPEC.md's conditions, then its Security/Compliance
+    criteria, each item whole (numbered_items), in file order."""
+    found = {}
+    for name in ("Conditions", "Security/Compliance criteria"):
+        body = find_section(text, name)
+        if body is None:
+            if name == "Conditions":
+                raise ArtifactError(f"{where}: no `## Conditions` section")
+            continue
+        try:
+            items = numbered_items(body)
+        except ArtifactError as exc:
+            raise ArtifactError(f"{where}: {exc}") from None
+        for item in items:
+            if item["id"] in found:
+                raise ArtifactError(f"{where}: item {item['id']} is numbered twice")
+            found[item["id"]] = item
+    if not found or not any(not i.startswith("S") for i in found):
+        raise ArtifactError(f"{where}: no numbered conditions under `## Conditions`")
+    return found
+
+
+BLOCK_RE = re.compile(r"^## (P\d+)\b.*$", re.MULTILINE)
+FIELD_RE = re.compile(r"^- (Target|Why|Comment|From|New text|Answer|Reason):\s*(.*)$",
+                      re.IGNORECASE)
+
+
+def _blocks(text):
+    """[(pid, body)] for each `## P<k>` block."""
+    parts = BLOCK_RE.split(text or "")
+    return [(parts[i], parts[i + 1]) for i in range(1, len(parts), 2)]
+
+
+def _fields(body):
+    """({field: text}, the lines after `- New text:`) for one block."""
+    fields, rest, field = {}, None, None
+    for line in body.splitlines():
+        if rest is not None:
+            rest.append(line)
+            continue
+        match = FIELD_RE.match(line)
+        if match:
+            field = match.group(1).lower()
+            if field == "new text":
+                rest = [match.group(2)] if match.group(2).strip() else []
+                continue
+            fields[field] = [match.group(2)]
+        elif field and line[:1].isspace() and line.strip():
+            fields[field].append(line)
+        elif line.strip():
+            field = None
+    return {k: _collapse(v) for k, v in fields.items()}, rest
+
+
+def proposal_blocks(text):
+    """A proposal file's `## P<k>` blocks: [{pid, target, why, comment, from,
+    items, new_text}]. `items` are the numbered items under `- New text:`
+    (numbered_items); a missing field is ""."""
+    found = []
+    for pid, body in _blocks(text):
+        fields, rest = _fields(body)
+        new_text = "\n".join(rest or []).strip("\n")
+        found.append({"pid": pid, "target": fields.get("target", ""),
+                      "why": fields.get("why", ""), "comment": fields.get("comment", ""),
+                      "from": fields.get("from", ""),
+                      "items": numbered_items(new_text) if rest is not None else [],
+                      "new_text": new_text})
+    return found
+
+
+def rulings(text):
+    """A rulings file's answers: {pid: {answer, reason}}. `answer` is the first
+    word of `- Answer:`, lowercased; `reason` is "" when absent or `none`."""
+    found = {}
+    for pid, body in _blocks(text):
+        fields, _ = _fields(body)
+        words = fields.get("answer", "").replace("`", "").split()
+        reason = fields.get("reason", "")
+        if reason.strip("`*_. ").lower() == "none":
+            reason = ""
+        found[pid] = {"answer": words[0].strip("*_.,;").lower() if words else "",
+                      "reason": reason}
+    return found
+
+
 LEVEL_RE = re.compile(r"\b(end-to-end|e2e|integration|unit)", re.IGNORECASE)
 
 

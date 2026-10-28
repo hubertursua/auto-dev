@@ -1,4 +1,4 @@
-<!-- auto-dev template: R.md (strict). Copy everything below this comment, filling in every <...>. A section with nothing in it says so: Findings `none — <what you tried>`, Security leads `none`. -->
+<!-- auto-dev template: R.md (strict). Copy everything below this comment, filling in every <...>. A section with nothing in it says so: Findings `none — <what you tried>`, Security leads `none`, Spec problems `none`. -->
 # Code review R<k> — pass <n>
 
 Scope: <the scope as briefed>
@@ -11,6 +11,9 @@ Scope: <the scope as briefed>
 
 ## Security leads
 - `path:line` — <one line, unchased>
+
+## Spec problems
+<a SPEC.md condition the change can only be right by breaking, or a requirement it lacks, with the finding that shows it — or `none`>
 
 ## Pre-existing
 <n> problems seen in code this change did not introduce (count only).

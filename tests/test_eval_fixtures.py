@@ -16,6 +16,7 @@ fixtures from the replay instead of editing them:
 
 import json
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -90,6 +91,12 @@ class FixtureFilesTest(unittest.TestCase):
             self.assertTrue((SKILL / rel).is_file(), f"evals.json names missing {rel}")
         on_disk = {str(p.relative_to(SKILL)) for p in FILES.rglob("*") if p.is_file()}
         self.assertEqual(on_disk - named, set(), "fixtures no eval names")
+
+    def test_the_eval_suite_has_the_four_spec_proposal_cases(self):
+        sessions = [e.get("session", "") for e in EVALS["evals"]]
+        for label in ("S2 (spec proposal: filed)", "S2 (spec proposal: applied)",
+                      "S3 (spec proposal: stands)", "S3 (spec proposal: PR comment)"):
+            self.assertTrue(any(s.startswith(label) for s in sessions), label)
 
     def test_each_state_fixture_has_its_generated_work_log(self):
         for path in FILES.rglob("state.json"):
@@ -195,6 +202,23 @@ class OldVersionFixtureTest(FixtureRunCase):
         self.assertEqual((self.dir / "WORK_LOG.md").read_text(encoding="utf-8"), ledger)
         status = self.sh("git", "status", "--porcelain", cwd=self.worktree)
         self.assertEqual(status.strip(), "?? .auto-dev/")
+
+
+class SpecProposalEvalsTest(unittest.TestCase):
+    """The eval suite covers the spec-proposal path."""
+
+    def test_the_evals_cover_a_filing_a_stands_a_redo_and_a_steering_pr_comment(self):
+        texts = [json.dumps(e, ensure_ascii=False) for e in EVALS["evals"]]
+        cases = [t for t in texts if re.search(r"(?i)\bproposals?\b", t)]
+        self.assertGreaterEqual(len(cases), 4, "fewer than four evals about spec proposals")
+        self.assertTrue(any("STANDS" in t for t in cases), "no eval of a proposal that stands")
+        self.assertTrue(any(re.search(r"(?i)\bappl(?:y|ies|ied)\b", t) and
+                            re.search(r"(?i)\bplanner\b|\bredo\b", t) for t in cases),
+                        "no eval of an applied proposal's redo")
+        self.assertTrue(any(re.search(r"(?i)PR comment", t) and
+                            re.search(r"(?i)instruction|ignore your brief|steer", t)
+                            for t in cases),
+                        "no eval of a PR comment that tries to steer the spec")
 
 
 if __name__ == "__main__":

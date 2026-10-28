@@ -71,8 +71,8 @@ orchestrator runs:
 | 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
-| 5 Verify | cleanup agent, then verifier (acceptance tester to fold or repair a check, when needed) | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
-| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate |
+| 5 Verify | cleanup agent, then verifier (acceptance tester to fold or repair a check, when needed; Define agent when the verifier proposes a spec change) | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier); a spec proposal goes to the Define agent first, and an applied one is redone (plan, its checks, code, a full verifier pass) |
+| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager (Define agent for a spec proposal) | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate; a spec proposal from the review or a PR comment goes to the Define agent, and an applied one is redone, reviewed again and shown at the next gate |
 
 ## Agent hierarchy
 
@@ -95,6 +95,7 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
 ├─ Phase 5  Cleanup + verifier  /simplify → quality gate → RUN the checks vs. the withheld spec
 └─ Phase 6  orch + reviewers  code review panel ∥ security review → [GATE] PR + CI → [GATE] main
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
+            Define agent .... rules again when a later step proposes a SPEC.md change (Phases 5–6)
 ```
 
 Two documents describe the work. `SPEC.md` answers *did we build the right
@@ -168,6 +169,23 @@ weakening them. Verification is built around that:
   themselves after about a tenth of its estimate (30 seconds to 5 minutes),
   repeated until the run is done. The detail is in step 7 of
   `agents/verifier.md`.
+- **A spec that can be corrected, but only by its owner.** When late work
+  shows `SPEC.md` itself is wrong or incomplete, the verifier, the review judge
+  (on the panel's behalf), the security reviewer or the triager (from a PR
+  comment) may file a *spec proposal* (`skills/auto-dev/templates/PROPOSAL.md`);
+  no other worker can, and none may edit `SPEC.md`. Before the result that
+  carried it is acted on, the Define agent rules on it: it applies it, or
+  answers STANDS with its reason, and `record` checks `SPEC.md` against each
+  answer. A STANDS holds for the rest of the run (the proposal is never sent
+  again, and every later verifier pass is told the ruling), and the result is
+  acted on as if it carried no proposal. An applied change is redone before
+  anything relies on it: the planner revises the plan for the changed
+  conditions, the acceptance tester rewrites only their checks (the others are
+  held as they are), the coder gets the plan's change (only when the plan
+  changed, or a review or PR-comment fix rides along), then cleanup and a full
+  first-pass verification; in Phase 6, a re-review and the gate again. Sending
+  the proposals costs the round the result's own correction would; the redo
+  costs nothing more (`skills/auto-dev/references/S2-build.md`).
 - **Re-checked after every change.** Cleanup (`/simplify` and the quality gate)
   runs before the verifier, so the verifier checks the code that ships, and
   both run again after every fix.
@@ -234,8 +252,10 @@ twice, at the same time, and you have seen the results:
 
 One correction fixes every must-fix finding from both, for one round of the
 iteration budget. A finding about a held-out check goes to the acceptance
-tester, never the coder. After the correction, the full panel reviews the
-result again. A re-review of a correction skips the nested `/code-review` and `/security-review` skills: the
+tester, never the coder. A problem that lies in `SPEC.md` rather than the code
+goes in a reviewer's report, and the judge files a spec proposal for the panel;
+the pass's proposals go to the Define agent together once the pass has settled.
+After the correction, the full panel reviews the result again. A re-review of a correction skips the nested `/code-review` and `/security-review` skills: the
 reviewers follow the correction and everything downstream of it themselves.
 
 A **rubric** (`skills/auto-dev/templates/rubric.md`) decides what must be fixed:
@@ -302,6 +322,11 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
 - **CI** is watched with a time limit on the PR, and again after the merge. CI
   that timed out or couldn't be watched is shown as not monitored, never as
   green.
+- **Spec changes** made during the run are listed in the PR and main gate
+  summaries, each with the worker that proposed it, along with the proposals
+  ruled to stand and any no round was left to send. After a spec change from a
+  PR comment, the redo is committed and the main gate is asked again before
+  any merge.
 
 ## Stack profiles
 
@@ -541,6 +566,8 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports, the judge's code review, the security review, and the review's required changes for the coder |
 | `pr-body.md`, `pr-output-comment.md` | Phase 6 | the generated PR description, and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments |
+| `proposals/` | Phases 5–6 | the filers' spec proposals (`<worker>-<n>.md`), each batch sent to the Define agent (`batch-<k>.md`) and its rulings (`batch-<k>-rulings.md`), and copies of `SPEC.md` taken when a filer or the Define agent was briefed (`spec-<sha>.md`) |
+| `redo/` | Phases 5–6 | the plan as it was before a spec redo revised it, and the plan's change for the coder |
 | `lookups/` | any phase | lookup answers |
 
 ## Safety
@@ -548,7 +575,18 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 Autonomous but bounded:
 
 - **One iteration budget per task** (default 4 revise rounds) covers every
-  correction and every Define or plan re-review.
+  correction, every Define or plan re-review, and every batch of spec
+  proposals sent to the Define agent (the redo after it costs nothing more).
+- **A later step can only propose a spec change.** Only the verifier, the
+  review judge, the security reviewer and the triager may file one; a
+  Security/Compliance criterion can be added, never edited or removed; PR
+  comment wording reaches the Define agent only as the triager's summary,
+  marked as a claim to check (CI logs never reach it); a spec change after the
+  PR opens is committed and shown at the main gate before any merge; a
+  proposal with no round left is named in the stop report or gate summary.
+  A spec redo whose rewritten checks still have gaps after its one free tester
+  re-spawn, or that needs a second ambiguity ruling, stops the run instead of
+  looping.
 - **It stops and reports** rather than commit a red build, weaken a security
   control, or carry on when a planted bug may be left in the tree, the build
   edited a submodule, or a commit holds code no result checked.

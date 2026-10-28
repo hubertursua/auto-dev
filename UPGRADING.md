@@ -4,6 +4,48 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.9
+
+- **A later step can propose a change to `SPEC.md`.** The verifier, the review
+  judge (consolidating the panel, whose reviewers raise a spec problem in a new
+  `## Spec problems` section of their reports), the security reviewer and the
+  triager (human mode only, in its own words, naming the comment's id) may
+  write `proposals/<worker>-<n>.md` (`templates/PROPOSAL.md`) when SPEC.md
+  itself is wrong, and return `proposals: <k>`. No other worker or mode may.
+  A proposal changes named conditions or adds one condition or one security
+  criterion; it never removes or renumbers a condition or touches an existing
+  S row. `record` refuses a malformed proposal, a correction file that copies
+  a proposal's new text, and a filer that edited SPEC.md itself.
+- **The Define agent rules on them.** `next` sends a result's proposals (or a
+  settled review pass's, together) to the Define agent in revise mode, as
+  `proposals/batch-<k>.md`, before the result is acted on. Define answers each
+  `applied` or `stands` with a reason in `proposals/batch-<k>-rulings.md`
+  (`templates/RULINGS.md`) and returns `REVISED` or the new token `STANDS`;
+  `record` holds SPEC.md to the rulings. A STANDS holds for the run: the
+  result is acted on as if it carried no proposal, a later proposal on that
+  condition is not sent again, and every later verifier brief carries the
+  ruling (`{{rulings}}`).
+- **An applied change is redone.** The planner revises the plan for the
+  changed conditions (`{{spec_change}}`), the acceptance tester rewrites only
+  their checks in place (write mode after the build; sealed files of other
+  conditions are held), one free repair covers changed entry points and any
+  carried check finding, the coder gets the plan's change
+  (`redo/plan-change-<k>.md`) with any review or PR-comment fix the result
+  carried, then cleanup and a verifier first pass. In Phase 6, the change is
+  reviewed again and the next gate asked again. A redo that can't settle its
+  checks (gaps after one re-spawn, or a second ambiguity) is stop #21.
+- **The budget.** Sending the proposals spends the round the result's own
+  correction would; the redo spends nothing more. With no round left nothing
+  is sent, and the stop report or gate summary names the proposal.
+- **Gate summaries** list every spec change made during the run and who
+  proposed it, the proposals ruled to stand, and the ones never sent.
+- **New files:** `.auto-dev/proposals/` (proposals, batches, rulings, SPEC.md
+  copies) and `.auto-dev/redo/`.
+- **A run in flight resumes.** No `.auto-dev.yml` key changes and the state
+  needs no migration: `state.json` gains a `proposals` key on first use. A
+  return without the new `proposals` key is read as none, so a worker briefed
+  on 4.9 is still recorded.
+
 ## Upgrading from 4.8
 
 - **A mutation run that fits now runs as one blocking call.** The verifier

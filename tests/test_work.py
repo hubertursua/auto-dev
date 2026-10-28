@@ -798,6 +798,338 @@ class RecordTest(WorkCase):
         self.assertEqual(self.cmd("record", "lookup", "1").returncode, 0)
 
 
+PROPOSAL_ON_1 = """# Spec proposals
+
+## P1
+- Target: condition 1
+- Why: the ticket asks for the date in the detail view as well as in the list
+- Comment: none
+- New text:
+1. A todo can carry a due date that both the list and its detail view show
+   - Example: Given todo 7, when its due date is set to 2026-01-02, then the list and
+     the detail view show 2026-01-02.
+   - Edge: an invalid date is rejected → 400
+   - Verify by: integration
+"""
+NEW_CONDITION = """
+## P{k}
+- Target: new condition
+- Why: undated todos have no place in the order
+- Comment: {comment}
+- New text:
+{n}. A todo with no due date is listed after every dated todo
+   - Example: Given one dated and one undated todo, when listed, then the undated one is last.
+   - Edge: two undated todos keep the order they were created in
+   - Verify by: unit
+"""
+NEW_CRITERION = """
+## P{k}
+- Target: new security criterion
+- Why: the due date is visible to anyone who knows the id
+- Comment: none
+- New text:
+{n}. Only the owner can read a todo's due date
+   - Example: Given user B, when B reads A's todo, then it is refused with 404.
+   - Verify by: integration
+"""
+
+
+class SpecProposalRecordTest(WorkCase):
+    """`record` on a filer's spec proposals and on Define's rulings."""
+
+    def brief(self, worker, as_mode=None, **sets):
+        args = [a for k, v in sets.items() for a in ("--set", f"{k}={v}")]
+        r = self.cmd("brief", worker, *(("--mode", as_mode) if as_mode else ()), *args)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return int(r.stdout.split("BRIEF:")[1].split()[0].rsplit("-", 1)[1][:-3])
+
+    def entry(self, worker, n):
+        return next(b for b in self.state()["briefs"]
+                    if b["worker"] == worker and b["n"] == n)
+
+    def verifier(self, proposal=None, count=None, **extra):
+        """A verifier's CORRECT return, with `proposal` as its proposal file."""
+        n = self.brief("verifier", mode="first pass", what_changed="none")
+        self.spec_eval(v1="unmet")
+        self.write("evidence/corrections.md", CORRECTION)
+        if proposal is not None:
+            self.write(f"proposals/verifier-{n}.md", proposal)
+        if count is None:
+            count = str(proposal.count("\n## P")) if proposal else "0"
+        self.returned("verifier", n, next="CORRECT", tree="x", corrections="1",
+                      proposals=count, **extra)
+        return self.cmd("record", "verifier", n)
+
+    def refused(self, r, *words):
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        for word in words:
+            self.assertIn(word, r.stdout)
+
+    def test_a_return_without_the_proposals_key_records(self):
+        n = self.brief("verifier", mode="first pass", what_changed="none")
+        self.spec_eval(v1="unmet")
+        self.write("evidence/corrections.md", CORRECTION)
+        self.returned("verifier", n, next="CORRECT", tree="x", corrections="1")
+        r = self.cmd("record", "verifier", n)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        path = self.write("returns/define-9.json", json.dumps(
+            {"worker": "define", "status": "ok", "next": "STANDS", "high_risk": "no",
+             "reading": "none"}))
+        self.assertEqual(self.cmd("check-artifact", path).returncode, 0)
+        path.write_text(json.dumps({"worker": "define", "status": "ok", "next": "SHRUG",
+                                    "high_risk": "no", "reading": "none"}))
+        self.assertEqual(self.cmd("check-artifact", path).returncode, 1)
+
+    def test_a_filer_brief_snapshots_the_spec_and_a_retry_keeps_it(self):
+        n = self.brief("verifier", mode="first pass", what_changed="none")
+        values = self.brief_values(self.dir / "briefs" / f"verifier-{n}.md")
+        self.assertEqual(values["proposal_file"], str(self.dir / "proposals" / "verifier-1.md"))
+        self.assertEqual(values["rulings"], "none")
+        sha = self.entry("verifier", n)["spec"]
+        self.assertEqual((self.dir / "proposals" / f"spec-{sha}.md").read_text(), SPEC)
+        self.assertNotIn("spec", self.entry("coder", self.brief(
+            "coder", as_mode="build")))
+        (self.dir / "SPEC.md").write_text(SPEC.replace("earliest first", "latest first"))
+        self.spec_eval(v1="unmet")
+        self.write("evidence/corrections.md", CORRECTION)
+        self.returned("verifier", n, next="CORRECT", tree="x", corrections="1",
+                      proposals="0")
+        self.refused(self.cmd("record", "verifier", n), "SPEC.md's condition 2 changed")
+        r = self.cmd("brief", "verifier", "--retry", str(n), "--set", "mode=first pass",
+                     "--set", "what_changed=none")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.entry("verifier", n + 1)["spec"], sha)
+
+    def test_a_well_formed_verifier_filing_is_recorded(self):
+        r = self.verifier(PROPOSAL_ON_1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["log"][-1]["data"]["proposals"], "1")
+
+    def test_a_filing_on_a_condition_the_spec_lacks_is_refused(self):
+        r = self.verifier(PROPOSAL_ON_1.replace("condition 1", "condition 9").replace(
+            "\n1. A todo", "\n9. A todo"))
+        self.refused(r, "condition 9, which SPEC.md does not have")
+
+    def test_only_the_four_filers_may_file(self):
+        self.returned("coder", self.brief("coder", as_mode="build"), next="BUILT",
+                      blocked="0", test_changes="none", proposals="1")
+        self.refused(self.cmd("record", "coder", "1"), "may not file a spec proposal")
+        n = self.brief("cleanup", scope="phase5")
+        self.write(f"proposals/cleanup-{n}.md", PROPOSAL_ON_1)
+        self.write("lint/TEST.md", "# TEST — pass\n\n- **Tree:** abc\n")
+        self.returned("cleanup", n, next="GREEN")
+        self.refused(self.cmd("record", "cleanup", n), "cleanup (no mode) may not file")
+        n = self.brief("triager", as_mode="ci", failing="unit")
+        self.write(f"proposals/triager-{n}.md", PROPOSAL_ON_1)
+        self.returned("triager", n, next="INFRA", blockers="0", acceptance_checks="0",
+                      triage_file="none", checks_file="none", proposals="1")
+        self.refused(self.cmd("record", "triager", n), "triager (ci) may not file")
+        n = self.brief("review-judge", as_mode="security-verify")
+        from test_next import SECURITY_REVIEW
+        self.write("SECURITY_REVIEW.md", SECURITY_REVIEW.format(tree="0" * 40))
+        self.write("review/security-corrections.md", "# Required changes\nNone.\n")
+        self.returned("review-judge", n, next="VERIFIED", must_fix_open="0", revote="0",
+                      proposals="0")
+        self.write(f"proposals/review-judge-{n}.md", PROPOSAL_ON_1)
+        self.refused(self.cmd("record", "review-judge", n),
+                     "review-judge (security-verify) may not file")
+        (self.dir / "proposals" / f"review-judge-{n}.md").unlink()
+        r = self.cmd("record", "review-judge", n)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_filing_missing_a_part_is_refused(self):
+        self.refused(self.verifier(PROPOSAL_ON_1.replace(
+            "- Why: the ticket asks for the date in the detail view as well as in the "
+            "list\n", "")), "P1 has no `Why:`")
+        self.refused(self.verifier(PROPOSAL_ON_1.split("- New text:")[0]),
+                     "P1 has no `New text:`")
+        self.refused(self.verifier(PROPOSAL_ON_1.replace("- Target: condition 1",
+                                                         "- Target: the sort rule")),
+                     "names nothing")
+        self.refused(self.verifier(PROPOSAL_ON_1.replace(
+            "   - Edge: an invalid date is rejected → 400\n", "")), "no `Edge:` line")
+        self.refused(self.verifier(PROPOSAL_ON_1, count="2"), "holds 1 proposal(s)")
+        self.refused(self.verifier(None, count="1"), "there is no such file")
+
+    def test_a_filing_that_takes_out_or_renumbers_is_refused(self):
+        self.refused(self.verifier(PROPOSAL_ON_1.replace(
+            "- Target: condition 1", "- Target: delete condition 2")),
+            "never removes")
+        self.refused(self.verifier(PROPOSAL_ON_1.replace("\n1. A todo", "\n2. A todo")),
+                     "never renumbered")
+
+    def test_a_filing_on_an_existing_s_row_is_refused(self):
+        self.refused(self.verifier(PROPOSAL_ON_1.replace("condition 1", "S1")),
+                     "security criterion S1")
+        self.refused(self.verifier(PROPOSAL_ON_1.replace("- Target: condition 1",
+                                                         "- Target: conditions 1, S1")),
+                     "security criterion S1")
+
+    def test_an_addition_is_one_item_with_the_next_number(self):
+        head = "# Spec proposals\n"
+        self.refused(self.verifier(head + NEW_CONDITION.format(k=1, n=3, comment="none")
+                                   .replace("- Target: new condition",
+                                            "- Target: new condition, condition 2")),
+                     "adds and changes at once")
+        self.refused(self.verifier(head + NEW_CONDITION.format(k=1, n=4, comment="none")),
+                     "must be numbered 3")
+        two = NEW_CONDITION.format(k=1, n=3, comment="none") + (
+            "4. Another item\n   - Example: x\n   - Edge: y\n   - Verify by: unit\n")
+        self.refused(self.verifier(head + two), "adds more than one item")
+        r = self.verifier(head + NEW_CONDITION.format(k=1, n=3, comment="none")
+                          + NEW_CRITERION.format(k=2, n="S2"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.refused(self.verifier(head + NEW_CRITERION.format(k=1, n="S1")),
+                     "must be numbered S2")
+
+    def test_new_text_equal_to_the_current_item_is_refused(self):
+        same = ("# Spec proposals\n\n## P1\n- Target: condition 2\n- Why: x\n"
+                "- New text:\n2. The list sorts todos by due date\n   with the earliest "
+                "first\n   - Example: Given two todos, when listed, then the earlier one "
+                "is first.\n   - Edge: none — every todo has a place in the order\n"
+                "   - Verify by:   unit\n")
+        self.refused(self.verifier(same), "is what it says now (spacing aside)")
+
+    def triager(self, proposal, comment, blockers="0"):
+        n = self.brief("triager", as_mode="human")
+        self.write(f"proposals/triager-{n}.md", proposal.replace(
+            "- Comment: none", f"- Comment: {comment}"))
+        self.returned("triager", n, next="TRIAGED", blockers=blockers,
+                      acceptance_checks="0", triage_file="none", checks_file="none",
+                      proposals="1")
+        return n, self.cmd("record", "triager", n)
+
+    def test_a_pr_comment_filing_needs_the_comment_id(self):
+        _, r = self.triager(PROPOSAL_ON_1, "none")
+        self.refused(r, "names no comment id")
+        _, r = self.triager(PROPOSAL_ON_1, "12345")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_filer_that_edits_spec_md_is_refused(self):
+        n = self.brief("triager", as_mode="human")
+        cut = SPEC.split("2. The list sorts")[0] + "\n## Assumptions" + \
+            SPEC.split("## Assumptions")[1]
+        (self.dir / "SPEC.md").write_text(cut)
+        self.returned("triager", n, next="TRIAGED", blockers="0", acceptance_checks="0",
+                      triage_file="none", checks_file="none", proposals="0")
+        self.refused(self.cmd("record", "triager", n), "SPEC.md's condition 2 changed",
+                     "may only propose")
+        # Even a blocked return: the edit is refused before its status counts.
+        self.returned("triager", n, status="blocked", next="none")
+        self.refused(self.cmd("record", "triager", n), "may only propose")
+        (self.dir / "SPEC.md").write_text(SPEC.replace(
+            "A todo can carry a due date that the list shows next to its title",
+            "A todo can carry a due date\n   that the list shows next to its title"))
+        self.returned("triager", n, next="TRIAGED", blockers="0", acceptance_checks="0",
+                      triage_file="none", checks_file="none", proposals="0")
+        r = self.cmd("record", "triager", n)  # re-wrapping is no edit
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_correction_quoting_a_proposed_statement_is_refused(self):
+        no_pending = "\n".join(ln for ln in CODE_REVIEW.splitlines()
+                               if not ln.startswith(("| C4", "| C6")))
+        n = self.brief("review-judge", as_mode="consolidate", reviewers="R1, R2, R3",
+                       scope="first", tree="a" * 40)
+        self.write(f"proposals/review-judge-{n}.md", PROPOSAL_ON_1)
+        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: make "
+                   "both the list and its detail view show the date in src/view.ts\n")
+        self.write("CODE_REVIEW.md", no_pending.format(tree="0" * 40))
+        self.returned("review-judge", n, next="MUST_FIX", must_fix_open="1", revote="0",
+                      proposals="1")
+        self.refused(self.cmd("record", "review-judge", n), "copies P1's proposed text")
+        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: guard "
+                   "the null due date in `src/sort.ts:4` before comparing\n")
+        r = self.cmd("record", "review-judge", n)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    # ------------------------------------------------------------ Define's answer
+
+    def define(self, batch, rulings, spec, nxt):
+        """Define ruling on `batch`: SPEC.md becomes `spec`; returns record's result."""
+        self.write("proposals/batch-1.md", batch)
+        n = self.brief("define", as_mode="revise",
+                       proposals=f"{self.dir}/proposals/batch-1.md\nRule on 1 proposal.",
+                       rulings_file=f"{self.dir}/proposals/batch-1-rulings.md")
+        self.assertTrue(self.entry("define", n)["spec"])
+        values = self.brief_values(self.dir / "briefs" / f"define-{n}.md")
+        self.assertEqual(values["proposals"], f"{self.dir}/proposals/batch-1.md")
+        self.assertEqual(values["rulings_file"], f"{self.dir}/proposals/batch-1-rulings.md")
+        (self.dir / "SPEC.md").write_text(spec)
+        self.write("proposals/batch-1-rulings.md", rulings)
+        self.returned("define", n, next=nxt, high_risk="yes", reading="none")
+        r = self.cmd("record", "define", n)
+        (self.dir / "SPEC.md").write_text(SPEC)
+        return r
+
+    APPLIED = "# Rulings\n\n## P1\n- Answer: applied\n- Reason: none\n"
+    STOOD = "# Rulings\n\n## P1\n- Answer: stands\n- Reason: the ticket names the list only\n"
+
+    def test_define_rulings_must_match_the_spec_diff(self):
+        new_1 = SPEC.replace("that the list shows next to its title",
+                             "that both the list and its detail view show")
+        new_2 = SPEC.replace("earliest first", "latest first")
+        cases = {
+            "only Context": (self.APPLIED, SPEC.replace("Todos have no due dates.",
+                                                       "Todos have none."), "REVISED",
+                             "condition 1 reads as before"),
+            "stands but changed": (self.STOOD, new_1, "STANDS",
+                                   "condition 1 changed, but no applied proposal"),
+            "no reason": (self.STOOD.replace("the ticket names the list only", "none"),
+                          SPEC, "STANDS", "P1 stands with no reason"),
+            "applied plus 2": (self.APPLIED, new_1.replace("earliest first",
+                                                           "latest first"),
+                               "REVISED", "condition 2 changed, but no applied"),
+            "condition 2 gone": (self.APPLIED, new_1.split("2. The list")[0]
+                                 + "## Assumptions" + SPEC.split("## Assumptions")[1],
+                                 "REVISED", "condition 2 is gone"),
+            "renumbered": (self.APPLIED, new_1.replace("2. The list", "3. The list"),
+                           "REVISED", "condition 2 is gone"),
+            "an extra item": (self.APPLIED, new_1.replace(
+                "\n## Assumptions", "3. Undated todos sort last\n   - Example: x\n"
+                "   - Edge: y\n   - Verify by: unit\n\n## Assumptions"), "REVISED",
+                "SPEC.md adds 3"),
+            "wrong token": (self.APPLIED, new_1, "STANDS", "which is REVISED"),
+        }
+        for name, (rulings, spec, nxt, said) in cases.items():
+            with self.subTest(name):
+                self.refused(self.define(PROPOSAL_ON_1, rulings, spec, nxt), said)
+        r = self.define(PROPOSAL_ON_1, self.APPLIED, new_1, "REVISED")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.define(PROPOSAL_ON_1, self.STOOD, SPEC.replace(
+            "Todos have no due dates.", "Todos have none (the list-only reading stands)."),
+            "STANDS")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNotNone(new_2)
+
+    def test_define_may_not_touch_an_existing_s_row(self):
+        new_1 = SPEC.replace("that the list shows next to its title",
+                             "that both the list and its detail view show")
+        reworded = new_1.replace("Only the owner can set", "Anyone can set")
+        self.refused(self.define(PROPOSAL_ON_1, self.APPLIED, reworded, "REVISED"),
+                     "security criterion S1 changed")
+        deleted = new_1.split("S1. Only")[0]
+        self.refused(self.define(PROPOSAL_ON_1, self.APPLIED, deleted, "REVISED"),
+                     "security criterion S1 is gone")
+
+    def test_check_artifact_reads_proposal_and_rulings_files(self):
+        good = self.write("proposals/verifier-1.md", PROPOSAL_ON_1)
+        self.assertEqual(self.cmd("check-artifact", good).returncode, 0)
+        bad = self.write("proposals/verifier-2.md", PROPOSAL_ON_1.replace(
+            "condition 1", "condition 9").replace("\n1. A todo", "\n9. A todo"))
+        r = self.cmd("check-artifact", bad)
+        self.refused(r, "condition 9")
+        r = self.cmd("check-artifact", self.write("proposals/triager-3.md", PROPOSAL_ON_1))
+        self.refused(r, "names no comment id")
+        self.assertEqual(self.cmd("check-artifact", self.write(
+            "proposals/batch-1.md", PROPOSAL_ON_1)).returncode, 0)
+        self.assertEqual(self.cmd("check-artifact", self.write(
+            "proposals/batch-1-rulings.md", self.STOOD)).returncode, 0)
+        r = self.cmd("check-artifact", self.write(
+            "proposals/batch-2-rulings.md", self.STOOD.replace(
+                "the ticket names the list only", "none")))
+        self.refused(r, "stands with no reason")
+
+
 class TicketTextTest(InitCase):
     def test_define_gets_the_ticket_text_verbatim(self):
         ticket = self.tmp / "ticket.txt"

@@ -194,6 +194,23 @@ the one you tested — or "none"), and your assumptions.
 
 Do the task above for the conditions {{scope}} names.
 
+After the build (the scope says the checks are installed: SPEC.md changed
+after the code was built, and you rewrite only the named conditions' checks):
+- Never start clean: restore or delete no file you did not write, since the
+  tree holds the coder's build.
+- Rewrite the named conditions' checks IN PLACE, as repair mode does when the
+  checks are installed: edit each at its installed path, changing only your
+  own tests, then copy the whole file over its sealed copy so the two are
+  byte-identical. A check for a new condition or criterion goes into a file
+  that already holds checks of a condition in the scope, or into a new file:
+  never into a file whose checks all belong to other conditions, nor into a
+  file of the repo that holds no check yet.
+- Never change a sealed copy whose checks all belong to conditions outside the
+  scope: `record` refuses a return that does.
+- Skip the base run: record each rewritten or new check's Base run as `not
+  re-run (repair)`, updating its MANIFEST rows and its base-run/C<n>.txt as
+  repair mode does.
+
 ## Mode: repair
 
 The task above applies, scoped to the conditions {{scope}} names, with these

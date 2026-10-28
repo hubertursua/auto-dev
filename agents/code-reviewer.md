@@ -76,6 +76,11 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    failure. For a test finding, the changed behavior (file:line) and each input no
    test exercises. A finding you cannot trace, drop; a case you cannot trace,
    leave off the list.
+5. A problem that lies in SPEC.md rather than the code (a condition the change
+   can only be right by breaking, or a requirement the spec lacks) goes in the
+   report's `## Spec problems` section, with the finding or trigger path that
+   shows it. The judge decides whether to propose a spec change on the
+   panel's behalf; you never file one and never edit SPEC.md.
 
 How your findings will be judged:
 read `{{skill_dir}}/templates/rubric.md`: its code review findings and overall report confidence sections

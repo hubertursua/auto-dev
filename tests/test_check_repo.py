@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -9,7 +11,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
-TOOL = Path(__file__).resolve().parent.parent / "tools" / "check-repo.py"
+ROOT_DIR = Path(__file__).resolve().parent.parent
+TOOL = ROOT_DIR / "tools" / "check-repo.py"
 
 
 def load_tool():
@@ -157,6 +160,68 @@ class CheckRepoTest(unittest.TestCase):
             errors = self.check_frontmatter(frontmatter)
             self.assertEqual(len(errors), 1, frontmatter)
             self.assertIn("no description this check can read", errors[0])
+
+    def copy_of_the_repo(self, tmp):
+        """The repo's files (not its history) in `tmp`, as a git repo of its own."""
+        copy = Path(tmp) / "repo"
+        shutil.copytree(TOOL.parent.parent, copy, ignore=shutil.ignore_patterns(
+            ".git", ".auto-dev", "__pycache__", ".ruff_cache"))
+        subprocess.run(["git", "init", "-q", str(copy)], capture_output=True, check=True)
+        return copy
+
+    def test_a_result_token_or_template_the_repo_lacks_fails_the_check_naming_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = self.copy_of_the_repo(tmp)
+            tool = copy / "tools" / "check-repo.py"
+            define = copy / "agents" / "define.md"
+            text = define.read_text(encoding="utf-8")
+
+            def run():
+                return subprocess.run([sys.executable, str(tool)], capture_output=True,
+                                      text=True, check=False)
+
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stdout)  # the copy passes as it is
+            define.write_text(re.sub(r"(```auto-dev-result\n(?:.*\n)*?next: [^\n]*)",
+                                     r"\1 | WITHDRAWN", text, count=1), encoding="utf-8")
+            result = run()
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("WITHDRAWN", result.stdout)
+            define.write_text(text + "\nWrite your answer to `templates/NO-SUCH-RULINGS.md`.\n",
+                              encoding="utf-8")
+            result = run()
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("NO-SUCH-RULINGS.md", result.stdout)
+
+    def test_the_release_is_4_10_with_notes_on_upgrading_from_4_9(self):
+        root = TOOL.parent.parent
+        plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
+        self.assertEqual(plugin["version"], "4.10.0")
+        upgrading = (root / "UPGRADING.md").read_text(encoding="utf-8")
+        section = re.search(r"^## Upgrading from 4\.9\b.*?(?=^## |\Z)", upgrading,
+                            re.MULTILINE | re.DOTALL)
+        self.assertTrue(section, "UPGRADING.md has no Upgrading from 4.9 section")
+        self.assertRegex(section.group(0), r"(?i)resum")
+
+    def check_agents_dir(self, files):
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, text in files.items():
+                (Path(tmp) / name).write_text(text, encoding="utf-8")
+            tool.check_briefs(Path(tmp))
+        return tool.errors
+
+    def test_an_unknown_define_token_or_missing_template_fails_the_repo_check(self):
+        agents = ROOT_DIR / "agents"
+        define = (agents / "define.md").read_text(encoding="utf-8")
+        self.assertIn("| REVISED | STANDS\n", define)
+        errors = self.check_agents_dir({"define.md": define.replace(
+            "| REVISED | STANDS\n", "| REVISED | STANDS | SHRUGGED\n", 1)})
+        self.assertTrue(any("define.md" in e and "SHRUGGED" in e for e in errors), errors)
+        errors = self.check_agents_dir({"define.md": define + "\nSee templates/NOPE.md.\n"})
+        self.assertTrue(any("templates/NOPE.md" in e for e in errors), errors)
+        errors = self.check_agents_dir({"define.md": define})
+        self.assertFalse(any(e.startswith("agents/define.md") for e in errors), errors)
 
 
 if __name__ == "__main__":

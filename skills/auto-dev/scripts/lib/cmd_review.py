@@ -54,6 +54,10 @@ gate-summary <post-plan|pr|main> [--pr N]
     a finding sent to a separate PR is listed in the PR body as a follow-up.
     main: the PR is open and not a draft, and every result was checked on its
     head commit.
+    pr and main also list the spec changes made during the run (each changed
+    condition or criterion and who proposed it), the spec proposals the Define
+    agent ruled to stand (with its reason), and the proposals no round was
+    left to send.
     Exit: 0 printed; 1 a precondition failed (the reason says what to do; do
     not ask the gate): `STALE` when a result no longer matches the code,
     `PRECONDITION` otherwise; 2 check-fresh.py, `git submodule foreach` or gh
@@ -68,6 +72,7 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
+from . import proposals
 from . import state as st
 from .cmd_checks import git_add_intent
 from .cmd_ship import check_fresh
@@ -624,6 +629,7 @@ def pr_summary(state, ad, args):
     if state["budget"]["remaining"] <= 0:
         lines.append("Budget exhausted: no round is left for a fix; an open must-fix "
                      "finding ships listed in the PR body")
+    lines += proposals.summary_lines(state)
     return lines, questions
 
 
@@ -672,5 +678,5 @@ def main_summary(state, ad, args):
               f"{comments} human review(s)/comment(s): triage them before asking"),
              f"Mergeable: {info.get('mergeable')} / {info.get('mergeStateStatus')}",
              f"Head {head}: every result was checked on it; the merge is locked to it",
-             *review_lines]
+             *review_lines, *proposals.summary_lines(state)]
     return lines, []
