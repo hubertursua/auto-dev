@@ -193,14 +193,14 @@ class CheckRepoTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("NO-SUCH-RULINGS.md", result.stdout)
 
-    def test_the_release_is_4_10_with_notes_on_upgrading_from_4_9(self):
+    def test_the_release_is_4_11_with_notes_on_upgrading_from_4_10(self):
         root = TOOL.parent.parent
         plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
-        self.assertEqual(plugin["version"], "4.10.0")
+        self.assertEqual(plugin["version"], "4.11.0")
         upgrading = (root / "UPGRADING.md").read_text(encoding="utf-8")
-        section = re.search(r"^## Upgrading from 4\.9\b.*?(?=^## |\Z)", upgrading,
+        section = re.search(r"^## Upgrading from 4\.10\b.*?(?=^## |\Z)", upgrading,
                             re.MULTILINE | re.DOTALL)
-        self.assertTrue(section, "UPGRADING.md has no Upgrading from 4.9 section")
+        self.assertTrue(section, "UPGRADING.md has no Upgrading from 4.10 section")
         self.assertRegex(section.group(0), r"(?i)resum")
 
     def check_agents_dir(self, files):

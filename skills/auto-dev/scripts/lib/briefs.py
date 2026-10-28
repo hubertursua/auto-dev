@@ -38,7 +38,7 @@ CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "review
           "report", "blocked", "failing", "question", "corrections_file", "leads"}
 OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
             "previous_issues", "earlier", "focus", "proposals", "rulings_file",
-            "spec_change", "rulings"}
+            "spec_change", "rulings", "deviations"}
 # fix_file is AUTO for the reviewers, who write it; OPTIONAL for the authors.
 AUTO_FOR = {"fix_file": {"define-reviewer", "plan-reviewer"}}
 # tree is AUTO (the tree at spawn time) for the security reviewers; the judge

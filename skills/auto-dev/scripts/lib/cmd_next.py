@@ -280,6 +280,10 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
     for job in jobs:
         worker, mode, sets = job[:3]
         job_agent = job[3] if len(job) > 3 else agent
+        if (worker, mode) in (("code-reviewer", "review"), ("review-judge", "consolidate")):
+            accepted = proposals.deviations_text(c.state)
+            if accepted:
+                sets = {**sets, "deviations": accepted}
         if c.readonly:
             n = c.peek(worker)
             path = c.ad / "briefs" / f"{worker}-{n}.md"
@@ -971,7 +975,7 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
             return DONE_MARK
         return cleanup_spawn(c, scope, files, "every condition is met: the cleanup agent "
                              "simplifies and runs the quality gate (no round)")
-    if nxt != "INSTALL_CONFLICT":
+    if nxt != "INSTALL_CONFLICT":  # its SPEC_EVAL.md is stale: no verdict to ask on
         result = deviation_step(c, latest)
         if result is not None:
             return result
@@ -1507,14 +1511,15 @@ def spec_loop_step(c, start, consumer, scope, files=None):
 
 # ---------------------------------------------------------------- deviations
 #
-# A verifier result that files a proposal on a condition the Define agent
-# already ruled stands, with that condition partial or unmet, shows the code
-# doing what the proposal described and SPEC.md not allowing it. Before the
+# A verifier result that files a proposal on a condition the Define agent ruled
+# stands (on this result's own proposal or an earlier one), with that
+# condition partial or unmet, shows the code doing what the proposal described
+# and SPEC.md not allowing it. Before the
 # correction would undo it, the user answers the deviation gate, one condition
 # at a time: accept the deviation (the verifier re-checks, told so; no round),
-# keep the spec (the correction goes ahead) or stop. A condition whose
-# acceptance check fails (unmet) can't be accepted: the check would fail the
-# quality gate. Each answer holds for the rest of the run.
+# keep the spec (the correction goes ahead) or stop. Accept is not offered for
+# an unmet condition: its acceptance check may fail, and a failing check fails
+# the quality gate. Each answer holds for the rest of the run.
 
 def verifier_spend_id(c, n):
     """The spend id verifier result n's correction pays with: a re-check
@@ -1585,27 +1590,27 @@ def deviation_step(c, latest):
 
 def deviation_gate(c, latest, cid, verdict, why):
     reason, filer = proposals.stood_reason(c.state, cid)
-    if not c.readonly:
-        props(c).setdefault("deviations", {})[cid] = {
-            "why": why, "reason": reason, "verdict": verdict,
-            "filer": ["verifier", latest["n"]], "seq": c.seq()}
+    record = {"why": why, "reason": reason, "verdict": verdict,
+              "filer": ["verifier", latest["n"]]}
+    asked = (c.state.get("proposals") or {}).get("deviations") or {}
+    if not c.readonly and asked.get(cid) != record:  # written once, not on every `next`
+        props(c).setdefault("deviations", {})[cid] = record
         c.dirty = True
     try:
         statement = proposals.spec_now(c.ad)[cid]["statement"]
     except (art.ArtifactError, KeyError):
         statement = "(see SPEC.md)"
     summary = [f"Condition {cid} says: {statement}",
-               (f"The verifier judged it {verdict}: the code does what a spec proposal "
-                f"described, which SPEC.md does not allow. What the code does instead "
-                f"(the verifier's words): {why}"),
+               (f"The verifier judged it {verdict} and proposed changing it, its reason: "
+                f"{why}"),
                (f"The Define agent ruled SPEC.md stands ({filer} proposed the change): "
                 f"{reason}")]
     labels = ["Accept the deviation", "Keep the spec (correct the code)", "Stop"]
     if verdict == "unmet":
         labels = labels[1:]
-        summary.append(f"An acceptance check of condition {cid} fails, so the deviation "
-                       "can't be accepted: that check would fail the quality gate. Keep the "
-                       "spec, or stop.")
+        summary.append(f"Condition {cid} is unmet, so accepting is not offered: an unmet "
+                       "condition's acceptance check may fail, and a failing check fails "
+                       "the quality gate. Keep the spec, or stop.")
     commands = {"Accept the deviation": c.cmd("gate", "deviation", "accept",
                                               "--condition", cid),
                 "Keep the spec (correct the code)": c.cmd("gate", "deviation", "keep",

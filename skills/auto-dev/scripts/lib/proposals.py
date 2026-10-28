@@ -627,14 +627,18 @@ def deviations(state):
             if (deviation_answer(state, cid) or {}).get("choice") == "accept"]
 
 
+def deviations_text(state):
+    """`condition 4 (the verifier's reason: …); …` for the accepted
+    deviations, or None."""
+    found = deviations(state)
+    return "; ".join(f"condition {cid} (the verifier's reason: {d.get('why', '')})"
+                     for cid, d in found) or None
+
+
 def deviation_lines(state):
     """`Deviations from the spec the user accepted: …` for a summary or report."""
-    found = deviations(state)
-    if not found:
-        return []
-    return ["Deviations from the spec the user accepted: " + "; ".join(
-        f"condition {cid} (what the code does instead: {d.get('why', '')})"
-        for cid, d in found)]
+    text = deviations_text(state)
+    return [f"Deviations from the spec the user accepted: {text}"] if text else []
 
 
 def rulings_text(state):
@@ -659,7 +663,7 @@ def rulings_text(state):
                         why = (((state.get("proposals") or {}).get("deviations") or {})
                                .get(cid) or {}).get("why", "")
                         lines.append(f"condition {cid}: the user accepted the code's "
-                                     f"deviation from it ({why}); when that deviation is "
+                                     f"deviation from it (the verifier's reason: {why}); when "
                                      "its only gap, judge it met with Evidence starting "
                                      "`accepted deviation:`, and write no correction to "
                                      "undo it; judge any other gap as usual")

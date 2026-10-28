@@ -3754,12 +3754,14 @@ class SpecProposalTest(NextCase):
         self.after(out)
         self.resume()
         self.review_clean()
+        for worker in ("code-reviewer", "review-judge"):  # the review is told, too
+            self.assertIn("condition 4", self.briefs_of(worker)[-1]["sets"]["deviations"])
         self.lint()
         self.spec_eval()
         out = self.next(5)
         self.assertIn("pr gate", out["QUESTION"])
-        self.assertIn(f"Deviations from the spec the user accepted: condition 4 (what the "
-                      f"code does instead: {WHY})", out["SUMMARY"])
+        self.assertIn(f"Deviations from the spec the user accepted: condition 4 (the "
+                      f"verifier's reason: {WHY})", out["SUMMARY"])
 
     def test_after_accepting_another_open_condition_is_corrected_on_the_paid_round(self):
         _, out = self.deviation_gate()
@@ -3775,6 +3777,41 @@ class SpecProposalTest(NextCase):
         given = self.given(*jobs[0])
         self.assertIn("overdue", given)
         self.assertNotIn("retry guard", given)
+
+    def test_explain_at_the_gate_and_after_accepting_writes_nothing(self):
+        _, out = self.deviation_gate()
+        state = (self.dir / "state.json").read_text()
+        r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertEqual((self.dir / "state.json").read_text(), state)
+        self.after(out, "Accept the deviation")
+        state = (self.dir / "state.json").read_text()
+        r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("verifier", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), state)
+        self.assertEqual(len(self.briefs_of("verifier")), 1)
+
+    def test_several_deviations_are_asked_one_at_a_time(self):
+        self.verifier_files(blocks=[proposal_block(1, "condition 4", NEW_4),
+                            proposal_block(2, "condition 3", NEW_3)])
+        self.spec_eval(verdicts={"3": "partial", "4": "partial"})
+        _, jobs = self.expect("define")
+        r = self.define_answers(jobs[0][1], PROPOSAL_SPEC, [
+            ("stands", self.STOOD), ("stands", "overdue is marked, nothing more")], "STANDS")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(5)
+        self.assertIn("Condition 4:", out["QUESTION"])
+        self.after(out, "Accept the deviation")
+        out = self.next(5)
+        self.assertIn("Condition 3:", out["QUESTION"])
+        self.assertIn("overdue is marked, nothing more", "\n".join(out["SUMMARY"]))
+        self.after(out, "Keep the spec (correct the code)")
+        _, jobs = self.expect("verifier")  # 4 was accepted: the re-check first
+        rulings = self.sets(*jobs[0])["rulings"]
+        self.assertIn("condition 4: the user accepted", rulings)
+        self.assertIn("condition 3 stands as written", rulings)
+        self.assertIn("the user chose to keep it", rulings)
 
     def test_an_unmet_condition_can_t_be_accepted(self):
         _, out = self.deviation_gate("unmet")
@@ -3817,6 +3854,9 @@ class SpecProposalTest(NextCase):
         out = self.next(5)
         self.assertEqual(self.options(out)[0], "Accept the deviation")
         self.assertEqual(len(self.briefs_of("define")), before)
+        self.after(out, "Stop")
+        self.next(4)
+        self.assertEqual(self.state()["phases"]["6"]["status"], "stopped")
 
     # -------------------------------------------------------------- condition 6
 

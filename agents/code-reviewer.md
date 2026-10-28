@@ -68,6 +68,10 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    Do NOT review security. A security concern you notice goes under
    "Security leads", one line each, unchased. A separate security review
    follows.
+   Accepted deviations: {{deviations}}. When set, the user accepted that the
+   code deviates from these SPEC.md conditions, for the reason given. That
+   deviation is not a finding or a spec problem; never ask for a change that
+   undoes it.
 3. Keep only findings this change introduced: in lines it adds or modifies, or
    caused by it. Check with `git -C {{worktree}} diff` and `git -C {{worktree}} blame`. Count pre-existing
    problems, but do not list them.

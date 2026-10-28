@@ -178,9 +178,10 @@ weakening them. Verification is built around that:
   answers STANDS with its reason, and `record` checks `SPEC.md` against each
   answer. A STANDS holds for the rest of the run (the proposal is never sent
   again, and every later verifier pass is told the ruling), and the result is
-  acted on as if it carried no proposal. If a verifier then finds the code
-  doing what the stood proposal described, the *deviation gate* asks you
-  before the correction would undo it (see *Human gates & integrations*). An applied change is redone before
+  acted on as if it carried no proposal, unless a verifier (on that result or
+  a later one) finds the code doing what the stood proposal described: then the
+  *deviation gate* asks you before the correction would undo it (see *Human
+  gates & integrations*). An applied change is redone before
   anything relies on it: the planner revises the plan for the changed
   conditions, the acceptance tester rewrites only their checks (the others are
   held as they are), the coder gets the plan's change (only when the plan
@@ -332,12 +333,12 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
 - **The deviation gate** fires when a spec proposal was ruled to stand but the
   verifier finds the code still doing what it described (the condition partial
   or unmet), whoever first proposed it. For that one condition you choose
-  `Accept the deviation` (the verifier re-checks, told so, and nothing undoes
-  it; no round is spent), `Keep the spec (correct the code)` or `Stop`. A
-  condition whose acceptance check fails can't be accepted, since that check
-  would fail the quality gate, and neither can a Security/Compliance
-  criterion. Accepted deviations are listed in the PR and main gate summaries
-  and the final report.
+  `Accept the deviation` (the verifier re-checks, told so; the reviewers are
+  told too, and nothing undoes it; no round is spent), `Keep the spec (correct
+  the code)` or `Stop`. Accept is not offered for an unmet condition, whose
+  acceptance check may fail the quality gate, and a Security/Compliance
+  criterion is never deviated from. Accepted deviations are listed in the PR
+  and main gate summaries and the final report.
 
 ## Stack profiles
 

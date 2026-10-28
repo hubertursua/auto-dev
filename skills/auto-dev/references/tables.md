@@ -107,7 +107,7 @@ what they said, then run `next`.
 | Main (Phase 6, once CI and human comments are settled) | Merge PR to main | `gate main proceed` | `merge-pr`, then Jira Done and the final report |
 | | Hold | `gate main hold --reason "<why>"` | the run is held at the main gate |
 | | Stop | `gate main stop --reason "<why>"` | the run stops; the PR stays open |
-| Deviation (Phases 5–6, when a verifier shows the code doing what a spec proposal that stood described; one condition at a time) | Accept the deviation | `gate deviation accept --condition <n>` | the verifier re-checks, told the deviation is accepted (no round); it writes no correction to undo it, and any other open item is corrected on the round already paid. Not offered when the condition is unmet (its acceptance check fails) |
+| Deviation (Phases 5–6, when a verifier shows the code doing what a spec proposal that stood described; one condition at a time) | Accept the deviation | `gate deviation accept --condition <n>` | the verifier re-checks, told the deviation is accepted (no round); it writes no correction to undo it, and any other open item is corrected on the round already paid; later review passes are told not to undo it. Not offered when the condition is unmet (its acceptance check may fail, which fails the quality gate) |
 | | Keep the spec (correct the code) | `gate deviation keep --condition <n>` | the correction goes ahead, as after any `STANDS` |
 | | Stop | `gate deviation stop --condition <n>` | the run stops |
 | Worktree (after the final report) | Remove it / Keep it | `gate cleanup proceed` / `keep` | the worktree (and `.auto-dev/`) is removed or kept |

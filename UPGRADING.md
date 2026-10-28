@@ -7,8 +7,10 @@ can resume on the new one. Newest first. The current version is in
 ## Upgrading from 4.10
 
 - **The deviation gate.** When a verifier proposes a change to a condition the
-  Define agent already ruled stands, and judges that condition partial or
-  unmet, the code does what the proposal described. Before the correction
+  Define agent ruled stands (on that result's own proposal, or an earlier
+  one), and judges that condition partial or unmet, the code does what the
+  proposal described. This changes what follows a verifier STANDS: before
+  4.11 the correction went straight to the coder. Before the correction
   would undo it, `next` exits 5 and asks you, one condition at a time:
   `Accept the deviation`, `Keep the spec (correct the code)` or `Stop`. This
   applies whoever first proposed the change: a stood review or PR-comment
@@ -19,16 +21,19 @@ can resume on the new one. Newest first. The current version is in
   accepted (a new line in `{{rulings}}`): it judges the condition met when the
   deviation is its only gap, writing `accepted deviation:` in the Evidence, and
   writes no correction to undo it. Any other open item is corrected on the
-  round the first result already paid.
-- **What can't be accepted.** An unmet condition (one whose acceptance check
-  fails, which would fail the quality gate) is offered only Keep and Stop. A
+  round the first result already paid. Later code reviewers and the review
+  judge get the accepted deviations (a new optional `{{deviations}}` slot),
+  so a review never asks to undo one.
+- **What can't be accepted.** An unmet condition (its acceptance check may
+  fail, which fails the quality gate) is offered only Keep and Stop. A
   security criterion is never deviated from: proposals can't name an existing
   S row, and `gate deviation accept` refuses an `S<n>`.
 - **Where accepted deviations show.** The PR and main gate summaries, and a new
   *Accepted deviations* line in the final report. The PR body is unchanged.
 - **The verifier is told to propose again.** After a STANDS, a verifier that
   finds the code still doing what the proposal described proposes it again;
-  that proposal goes to the gate, never to the Define agent.
+  that proposal goes to the gate, never to the Define agent. A proposal's
+  `Why:` says what the code does, since the gate shows it to the user.
 - **A run in flight resumes.** No `.auto-dev.yml` key changes and the state
   needs no migration: `state.json`'s `proposals` gains a `deviations` key, and
   a verifier brief a `paid_by` key, on first use. A run that is in the middle of
