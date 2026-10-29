@@ -23,17 +23,21 @@ default 4. `next` spends a round before the action that needs it and prints a
 |---|---|---|
 | 1 | a Define re-review after its FIX blocks applied | stop; report the Define review's open blockers one by one |
 | 2 | a plan re-review, or re-spawning the acceptance tester for gaps | stop; report the plan review's open blockers or the gaps one by one |
-| 3 | a correction after verification, a re-dispatched `BLOCKED` step, an acceptance-check repair, a batch of the verifier's spec proposals sent to the Define agent (the same round its correction would spend) | stop; report each unmet condition by name and what was tried, and each spec proposal not sent; no cleanup, no Phase 6 |
-| 4 | a correction for a review finding or a human reviewer's blocker, a batch of a review pass's or a PR comment's spec proposals sent to the Define agent (the same round its correction would spend, or one when it asks for none) | before the commit: `next` goes on to the PR gate, whose summary names every open must-fix finding and each spec proposal not sent. After it: stop; report every open must-fix finding and each unsent proposal by name |
-| 5 | a correction for red CI caused by the code | stop; report each red check. Never merge over it |
+| 3 | a correction after verification, a re-dispatched `BLOCKED` step, an acceptance-check repair (the verifier's defective checks go to the tester as check proposals, on the round its correction would spend), a batch of the verifier's spec proposals sent to the Define agent (the same round its correction would spend), a Phase 4 or 5 coder result's plan and check proposals (one round for the owners' rulings and the coder's next run, `BLOCKED` included) | stop; report each unmet condition by name and what was tried, and each spec, plan or check proposal not sent; no cleanup, no Phase 6. A `BUILT` coder result whose proposals can't be sent goes on as if it filed none; a `BLOCKED` one goes to the planner in blocked mode first |
+| 4 | a correction for a review finding or a human reviewer's blocker (a finding or comment about a check goes to the tester as check proposals, on that round), a batch of a review pass's or a PR comment's spec proposals sent to the Define agent (the same round its correction would spend, or one when it asks for none), the plan and check proposals of a coder in that correction (one round, as for consumer 3) | before the commit: `next` goes on to the PR gate, whose summary names every open must-fix finding and each spec, plan or check proposal not sent. After it: stop; report every open must-fix finding and each unsent proposal by name |
+| 5 | a correction for red CI caused by the code, the plan and check proposals of a coder in that correction (one round, as for consumer 3) | stop; report each red check and each plan or check proposal not sent. Never merge over it |
 
 Free (no round): the first review of anything, every verifier re-check, every
 cleanup run, a user's "Revise plan" at the post-plan gate, a re-spawn after
 a worker failed once, and a spec redo after the Define agent applied a
 proposal (the planner's revision, the tester's rewrite with one re-spawn for
-gaps and one ambiguity ruling, one repair, the hand-off, cleanup and the
-verifier's first pass). Open items that first pass finds are a new correction,
-paid as usual.
+gaps and one ambiguity ruling, the entry-point repair and the carried check
+proposals' repair, the hand-off, cleanup and the verifier's first pass); after
+the owners ruled on a coder result's plan and check proposals, the
+entry-point repair a plan revision calls for and the coder's next run (both
+paid by that result's one round); and a proposal on a step or condition
+already ruled to stand, which is not sent. Open items that first pass finds
+are a new correction, paid as usual.
 
 ## Stop conditions
 
@@ -63,6 +67,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 19 | GitHub refused or only queued the merge | `merge-pr` exit 3 or 4, then `next` |
 | 20 | the user chose Stop at a gate or pause | `gate … stop` |
 | 21 | the tester could not settle a spec redo's rewritten checks: gaps after its one free re-spawn, or a condition that reads two ways after the Define agent's one ruling | `next` |
+| 22 | a check the acceptance tester ruled to stand, questioned again by the verifier, a review finding or a PR comment with nothing else open: the report names both sides, and no round is spent | `next` |
 
 ## Hold and Stop
 

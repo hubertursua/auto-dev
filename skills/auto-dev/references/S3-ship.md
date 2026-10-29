@@ -20,8 +20,14 @@ see in S3, in order:
    from either review run one correction (`coder`, `cleanup`, `verifier`), and
    the panel and the security reviewer review it, without the nested skills. A finding that a held-out
    acceptance check is wrong goes to the `acceptance-tester` in repair mode,
-   never the coder; it may fix the check or answer `STANDS` with its reason,
-   and a check that stands is not sent back a second time.
+   never the coder, as a batch with one ruling per condition (every condition
+   with a check in the file the finding's Location names); it may fix the
+   checks or rule they stand with its reason. A condition whose checks stood,
+   at any point of the run, is not sent back: the correction covers the rest,
+   and when nothing else is open `next` stops and reports both sides (#22). A
+   coder in the correction may file plan and check proposals: they go to the
+   planner and the tester as in S2 (`references/S2-build.md`, step 1), paid
+   from the correction's consumer.
    A pass's **spec proposals** (the judge files for the panel; the security
    reviewer files its own, most often a new security criterion) wait until the
    pass has settled: consolidation, re-votes, the check of the security
@@ -51,7 +57,10 @@ see in S3, in order:
    draft's checks doesn't count), the main gate, `merge-pr`. A human blocker
    goes to the coder; a comment saying a held-out check is wrong goes to the
    acceptance tester's repair mode (the triager writes it to
-   `triage/human-<n>-checks.md`). When both come back, the tester goes first.
+   `triage/human-<n>-checks.md`), one ruling per condition with a check in the
+   file its entry's `Where:` line names (a comment naming no such file goes as
+   one item with no condition); a condition whose checks stood is not sent
+   again. When both come back, the tester goes first.
    A comment that says the spec itself is wrong may become the triager's spec
    proposal, in its own words, naming the comment's id: the `define` agent gets
    it marked as a claim to check against the ticket (CI mode never files). An

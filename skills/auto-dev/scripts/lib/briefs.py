@@ -38,7 +38,7 @@ CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "review
           "report", "blocked", "failing", "question", "corrections_file", "leads"}
 OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
             "previous_issues", "earlier", "focus", "proposals", "rulings_file",
-            "spec_change", "rulings", "deviations"}
+            "spec_change", "rulings", "deviations", "answers", "plan_change"}
 # fix_file is AUTO for the reviewers, who write it; OPTIONAL for the authors.
 AUTO_FOR = {"fix_file": {"define-reviewer", "plan-reviewer"}}
 # tree is AUTO (the tree at spawn time) for the security reviewers; the judge
@@ -49,7 +49,8 @@ RESULTS = {
     "profiler": {"CONFIRM"},
     "define": {"FITS", "OVERSIZED", "REVISED", "STANDS"},
     "define-reviewer": {"CLEAN", "BLOCKERS"},
-    "planner": {"WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST", "SPEC_IMPOSSIBLE"},
+    "planner": {"WRITTEN", "REVISED", "STANDS", "PLAN_REVISED", "UPDATE_OLD_TEST",
+                "SPEC_IMPOSSIBLE"},
     "plan-reviewer": {"CLEAN", "BLOCKERS"},
     "acceptance-tester": {"SEALED", "REPAIRED", "STANDS", "FOLDED"},
     "coder": {"BUILT", "BLOCKED"},
@@ -64,8 +65,9 @@ RESULTS = {
     "lookup": {"ANSWERED", "OUT_OF_SCOPE"},
 }
 STATUSES = {"ok", "blocked", "failed"}
-# Result keys a return may leave out: `proposals` (the spec proposals a filer
-# wrote) came in 4.10, and a worker briefed before it never writes it.
+# Result keys a return may leave out: `proposals` (the proposals a filer wrote)
+# came in 4.10 (and for the coder in 4.12), and a worker briefed before it
+# never writes it.
 LENIENT_KEYS = {"proposals"}
 
 

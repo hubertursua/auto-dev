@@ -146,9 +146,9 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · medium |
 | Define agent (Phase 2; rules on spec proposals in Phases 5–6) | `auto-dev:define` | `opus` · high |
 | Define reviewer (Phase 2) | `auto-dev:define-reviewer` | `opus` · high |
-| Planner (Phase 3) | `auto-dev:planner` | `opus` · xhigh |
+| Planner (Phase 3; rules on the coder's plan proposals in Phases 4–6) | `auto-dev:planner` | `opus` · xhigh |
 | Plan reviewer (Phase 3) | `auto-dev:plan-reviewer` | `opus` · high |
-| Acceptance tester (Phase 3) | `auto-dev:acceptance-tester` | `opus` · high |
+| Acceptance tester (Phase 3; rules on check proposals in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
 | Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
 | Verifier (Phase 5, re-spawned on every change) | `auto-dev:verifier` | `opus` · high |
 | Cleanup agent (Phase 5, re-spawned on fixes) | `auto-dev:cleanup` | `sonnet` · medium |

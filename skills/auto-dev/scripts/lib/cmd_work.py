@@ -19,7 +19,11 @@ brief lookup --out <dir> --set worktree=<repo> --set question="<question>"
     security reviewers, the triager), or for Define ruling on proposals, also
     copies SPEC.md to proposals/spec-<sha>.md and keeps the sha on the brief's
     state entry (a --retry keeps the first brief's): `record` compares SPEC.md
-    with it.
+    with it. So does a planner brief in blocked mode, or in revise mode for a
+    spec change or plan proposals (IMPLEMENTATION.md to
+    proposals/snapshots/plan-<sha>.md), and an acceptance tester's repair brief
+    (MANIFEST.md and the sealed copies to
+    proposals/snapshots/acceptance-tester-<n>/).
     Prints the agent type to spawn and the one-line prompt to give it.
     With --out (the profiler always; a lookup before the run exists), the
     brief goes to <dir> with no state.json: a lookup's answer goes to
@@ -69,6 +73,34 @@ record <worker> <n>
     the new items the applied proposals asked for. An acceptance tester in a
     spec redo must leave unchanged every sealed copy whose checks all belong to
     conditions outside its scope.
+    Who may propose against what: SPEC.md, the filers above; the plan's build
+    steps and the held-out checks, the coder (build and correction mode)
+    alone. A spec filer's Target naming a step or a check is refused (a check
+    is questioned only through its own route: the verifier's REPAIR, an
+    `acceptance-check` finding, an ACCEPTANCE_CHECK comment). The coder's
+    proposals (proposals/coder-<n>.md) each name steps the plan has (`step
+    <n>`, `steps <n>, <m>`, changing them) or add one (`new step`, numbered
+    after the last), never both, or name one check its brief listed that
+    MANIFEST.md lists; never a condition or criterion. A coder returning
+    BLOCKED writes blocked/coder-<n>.md; when it also proposes a plan change,
+    the file lists each step it stopped as a line `- step <n>: <why>`, and a
+    file with no such line, or a list line opening on a step in another form,
+    is refused. The planner ruling on a
+    batch (proposals/plan-<k>.md) writes a ruling for each (stands with a
+    reason), returns REVISED or STANDS in revise mode, and leaves the build
+    sequence changed exactly as the rulings say (spacing aside; in blocked
+    mode the steps the coder stopped may change too); the tester ruling on a
+    batch (proposals/checks-<k>.md) rules each condition repaired or stands,
+    changes a sealed copy or MANIFEST.md rows only for a condition it
+    repaired (another condition's row only to rename a check the two share),
+    and must have changed each one it ruled repaired. Each answer is held to
+    the copy taken when its batch was first briefed, a re-spawn after an
+    answer that was not ok included; a planner or tester brief with no batch
+    re-spawned after a not-ok answer keeps the copy of the brief it replaces,
+    so the steps or conditions its log entry notes count from before the
+    first attempt. Neither may write a stands reason into
+    the plan or a sealed copy. The log entry notes the steps or conditions
+    such an answer changed.
     On a match it updates state.json (for an ok return of the Define agent, the
     size check; after Define or its reviewer, a Security/Compliance criterion in
     SPEC.md turns a run that FITS high-risk with the post-plan gate on; a note
@@ -92,8 +124,10 @@ check-artifact <file>
     triage/*.md; also refused when it copies the run's SPEC.md, as
     `spec-overlap` checks), a FIX file (fixes/*.md), a spec proposal file
     (proposals/<worker>-<n>.md, held to the run's SPEC.md as `record` holds it),
-    a batch of proposals or its rulings (proposals/batch-<k>.md,
-    proposals/batch-<k>-rulings.md), or a returns/*.json file.
+    the coder's plan and check proposals (proposals/coder-<n>.md, held to the
+    plan and MANIFEST.md), a batch of proposals or its rulings
+    (proposals/batch-<k>.md, plan-<k>.md, checks-<k>.md and their
+    -rulings.md), or a returns/*.json file.
     Exit: 0 it follows the template; 1 problems (each printed).
 
 All exit 2 when they could not run — never a pass.
@@ -107,7 +141,7 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import briefs, cmd_checks, proposals, sealed
+from . import briefs, check_props, cmd_checks, plan_props, proposals, sealed
 from . import state as st
 from .cmd_checks import FIX_RE, overlaps, rederive_risk
 from .cmd_review import pending_rows
@@ -441,6 +475,8 @@ def write_brief(state, where, worker, mode, given, retry=None):
         entry = {"worker": worker, "n": n, "mode": mode, "sets": given, "at": st.now(),
                  "retry": retry, "seq": st.seq(state)}
         watch_spec(state, ad, worker, given, retry, entry)
+        if retry is None:
+            watch_owner(state, ad, worker, mode, given, entry, n)
         state.setdefault("briefs", []).append(entry)
         for old in state["briefs"]:
             if retry is not None and old["worker"] == worker and old["n"] == retry:
@@ -456,7 +492,7 @@ def watch_spec(state, ad, worker, given, retry, entry):
     if retry is not None:
         old = next((b for b in state.get("briefs", [])
                     if b["worker"] == worker and b["n"] == retry), {})
-        for key in ("spec", "held"):
+        for key in ("spec", "held", "plan", "sealed"):
             if key in old:
                 entry[key] = old[key]
         return
@@ -466,6 +502,63 @@ def watch_spec(state, ad, worker, given, retry, entry):
         sha = proposals.snapshot(ad)
         if sha:
             entry["spec"] = sha
+
+
+def is_set(value):
+    return str(value or "none").strip().lower() not in ("", "none")
+
+
+def watch_owner(state, ad, worker, mode, given, entry, n):
+    """The planner revising the plan (blocked mode, or revise mode for a spec
+    change or plan proposals) and the tester repairing checks are held to
+    what they were briefed on: copy IMPLEMENTATION.md
+    (proposals/snapshots/plan-<sha>.md) or MANIFEST.md and the sealed copies
+    (proposals/snapshots/acceptance-tester-<n>/), and keep the key on the
+    brief's entry. `record` diffs against it; a retry keeps the first brief's
+    (watch_spec), and so does a new brief on the same batch of proposals (a
+    re-spawn after an answer that was not ok), so an edit the first attempt
+    left behind is never taken for the base. A brief with no batch does the
+    same through replaced(): the brief a re-spawn after a not-ok answer
+    replaces lends it its copy."""
+    key = {"planner": "plan", "acceptance-tester": "sealed"}.get(worker)
+    batch = proposals._batch_path(given) if is_set(given.get("proposals")) else None
+    first = next((b for b in state.get("briefs", []) if batch and b["worker"] == worker
+                  and key in b and is_set(b.get("sets", {}).get("proposals"))
+                  and proposals._batch_path(b["sets"]) == batch), None)
+    if first is None and key and batch is None:
+        first = replaced(state, worker, mode, given, key)
+    if first is not None:
+        entry[key] = first[key]
+    elif worker == "planner" and (mode == "blocked" or (mode == "revise" and (
+            is_set(given.get("spec_change")) or is_set(given.get("proposals"))))):
+        sha = plan_props.snapshot(ad)
+        if sha:
+            entry["plan"] = sha
+    elif worker == "acceptance-tester" and mode == "repair":
+        entry["sealed"] = check_props.snapshot(ad, f"{worker}-{n}")
+
+
+def replaced(state, worker, mode, given, key):
+    """The brief a new one with no batch replaces, or None: the latest earlier
+    brief for the same worker and mode, also with no batch, briefed on the same
+    `blocked` (the planner) or `scope` (the tester), that holds a copy
+    (`key`), whose job returned a status other than ok, with no ok result from
+    that worker since. Its copy is the base from before the first attempt."""
+    same = "blocked" if worker == "planner" else "scope"
+    want = str(given.get(same) or "").strip()
+    last = next((b for b in reversed(state.get("briefs", []))
+                 if b["worker"] == worker and b.get("mode") == mode
+                 and not is_set(b.get("sets", {}).get("proposals"))
+                 and str(b.get("sets", {}).get(same) or "").strip() == want), None)
+    if last is None or key not in last:
+        return None
+    log = [e for e in state.get("log") or [] if e.get("worker") == worker]
+    done = next((e for e in log if e.get("n") == last["n"]), None)
+    if done is None or done.get("status") == "ok":
+        return None
+    if any(e.get("status") == "ok" and e.get("seq", 0) > done.get("seq", 0) for e in log):
+        return None
+    return last
 
 
 # ---------------------------------------------------------------- record
@@ -553,12 +646,17 @@ def derive(worker, data, ad, state, n):
     issues += result_issues(worker, data, ad, state, n) + artifact_issues(
         worker, data, ad, state, n)
     as_int(data, "proposals")  # a count that is not a number is MALFORMED
+    shown = check_props.shown_paths(ad, worker, n) if worker == "coder" else None
     issues += proposals.filer_issues(worker, issued.get("mode"), data, ad, n,
-                                     handed_correction(worker, issued, data, ad, state))
+                                     handed_correction(worker, issued, data, ad, state),
+                                     shown=shown)
     sets = issued.get("sets", {})
-    if worker == "define" and str(sets.get("proposals") or "none").strip().lower() \
-            not in ("", "none"):
+    if worker == "define" and is_set(sets.get("proposals")):
         issues += proposals.answer_issues(ad, sets, issued.get("spec"), data.get("next"))
+    if worker == "planner" and is_set(sets.get("proposals")):
+        issues += plan_props.answer_issues(ad, sets, issued, data.get("next"))
+    if worker == "acceptance-tester" and is_set(sets.get("proposals")):
+        issues += check_props.answer_issues(ad, sets, issued, data.get("next"))
     if worker == "acceptance-tester" and issued.get("held"):
         issues += proposals.held_issues(ad, issued["held"])
     return issues
@@ -656,7 +754,8 @@ def result_issues(worker, data, ad, state, n):
         fix = str(data.get("fix_file", "none")).strip()
         if fix not in ("none", "") and not Path(fix).exists():
             issues.append(f"fix_file {fix} does not exist")
-    elif worker == "planner" and nxt in ("WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST"):
+    elif worker == "planner" and nxt in ("WRITTEN", "REVISED", "STANDS", "PLAN_REVISED",
+                                         "UPDATE_OLD_TEST"):
         issues += [f"IMPLEMENTATION.md: {p}" for p in check_file(ad / "IMPLEMENTATION.md")]
     elif worker == "acceptance-tester" and nxt in ("SEALED", "REPAIRED", "FOLDED"):
         # Gaps are not a disagreement: `next` re-spawns the tester for them.
@@ -668,6 +767,10 @@ def result_issues(worker, data, ad, state, n):
         listed = ad / "blocked" / f"coder-{n}.md"
         if nxt == "BLOCKED" and not listed.exists():
             issues.append(f"next is BLOCKED but {listed} does not exist")
+        elif nxt == "BLOCKED" and plan_props.files_plan_proposal(ad, n):
+            # Only the planner's combined answer reads the stopped steps out of
+            # the file; with no plan proposal it is read as prose, as before.
+            issues += plan_props.blocked_file_issues(listed)
     elif worker == "verifier":
         issues += derive_verifier(nxt, ad)
     elif worker == "cleanup":
@@ -846,6 +949,10 @@ def record(args):
     entry = {"worker": args.worker, "n": args.n, "mode": issued.get("mode"),
              "sets": issued.get("sets", {}), "status": data.get("status"),
              "next": data.get("next", ""), "data": data, "seq": st.seq(state)}
+    if ok and args.worker == "planner" and issued.get("plan"):
+        entry["steps_changed"] = plan_props.changed_steps(ad, issued["plan"])
+    if ok and args.worker == "acceptance-tester" and issued.get("sealed"):
+        entry["checks_changed"] = check_props.changed_conditions(ad, issued["sealed"])
     again = next((i for i, e in enumerate(log)
                   if e["worker"] == args.worker and e["n"] == args.n), None)
     if again is None:
@@ -863,10 +970,21 @@ def record(args):
 
 # ---------------------------------------------------------------- check-artifact
 
+def is_snapshot(path):
+    """Whether `path` lies in a run's proposals/snapshots/ folder: `proposals`
+    then `snapshots`, directly inside the artifact dir (`.auto-dev`). The same
+    names elsewhere in the clone's path never count."""
+    parts = Path(os.path.abspath(path)).parts
+    return any(parts[i - 1] == ".auto-dev" and parts[i] == "proposals"
+               and parts[i + 1] == "snapshots" for i in range(1, len(parts) - 2))
+
+
 def check_file(path):
     """Problems with one artifact, by its name; [] when it follows its template."""
     path = Path(path)
     name, parent = path.name, path.parent.name
+    if is_snapshot(path):
+        return []  # a copy taken at brief time, not a worker's file
     try:
         text = art.read(path)
     except art.ArtifactError as exc:
@@ -958,34 +1076,59 @@ def run_spec(path):
     return None
 
 
+def check_rulings(text, answers):
+    """A rulings file: a block per proposal, each answered one of `answers`,
+    a stands with a reason."""
+    found = art.rulings(text)
+    if not found:
+        return ["no `## P<k>` ruling block"]
+    problems = []
+    for pid, ruling in found.items():
+        if ruling["answer"] not in answers:
+            problems.append(f"{pid}: `Answer:` must be {' or '.join(answers)}")
+        elif ruling["answer"] == "stands" and not ruling["reason"]:
+            problems.append(f"{pid} stands with no reason")
+    return problems
+
+
 def check_proposals(path, text):
     """A file under proposals/: a filer's proposals, a batch, or its rulings."""
     name = path.name
     if name.startswith("spec-"):
         return []  # a copy of SPEC.md, not a worker's file
-    if re.match(r"batch-\d+-rulings\.md$", name):
-        answers = art.rulings(text)
-        if not answers:
-            return ["no `## P<k>` ruling block"]
-        problems = []
-        for pid, ruling in answers.items():
-            if ruling["answer"] not in ("applied", "stands"):
-                problems.append(f"{pid}: `Answer:` must be applied or stands")
-            elif ruling["answer"] == "stands" and not ruling["reason"]:
-                problems.append(f"{pid} stands with no reason")
-        return problems
+    if re.match(r"(batch|plan)-\d+-rulings\.md$", name):
+        return check_rulings(text, ("applied", "stands"))
+    if re.match(r"checks-\d+-rulings\.md$", name):
+        return check_rulings(text, ("repaired", "stands"))
     blocks = art.proposal_blocks(text)
     if not blocks:
         return ["no `## P<k>` proposal block"]
-    if re.match(r"batch-\d+\.md$", name):
-        return []  # once applied, its new text is SPEC.md's own
+    if re.match(r"(batch|plan|checks)-\d+\.md$", name):
+        return []  # next wrote it; once applied, its new text is the artifact's own
+    ad = path.resolve().parent.parent
+    if re.match(r"coder-\d+\.md$", name):
+        # The brief's check files are unknown here: record checks those.
+        return proposals.coder_problems(blocks, ad, shown=None)
     spec = run_spec(path)
     if spec is None:
         return ["no SPEC.md beside it to check the proposals against"]
     items = art.spec_items(art.read(spec), str(spec))
+    worker = re.sub(r"-\d+\.md$", "", name)
+    label = proposals.WORKER_LABEL.get(worker, "a filer")
     out = []
     for block in blocks:
-        out += proposals.problems(block, items, from_comment=name.startswith("triager-"))
+        artifact, _ = proposals.classify(block["target"])
+        if artifact == "plan":
+            out.append(f"{block['pid']} names a plan step: {label} may not propose against "
+                       "the plan; only the coder files plan proposals")
+        elif artifact == "checks":
+            route = proposals.CHECK_ROUTE.get(worker)
+            out.append(f"{block['pid']} names a check: {label} questions a check only "
+                       f"through {route}, never in a proposal file" if route else
+                       f"{block['pid']} names a check: {label} may not question a check; "
+                       "it files against SPEC.md alone")
+        else:
+            out += proposals.problems(block, items, from_comment=name.startswith("triager-"))
     return out
 
 

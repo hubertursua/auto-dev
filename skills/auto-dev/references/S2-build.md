@@ -18,6 +18,22 @@ see in S2, in order:
    - It may return `BLOCKED`: `next` sends the `planner` in blocked mode, then
      the coder again (a round), or the acceptance tester first when the plan's
      entry points changed.
+   - It may file **plan and check proposals** (`proposals/coder-<n>.md`: a step
+     of the plan, or a held-out check its correction brief listed, is wrong).
+     `next` spends one round (`BUDGET:`, `coder-<n>`; a result that is also
+     `BLOCKED` spends only that one), then sends them to their owners in
+     order: the `planner` (in revise mode, or in blocked mode when the coder
+     also stopped steps; one answer covers both), the free
+     `acceptance-tester` repair when the revised plan's entry points changed,
+     then the `acceptance-tester` in repair mode on the check proposals, one
+     ruling per condition, and then the `coder` again in its mode, told only
+     `repaired` or `stands` for each proposal and, when the plan changed, its
+     revised lines. A step or condition already ruled to stand is not sent
+     again: a result whose proposals are all on such items goes on from its
+     `next` token, spending nothing. With no round left, nothing is sent: a
+     `BUILT` result goes on, a `BLOCKED` one goes to the planner in blocked
+     mode as before, and the next stop report or the PR gate summary names
+     each proposal not sent.
 2. `next` installs the sealed checks in the worktree itself (a check that
    adds tests to an existing file goes in among the coder's lines; if one
    can't, the `acceptance-tester` in fold mode adds its tests to the coder's
@@ -32,11 +48,18 @@ see in S2, in order:
 4. While something is open: the `coder` in correction mode with that file
    (each one spends a round; `BUDGET:` shows what's left), then `cleanup`, then
    a `verifier` re-check. Defective checks go to the `acceptance-tester` first, in repair
-   mode: it fixes them (then `cleanup` runs the gate on the repaired checks
-   before the re-check), or answers `STANDS` with its reason, and the verifier
-   then judges those checks as written. A check that stands is never sent back
-   on the same condition; if the verifier and the tester still disagree, `next`
-   stops and reports both sides.
+   mode, as a batch of check proposals with one ruling per condition
+   (`proposals/checks-<k>.md`): it fixes them (then `cleanup` runs the gate on
+   the repaired checks before the re-check), or rules they stand with its
+   reason, and the verifier then judges those checks as written (every later
+   verifier brief's `rulings:` line names them). A condition
+   whose checks stand is never sent back for the rest of the run, unless a
+   spec change or an entry-point repair rewrites them; if the verifier and the
+   tester still disagree with nothing else open, `next` stops and reports both
+   sides. When a verifier result carries a spec proposal and defective checks,
+   the `define` agent rules first and the tester only after its answer; a
+   spec change applied to a condition also rewrites that condition's checks,
+   so its separate repair is not sent.
    - A verifier result may carry a **spec proposal** (`proposals/verifier-<n>.md`:
      SPEC.md itself is wrong). `next` sends it to the `define` agent in revise
      mode first, spending the round the result's correction would (`BUDGET:`).
