@@ -89,6 +89,13 @@ Sort each comment or review thread as one of:
 - ACCEPTANCE_CHECK — says a held-out acceptance check (a test added before the
   code: one {{artifact_dir}}/acceptance/MANIFEST.md names) is wrong. A comment
   on another test in the same file is not one.
+  Its entry in the checks file is the only way a comment questions a check
+  (a proposal file whose Target names a check is refused); its `Where:` line
+  names the check's file, so the acceptance tester rules on every condition
+  with a check there. Once the tester rules a condition's checks stand, a
+  comment on them is not sent to it again for the rest of the run unless
+  something changes them; when it is the only thing open, the run stops and
+  reports both sides.
 Earlier rounds: {{earlier}}. When set, each line names an earlier triage of this
 PR, when it ran, the files it wrote, and what the run did with them. Read those
 files before you sort:

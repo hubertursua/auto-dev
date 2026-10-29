@@ -778,6 +778,30 @@ class ProposalParserTest(unittest.TestCase):
                    "reason": "the ticket asks for the earliest first, as written"}})
         self.assertEqual(art.rulings("## P1\n- Answer: stands\n")["P1"]["reason"], "")
 
+    def test_build_steps_read_whole_and_whitespace_insensitive(self):
+        plan = ("# Plan\n\n## Files\n- src/cart.ts\n\n## Build sequence\n"
+                "1. Add the cart total in src/cart.ts — test: `src/cart.test.ts`\n"
+                "2. Refuse an empty cart\n   in the checkout route\n"
+                "   - with its own test\n"
+                "3. Wire the route\n\nA note after the steps.\n\n## Test plan\nx\n")
+        steps = art.plan_steps(plan, "IMPLEMENTATION.md")
+        self.assertEqual(list(steps), ["1", "2", "3"])
+        self.assertEqual(steps["2"]["words"],
+                         "2. Refuse an empty cart in the checkout route - with its own test")
+        self.assertNotIn("note", steps["3"]["words"])
+        self.assertNotIn("Test plan", steps["3"]["words"])
+        rewrapped = plan.replace("2. Refuse an empty cart\n   in the checkout route",
+                                 "2. Refuse an  empty cart in\n      the checkout route")
+        self.assertEqual(art.plan_steps(rewrapped)["2"]["words"], steps["2"]["words"])
+        reworded = plan.replace("Wire the route", "Wire the route and its handler")
+        self.assertNotEqual(art.plan_steps(reworded)["3"]["words"], steps["3"]["words"])
+        with self.assertRaises(art.ArtifactError) as err:
+            art.plan_steps(plan.replace("3. Wire", "2. Wire"), "IMPLEMENTATION.md")
+        self.assertIn("IMPLEMENTATION.md", str(err.exception))
+        self.assertIn("numbered twice", str(err.exception))
+        with self.assertRaises(art.ArtifactError):
+            art.plan_steps("# Plan\n\n## Files\nx\n", "IMPLEMENTATION.md")
+
 
 if __name__ == "__main__":
     unittest.main()

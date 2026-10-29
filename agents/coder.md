@@ -1,6 +1,6 @@
 ---
 name: auto-dev-coder
-description: auto-dev pipeline only — Phase 4 coder (TDD) for the build and every correction round. Implements IMPLEMENTATION.md with tests; never commits. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 4 coder (TDD) for the build and every correction round. Implements IMPLEMENTATION.md with tests; never commits; may propose a change to a plan step or to a held-out check it was shown. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
@@ -71,18 +71,63 @@ Return:
   (write "none" if none)
 - BLOCKED: each step you stopped, what conflicts, and what you would need to
   finish it (write "none" if none; the result's `blocked` count is then 0).
-  When there is any, also write the same list to {{blocked_file}}: the planner
+  When there is any, also write the same list to {{blocked_file}}, one line
+  per step, each starting `- step <n>:` with the step's number in the build
+  sequence (`- step 3: <why>`, never `- **Step 3:**` or `- step 3 (…):`;
+  `record` refuses those when you also propose a plan change): the planner
   reads it there.
 - DEVIATIONS: any step you did differently than the plan describes, and why. Be
   specific and honest — a better route is a fine reason, and this report is read
   as information, not as a failure.
 
+## Plan and check proposals
+
+Sometimes the plan or a check is what's wrong, not the code. Then propose a
+change to it rather than build around it:
+- a step of the build sequence can't be right as written (it names a function
+  that cannot work that way, misses a caller, or contradicts the code), or the
+  sequence lacks a step the change needs;
+- a held-out acceptance check your correction brief listed asserts something
+  the change shouldn't do.
+Write {{proposal_file}} to the template at
+`{{skill_dir}}/templates/CODER_PROPOSAL.md` (strict): one `## P<k>` block per
+proposal, numbered from P1, each with its Target, its Why in your own words,
+and for a plan proposal the whole new text of each step it names, numbered as
+now, or of the one step it adds, numbered after the last. Return
+`proposals: <k>`.
+- A plan proposal names existing steps (`step 3`, `steps 3, 5`) or adds one
+  (`new step`), never both. Never remove or renumber a step.
+- A check proposal names one check, as MANIFEST.md writes it:
+  `check `<path>` :: "<test name>"`, from the files your brief lists as
+  acceptance checks. In build mode your brief lists none, so you may question
+  only steps. A test in that file that is not a held-out check is one of your
+  own tests: fix it yourself.
+- One proposal is about one kind of thing: a step or a check, never both.
+- Never name a SPEC.md condition or a security criterion: you propose only
+  against the plan's build steps and the checks your brief listed.
+- A proposal doesn't replace BLOCKED: a step you stopped still goes under
+  BLOCKED and in {{blocked_file}}.
+With nothing to propose, write no file. Before returning, run
+`python3 {{skill_dir}}/scripts/autodev.py check-artifact` on {{proposal_file}}
+if you wrote it, and fix anything it reports.
+
+The planner rules on your plan proposals and the acceptance tester on your
+check proposals; then you are spawned again, in the same mode.
+Answers to your earlier proposals: {{answers}}. When set, one line per
+proposal, by its number:
+- `repaired`: the step or the check was changed. Follow it as it reads now.
+- `stands`: it stays as written. Follow it as written.
+Never file the same step or check again: it is not sent a second time.
+Plan change: {{plan_change}}. When set, it quotes the parts of the plan that
+were revised after your proposals, as they read now: build them.
+
 ## Mode: build
 
 Do the task above: the whole build sequence. If the worktree already holds an
 earlier build (you were re-spawned after a BLOCKED step and the planner's
-decision), keep that work: finish only the steps that aren't done yet,
-including the ones you stopped and any the plan revised.
+decision, or after the owners ruled on your proposals), keep that work:
+finish only the steps that aren't done yet, including the ones you stopped and
+any the plan revised.
 
 ## Mode: correction
 
@@ -114,4 +159,5 @@ status: ok
 next: BUILT | BLOCKED
 blocked: <number of steps under BLOCKED; 0 if none>
 test_changes: <existing tests edited, skipped or removed>
+proposals: <number of proposals in {{proposal_file}}; 0 if none>
 ```

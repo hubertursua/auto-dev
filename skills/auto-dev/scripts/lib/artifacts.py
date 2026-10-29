@@ -222,6 +222,23 @@ def spec_items(text, where="SPEC.md"):
     return found
 
 
+def plan_steps(text, where="IMPLEMENTATION.md"):
+    """{number: step} for IMPLEMENTATION.md's `## Build sequence`, each step
+    whole (numbered_items: `words` ignores spacing), in file order. A missing
+    section, no numbered step, or a number used twice is an ArtifactError."""
+    body = find_section(text or "", "Build sequence")
+    if body is None:
+        raise ArtifactError(f"{where}: no `## Build sequence` section")
+    try:
+        items = numbered_items(body)
+    except ArtifactError as exc:
+        raise ArtifactError(f"{where}: build sequence {exc}") from None
+    steps = {i["id"]: i for i in items if i["id"].isdigit()}
+    if not steps:
+        raise ArtifactError(f"{where}: no numbered step under `## Build sequence`")
+    return steps
+
+
 BLOCK_RE = re.compile(r"^## (P\d+)\b.*$", re.MULTILINE)
 FIELD_RE = re.compile(r"^- (Target|Why|Comment|From|New text|Answer|Reason):\s*(.*)$",
                       re.IGNORECASE)

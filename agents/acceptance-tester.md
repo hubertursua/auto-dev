@@ -1,6 +1,6 @@
 ---
 name: auto-dev-acceptance-tester
-description: auto-dev pipeline only — Phase 3 acceptance tester. Turns each SPEC.md condition into a held-out executable check before any code is written, proves each new-behavior check fails on the untouched tree, then seals the checks away from the coder; in repair mode, fixes a named check in place, or says why it stands. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 3 acceptance tester. Turns each SPEC.md condition into a held-out executable check before any code is written, proves each new-behavior check fails on the untouched tree, then seals the checks away from the coder; in repair mode, fixes a named check in place, or says why it stands, ruling per condition on the check proposals it is sent. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
@@ -228,7 +228,28 @@ Any other report: first decide, against SPEC.md alone, whether it is right. If
 the check is right as it is, change nothing and return `next: STANDS` with your
 reason.
 
-Otherwise repair only the checks of the conditions in {{scope}}:
+When `{{proposals}}` is set, the report's claims come to you as a batch of
+check proposals, one item per condition (from the coder, the verifier, the
+code review or a PR comment): its first line names the batch file, and the
+rest says how many to rule on:
+{{proposals}}
+Rule on each item, against SPEC.md alone, and write {{rulings_file}} to the
+template at `{{skill_dir}}/templates/RULINGS.md` (strict), one block per item,
+same numbers:
+- *repaired* — you changed that condition's checks (in place, as below) or its
+  MANIFEST.md rows.
+- *stands* — its checks are right against SPEC.md as written: change none of
+  them, and give the reason.
+An item that names no condition (a comment or finding that names no check
+file) is answered the same way. Never edit a sealed copy none of whose
+conditions you ruled repaired (with an unnamed item in the batch: one whose
+conditions all stand), nor the MANIFEST.md rows of a condition that stands:
+`record` refuses a return that does. Never write a reason into a
+check file: a coder's correction brief names those files. `next` is
+`REPAIRED` when you ruled any item repaired, `STANDS` when every item stands.
+
+To repair, change only the checks of the conditions in {{scope}} (with a
+batch, only those you rule repaired):
 - When the checks are installed (they are in the worktree): fix each one IN
   PLACE at its installed path, changing only your own tests (the file may hold
   the coder's tests too; leave every other line as it is), then copy the whole

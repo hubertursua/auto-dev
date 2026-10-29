@@ -4,6 +4,55 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.11
+
+- **The coder proposes against the plan and the checks.** When a step of
+  `IMPLEMENTATION.md`'s build sequence can't be right as written, or a held-out
+  check its correction brief listed asserts the wrong thing, the coder writes
+  `proposals/coder-<n>.md` (the new `templates/CODER_PROPOSAL.md`) and returns
+  `proposals: <k>`. A plan proposal names steps or adds one after the last; a
+  check proposal names one check as `MANIFEST.md` writes it. `record` refuses
+  a coder proposal on a `SPEC.md` condition or criterion, a step the plan
+  lacks, a check its brief didn't list, or a test `MANIFEST.md` doesn't name.
+- **The planner and the acceptance tester rule.** The planner answers plan
+  proposals in revise mode (a new `STANDS` token when it applies none) or, when
+  the coder also returned `BLOCKED`, in the same blocked-mode answer, writing
+  `proposals/plan-<k>-rulings.md`. The tester answers check proposals per
+  condition, `repaired` or `stands`, in `proposals/checks-<k>-rulings.md`.
+  `record` holds the build sequence and the sealed copies to the rulings,
+  against copies taken at brief time (`proposals/snapshots/`), and refuses an
+  answer that writes a `stands` reason into the plan or a check file.
+- **The three existing check routes become check proposals.** The verifier's
+  `REPAIR`, the review judge's `acceptance-check` findings and the triager's
+  `ACCEPTANCE_CHECK` comments are written as before, but now reach the tester
+  as a batch with one item per condition. They stay those workers' only way to
+  question a check: a proposal file whose Target is a check is refused.
+- **Order, settled items and rounds.** Proposals on one result settle spec,
+  then plan, then checks; after a plan revision that changes the checks' entry
+  points, the entry-point repair runs before the check proposals. A step or
+  condition ruled to stand is not sent again for the rest of the run (before
+  4.12 a stood check counted only within one build–verify loop), until
+  something changes it; a review or PR comment that re-raises a stood check
+  with nothing else open stops the run (stop #22). A coder result's proposals
+  cost one round, `BLOCKED` included; the coder then runs again in its mode,
+  told only `P<k>: repaired` or `P<k>: stands` (new optional `{{answers}}`
+  slot) and, when the plan changed, its revised lines (`{{plan_change}}`). A
+  plan or check proposal no round was left for is named in the stop report or
+  the PR gate summary.
+- **A run in flight resumes.** No `.auto-dev.yml` key changes and the state
+  needs no migration: `state.json`'s `proposals` gains `plan_batches`,
+  `check_batches` and `filings`, briefs gain `plan` and `sealed` keys, and log
+  entries `steps_changed` and `checks_changed`, on first use. A coder return
+  without `proposals` (briefed on 4.11) reads as filing none; a planner or
+  tester briefed on 4.11 has no batch, so `record` asks no rulings of it; a
+  correction or spec redo started on 4.11 sends its checks as before; and a
+  4.11 tester STANDS on an `ONLY conditions …` scope now counts as settled for
+  the rest of the run, until a later 4.11 REPAIRED on such a scope names the
+  condition again.
+- **Every verifier pass is told which checks stand.** Its brief's `rulings:`
+  line names each condition whose checks the tester ruled stand, from a mixed
+  batch or an earlier loop too.
+
 ## Upgrading from 4.10
 
 - **The deviation gate.** When a verifier proposes a change to a condition the

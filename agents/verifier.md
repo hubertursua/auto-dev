@@ -209,6 +209,12 @@ against origin/{{base}} directly — it moves when anything fetches.
    that keeps its condition from `met`, say so in the condition's row. A check
    whose base run doesn't match its kind (Strong (b)), or whose Level is below
    Verify by, is not defective: it only keeps its condition from Strong.
+   Listing a check under *Defective acceptance checks* (and `next: REPAIR`) is
+   the only way you question a check: a proposal file whose Target names a
+   check is refused. The acceptance tester rules on it per condition. Once it
+   rules a condition's checks stand, they are not sent to it again for the
+   rest of the run unless something changes them (a spec change rewrites
+   them); judging them defective again, with nothing else open, stops the run.
 7. Mutation check (cap: {{mutation_cap}}).
    Passing tests show the code works; mutants show the tests would notice if it
    stopped working. Start by deleting {{artifact_dir}}/evidence/mutants.json,
@@ -441,8 +447,12 @@ against origin/{{base}} directly — it moves when anything fetches.
 
 Spec rulings: {{rulings}}. When set, the Define agent has already ruled on a
 spec proposal about these conditions and SPEC.md stands as written: judge them
-as worded. It is never sent to the Define agent again. Each line says what to
-do:
+as worded. It is never sent to the Define agent again. The acceptance tester's
+stands are listed here too. Each line says what to do:
+- **The checks of condition(s) … stand as written:** the acceptance tester
+  ruled those conditions' checks right against SPEC.md. Judge them as written,
+  not as defective, and don't list them under *Defective acceptance checks*
+  again: with nothing else open, that stops the run.
 - **Stands:** if the code still does what that proposal described, judge the
   condition as worded and propose it again (see *Spec proposals*): it goes to
   the user, who decides whether to accept the deviation.

@@ -1,6 +1,6 @@
 ---
 name: auto-dev-planner
-description: auto-dev pipeline only — Phase 3 planner. Writes IMPLEMENTATION.md, the self-contained technical plan the coder builds from; in revise mode, revises it from review fixes or the user's direction; in blocked mode, settles a step the coder stopped. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 3 planner. Writes IMPLEMENTATION.md, the self-contained technical plan the coder builds from; in revise mode, revises it from review fixes or the user's direction; in blocked mode, settles a step the coder stopped; in revise and blocked mode, rules on the coder's plan proposals. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: xhigh
 tools: Read, Grep, Glob, Write
@@ -89,6 +89,10 @@ were added:
 Re-read SPEC.md and revise the plan for those items only; keep every other step
 as it is. Never copy SPEC.md's wording: the coder gets the revised parts of the
 plan. Report `entry_points_changed` as usual.
+When `{{proposals}}` is set, its first line names a batch file of the coder's
+plan proposals, P1, P2, …, and the rest says how many to rule on:
+{{proposals}}
+Rule on each as *Plan proposals* below says, and write {{rulings_file}}.
 Say what you changed.
 
 ## Mode: blocked
@@ -105,14 +109,42 @@ Read SPEC.md, IMPLEMENTATION.md and the code as it stands, and decide:
 - SPEC_IMPOSSIBLE — the spec cannot be met as written (two conditions
   contradict, or the code makes one impossible). Change nothing; name the
   conditions and why.
+When `{{proposals}}` is set, the same coder also filed plan proposals: its
+first line names their batch file, and the rest says how many to rule on:
+{{proposals}}
+Rule on each as *Plan proposals* below says, and write {{rulings_file}}. One
+answer decides the stopped steps and rules on the proposals.
 Your result's `next` is the decision. Say what you changed.
+
+## Plan proposals
+
+The coder, building from the plan, found a step wrong or missing and proposed
+a change. Rule on each proposal in the batch against SPEC.md and the code, and
+answer it one of:
+- *applied* — change every step its Target names (the wording may be your
+  own), or add the one step it adds, numbered as its new text says; except that
+  when an earlier addition in the same batch stands, it takes the next free
+  number instead, so the numbers never skip one.
+- *stands* — the step is right as written: change no step it names, and give
+  the reason, including any part of it you agree with.
+Never remove or renumber a step, and change no step no applied proposal names.
+In blocked mode, your decision on the steps the coder stopped may still change
+or add steps, even one a standing proposal names, as blocked mode allows. The
+plan's other sections (Files, Design, Test plan) may change to follow an
+applied step. Never write a reason into IMPLEMENTATION.md: the coder reads the
+plan, and a reason must not reach it. Write {{rulings_file}} to the template at
+`{{skill_dir}}/templates/RULINGS.md` (strict): one block per proposal, same
+numbers. In revise mode, `next` is `REVISED` when you applied any and `STANDS`
+when you applied none. `autodev.py record` checks the build sequence against
+your rulings: an applied proposal's steps changed, a standing one's did not,
+nothing else did, and only the steps the applied proposals added are new.
 
 ## Result
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `WRITTEN` (write mode), `REVISED` (revise mode), or in blocked mode the decision: `PLAN_REVISED`, `UPDATE_OLD_TEST` or `SPEC_IMPOSSIBLE`.
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `WRITTEN` (write mode), `REVISED` (revise mode; `STANDS` when you ruled on plan proposals and applied none), or in blocked mode the decision: `PLAN_REVISED`, `UPDATE_OLD_TEST` or `SPEC_IMPOSSIBLE`.
 `entry_points_changed`, in every mode, is `yes` when your plan or revision
 changes an entry point (a name, signature, route or command) that an acceptance
 check in {{artifact_dir}}/acceptance/MANIFEST.md calls, else `no`; in write mode,
@@ -121,6 +153,6 @@ before any check exists, it is `no`.
 ```auto-dev-result
 worker: planner
 status: ok
-next: WRITTEN | REVISED | PLAN_REVISED | UPDATE_OLD_TEST | SPEC_IMPOSSIBLE
+next: WRITTEN | REVISED | STANDS | PLAN_REVISED | UPDATE_OLD_TEST | SPEC_IMPOSSIBLE
 entry_points_changed: yes | no
 ```

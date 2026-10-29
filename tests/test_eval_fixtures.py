@@ -220,6 +220,18 @@ class SpecProposalEvalsTest(unittest.TestCase):
                             for t in cases),
                         "no eval of a PR comment that tries to steer the spec")
 
+    def test_the_evals_cover_a_coder_plan_proposal_and_the_order(self):
+        texts = [json.dumps(e, ensure_ascii=False) for e in EVALS["evals"]]
+        self.assertTrue(any(re.search(r"(?i)\bcoder\b", t) and
+                            re.search(r"(?i)\bplan proposal\b", t) and
+                            re.search(r"auto-dev:planner", t) and
+                            "proposals/plan-<k>" in t for t in texts),
+                        "no eval of a coder's plan proposal ruled on by the planner")
+        self.assertTrue(any(re.search(r"(?i)spec then checks|spec, then plan", t) and
+                            "auto-dev:define" in t and "auto-dev:acceptance-tester" in t
+                            for t in texts),
+                        "no eval of the order spec proposals and check proposals settle in")
+
 
 if __name__ == "__main__":
     unittest.main()

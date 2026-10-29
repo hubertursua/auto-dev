@@ -90,6 +90,13 @@ Read every one. <Pass 2 or later: also read the previous
    the tests {{artifact_dir}}/acceptance/MANIFEST.md names; a file that holds
    one can hold the coder's tests too, and a finding about one of those is an
    ordinary `tests` finding.
+   That category is the only way the panel questions a check: a proposal file
+   whose Target names a check is refused. The acceptance tester rules on it
+   per condition (every condition with a check in the file its Location
+   names). Once it rules a condition's checks stand, a finding on them is not
+   sent to it again for the rest of the run unless something changes them;
+   when such a finding is the only thing open, the run stops and reports both
+   sides.
 6. Write the Tree line. The panel reviewed tree {{tree}}. Run
    `python3 {{skill_dir}}/scripts/check-fresh.py --print-tree {{worktree}}`: if it
    prints that hash, write it; if not, the code changed after the review, so

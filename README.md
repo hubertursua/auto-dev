@@ -70,9 +70,9 @@ orchestrator runs:
 | 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch (or the worktree you started in), `.auto-dev/` |
 | 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
-| 4 Build | coder | code + tests given **only** the plan |
-| 5 Verify | cleanup agent, then verifier (acceptance tester to fold or repair a check, when needed; Define agent when the verifier proposes a spec change) | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier); a spec proposal goes to the Define agent first, and an applied one is redone (plan, its checks, code, a full verifier pass) |
-| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager (Define agent for a spec proposal) | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate; a spec proposal from the review or a PR comment goes to the Define agent, and an applied one is redone, reviewed again and shown at the next gate |
+| 4 Build | coder (planner and acceptance tester when the coder proposes a plan or check change) | code + tests given **only** the plan; a step or check the coder finds wrong goes to its owner (the planner, then the acceptance tester) before the coder goes on |
+| 5 Verify | cleanup agent, then verifier (acceptance tester to fold a check or rule on a questioned one, when needed; Define agent when the verifier proposes a spec change; planner when the coder proposes a plan change) | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests vs. the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier); a spec proposal goes to the Define agent first, and an applied one is redone (plan, its checks, code, a full verifier pass) |
+| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager (Define agent for a spec proposal; planner and acceptance tester for plan and check proposals) | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then main + Jira Done — pausing at each gate; a spec proposal from the review or a PR comment goes to the Define agent, and an applied one is redone, reviewed again and shown at the next gate |
 
 ## Agent hierarchy
 
@@ -96,6 +96,8 @@ Orchestrator (main agent) ── owns the pipeline, holds the spec, runs the hum
 └─ Phase 6  orch + reviewers  code review panel ∥ security review → [GATE] PR + CI → [GATE] main
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
             Define agent .... rules again when a later step proposes a SPEC.md change (Phases 5–6)
+            Planner ......... rules on the coder's plan proposals (Phases 4–6)
+            Acceptance tester  rules per condition on every questioned check (Phases 4–6)
 ```
 
 Two documents describe the work. `SPEC.md` answers *did we build the right
@@ -189,6 +191,34 @@ weakening them. Verification is built around that:
   first-pass verification; in Phase 6, a re-review and the gate again. Sending
   the proposals costs the round the result's own correction would; the redo
   costs nothing more (`skills/auto-dev/references/S2-build.md`).
+- **The plan and the checks can be questioned too, by their owners' rules.**
+  Each upstream artifact has one owner who rules on proposals against it, and
+  only some workers may file against each:
+  - `SPEC.md` (the Define agent): the verifier, the review judge, the security
+    reviewer and the triager, as above.
+  - The plan's build steps (the planner): the coder alone. A plan proposal
+    changes named steps or adds one after the last
+    (`skills/auto-dev/templates/CODER_PROPOSAL.md`).
+  - The held-out checks (the acceptance tester): the coder, for a check its
+    correction brief listed; the verifier, through `REPAIR`; the review judge,
+    through a must-fix finding of category `acceptance-check`; and the
+    triager, through an `ACCEPTANCE_CHECK` comment. The tester rules once per
+    condition: every condition with a manifest row naming the questioned
+    check, or with a check in the file a finding or comment names.
+
+  The coder never sees `SPEC.md`, so it can't propose against it; the
+  verifier never reads the plan, so it can't propose against that. The owner
+  answers each proposal `applied` (the tester: `repaired`) or `stands` with a
+  reason, and `record` holds its answer to the rulings: the plan's build
+  sequence changes only where an applied proposal says, and a sealed check
+  changes only for a condition ruled repaired. When one result carries
+  proposals against several artifacts, they settle in order: spec, then plan,
+  then checks. A step or condition ruled to stand is not sent again for the
+  rest of the run unless something later changes it, and every later
+  verifier pass is told which conditions' checks stand. The coder is then
+  spawned again in its mode and told only `repaired` or `stands` for each of
+  its proposals, never an owner's reason; when the plan changed, its brief
+  quotes the revised lines.
 - **Re-checked after every change.** Cleanup (`/simplify` and the quality gate)
   runs before the verifier, so the verifier checks the code that ships, and
   both run again after every fix.
@@ -255,7 +285,9 @@ twice, at the same time, and you have seen the results:
 
 One correction fixes every must-fix finding from both, for one round of the
 iteration budget. A finding about a held-out check goes to the acceptance
-tester, never the coder. A problem that lies in `SPEC.md` rather than the code
+tester, never the coder, and the tester rules on it per condition; a finding
+about a check the tester already ruled to stand is not sent to it again (with
+nothing else open, the run stops and shows you both sides). A problem that lies in `SPEC.md` rather than the code
 goes in a reviewer's report, and the judge files a spec proposal for the panel;
 the pass's proposals go to the Define agent together once the pass has settled.
 After the correction, the full panel reviews the result again. A re-review of a correction skips the nested `/code-review` and `/security-review` skills: the
@@ -327,9 +359,10 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   green.
 - **Spec changes** made during the run are listed in the PR and main gate
   summaries, each with the worker that proposed it, along with the proposals
-  ruled to stand and any no round was left to send. After a spec change from a
-  PR comment, the redo is committed and the main gate is asked again before
-  any merge.
+  ruled to stand and any no round was left to send. The PR gate summary also
+  names each plan or check proposal no round was left to send. After a spec
+  change from a PR comment, the redo is committed and the main gate is asked
+  again before any merge.
 - **The deviation gate** fires when a spec proposal was ruled to stand but the
   verifier finds the code still doing what it described (the condition partial
   or unmet), whoever first proposed it. For that one condition you choose
@@ -578,7 +611,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports, the judge's code review, the security review, and the review's required changes for the coder |
 | `pr-body.md`, `pr-output-comment.md` | Phase 6 | the generated PR description, and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments |
-| `proposals/` | Phases 5–6 | the filers' spec proposals (`<worker>-<n>.md`), each batch sent to the Define agent (`batch-<k>.md`) and its rulings (`batch-<k>-rulings.md`), and copies of `SPEC.md` taken when a filer or the Define agent was briefed (`spec-<sha>.md`) |
+| `proposals/` | Phases 4–6 | the filers' spec proposals (`<worker>-<n>.md`) and the coder's plan and check proposals (`coder-<n>.md`); each batch sent to the Define agent (`batch-<k>.md`), the planner (`plan-<k>.md`) or the acceptance tester (`checks-<k>.md`), and its rulings (`…-<k>-rulings.md`); copies of `SPEC.md` taken when a filer or the Define agent was briefed (`spec-<sha>.md`), and of the plan and the sealed checks taken when the planner or the tester was briefed to change them (`snapshots/`) |
 | `redo/` | Phases 5–6 | the plan as it was before a spec redo revised it, and the plan's change for the coder |
 | `lookups/` | any phase | lookup answers |
 
@@ -589,6 +622,9 @@ Autonomous but bounded:
 - **One iteration budget per task** (default 4 revise rounds) covers every
   correction, every Define or plan re-review, and every batch of spec
   proposals sent to the Define agent (the redo after it costs nothing more).
+  A coder result's plan and check proposals cost one round, from the consumer
+  that pays for that coder run, covering the owners' rulings and the coder's
+  next run; a result that is also `BLOCKED` still costs one.
 - **A later step can only propose a spec change.** Only the verifier, the
   review judge, the security reviewer and the triager may file one; a
   Security/Compliance criterion can be added, never edited or removed; PR
@@ -598,6 +634,14 @@ Autonomous but bounded:
   proposal with no round left is named in the stop report or gate summary.
   Code that deviates from a condition ruled to stand ships only if you accept
   that deviation at the deviation gate, one condition at a time.
+- **Each artifact has one owner, and only some workers may question it.** The
+  coder proposes against the plan's steps and the checks it was shown, never
+  `SPEC.md`; the verifier, the review judge and the triager question a check
+  only through their own routes, never in a proposal file; the security
+  reviewers file against `SPEC.md` alone; `record` refuses anything else. A
+  question about a check the tester ruled to stand, raised again with nothing
+  else open, stops the run and reports both sides, and a step or check ruled
+  to stand is never sent again unless something changes it.
   A spec redo whose rewritten checks still have gaps after its one free tester
   re-spawn, or that needs a second ambiguity ruling, stops the run instead of
   looping.

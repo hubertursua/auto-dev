@@ -558,6 +558,36 @@
         "The budget's remaining rounds are the same before the gate and after the re-check",
         "The PR gate SUMMARY has a `Deviations from the spec the user accepted:` line naming the condition, and the final report has an Accepted deviations line naming it"
       ]
+    },
+    {
+      "id": 36,
+      "session": "S2 (plan proposal: coder)",
+      "setup": "Run eval 1 through S1. Before S2, change one step of .auto-dev/IMPLEMENTATION.md's build sequence so it can't work as written (it names a function signature the code it calls doesn't have), leaving SPEC.md and the sealed checks alone. Start a fresh session.",
+      "prompt": "auto-dev continue",
+      "expected_output": "The coder builds what it can, writes proposals/coder-<n>.md with one plan proposal naming that step, and returns `proposals: 1`; since it can't build that step as written, it may also stop it under BLOCKED (`next: BLOCKED`, the step in blocked/coder-<n>.md). `next` spends one round (one BUDGET line naming `coder-<n>`) and spawns auto-dev:planner, its brief's `proposals:` line naming proposals/plan-<k>.md: in revise mode, or, when the coder also returned BLOCKED, in blocked mode with a `blocked:` line too, one answer that decides the stopped step and rules on P1. The planner rules on it in proposals/plan-<k>-rulings.md and revises only that step (or answers STANDS with a reason). Then `next` spawns auto-dev:coder again in build mode, with no BUDGET line, its brief's `answers:` line saying `P1: repaired` (or `P1: stands`) and nothing else about the ruling. The run goes on to Phase 5 as usual.",
+      "files": [],
+      "expectations": [
+        "proposals/coder-<n>.md holds one `## P1` block whose Target names the changed step, and the coder's result says `proposals: 1`",
+        "The next spawn is auto-dev:planner, with one BUDGET line naming `coder-<n>`; its brief's `proposals:` line names proposals/plan-<k>.md. It is in revise mode, or in blocked mode (its `blocked:` line naming blocked/coder-<n>.md) when the coder also returned BLOCKED",
+        "proposals/plan-<k>-rulings.md answers P1 `applied` or `stands`, and IMPLEMENTATION.md's other existing steps read as before",
+        "The coder is then spawned again in build mode with no BUDGET line; its brief's `answers:` line is `P1: repaired` or `P1: stands`, and neither the brief nor any file it names holds the planner's reason",
+        "The budget's remaining rounds drop by exactly one between the coder's filing and the coder's next run"
+      ]
+    },
+    {
+      "id": 37,
+      "session": "S2 (proposal order: spec then checks)",
+      "setup": "Run eval 1 through S1. Before S2, edit one sealed acceptance check under .auto-dev/acceptance/files/ so it asserts something SPEC.md doesn't say (keep it failing on the untouched tree), and edit .auto-dev/IMPLEMENTATION.md so the code also does something harmless that another condition's wording doesn't allow. Start a fresh session. When the deviation gate is asked, answer `Keep the spec (correct the code)`.",
+      "prompt": "auto-dev continue",
+      "expected_output": "The verifier's first pass calls the edited check defective and files a spec proposal on the other condition. `next` spawns auto-dev:define in revise mode first, with the round the result's correction would spend, and spawns no acceptance tester until Define's answer is recorded. After Define's STANDS, the code still does what the proposal described, so `next` exits 5 with the deviation gate for the other condition; after `gate deviation keep --condition <n>`, `next` spawns auto-dev:acceptance-tester in repair mode with no new round, its brief's `proposals:` line naming proposals/checks-<k>.md with one item per condition whose check was called defective; the tester rules on each in proposals/checks-<k>-rulings.md.",
+      "files": [],
+      "expectations": [
+        "After the verifier's first pass is recorded, the next spawn is auto-dev:define in revise mode, and no auto-dev:acceptance-tester brief is written before Define's answer is recorded",
+        "After Define's answer is recorded (and the deviation gate, when `next` asks it, is answered `Keep the spec (correct the code)`), the next spawn is auto-dev:acceptance-tester in repair mode whose brief's `proposals:` line names proposals/checks-<k>.md",
+        "proposals/checks-<k>.md has one `## P<k>` block per condition whose check the verifier called defective, each with `- Target: condition <n>`",
+        "proposals/checks-<k>-rulings.md answers each block `repaired` or `stands`, and a `stands` has a reason",
+        "Only one round is spent between the verifier's result and the tester's spawn (the deviation gate spends none)"
+      ]
     }
   ]
 }

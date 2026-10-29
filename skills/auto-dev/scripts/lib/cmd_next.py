@@ -31,6 +31,22 @@ cleanup and a verifier first pass; in Phase 6 a re-review and the gate again.
 A redo whose rewritten checks keep gaps after one re-spawn, or that needs a
 second ambiguity ruling, stops.
 
+The plan and the checks can be questioned too. The coder files plan
+proposals (a build step) and check proposals (a held-out check its brief
+listed) in proposals/coder-<n>.md; the verifier's REPAIR, a review finding of
+category `acceptance-check` and a PR comment the triager sorted
+ACCEPTANCE_CHECK are check proposals as well. Proposals on one result settle
+spec, then plan, then checks: the planner rules on the plan proposals (in
+blocked mode when the coder also returned BLOCKED, one answer for both), the
+tester repairs the checks the revised plan's entry points touch, then rules
+on the check proposals, one ruling per condition, and the coder runs again in
+its mode, told only `repaired` or `stands` for each proposal. A coder
+result's proposals cost one round (BLOCKED included); the other check routes
+cost what their correction would. A step or condition ruled to stand is not
+sent again for the rest of the run until something changes it; a check
+questioned again with nothing else open stops the run. With no round left,
+nothing is sent, and the next stop report or the PR gate summary names it.
+
 Output lines (only the ones that apply):
     ACTION:   what to do, in one line
     AGENT:    an agent to spawn (several AGENT lines: spawn them all in one
@@ -102,7 +118,7 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import cmd_checks, cmd_review, cmd_work, proposals, sealed
+from . import check_props, cmd_checks, cmd_review, cmd_work, plan_props, proposals, sealed
 from . import state as st
 from .cmd_ship import changed_paths
 from .cmd_state import ON_EXHAUSTED, spend_round
@@ -131,6 +147,7 @@ LOOP = ("verifier", "coder", "cleanup", "acceptance-tester", "planner")
 NONE = ("none", "", None)
 ONLY_RE = re.compile(r"ONLY conditions ([^:]+):")
 ENTRY_POINT_SCOPE = "ALL CONDITIONS whose checks call an entry point the revised plan changed"
+GATE_SCOPE = "ONLY the conditions whose checks fail the quality gate"
 FILL = ("replace each '<...>' placeholder, inside its single quotes, with text that "
         "holds no single quote (rephrase, or use the typographic apostrophe U+2019)")
 
@@ -284,6 +301,10 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
             accepted = proposals.deviations_text(c.state)
             if accepted:
                 sets = {**sets, "deviations": accepted}
+        if worker == "coder":
+            answers = coder_answers(c)  # repaired or stands per proposal, never a reason
+            if answers:
+                sets = {**sets, "answers": answers}
         if c.readonly:
             n = c.peek(worker)
             path = c.ad / "briefs" / f"{worker}-{n}.md"
@@ -389,6 +410,11 @@ def main(args):
                           ("Tell the user; it is a broken artifact or an auto-dev bug. "
                            f"State and artifacts: {c.ad}")],
                          f"a step failed: {exc.token}"), args)
+    if result.get("code") == NEXT_STOP:
+        report = list(result.get("REPORT") or [])
+        report += [line for line in proposals.upstream_unsent_lines(c.state)
+                   if line not in report]
+        result["REPORT"] = report
     c.save()
     return show(result, args)
 
@@ -861,6 +887,9 @@ def phase4(c):
     coder = c.last("coder", after=start)
     if coder is None:
         return spawn(c, "coder", "build", rule="Phase 4: the coder builds from the plan")
+    flow = coder_step(c, start, 3)
+    if flow is not None:
+        return flow
     result = loop_step(c, start, 3, "phase5", first=None)
     if result is DONE_MARK:
         c.finish(4)
@@ -946,7 +975,7 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
         if budget is None:
             return exhausted(c, consumer, "no round left for an acceptance-check repair")
         return spawn(c, "acceptance-tester", "repair", {
-            "scope": "ONLY the conditions whose checks fail the quality gate",
+            "scope": GATE_SCOPE,
             "report": f"the quality gate fails on an acceptance check's lines: see the "
                       f"cleanup agent's reports in {c.ad}/lint/"},
             rule="an acceptance check fails the quality gate: the tester repairs it",
@@ -985,7 +1014,10 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
     stood, unnamed = stood_conditions(c, start)
     again = list(repair) if unnamed else [x for x in repair if x in stood]
     if again:  # never a second round on a check the tester ruled right
-        if not fields.get("correct"):
+        # Stop only when nothing else is left to do: every condition listed
+        # stood and no code correction came with them. Otherwise drop the
+        # stood ones and send the rest on.
+        if not fields.get("correct") and len(again) == len(repair):
             return stop([(f"The verifier still judges the checks of condition(s) "
                          f"{', '.join(again)} defective after the acceptance tester ruled "
                          "they stand as written. Tell the user both sides: "
@@ -994,14 +1026,18 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
                         "the verifier and the acceptance tester disagree about a check")
         fields["repair"] = ", ".join(x for x in repair if x not in again)
     budget = c.spend(consumer, verifier_spend_id(c, n), "correction after verification")
+    ids = [x.strip() for x in fields.get("repair", "").split(",") if x.strip()]
     if budget is None:
+        note_unsent(c, f"verifier-{n}", "checks",
+                    item_labels([{"cid": x} for x in ids], "the verifier"), [["verifier", n]])
         return exhausted_loop(c, consumer, fields)
-    if fields.get("repair") and c.last("acceptance-tester", after=latest["seq"]) is None:
-        return spawn(c, "acceptance-tester", "repair", {
-            "scope": f"ONLY conditions {fields['repair']}: the verifier judged their checks "
-                     "defective",
-            "report": f"{c.ad}/SPEC_EVAL.md, section Defective acceptance checks"},
-            rule="defective checks are repaired first (the same round)", budget=budget)
+    if ids and c.last("acceptance-tester", after=latest["seq"]) is None:
+        return check_spawn(c, f"verifier-{n}", verifier_items(c, n, ids), "verifier",
+                           f"ONLY conditions {fields['repair']}: the verifier judged their "
+                           "checks defective",
+                           f"{c.ad}/SPEC_EVAL.md, section Defective acceptance checks",
+                           "defective checks are repaired first, one ruling per condition "
+                           "(the same round)", budget)
     return coder_correction(c, f"{c.ad}/evidence/corrections.md", budget,
                             f"the verifier found open items (consumer {consumer})")
 
@@ -1017,25 +1053,12 @@ def exhausted_loop(c, consumer, fields):
 
 
 def stood_conditions(c, start):
-    """(conditions, unnamed) the acceptance tester ruled right (STANDS) in this
-    loop, after `start`. `unnamed` is true when a STANDS answered a scope that
-    names no condition (a PR comment, a review finding): then any repair the
-    verifier asks for in this loop is the same disagreement."""
-    stood, unnamed = set(), False
-    applied = [b for b in batches(c) if b["status"] in ("applied", "handed")]
-    for r in c.recs("acceptance-tester", after=start, mode="repair"):
-        if r["next"] != "STANDS" or any(in_redo(c, b, r["worker"], r["n"])
-                                        for b in applied):
-            continue
-        # A spec change rewrites a condition's checks: a ruling on them lapses.
-        later = [b for b in applied if b["seq"] > r["seq"]]
-        match = ONLY_RE.match(r.get("sets", {}).get("scope", ""))
-        if match:
-            ids = {x.strip() for x in match.group(1).split(",") if x.strip()}
-            stood |= ids - {i for b in later for i in b.get("changed", [])}
-        elif not later:
-            unnamed = True
-    return stood, unnamed
+    """(conditions, unnamed): every condition whose checks the acceptance
+    tester ruled stand in this run and nothing changed since (stood_checks),
+    and whether, in this loop (after `start`), it ruled stands on checks no
+    condition named (unnamed_stood): then any repair the verifier asks for in
+    this loop is the same disagreement."""
+    return set(stood_checks(c)), unnamed_stood(c, start)
 
 
 def stands_note(tester):
@@ -1087,7 +1110,7 @@ def blocked_step(c, coder, consumer):
                       "IMPLEMENTATION.md"},
             rule="the revised plan changed the checks' entry points", budget=budget)
     if c.last("coder", after=planner["seq"]) is None:
-        return spawn(c, "coder", coder.get("mode") or "build", coder.get("sets", {}),
+        return spawn(c, "coder", coder.get("mode") or "build", coder_sets(coder),
                      rule=f"the planner returned {planner['next']}: the coder goes again "
                           f"(consumer {consumer})", budget=budget)
     return None
@@ -1122,7 +1145,7 @@ def batch_for(c, job):
 
 def unsent_for(c, job):
     return next((u for u in (c.state.get("proposals") or {}).get("unsent") or []
-                 if list(job) in u.get("jobs", [])), None)
+                 if not u.get("artifact") and list(job) in u.get("jobs", [])), None)
 
 
 def filed(rec):
@@ -1395,31 +1418,55 @@ def redo_checks(c, b, planner):
         if not c.readonly:
             b["gap_jobs"].append(b["redo_jobs"][-1])
         return result
-    if redo_recs(c, b, "acceptance-tester", mode="repair", after=latest["seq"]):
+    repairs = redo_recs(c, b, "acceptance-tester", mode="repair", after=latest["seq"])
+    scopes = [r.get("sets", {}).get("scope", "") for r in repairs]
+    if str(planner["data"].get("entry_points_changed", "")).strip().lower() == "yes" and \
+            not any(ENTRY_POINT_SCOPE in s for s in scopes):
+        return spawn_redo(c, b, "acceptance-tester", "repair", {
+            "scope": ENTRY_POINT_SCOPE,
+            "report": (f"the plan was revised after a spec change and its entry points "
+                       f"changed: see {c.ad}/IMPLEMENTATION.md")},
+            "the revised plan changed the checks' entry points: the tester repairs them "
+            "first (no round)")
+    # A repair recorded before 4.12 that carried the checks (one scope for both).
+    if any(is_set(r.get("sets", {}).get("proposals")) or "ONLY" in s
+           for r, s in zip(repairs, scopes)):
         return None
-    parts = []
-    if str(planner["data"].get("entry_points_changed", "")).strip().lower() == "yes":
-        parts.append((ENTRY_POINT_SCOPE,
-                      (f"the plan was revised after a spec change and its entry points "
-                       f"changed: see {c.ad}/IMPLEMENTATION.md")))
+    carried = redo_carried(c, b, ids)
+    if carried is None:
+        return None
+    items, scope, report = carried
+    return check_spawn(c, f"redo-{b['k']}", items, "redo", scope, report,
+                       "the spec redo's carried check proposals go to the tester after the "
+                       "rewrite, one ruling per condition (no round)", None, redo=b)
+
+
+def redo_carried(c, b, rewritten):
+    """(items, scope, report) of the check proposals batch b's result carried,
+    less the conditions the redo just rewrote and those that stood; None when
+    nothing is left. A carry from before 4.12 has ids, not items."""
     checks = (b.get("carry") or {}).get("checks")
-    if checks:
-        if checks.get("ids"):
-            left = [i for i in checks["ids"] if i not in ids]
-            if left:
-                why = checks["scope"].split(":", 1)[1] if ":" in checks["scope"] else ""
-                parts.append((f"ONLY conditions {', '.join(left)}:{why}", checks["report"]))
-        else:
-            parts.append((checks["scope"] + (f", except conditions {', '.join(ids)}, whose "
-                                             "checks were just rewritten" if ids else ""),
-                          checks["report"]))
-    if not parts:
+    if not checks:
         return None
-    scope = "; ".join(p[0] for p in parts)
-    return spawn_redo(c, b, "acceptance-tester", "repair", {
-        "scope": scope, "report": "; ".join(p[1] for p in parts)},
-        "the spec redo's checks need a repair too (one, no round)",
-        held_ids=only_ids(scope) if scope.startswith("ONLY conditions") else None)
+    items = checks.get("items")
+    if items is None:  # 4.11: the ids, or one unnamed item
+        src = {"job": None, "pid": None, "what": checks["report"], "checks": []}
+        items = [{"cid": cid, "srcs": [src]} for cid in checks.get("ids") or []] or \
+            [{"cid": None, "srcs": [src]}]
+    settled = stood_checks(c)
+    items = [i for i in items if i["cid"] is None
+             or (i["cid"] not in rewritten and i["cid"] not in settled)]
+    if not items:
+        return None
+    named = item_ids(items)
+    if named:
+        why = (checks["scope"].split(":", 1)[1] if ":" in checks["scope"] else
+               " the report questions their checks")
+        scope = f"ONLY conditions {', '.join(named)}:{why}"
+    else:
+        scope = checks["scope"] + (f", except conditions {', '.join(rewritten)}, whose "
+                                   "checks were just rewritten" if rewritten else "")
+    return items, scope, checks["report"]
 
 
 def spawn_redo(c, b, worker, mode, sets, rule, held_ids=None):
@@ -1692,13 +1739,594 @@ def spec_human_step(c, triage):
     carry = {"files": [], "checks": None}
     if _int(triage["data"].get("blockers")):
         carry["files"] = [triage_file(c, triage)]
-    if _int(triage["data"].get("acceptance_checks")):
-        carry["checks"] = {"scope": "ONLY the conditions whose checks the PR comments in "
-                                    "the report question",
-                           "report": triage_file(c, triage, "checks_file"), "ids": None}
+    carry["checks"], _ = human_checks(c, triage)
     return open_batch(c, [job], 4, f"human-{triage['n']}", "human", carry,
                       "a PR comment led the triager to propose a spec change: the Define "
                       "agent rules on it first (consumer 4)")
+# ---------------------------------------------------------------- plan and check proposals
+#
+# The coder files against the plan's build steps and the held-out checks it was
+# shown; the verifier's REPAIR, a review finding of category `acceptance-check`
+# and a PR comment the triager sorted ACCEPTANCE_CHECK question checks too. The
+# planner rules on plan proposals, the acceptance tester on check proposals,
+# one ruling per condition. A coder result's proposals settle in order (the
+# planner, the entry-point repair its revision calls for, the tester), then the
+# coder runs again in its mode, told only `repaired` or `stands` for each; one
+# round pays for all of it, a BLOCKED result included. A step or a condition's
+# checks ruled to stand are not sent again for the rest of the run, until
+# something changes them. Everything is derived from state["proposals"] and the
+# log, so a new session picks up where the last one stopped.
+
+def plan_batches(c):
+    return (c.state.get("proposals") or {}).get("plan_batches") or []
+
+
+def check_batches(c):
+    return (c.state.get("proposals") or {}).get("check_batches") or []
+
+
+def filings(c):
+    return (c.state.get("proposals") or {}).get("filings") or []
+
+
+def filing_for(c, job):
+    return next((f for f in filings(c) if f["job"] == list(job)), None)
+
+
+def first_line(value):
+    return str(value or "").strip().split("\n")[0].strip()
+
+
+def is_set(value):
+    return str(value or "none").strip().lower() not in NONE
+
+
+def owner_answer(c, worker, b, mode=None):
+    """The owner's recorded answer to batch b (its brief named b's file), or None."""
+    found = [r for r in c.recs(worker, after=b["seq"], mode=mode)
+             if first_line(r.get("sets", {}).get("proposals")) == b["file"]]
+    return found[-1] if found else None
+
+
+def check_answer(c, b):
+    return owner_answer(c, "acceptance-tester", b, mode="repair")
+
+
+def plan_answer(c, b):
+    return owner_answer(c, "planner", b)
+
+
+def batch_rulings(c, b, answer):
+    """b's rulings, read from its rulings file once its answer is recorded
+    (and kept on b)."""
+    if b.get("answer_seq") != answer["seq"] or "rulings" not in b:
+        answers = art.rulings(_read(b["rulings_file"]))
+        b["rulings"] = {i["pid"]: answers.get(i["pid"], {}) for i in b["items"]}
+        b["answer_seq"] = answer["seq"]
+        c.dirty = True
+    return b["rulings"]
+
+
+def stood_steps(c):
+    """{step: seq of its ruling}: each step the planner ruled stands on, that no
+    planner answer since has changed (an applied ruling, a spec redo's plan
+    revision, a blocked-mode revision; `steps_changed` in the log)."""
+    events = []
+    for b in plan_batches(c):
+        answer = plan_answer(c, b)
+        if answer is None:
+            continue
+        rulings = batch_rulings(c, b, answer)
+        events += [(answer["seq"], item["targets"], rulings.get(item["pid"], {}).get("answer"))
+                   for item in b["items"] if item["kind"] == "change"]
+    found = {}
+    for seq, targets, ruling in sorted(events, key=lambda e: e[0]):
+        for step in targets:
+            if ruling == "stands":
+                found[step] = seq
+            elif ruling == "applied":
+                found.pop(step, None)
+    changed = [(r["seq"], set(r.get("steps_changed") or [])) for r in c.recs("planner")]
+    return {s: seq for s, seq in found.items()
+            if not any(at >= seq and s in steps for at, steps in changed)}
+
+
+def stood_checks(c):
+    """{condition: seq of its ruling}: each condition whose checks the tester
+    ruled stand, in a check batch or (a brief from before 4.12) a STANDS on an
+    `ONLY conditions …:` scope outside a spec redo, that nothing changed since:
+    a later `repaired` ruling (in a batch, or a pre-4.12 REPAIRED on such a
+    scope), a spec batch applied after it that changed the condition, or a
+    repair after the plan's entry points changed that changed its checks. A
+    quality-gate repair and a fold never lapse one."""
+    applied = [b for b in batches(c) if b["status"] in ("applied", "handed")]
+    events = []
+    for b in check_batches(c):
+        answer = check_answer(c, b)
+        if answer is None:
+            continue
+        rulings = batch_rulings(c, b, answer)
+        events += [(answer["seq"], item["cid"], rulings.get(item["pid"], {}).get("answer"))
+                   for item in b["items"] if item.get("cid")]
+    repairs = c.recs("acceptance-tester", mode="repair")
+    for r in repairs:
+        sets = r.get("sets", {})
+        if is_set(sets.get("proposals")) or r["next"] not in ("STANDS", "REPAIRED") or \
+                any(in_redo(c, b, r["worker"], r["n"]) for b in applied):
+            continue
+        ruling = "stands" if r["next"] == "STANDS" else "repaired"
+        events += [(r["seq"], cid, ruling) for cid in only_ids(sets.get("scope", ""))]
+    found = {}
+    for seq, cid, ruling in sorted(events, key=lambda e: e[0]):
+        if ruling == "stands":
+            found[cid] = seq
+        elif ruling == "repaired":
+            found.pop(cid, None)
+    entry_points = [(r["seq"], set(r.get("checks_changed") or [])) for r in repairs
+                    if ENTRY_POINT_SCOPE in r.get("sets", {}).get("scope", "")]
+    return {cid: seq for cid, seq in found.items()
+            if not any(b["seq"] > seq and cid in b.get("changed", []) for b in applied)
+            and not any(at > seq and cid in ids for at, ids in entry_points)}
+
+
+def unnamed_stood(c, start):
+    """Whether, in this loop (after `start`), the tester ruled stands on checks
+    a report named by no condition (an unnamed batch item, or a STANDS on a
+    review or PR-comment scope from before 4.12 that names none) with no spec
+    change applied since: then any repair the verifier asks for in this loop
+    is the same disagreement. The entry-point repair and the quality-gate
+    repair question no check, so their STANDS never counts."""
+    applied = [b for b in batches(c) if b["status"] in ("applied", "handed")]
+    seqs = []
+    for b in check_batches(c):
+        answer = check_answer(c, b)
+        if answer is None or answer["seq"] <= start:
+            continue
+        rulings = batch_rulings(c, b, answer)
+        if any(not item.get("cid") and rulings.get(item["pid"], {}).get("answer") == "stands"
+               for item in b["items"]):
+            seqs.append(answer["seq"])
+    for r in c.recs("acceptance-tester", after=start, mode="repair"):
+        sets = r.get("sets", {})
+        scope = sets.get("scope", "")
+        if is_set(sets.get("proposals")) or r["next"] != "STANDS" or \
+                ONLY_RE.match(scope) or ENTRY_POINT_SCOPE in scope or scope == GATE_SCOPE or \
+                any(in_redo(c, b, r["worker"], r["n"]) for b in applied):
+            continue
+        seqs.append(r["seq"])
+    return any(not any(b["seq"] > seq for b in applied) for seq in seqs)
+
+
+def stood_files(c, cids):
+    """The rulings files in which the tester ruled the checks of `cids` stand."""
+    cids = set(cids)
+    found = []
+    for b in check_batches(c):
+        answer = check_answer(c, b)
+        if answer is None:
+            continue
+        rulings = batch_rulings(c, b, answer)
+        if any(item.get("cid") in cids and rulings.get(item["pid"], {}).get("answer")
+               == "stands" for item in b["items"]):
+            found.append(b["rulings_file"])
+    return ", ".join(found) or "the tester's reply"
+
+
+def settled_stop(c, who, ids, where):
+    return stop([(f"{who} still finds the checks of condition(s) {', '.join(ids)} wrong "
+                  "after the acceptance tester ruled they stand as written. Tell the user "
+                  f"both sides: {where} and the tester's rulings ({stood_files(c, ids)}). "
+                  "No round is spent on it.")],
+                "a settled check was questioned again with nothing else open (stop #22)")
+
+
+def check_item(items, cid, src):
+    """Add `src` to the item for condition `cid` (None: the unnamed item)."""
+    item = next((i for i in items if i["cid"] == cid), None)
+    if item is None:
+        item = {"cid": cid, "srcs": []}
+        items.append(item)
+    item["srcs"].append(src)
+    return items
+
+
+def item_ids(items):
+    return [i["cid"] for i in items if i.get("cid")]
+
+
+def open_check_batch(c, key, items, source, rule):
+    """The check batch for `key`, written on first use (proposals/checks-<k>.md)."""
+    b = next((b for b in check_batches(c) if b["key"] == key), None)
+    if b is not None:
+        return b
+    c.would(f"send {len(items)} check proposal item(s) to the acceptance tester", rule)
+    k = len(check_batches(c)) + 1
+    folder = c.ad / "proposals"
+    folder.mkdir(parents=True, exist_ok=True)
+    items = sorted(items, key=lambda i: (i["cid"] is None,
+                                         cmd_checks.sort_key(i["cid"] or "0")))
+    path = folder / f"checks-{k}.md"
+    path.write_text(check_props.render_batch(items, check_props.rows(c.ad)),
+                    encoding="utf-8")
+    b = {"k": k, "key": key, "file": str(path),
+         "rulings_file": str(folder / f"checks-{k}-rulings.md"), "seq": c.seq(),
+         "source": source,
+         "items": [{"pid": f"P{i}", "cid": item["cid"], "srcs": item["srcs"]}
+                   for i, item in enumerate(items, 1)]}
+    props(c).setdefault("check_batches", []).append(b)
+    st.add_note(c.state, f"check proposal batch {k}: {len(items)} item(s) to the "
+                "acceptance tester")
+    c.dirty = True
+    return b
+
+
+def check_spawn(c, key, items, source, scope, report, rule, budget, redo=None):
+    """The tester's repair mode on a batch of check proposals, one ruling per
+    condition; `scope` and `report` are what a repair was always given. In a
+    spec redo (`redo`, its batch) the spawn is the redo's, at no cost."""
+    b = open_check_batch(c, key, items, source, rule)
+    n = len(b["items"])
+    sets = {"scope": scope, "report": report,
+            "proposals": (f"{b['file']}\nRule on {n} item(s), P1 to P{n}: one ruling per "
+                          "condition; an unnamed item names no condition."),
+            "rulings_file": b["rulings_file"]}
+    if redo is not None:
+        return spawn_redo(c, redo, "acceptance-tester", "repair", sets, rule)
+    return spawn(c, "acceptance-tester", "repair", sets, rule, budget)
+
+
+def note_unsent(c, key, artifact, labels, jobs=()):
+    """Plan or check proposals no round was left to send, for the stop report
+    or the PR gate summary (once per key)."""
+    found = props(c)["unsent"]
+    if not labels or any(u.get("key") == key for u in found):
+        return
+    found.append({"key": key, "artifact": artifact, "jobs": [list(j) for j in jobs],
+                  "seq": c.seq(), "items": [{"label": x} for x in labels]})
+    st.add_note(c.state, f"no round left: {len(labels)} {artifact} proposal(s) not sent")
+    c.dirty = True
+
+
+def item_labels(items, who):
+    return [check_props.label({"cid": i.get("cid"), "who": who}) for i in items]
+
+
+def defective_checks(c, cid, rows):
+    """The checks of `cid` SPEC_EVAL.md's Defective section names (all of the
+    condition's when it names none of them by name)."""
+    try:
+        section = art.spec_eval(c.ad / "SPEC_EVAL.md")["defective"]
+    except art.ArtifactError:
+        section = ""
+    named = {(p.strip(), n.strip()) for p, n in cmd_checks.CHECK_REF_RE.findall(section)}
+    cells = [r["Check (path :: test name)"].strip() for r in rows if r["#"].strip() == cid
+             and check_props.ref(r["Check (path :: test name)"]) in named]
+    return cells or check_props.checks_of(rows, cid)
+
+
+def verifier_items(c, n, ids):
+    rows = check_props.rows(c.ad)
+    items = []
+    for cid in ids:
+        check_item(items, cid, {"job": ["verifier", n], "pid": None,
+                                "what": (f"the verifier (verifier #{n}): {c.ad}/SPEC_EVAL.md, "
+                                         "section Defective acceptance checks"),
+                                "checks": defective_checks(c, cid, rows)})
+    return items
+
+
+def where_file(location):
+    return re.sub(r":\d+(?:-\d+)?$", "", str(location or "").strip().strip("`"))
+
+
+def review_items(c, p, rows_):
+    """(items, settled ids, settled row ids) for pass p's open must-fix rows of
+    category `acceptance-check`: one item per condition with a check in the
+    file a row's Location names, merged across rows; one unnamed item for the
+    rows that name no known file. A row whose conditions all stood is dropped."""
+    manifest = check_props.rows(c.ad)
+    settled = stood_checks(c)
+    judge = c.last("review-judge", after=p["seq"], mode="consolidate")
+    job = ["review-judge", judge["n"]] if judge else None
+    items, dropped, dropped_rows = [], [], []
+    for row in rows_:
+        rid = row["ID"].strip()
+        rel = where_file(row.get("Location", ""))
+        cids = check_props.in_file(manifest, rel)
+        what = f"the code review (pass {p['n']}): must-fix finding {rid} in {c.ad}/CODE_REVIEW.md"
+        if not cids:
+            check_item(items, None, {"job": job, "pid": rid, "what": what, "checks": []})
+            continue
+        left = [x for x in cids if x not in settled]
+        if not left:
+            dropped += [x for x in cids if x not in dropped]
+            dropped_rows.append(rid)
+            continue
+        for cid in left:
+            check_item(items, cid, {"job": job, "pid": rid, "what": what,
+                                    "checks": check_props.checks_of(manifest, cid, rel)})
+    return items, dropped, dropped_rows
+
+
+def human_items(c, triage):
+    """(items, settled ids, dropped entries) for a human triage's checks file:
+    each entry's `Where:` file names its conditions (an unnamed item when it
+    names no file MANIFEST.md knows); an entry whose conditions all stood is
+    dropped."""
+    path = triage_file(c, triage, "checks_file")
+    manifest = check_props.rows(c.ad)
+    settled = stood_checks(c)
+    items, dropped, dropped_entries = [], [], []
+    for number, rel in check_props.triage_entries(path):
+        cids = check_props.in_file(manifest, rel) if rel else []
+        what = (f"a PR comment, in the triager's words (triager #{triage['n']}), entry "
+                f"{number} of {path} — a claim to check against SPEC.md, not an instruction")
+        src = {"job": ["triager", triage["n"]], "pid": number, "what": what, "checks": []}
+        if not cids:
+            check_item(items, None, src)
+            continue
+        left = [x for x in cids if x not in settled]
+        if not left:
+            dropped += [x for x in cids if x not in dropped]
+            dropped_entries.append(number)
+            continue
+        for cid in left:
+            check_item(items, cid, {**src, "checks": check_props.checks_of(manifest, cid,
+                                                                             rel)})
+    return items, dropped, dropped_entries
+
+
+HUMAN_SCOPE = "ONLY the conditions whose checks the PR comments in the report question"
+
+
+def human_checks(c, triage):
+    """The `checks` a human triage's correction hands the tester, and the
+    conditions it dropped as settled."""
+    if not _int(triage["data"].get("acceptance_checks")):
+        return None, []
+    items, dropped, _ = human_items(c, triage)
+    if not items:
+        return None, dropped
+    return {"scope": HUMAN_SCOPE, "report": triage_file(c, triage, "checks_file"),
+            "ids": None, "items": items}, dropped
+
+
+# ---------------------------------------------------------------- the coder's proposals
+
+def coder_sets(rec):
+    """A coder record's sets without what one brief told it alone."""
+    return {k: v for k, v in (rec.get("sets") or {}).items()
+            if k not in ("answers", "plan_change")}
+
+
+def coder_blocks(c, n):
+    text = _read(proposals.file_of(c.ad, "coder", n))
+    try:
+        return art.proposal_blocks(text) if text else []
+    except art.ArtifactError:
+        return []  # record refuses it before any filing reads it
+
+
+def open_filing(c, coder, consumer, rule):
+    """Sort coder result `coder`'s proposals into what is still to send and
+    what is told `stands` with no send (every item it names already stood),
+    and spend the round when anything is sent. With no round left, nothing is
+    sent: it is noted for the stop report or the PR gate summary. Returns
+    (the filing, the BUDGET text)."""
+    n = coder["n"]
+    steps_settled, checks_settled = stood_steps(c), stood_checks(c)
+    rows = check_props.rows(c.ad)
+    entries, items, told = [], [], []
+    labels = {"plan": [], "checks": []}
+    for block in coder_blocks(c, n):
+        pid = block["pid"]
+        artifact, problem = proposals.classify(block["target"], coder=True)
+        if problem:
+            continue
+        if artifact == "plan":
+            kind, ids, problem = plan_props.parse_target(block["target"])
+            if problem:
+                continue
+            left = [s for s in ids if s not in steps_settled]
+            if kind == "change" and not left:
+                told.append(pid)
+                continue
+            entries.append({"block": block, "kind": kind, "n": n,
+                            "targets": left if kind == "change" else [],
+                            "trimmed": kind == "change" and len(left) < len(ids)})
+            labels["plan"].append(plan_props.label({"kind": kind, "targets": left})
+                                  + " (the coder)")
+        elif artifact == "checks":
+            check, problem = check_props.parse_target(block["target"])
+            if problem:
+                continue
+            left = [x for x in check_props.owners(rows, *check) if x not in checks_settled]
+            if not left:
+                told.append(pid)
+                continue
+            for cid in left:
+                check_item(items, cid, {"job": ["coder", n], "pid": pid,
+                                        "what": f"the coder (coder #{n}), its {pid}: "
+                                                f"{block['why']}",
+                                        "checks": [f"`{check[0]}` :: \"{check[1]}\""]})
+            labels["checks"].append(check_props.label({"check": check}))
+    f = {"job": ["coder", n], "seq": c.seq(), "consumer": consumer, "spend_id": f"coder-{n}",
+         "plan": None, "check_items": items, "checks": None, "told": told, "jobs": []}
+    budget = None
+    if not entries and not items:
+        f["status"] = "stood"
+        st.add_note(c.state, f"coder #{n}'s proposals are all on items ruled to stand: "
+                    "none is sent")
+    else:
+        budget = c.spend(consumer, f"coder-{n}", "the coder's plan/check proposal(s)")
+        if budget is None:
+            f["status"] = "unsent"
+            for artifact, found in labels.items():
+                note_unsent(c, f"coder-{n}-{artifact}", artifact, found, [["coder", n]])
+        else:
+            c.would(f"send coder #{n}'s proposals to the planner and the acceptance tester",
+                    rule)
+            f["status"] = "sent"
+            if entries:
+                f["plan"] = open_plan_batch(c, entries, n)
+    props(c).setdefault("filings", []).append(f)
+    c.dirty = True
+    return f, budget
+
+
+def open_plan_batch(c, entries, n):
+    k = len(plan_batches(c)) + 1
+    folder = c.ad / "proposals"
+    folder.mkdir(parents=True, exist_ok=True)
+    text, numbers = plan_props.render_batch(entries, plan_props.steps_now(c.ad))
+    path = folder / f"plan-{k}.md"
+    path.write_text(text, encoding="utf-8")
+    props(c).setdefault("plan_batches", []).append({
+        "k": k, "file": str(path), "rulings_file": str(folder / f"plan-{k}-rulings.md"),
+        "seq": c.seq(), "job": ["coder", n],
+        "items": [{"pid": f"P{i}", "src": e["block"]["pid"], "kind": e["kind"],
+                   "targets": e["targets"], "number": numbers[i - 1]}
+                  for i, e in enumerate(entries, 1)]})
+    st.add_note(c.state, f"plan proposal batch {k}: {len(entries)} proposal(s) to the "
+                "planner")
+    return k
+
+
+def flow_rec(c, f, worker, scope=None):
+    """The latest ok record of a job filing f's flow spawned."""
+    found = [r for r in c.recs(worker, after=f["seq"])
+             if in_jobs(c, f["jobs"], worker, r["n"])
+             and (scope is None or r.get("sets", {}).get("scope") == scope)]
+    return found[-1] if found else None
+
+
+def flow_spawn(c, f, worker, mode, sets, rule, budget):
+    result = spawn(c, worker, mode, sets, rule, budget)
+    if not c.readonly:
+        f["jobs"].append([worker, c.state["briefs"][-1]["n"]])
+        c.dirty = True
+    return result
+
+
+def coder_step(c, start, consumer):
+    """The latest coder result's plan and check proposals (after `start`): the
+    planner first (in blocked mode when the coder also stopped steps), then
+    the entry-point repair its revision calls for, then the tester on the
+    check proposals, then the coder again in its mode. None when it filed
+    none, when none could be sent, or once the coder ran again."""
+    coder = c.last("coder", after=start)
+    if not filed(coder):
+        return None
+    n = coder["n"]
+    rule = (f"coder #{n} questions the plan or the checks: their owners rule first, then "
+            f"the coder goes again (consumer {consumer})")
+    f = filing_for(c, ["coder", n])
+    budget = None
+    if f is None:
+        f, budget = open_filing(c, coder, consumer, rule)
+    if f["status"] != "sent":
+        return None
+    blocked = coder["next"] == "BLOCKED"
+    plan_b = next((b for b in plan_batches(c) if b["k"] == f.get("plan")), None)
+    planner = None
+    if plan_b or blocked:
+        planner = flow_rec(c, f, "planner")
+        if planner is None:
+            sets = {}
+            if blocked:
+                sets["blocked"] = f"the steps listed in {c.ad / 'blocked' / f'coder-{n}.md'}"
+            if plan_b:
+                k = len(plan_b["items"])
+                sets["proposals"] = (f"{plan_b['file']}\nRule on {k} plan proposal(s), P1 to "
+                                     f"P{k}.")
+                sets["rulings_file"] = plan_b["rulings_file"]
+            return flow_spawn(c, f, "planner", "blocked" if blocked else "revise", sets,
+                              "the planner rules on the coder's plan proposals first"
+                              + (" and decides the steps it stopped" if blocked else "")
+                              + f" (consumer {consumer})", budget)
+        if planner["next"] == "SPEC_IMPOSSIBLE":
+            return stop([("The planner judged the spec impossible to meet as written. Tell "
+                         f"the user its reasons (its reply, and {c.ad}/IMPLEMENTATION.md).")],
+                        "the planner returned SPEC_IMPOSSIBLE")
+        if plan_b:
+            batch_rulings(c, plan_b, planner)
+    if planner and str(planner["data"].get("entry_points_changed", "")).strip().lower() \
+            == "yes" and flow_rec(c, f, "acceptance-tester", ENTRY_POINT_SCOPE) is None:
+        return flow_spawn(c, f, "acceptance-tester", "repair", {
+            "scope": ENTRY_POINT_SCOPE,
+            "report": (f"the plan was revised for the coder's proposals or the steps it "
+                       f"stopped, and its entry points changed: see {c.ad}/IMPLEMENTATION.md")},
+            "the revised plan changed the checks' entry points: the tester repairs them "
+            "before the coder's check proposals (no round)", budget)
+    if f["check_items"]:
+        key = f"coder-{n}"
+        b = next((b for b in check_batches(c) if b["key"] == key), None)
+        if b is None or check_answer(c, b) is None:
+            ids = item_ids(f["check_items"])
+            why = ("the acceptance tester rules on the coder's check proposals, one ruling "
+                   "per condition")
+            b = open_check_batch(c, key, f["check_items"], "coder", why)
+            result = check_spawn(c, key, f["check_items"], "coder",
+                                 f"ONLY conditions {', '.join(ids)}: the coder questions "
+                                 "their checks", b["file"], why, budget)
+            if not c.readonly:
+                f["checks"] = b["k"]
+                f["jobs"].append(["acceptance-tester", c.state["briefs"][-1]["n"]])
+            return result
+    if flow_rec(c, f, "coder") is None:
+        sets = coder_sets(coder)
+        change = flow_plan_change(c, planner)
+        if change:
+            sets["plan_change"] = change
+        return flow_spawn(c, f, "coder", coder.get("mode") or "build", sets,
+                          "the owners have ruled on the coder's proposals: the coder goes "
+                          "again in its mode (the same round)", budget)
+    return None
+
+
+def flow_plan_change(c, planner):
+    """The plan's revised lines since the planner of the flow was briefed, or
+    None (no planner, or the plan unchanged)."""
+    if planner is None:
+        return None
+    entry = brief_entry(c, "planner", planner["n"]) or {}
+    sha = entry.get("plan")
+    if not sha:
+        return None
+    return plan_props.change_text(_read(plan_props.snapshot_path(c.ad, sha)) or None,
+                                  _read(c.ad / "IMPLEMENTATION.md") or None)
+
+
+def coder_answers(c):
+    """What the next coder brief is told about the last coder result's
+    proposals: one `P<k>: repaired` or `P<k>: stands` line each, never a
+    reason. None when that result filed none."""
+    prev = c.last("coder")
+    if not filed(prev):
+        return None
+    n = prev["n"]
+    f = filing_for(c, ["coder", n])
+    if f is None:
+        return None
+    repaired = set()
+    plan_b = next((b for b in plan_batches(c) if b["k"] == f.get("plan")), None)
+    answer = plan_answer(c, plan_b) if plan_b else None
+    if answer:
+        rulings = batch_rulings(c, plan_b, answer)
+        repaired |= {i["src"] for i in plan_b["items"]
+                     if rulings.get(i["pid"], {}).get("answer") == "applied"}
+    check_b = next((b for b in check_batches(c) if b["key"] == f"coder-{n}"), None)
+    answer = check_answer(c, check_b) if check_b else None
+    if answer:
+        rulings = batch_rulings(c, check_b, answer)
+        repaired |= {s["pid"] for i in check_b["items"]
+                     if rulings.get(i["pid"], {}).get("answer") == "repaired"
+                     for s in i["srcs"] if s.get("job") == ["coder", n]}
+    lines = [f"{b['pid']}: {'repaired' if b['pid'] in repaired else 'stands'}"
+             for b in coder_blocks(c, n)]
+    return "\n".join(lines) or None
+
+
 # ---------------------------------------------------------------- Phase 5
 
 def verifier_first(c, rule):
@@ -1706,11 +2334,23 @@ def verifier_first(c, rule):
 
 
 def with_rulings(c, sets):
-    """A verifier brief is told every Define ruling that SPEC.md stands."""
-    text = proposals.rulings_text(c.state)
+    """A verifier brief is told every Define ruling that SPEC.md stands, and
+    every condition whose checks the acceptance tester ruled stand
+    (stood_checks): from a mixed batch or an earlier loop too."""
+    text = "; ".join(t for t in (proposals.rulings_text(c.state), checks_stand_text(c)) if t)
     if text:
         sets["rulings"] = text
     return sets
+
+
+def checks_stand_text(c):
+    """`the checks of condition(s) 2, 4 stand as written …`, or None."""
+    ids = sorted(stood_checks(c), key=cmd_checks.sort_key)
+    if not ids:
+        return None
+    return (f"the checks of condition(s) {', '.join(ids)} stand as written (the acceptance "
+            "tester ruled them right against SPEC.md): judge them as written, not as "
+            "defective")
 
 
 def fold_spawn(c, conflicts):
@@ -1781,6 +2421,9 @@ def phase5(c):
     spec = spec_loop_step(c, start, 3, "phase5")
     if spec is not None:
         return spec
+    flow = coder_step(c, start, 3)
+    if flow is not None:
+        return flow
     result = loop_step(c, start, 3, "phase5", first=lambda: phase5_first(c))
     if result is not DONE_MARK:
         return result
@@ -1837,6 +2480,9 @@ def open_correction(c):
     spec = spec_loop_step(c, corr["seq"], corr["consumer"], scope, files)
     if spec is not None:
         return spec
+    flow = coder_step(c, corr["seq"], corr["consumer"])
+    if flow is not None:
+        return flow
     result = loop_step(c, corr["seq"], corr["consumer"], scope,
                        first=lambda: first_of(c, corr), files=files,
                        after_change="a Phase 6 correction")
@@ -1882,10 +2528,15 @@ def first_of(c, corr):
                      rule="the code changed outside the pipeline: the quality gate runs "
                           "again (no round)")
     if corr.get("checks"):  # acceptance checks first: the tester's repair mode
-        return spawn(c, "acceptance-tester", "repair", dict(corr["checks"]),
-                     rule="a finding questions an acceptance check: the tester decides "
-                          "first" + (", then the coder" if corr.get("file") else ""),
-                     budget=corr.get("budget"))
+        checks = corr["checks"]
+        rule = ("a finding questions an acceptance check: the tester decides first"
+                + (", then the coder" if corr.get("file") else ""))
+        if checks.get("items"):
+            return check_spawn(c, f"corr-{corr['seq']}", checks["items"], corr["entry"],
+                               checks["scope"], checks["report"],
+                               rule + " (one ruling per condition)", corr.get("budget"))
+        return spawn(c, "acceptance-tester", "repair", dict(checks), rule=rule,
+                     budget=corr.get("budget"))  # a correction started before 4.12
     if not corr.get("file"):  # a spec redo with nothing for the coder
         after = corr["after_commit"]
         return cleanup_spawn(c, "after-commit" if after else "review-fix",
@@ -1931,6 +2582,9 @@ def start_correction(c, entry, consumer, file, spend_id, rule, checks=None, why=
     budget = None
     if spend_id and not paid:
         budget = c.spend(consumer, spend_id, f"{entry} correction")
+        if budget is None and (checks or {}).get("items"):
+            who = "the code review" if entry == "review" else "a PR comment"
+            note_unsent(c, spend_id, "checks", item_labels(checks["items"], who))
         if budget is None and after_commit:
             return exhausted(c, consumer, "no round left for a correction after the "
                              "commit", (f"{why} " if why else "") + f"What is open: {file}")
@@ -2089,22 +2743,29 @@ def review_step(c, p):
 
 
 def review_carry(c, p, rows, sec):
-    """What pass p's correction hands out: `files` for the coder, and `checks`
-    (scope, report, the conditions' ids) for the tester's repair mode."""
+    """What pass p's correction hands out: `files` for the coder (the pass's
+    corrections.md when a must-fix row other than a check's is open, and the
+    security corrections), and `checks` (scope, report, the conditions' ids,
+    one item per condition) for the tester's repair mode. A check row whose
+    conditions all stood is left out (`stood`: their ids)."""
     checks = [r for r in rows if _category(r) == "acceptance-check"]
     spec = None
-    if checks:  # a finding about a check goes to the tester, never the coder
-        ids = ", ".join(r["ID"].strip() for r in checks)
-        spec = {"scope": check_scope(c, checks),
+    items, stood, dropped = review_items(c, p, checks)
+    live = [r for r in checks if r["ID"].strip() not in dropped]
+    if items:  # a finding about a check goes to the tester, never the coder
+        ids = ", ".join(r["ID"].strip() for r in live)
+        named = item_ids(items)
+        spec = {"scope": (f"ONLY conditions {', '.join(named)}: the code review found "
+                          "their checks wrong" if named else check_scope(c, live)),
                 "report": (f"{c.ad}/CODE_REVIEW.md, must-fix finding(s) {ids}: each "
                            "one's `### <id>` block says what is wrong with the check"),
-                "ids": check_ids(c, checks) or None}
+                "ids": named or None, "items": items}
     files = []
     if len(checks) < len(rows):
         files.append(f"{c.ad}/review/pass-{p['n']}/corrections.md")
     if sec:
         files.append(f"{c.ad}/review/security-corrections.md")
-    return {"files": files, "checks": spec}
+    return {"files": files, "checks": spec, "stood": stood}
 
 
 def review_correction(c, p, rows, sec):
@@ -2113,8 +2774,10 @@ def review_correction(c, p, rows, sec):
     carry = review_carry(c, p, rows, sec)
     files, why = carry["files"], []
     spec = carry["checks"]
+    if spec is None and not files:  # only checks the tester ruled right, again
+        return settled_stop(c, "The code review", carry["stood"], f"{c.ad}/CODE_REVIEW.md")
     if spec:
-        spec = {"scope": spec["scope"], "report": spec["report"]}
+        spec = {"scope": spec["scope"], "report": spec["report"], "items": spec["items"]}
     if rows:
         why.append(f"pass {p['n']} left {len(rows)} must-fix finding(s) open")
     if sec:
@@ -2532,11 +3195,11 @@ def human_step(c):
     if b is not None and b["status"] == "handed":
         return None  # its correction runs through open_correction
     blockers = _int(triage["data"].get("blockers"))
-    checks = None
-    if _int(triage["data"].get("acceptance_checks")):
-        checks = {"scope": "ONLY the conditions whose checks the PR comments in the "
-                           "report question",
-                  "report": triage_file(c, triage, "checks_file")}
+    checks, stood = human_checks(c, triage)
+    if checks:
+        checks = {k: checks[k] for k in ("scope", "report", "items")}
+    elif stood and not blockers:  # only checks the tester ruled right, again
+        return settled_stop(c, "A PR comment", stood, triage_file(c, triage, "checks_file"))
     if blockers or checks:
         return start_correction(c, "human", 4, triage_file(c, triage) if blockers else None,
                                 spend_id, "people's comments on the PR need a correction "

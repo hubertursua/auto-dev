@@ -1,5 +1,6 @@
 """Spec proposals: a later worker's proposed change to SPEC.md, and the
-Define agent's rulings on it.
+Define agent's rulings on it; and who may propose against which upstream
+artifact (SPEC.md, the plan, the checks).
 
 A filer (FILERS: the verifier, the review judge consolidating the panel, the
 security reviewer, the triager in human mode) writes proposals/<worker>-<n>.md
@@ -17,6 +18,11 @@ not allow: `next` asks the user the deviation gate for it (accept the
 deviation, keep the spec, or stop), never the Define agent again. What it asks
 is kept in state["proposals"]["deviations"]; the answer is a `deviation` gate.
 
+The coder files against the plan and the checks instead (plan_props.py,
+check_props.py), never against SPEC.md, which it never sees; a spec filer
+questions a check only through its own route (CHECK_ROUTE), never in its
+proposal file.
+
 This module holds everything but the routing: who may file, the checks
 `record` runs, the snapshots, the batch file, the plan's change for the coder,
 the deviations, and the lines the gate summaries, stop reports and verifier
@@ -29,7 +35,7 @@ import re
 from pathlib import Path
 
 from . import artifacts as art
-from . import cmd_checks, sealed
+from . import check_props, cmd_checks, plan_props, sealed
 
 # Each filer and the one mode it may file in (None: any mode).
 FILERS = {"verifier": None, "review-judge": "consolidate", "security-reviewer": None,
@@ -47,6 +53,28 @@ ADD_CONDITION = re.compile(r"\bnew\s+conditions?\b")
 TARGET_ID = re.compile(r"\b(s?\d+)\b")
 FORMS = ("`condition <n>`, `conditions <n>, <m>`, `new condition` or "
          "`new security criterion`")
+# The coder files against the plan and the checks, in build and correction mode.
+CODER_MODES = ("build", "correction")
+# How each spec filer questions a check: never in its proposal file.
+CHECK_ROUTE = {
+    "verifier": "`next: REPAIR`, listing it under Defective acceptance checks in SPEC_EVAL.md",
+    "review-judge": "a must-fix finding of category `acceptance-check` in CODE_REVIEW.md",
+    "triager": "an ACCEPTANCE_CHECK entry in its checks file",
+}
+WORKER_LABEL = {"verifier": "the verifier", "review-judge": "the review judge",
+                "security-reviewer": "the security reviewer",
+                "security-reviewer-sensitive": "the security reviewer",
+                "triager": "the triager"}
+WHO_FILES = ("{worker} ({mode}) may not file a proposal: SPEC.md's are filed by the "
+             "verifier, the review judge in consolidate mode, the security reviewer and "
+             "the triager in human mode; the plan's and the checks' by the coder")
+STEP_WORDS = re.compile(r"\bsteps?\b")
+# A step in the plan's own form: `step 3`, `steps 3, 5`, `new step`. A spec
+# filer's Target is a plan's only in this form (`3 (the wizard's address
+# step)` names condition 3, as before 4.12).
+PLAN_FORM = re.compile(r"\bsteps?\s+\d+\b|\bnew\s+steps?\b")
+SPEC_WORDS = re.compile(r"\bconditions?\b|\bcriteri(?:on|a)\b|\bs\d+\b")
+CRITERION_WORDS = re.compile(r"\bcriteri(?:on|a)\b|\bs\d+\b")
 
 
 def may_file(worker, mode):
@@ -54,6 +82,52 @@ def may_file(worker, mode):
     if worker not in FILERS:
         return False
     return FILERS[worker] is None or FILERS[worker] == mode
+
+
+def against(worker, mode):
+    """The artifacts `worker` in `mode` may target in its proposal file:
+    `spec` for a spec filer, `plan` and `checks` for the coder."""
+    if worker == "coder" and mode in CODER_MODES:
+        return {"plan", "checks"}
+    return {"spec"} if may_file(worker, mode) else set()
+
+
+def _words(raw):
+    return " ".join(str(raw or "").replace("`", " ").split()).lower()
+
+
+def names_spec(raw):
+    """Whether a Target names a SPEC.md condition or criterion (a check's test
+    name aside)."""
+    return bool(SPEC_WORDS.search(_words(check_props.strip_check(raw))))
+
+
+def classify(raw, coder=False):
+    """(artifact, problem) for a proposal's Target: `checks` when it names a
+    check, `plan` when it names steps, else `spec` (parse_target then reads
+    it). Words inside a check's test name never count. For the coder, a step
+    together with a condition is a problem; for a spec filer it is `spec`, as
+    before 4.12, and only steps in the plan's form (PLAN_FORM) count, so a
+    Target whose numbers stand alone is `spec`."""
+    check = check_props.names_check(raw)
+    rest = _words(check_props.strip_check(raw))
+    steps = bool((STEP_WORDS if coder else PLAN_FORM).search(rest))
+    spec = bool(SPEC_WORDS.search(rest))
+    if check and steps:
+        return "checks", "mixes a step with a check: file them as two proposals"
+    if check and spec:
+        return "checks", ("names two artifacts at once, a check and a SPEC.md item: "
+                          "propose only against the check")
+    if check:
+        return "checks", None
+    if steps and spec:
+        if coder:
+            return "plan", ("names two artifacts at once, a step and a SPEC.md item: "
+                            "propose only against the step")
+        return "spec", None
+    if steps:
+        return "plan", None
+    return "spec", None
 
 
 def file_of(ad, worker, n):
@@ -228,10 +302,12 @@ def problems(p, spec, from_comment=False):
 
 # ---------------------------------------------------------------- record checks
 
-def filer_issues(worker, mode, data, ad, n, correction=None):
-    """`record`'s checks of a return's spec proposals: only a filer files, the
-    count matches the file, each proposal is well formed, and the filer's
-    correction file (when it hands the coder one) copies no proposed text."""
+def filer_issues(worker, mode, data, ad, n, correction=None, shown=None):
+    """`record`'s checks of a return's proposals: only a filer files, the count
+    matches the file, each proposal targets an artifact the filer may question
+    and is well formed, and a spec filer's correction file (when it hands the
+    coder one) copies no proposed text. `shown`: the check files the coder's
+    brief listed (None when unknown)."""
     count = _count(data.get("proposals"))
     path = file_of(ad, worker, n)
     text = _read(path)
@@ -239,25 +315,81 @@ def filer_issues(worker, mode, data, ad, n, correction=None):
         blocks = art.proposal_blocks(text) if text is not None else []
     except art.ArtifactError as exc:
         return [f"{path}: {exc}"]
-    if not may_file(worker, mode):
+    if not against(worker, mode):
         if count or blocks:
-            return [(f"{worker} ({mode or 'no mode'}) may not file a spec proposal: only "
-                     "the verifier, the review judge in consolidate mode, the security "
-                     "reviewer and the triager in human mode can")]
+            return [WHO_FILES.format(worker=worker, mode=mode or "no mode")]
         return []
     if count != len(blocks):
         return [f"proposals is {data.get('proposals')!r} but {path} holds {len(blocks)} "
-                "proposal(s)" + ("" if text is not None else " (there is no such file)")]
+                "proposal(s)" + ("" if text is not None else " (there is no such file)")
+                + ("; the coder may not file a spec proposal: only plan and check "
+                   "proposals go in that file" if worker == "coder" else "")]
     if not blocks:
         return []
-    spec = spec_now(ad)
-    issues = []
+    if worker == "coder":
+        return [f"{path.name}: {p}" for p in coder_problems(blocks, ad, shown)]
+    label = WORKER_LABEL.get(worker, worker)
+    spec_blocks, issues = [], []
     for block in blocks:
-        issues += [f"{path.name}: {p}"
-                   for p in problems(block, spec, from_comment=worker == "triager")]
+        artifact, _ = classify(block["target"])
+        pid = block["pid"]
+        if artifact == "plan":
+            issues.append(f"{path.name}: {pid} names a plan step: {label} may not propose "
+                          "against the plan; only the coder files plan proposals")
+        elif artifact == "checks" and worker in CHECK_ROUTE:
+            issues.append(f"{path.name}: {pid} names a check: {label} questions a check "
+                          f"only through {CHECK_ROUTE[worker]}, never in a proposal file")
+        elif artifact == "checks":
+            issues.append(f"{path.name}: {pid} names a check: {label} may not question a "
+                          "check; it files against SPEC.md alone")
+        else:
+            spec_blocks.append(block)
+    if spec_blocks:
+        spec = spec_now(ad)
+        for block in spec_blocks:
+            issues += [f"{path.name}: {p}"
+                       for p in problems(block, spec, from_comment=worker == "triager")]
     if correction:
-        issues += copied(correction, blocks)
+        issues += copied(correction, spec_blocks)
     return issues
+
+
+def coder_problems(blocks, ad, shown=None):
+    """What is wrong with the coder's plan and check proposals: each names
+    steps the plan has, or one check it was shown that MANIFEST.md lists, and
+    never a SPEC.md item."""
+    out, steps, unreadable = [], None, None
+    rows = check_props.rows(ad)
+    for block in blocks:
+        pid = block["pid"]
+        artifact, problem = classify(block["target"], coder=True)
+        if problem:
+            out.append(f"{pid}'s Target {problem}")
+        elif artifact == "spec":
+            if names_spec(block["target"]):
+                what = ("a security criterion" if CRITERION_WORDS.search(
+                    _words(check_props.strip_check(block["target"]))) else
+                    "a SPEC.md condition")
+                out.append(f"{pid} names {what}: the coder may not propose against the "
+                           "spec, nor file a spec proposal; it proposes only against the "
+                           "plan's build steps and the held-out checks its brief listed")
+            else:
+                out.append(f"{pid} names no step and no check: write step <n>, steps <n>, "
+                           f"<m>, new step, or {check_props.FORM}")
+        elif artifact == "plan":
+            if steps is None and unreadable is None:
+                try:
+                    steps = plan_props.steps_now(ad)
+                except art.ArtifactError as exc:
+                    unreadable = str(exc)
+            if unreadable is not None:
+                out.append(f"{pid} names a step, but IMPLEMENTATION.md's build sequence "
+                           f"can't be read ({unreadable})")
+            else:
+                out += plan_props.problems(block, steps)
+        else:
+            out += check_props.problems(block, rows, shown)
+    return out
 
 
 def copied(path, blocks):
@@ -269,6 +401,47 @@ def copied(path, blocks):
     return [f"{Path(path).name} copies {label}'s proposed text (\"{phrase}\"): the coder "
             "never sees a proposal; say what the code must do in your own words"
             for label, phrase in cmd_checks.phrase_hits(text, sources, quoted=False)]
+
+
+def repeats(before, after, reasons, n=6):
+    """[(label, phrase)]: for each (label, reason), the first run of its words
+    (`n` of them, fewer for a short reason, never under 4, as the SPEC.md copy
+    check matches) found anywhere in the text `after`, quoted text included,
+    unless every word at that place lies inside one single `equal` run of
+    the word diff from `before`: text the reader could already read, in that
+    order, never counts, while a reason written around a kept word, or joined
+    from two kept phrases the old text held apart, does. An empty reason (an
+    applied ruling's `none`) is never matched."""
+    old, new = cmd_checks.words(before or ""), cmd_checks.words(after or "")
+    run = [None] * len(new)
+    for k, (tag, _i1, _i2, j1, j2) in enumerate(difflib.SequenceMatcher(
+            None, old, new, autojunk=False).get_opcodes()):
+        if tag == "equal":
+            run[j1:j2] = [k] * (j2 - j1)
+
+    def kept(j, size):
+        return run[j] is not None and all(r == run[j] for r in run[j:j + size])
+    starts = {}
+    for j, word in enumerate(new):
+        starts.setdefault(word, []).append(j)
+    hits = []
+    for label, reason in reasons:
+        if not str(reason or "").strip():
+            continue
+        words = cmd_checks.words(reason)
+        size = min(n, len(words))
+        if size < 4:
+            continue
+        found = None
+        for i in range(len(words) - size + 1):
+            window = words[i:i + size]
+            if any(new[j:j + size] == window and not kept(j, size)
+                   for j in starts.get(window[0], [])):
+                found = " ".join(window)
+                break
+        if found:
+            hits.append((label, found))
+    return hits
 
 
 def spec_edit_issues(ad, sha):
@@ -564,13 +737,28 @@ def summary_lines(state):
     return lines + deviation_lines(state) + unsent_lines(state)
 
 
+def _unsent(state):
+    return (state.get("proposals") or {}).get("unsent") or []
+
+
 def unsent_lines(state):
-    items = [i for u in (state.get("proposals") or {}).get("unsent") or []
+    """The spec proposals no round was left to send, then the plan and check
+    proposals (upstream_unsent_lines)."""
+    items = [i for u in _unsent(state) if not u.get("artifact")
              for i in u.get("items", [])]
-    if not items:
+    lines = ["Spec proposals not sent (no round left): " + "; ".join(
+        f"{target_label(i)} ({filer_label(i)})" for i in items)] if items else []
+    return lines + upstream_unsent_lines(state)
+
+
+def upstream_unsent_lines(state):
+    """`Plan and check proposals not sent (no round left): …`, or []."""
+    labels = [i.get("label", "") for u in _unsent(state) if u.get("artifact")
+              for i in u.get("items", [])]
+    labels = [x for i, x in enumerate(labels) if x and x not in labels[:i]]
+    if not labels:
         return []
-    return ["Spec proposals not sent (no round left): " + "; ".join(
-        f"{target_label(i)} ({filer_label(i)})" for i in items)]
+    return ["Plan and check proposals not sent (no round left): " + "; ".join(labels)]
 
 
 def job_items(ad, worker, n):
