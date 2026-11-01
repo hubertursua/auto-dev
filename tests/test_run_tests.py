@@ -1,10 +1,13 @@
 """Tests for tools/run-tests.py, run as a subprocess on a small suite of its own."""
 
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -29,6 +32,53 @@ class SecondTest(unittest.TestCase):
         pass
 """
 
+BIG = """
+import unittest
+
+class BigTest(unittest.TestCase):
+    def test_1(self):
+        pass
+
+    def test_2(self):
+        pass
+
+    def test_3(self):
+        pass
+"""
+
+SETUP_FAILS = """
+import unittest
+
+class SetupTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raise RuntimeError("setUpClass broke")
+
+    def test_never(self):
+        pass
+"""
+
+SKIPS_ITSELF = """
+import unittest
+
+class SkipsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        raise unittest.SkipTest("no tool here")
+
+    def test_never(self):
+        pass
+"""
+
+SLOW = """
+import time
+import unittest
+
+class Slow{n}Test(unittest.TestCase):
+    def test_sleeps(self):
+        time.sleep(2)
+"""
+
 FAILING = """
 import unittest
 
@@ -51,9 +101,13 @@ class RunTestsTest(unittest.TestCase):
             (tmp / "tests" / f"{name}.py").write_text(textwrap.dedent(text), encoding="utf-8")
         return tmp
 
+    def env(self):
+        # Not this suite's own PYTHONPATH: a planted module must not find a real one.
+        return {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+
     def run_tool(self, root, *args):
         return subprocess.run([sys.executable, str(root / "tools" / "run-tests.py"), *args],
-                              capture_output=True, text=True, check=False)
+                              capture_output=True, text=True, check=False, env=self.env())
 
     def test_a_passing_suite_runs_every_class_and_exits_0(self):
         root = self.suite(test_a=PASSING)
@@ -93,6 +147,7 @@ class RunTestsTest(unittest.TestCase):
         r = self.run_tool(root)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("failed to import", r.stderr)
+        self.assertIn("no_such_module_here", r.stderr)  # the reason, not only the module
 
     def test_a_name_with_no_classes_could_not_run(self):
         root = self.suite(test_a=PASSING)
@@ -101,11 +156,39 @@ class RunTestsTest(unittest.TestCase):
         self.assertIn("no test classes found for test_nothing", r.stderr)
 
     def test_classes_with_more_tests_start_first(self):
-        root = self.suite(test_a=PASSING, test_b=FAILING)
+        root = self.suite(test_a=FAILING, test_b=BIG)  # discovery finds test_a first
         r = self.run_tool(root, "-j", "1")
         names = [ln.split()[1] for ln in r.stdout.splitlines()
                  if ln.startswith(("ok ", "FAIL "))]
-        self.assertEqual(names[-1], "test_b.BrokenTest", r.stdout)
+        self.assertEqual(names, ["test_b.BigTest", "test_a.BrokenTest"], r.stdout)
+
+    def test_a_class_whose_setup_fails_fails_and_one_that_skips_itself_passes(self):
+        root = self.suite(test_a=SETUP_FAILS, test_b=SKIPS_ITSELF)
+        r = self.run_tool(root)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("FAIL test_a.SetupTest", r.stdout)
+        self.assertIn("setUpClass broke", r.stdout)
+        self.assertIn("ok   test_b.SkipsTest (0 tests", r.stdout)
+
+    def test_a_single_test_and_the_tests_prefix_are_accepted(self):
+        root = self.suite(test_a=PASSING)
+        r = self.run_tool(root, "tests.test_a.FirstTest.test_two")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   test_a.FirstTest.test_two (1 tests", r.stdout)
+        self.assertIn("OK: 1 tests", r.stdout)
+
+    def test_an_interrupt_stops_the_run_and_starts_no_more(self):
+        root = self.suite(**{f"test_{n}": SLOW.format(n=n) for n in "abcdef"})
+        proc = subprocess.Popen([sys.executable, str(root / "tools" / "run-tests.py"),
+                                 "-j", "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=self.env(), start_new_session=True)
+        time.sleep(1.5)
+        start = time.monotonic()
+        os.killpg(proc.pid, signal.SIGINT)  # as Ctrl-C does: the runner and its test
+        _out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 2, err)
+        self.assertIn("interrupted", err)
+        self.assertLess(time.monotonic() - start, 6)  # the 5 queued classes never ran
 
 
 if __name__ == "__main__":
