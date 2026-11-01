@@ -275,8 +275,8 @@ access control or a data migration), which turns on the post-plan gate.
 Nothing is committed or pushed until the uncommitted change has been reviewed
 twice, at the same time, and you have seen the results:
 
-1. **Code review panel.** Three reviewers run `/code-review xhigh`
-   independently; the plan sets the reviewer agents' effort (see
+1. **Code review panel.** Three reviewers run `/code-review` on the changed
+   files independently, at the effort the plan sets for the review (see
    [*Models and effort*](#models-and-effort)). A judge merges their findings and
    checks each one's trigger path in the code. A finding that could be must-fix
    but only one reviewer raised goes to the other two for a re-vote.
@@ -584,7 +584,8 @@ and the table in `SKILL.md`.
 The code reviewers' effort is set per run. The planner writes a
 `Review effort:` line in `IMPLEMENTATION.md`: `high` for a small, local,
 straightforward change, otherwise `xhigh`. The orchestrator passes it to each
-code reviewer, overriding the agent file's `xhigh`.
+code reviewer, overriding the agent file's `xhigh`, and each reviewer runs its
+nested `/code-review` at that effort too.
 
 ## The `.auto-dev/` scratch directory
 

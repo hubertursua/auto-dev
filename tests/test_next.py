@@ -2468,12 +2468,52 @@ class ReviewEffortTest(NextCase):
         out, _ = self.expect("code-reviewer")  # the re-votes
         self.assertEqual(out["EFFORT"], ["high"] * 3)
 
+    def test_the_nested_code_review_gets_the_pass_s_effort_and_the_changed_files(self):
+        self.to_panel()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            sets = self.sets(w, n)
+            self.assertEqual(sets["review_effort"], "high")
+            files = sets["files"].split(", ")
+            self.assertIn("due.ts", files)  # the coder's change, uncommitted
+            self.assertFalse([f for f in files if f.startswith(".auto-dev/")], files)
+            brief = (self.dir / "briefs" / f"{w}-{n}.md").read_text()
+            self.assertIn("review_effort: high", brief)
+        # A failed reviewer's re-spawn gets the same effort and files.
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            if slot == "R2":
+                self.answer(w, n, "", status="failed")
+                failed = self.sets(w, n)
+                continue
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        _, again = self.expect("code-reviewer")
+        self.assertEqual(self.sets(*again[0]), failed)
+
+    def test_a_first_pass_started_before_4_12_1_lists_the_changed_files(self):
+        self.to_panel()
+        _, jobs = self.reviewers()
+        state = json.loads((self.dir / "state.json").read_text())
+        state["phase6"]["passes"][0]["files"] = []  # as an older `next` saved it
+        (self.dir / "state.json").write_text(json.dumps(state))
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            if slot == "R1":
+                self.answer(w, n, "", status="failed")
+                continue
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        _, again = self.expect("code-reviewer")
+        self.assertIn("due.ts", self.sets(*again[0])["files"].split(", "))
+
     def test_a_plan_without_a_review_effort_runs_the_reviewers_at_xhigh(self):
         self.plan_text = IMPLEMENTATION
         self.to_panel()
-        out, _ = self.reviewers()
+        out, jobs = self.reviewers()
         self.assertEqual(out["EFFORT"], ["xhigh"] * 3 + [""])
         self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "xhigh")
+        self.assertEqual({self.sets(*j)["review_effort"] for j in jobs}, {"xhigh"})
 
     def test_a_pass_started_before_4_3_reads_the_plan(self):
         self.to_panel()
