@@ -196,7 +196,7 @@ class CheckRepoTest(unittest.TestCase):
     def test_the_release_is_4_12_with_notes_on_upgrading_from_4_11(self):
         root = TOOL.parent.parent
         plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
-        self.assertEqual(plugin["version"], "4.12.0")
+        self.assertRegex(plugin["version"], r"^4\.12\.\d+$")  # a patch keeps the notes
         upgrading = (root / "UPGRADING.md").read_text(encoding="utf-8")
         first = re.search(r"^## (.*)$", upgrading, re.MULTILINE)
         self.assertEqual(first.group(1).strip(), "Upgrading from 4.11")

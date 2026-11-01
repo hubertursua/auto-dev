@@ -48,7 +48,7 @@ Scope: the scope `{{scope}}` names (Scopes, below).
 
 1. In scope `first` or `outside`, run the /code-review skill with the Skill
    tool on the files `{{files}}` lists: args `{{review_effort}} <path> …`
-   (`xhigh` when the brief has no review_effort line), one literal path per
+   (`xhigh` when it is `none`), one literal path per
    file, quoted when it has a space. Never run it with no path: it then
    reviews the branch against its upstream, which is empty while the change
    is uncommitted. When the list is `none`, skip the skill. Its findings are
