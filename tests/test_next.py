@@ -2474,6 +2474,22 @@ class ReviewEffortTest(NextCase):
         _, again = self.expect("code-reviewer")
         self.assertEqual(self.sets(*again[0]), failed)
 
+    def test_a_first_pass_started_before_4_12_1_lists_the_changed_files(self):
+        self.to_panel()
+        _, jobs = self.reviewers()
+        state = json.loads((self.dir / "state.json").read_text())
+        state["phase6"]["passes"][0]["files"] = []  # as an older `next` saved it
+        (self.dir / "state.json").write_text(json.dumps(state))
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            if slot == "R1":
+                self.answer(w, n, "", status="failed")
+                continue
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        _, again = self.expect("code-reviewer")
+        self.assertIn("due.ts", self.sets(*again[0])["files"].split(", "))
+
     def test_a_plan_without_a_review_effort_runs_the_reviewers_at_xhigh(self):
         self.plan_text = IMPLEMENTATION
         self.to_panel()

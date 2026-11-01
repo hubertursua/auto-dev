@@ -2641,9 +2641,7 @@ def start_pass(c, scope, files, rule, since=None):
     cmd_checks.git_add_intent(c.wt)
     tree = cmd_review.print_tree(c.wt)
     if scope == "first":
-        # The reviewers' /code-review gets these paths: with no target it reviews
-        # the branch against its upstream, which is empty before the commit.
-        files = changed_paths(c.wt)[0]
+        files = first_pass_files(c)
     effort = plan_effort(c)
     p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq(),
          "effort": effort}
@@ -2667,6 +2665,22 @@ def focus_text(p):
     return "none"
 
 
+def first_pass_files(c):
+    """The files a first pass's /code-review gets: those the change adds or
+    modifies, outside .auto-dev/. With no target the skill reviews the branch
+    against its upstream, which is empty before the commit. A name that isn't
+    UTF-8 can't go in a brief; the reviewer still sees it in its own diff."""
+    return [f for f in changed_paths(c.wt)[0] if utf8(f)]
+
+
+def utf8(text):
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def reviewer_sets(c, p, slot):
     """A panelist's brief: its pass's scope, the files it names, and the effort
     its /code-review runs at (the pass's, which the plan set)."""
@@ -2675,7 +2689,7 @@ def reviewer_sets(c, p, slot):
             "review_effort": p.get("effort") or plan_effort(c)}
     files = p["files"]
     if scope == "first" and not files:  # a pass started before 4.12.1 kept none
-        files = changed_paths(c.wt)[0]
+        files = first_pass_files(c)
     if scope in ("first", "review-fix", "outside"):
         sets["files"] = ", ".join(files) or "none"
     if scope == "outside":

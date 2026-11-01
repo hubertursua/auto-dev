@@ -47,10 +47,12 @@ Assume there ARE bugs and go looking for them.
 Scope: the scope `{{scope}}` names (Scopes, below).
 
 1. In scope `first` or `outside`, run the /code-review skill with the Skill
-   tool on the files `{{files}}` lists: args `{{review_effort}} <path> …`,
-   one literal path per file. Never run it with no path: it then reviews the
-   branch against its upstream, which is empty while the change is
-   uncommitted. Its findings are your starting point, not your answer. In scope `review-fix` or `after-commit`
+   tool on the files `{{files}}` lists: args `{{review_effort}} <path> …`
+   (`xhigh` when the brief has no review_effort line), one literal path per
+   file, quoted when it has a space. Never run it with no path: it then
+   reviews the branch against its upstream, which is empty while the change
+   is uncommitted. When the list is `none`, skip the skill. Its findings are
+   your starting point, not your answer. In scope `review-fix` or `after-commit`
    (a correction's re-review), skip the skill and review the correction
    yourself in step 2, following what it changed downstream: every caller
    and every use of the values it changed, however few lines it touched.
