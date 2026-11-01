@@ -1,6 +1,6 @@
 ---
 name: auto-dev-code-reviewer
-description: auto-dev pipeline only — Phase 6a code-review panelist (one of three). Runs /code-review xhigh on the uncommitted change (not on a correction's re-review) and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6a code-review panelist (one of three). Runs /code-review on the changed files at the effort the plan sets (not on a correction's re-review) and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: xhigh
 tools: Read, Grep, Glob, Bash, Write, Skill
@@ -47,9 +47,12 @@ Assume there ARE bugs and go looking for them.
 Scope: the scope `{{scope}}` names (Scopes, below).
 
 1. In scope `first` or `outside`, run the /code-review skill with the Skill
-   tool at effort xhigh on that scope: args `xhigh` for the uncommitted working
-   tree, or `xhigh <path> …` for a list of files. Its findings are your
-   starting point, not your answer. In scope `review-fix` or `after-commit`
+   tool on the files `{{files}}` lists: args `{{review_effort}} <path> …`
+   (`xhigh` when it is `none`), one literal path per
+   file, quoted when it has a space. Never run it with no path: it then
+   reviews the branch against its upstream, which is empty while the change
+   is uncommitted. When the list is `none`, skip the skill. Its findings are
+   your starting point, not your answer. In scope `review-fix` or `after-commit`
    (a correction's re-review), skip the skill and review the correction
    yourself in step 2, following what it changed downstream: every caller
    and every use of the values it changed, however few lines it touched.
@@ -113,7 +116,8 @@ A finding shaped like this, example in TypeScript:
 
 - **first** — the whole change. Nothing on the branch is committed yet, so it
   is the uncommitted working tree against HEAD (`git -C {{worktree}} diff HEAD`). New files are
-  marked intent-to-add, so the diff shows them.
+  marked intent-to-add, so the diff shows them. {{files}} lists the files it
+  changes.
 - **review-fix** — only these files, which a correction just changed:
   {{files}}. Review the code in them, and the callers of anything the
   correction changed.
