@@ -35,7 +35,8 @@ AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "tick
         "symbol_lookup", "pass", "tree", "cut", "run", "pr", "triage_file", "checks_file",
         "answer_file", "blocked_file", "proposal_file"}
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
-          "report", "blocked", "failing", "question", "corrections_file", "leads"}
+          "report", "blocked", "failing", "question", "corrections_file", "leads",
+          "review_effort"}
 OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
             "previous_issues", "earlier", "focus", "proposals", "rulings_file",
             "spec_change", "rulings", "deviations", "answers", "plan_change"}

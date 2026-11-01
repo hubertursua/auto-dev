@@ -2640,6 +2640,10 @@ def start_pass(c, scope, files, rule, since=None):
     (c.ad / "review" / f"pass-{n}").mkdir(parents=True, exist_ok=True)
     cmd_checks.git_add_intent(c.wt)
     tree = cmd_review.print_tree(c.wt)
+    if scope == "first":
+        # The reviewers' /code-review gets these paths: with no target it reviews
+        # the branch against its upstream, which is empty before the commit.
+        files = changed_paths(c.wt)[0]
     effort = plan_effort(c)
     p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq(),
          "effort": effort}
@@ -2648,8 +2652,7 @@ def start_pass(c, scope, files, rule, since=None):
     c.p6["passes"].append(p)
     st.add_note(c.state, f"code-review pass {n}: the reviewers run at effort {effort}")
     c.dirty = True
-    jobs = [("code-reviewer", "review", reviewer_sets(scope, files, slot, since))
-            for slot in SLOTS]
+    jobs = [("code-reviewer", "review", reviewer_sets(c, p, slot)) for slot in SLOTS]
     return spawn_security(c, jobs, panel_leads(c), rule + "; the security review runs "
                           "alongside the panel, on the same tree", focus=focus_text(p))
 
@@ -2664,12 +2667,19 @@ def focus_text(p):
     return "none"
 
 
-def reviewer_sets(scope, files, slot, since=None):
-    sets = {"reviewer": slot, "scope": scope}
-    if scope in ("review-fix", "outside"):
-        sets["files"] = ", ".join(files or []) or "none"
+def reviewer_sets(c, p, slot):
+    """A panelist's brief: its pass's scope, the files it names, and the effort
+    its /code-review runs at (the pass's, which the plan set)."""
+    scope = p["scope"]
+    sets = {"reviewer": slot, "scope": scope,
+            "review_effort": p.get("effort") or plan_effort(c)}
+    files = p["files"]
+    if scope == "first" and not files:  # a pass started before 4.12.1 kept none
+        files = changed_paths(c.wt)[0]
+    if scope in ("first", "review-fix", "outside"):
+        sets["files"] = ", ".join(files) or "none"
     if scope == "outside":
-        sets["since"] = since or "HEAD"
+        sets["since"] = p.get("since") or "HEAD"
     return sets
 
 
@@ -2686,9 +2696,7 @@ def review_step(c, p):
                 usable.append(slot)
         elif len(mine) == 1:
             respawn.append(slot)
-    jobs = [("code-reviewer", "review", reviewer_sets(p["scope"], p["files"], slot,
-                                                      p.get("since")))
-            for slot in respawn]
+    jobs = [("code-reviewer", "review", reviewer_sets(c, p, slot)) for slot in respawn]
     secs = c.recs(SECURITY, after=p["seq"], ok=False)
     if not secs or secs[-1]["status"] != "ok":
         # None yet (a pass started before 4.4.0), or it failed once: not_ok

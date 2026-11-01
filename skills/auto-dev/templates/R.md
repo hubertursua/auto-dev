@@ -2,7 +2,7 @@
 # Code review R<k> — pass <n>
 
 Scope: <the scope as briefed>
-/code-review xhigh: <ran | failed: <reason>>   ·   Coverage: <full | partial: <files not covered, and why>>
+/code-review <effort>: <ran | failed: <reason>>   ·   Coverage: <full | partial: <files not covered, and why>>
 
 ## Findings
 1. **<title>** — `path:line` — <correctness | tests | scope | performance | design | conventions>
