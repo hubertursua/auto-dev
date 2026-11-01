@@ -292,6 +292,8 @@ goes in a reviewer's report, and the judge files a spec proposal for the panel;
 the pass's proposals go to the Define agent together once the pass has settled.
 After the correction, the full panel reviews the result again. A re-review of a correction skips the nested `/code-review` and `/security-review` skills: the
 reviewers follow the correction and everything downstream of it themselves.
+When the judge passes a security lead from the panel on, a security run that
+skips `/security-review` checks just those leads.
 
 A **rubric** (`skills/auto-dev/templates/rubric.md`) decides what must be fixed:
 

@@ -1718,7 +1718,7 @@ def spec_pass_step(c, p, rows, sec):
     if leads:  # the pass has not settled until its leads have had a security run
         return spawn_security(c, [], leads, "the panel passed the security review leads "
                               "it had not seen: it checks them before the pass's spec "
-                              "proposals go out", focus=focus_text(p))
+                              "proposals go out", focus=LEADS_FOCUS)
     tag = (f"pass-{p['n']}" if rows else f"security-{sec['n']}" if sec else
            f"spec-pass-{p['n']}")
     consumer, spend_id = review_round(c, tag)
@@ -2715,12 +2715,13 @@ def review_step(c, p):
     if not secs or secs[-1]["status"] != "ok":
         # None yet (a pass started before 4.4.0), or it failed once: not_ok
         # stops the run when it fails twice running.
-        leads = secs[-1].get("sets", {}).get("leads") if secs else panel_leads(c)
+        last = secs[-1].get("sets", {}) if secs else {}
+        leads = last.get("leads") if secs else panel_leads(c)
         return spawn_security(c, jobs, leads or "none",
                               "a code reviewer or the security reviewer failed: it gets "
                               "one re-spawn" if secs or jobs else
                               "the security review covers the whole change",
-                              focus=focus_text(p))
+                              focus=last.get("focus") or focus_text(p))
     if jobs:
         return spawn_many(c, jobs, "a code reviewer failed: it gets one re-spawn")
     sec = secs[-1]
@@ -2760,7 +2761,7 @@ def review_step(c, p):
     leads = unreviewed_leads(c, p)
     if leads:
         return spawn_security(c, [], leads, "the panel passed the security review leads "
-                              "it had not seen: it checks them", focus=focus_text(p))
+                              "it had not seen: it checks them", focus=LEADS_FOCUS)
     return None
 
 
@@ -2816,6 +2817,9 @@ def panel_leads(c):
 
 
 PASSED_LEAD = "passed to the security review"
+# A run on leads alone: the pass's earlier security run covered the change, so
+# this one skips /security-review and follows only the leads.
+LEADS_FOCUS = "only the code review panel's leads (the brief's `leads`)"
 
 
 def unreviewed_leads(c, p):

@@ -31,7 +31,7 @@ see in S3, in order:
    A pass's **spec proposals** (the judge files for the panel; the security
    reviewer files its own, most often a new security criterion) wait until the
    pass has settled: consolidation, re-votes, the check of the security
-   findings, and a security run on any lead the panel passed on. Then they go
+   findings, and a security run focused on any lead the panel passed on. Then they go
    to the `define` agent in one brief, before any correction, for the round
    that correction would spend. `STANDS` leaves the pass to go on as if there
    were none; if a later verifier finds the code doing what the stood proposal
