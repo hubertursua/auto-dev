@@ -1086,6 +1086,23 @@ class ShipTest(NextCase):
         self.assertIn("covered by S2", sent)  # S2 was refuted: the lead stands
         self.assertNotIn("<lead>", sent)
 
+    def test_a_run_on_leads_alone_is_focused_on_them_and_so_is_its_re_spawn(self):
+        self.ship_ready()
+        lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
+                "the security review")
+        self.panel(CLEAN_REVIEW.replace("## Security leads\nnone",
+                                        f"## Security leads\n{lead}"))
+        _, jobs = self.expect("security-reviewer-sensitive")
+        sets = self.sets(*jobs[0])
+        # The pass's first run covered the whole change: this one skips
+        # /security-review and follows the leads.
+        self.assertIn("leads", sets["focus"])
+        self.assertNotEqual(sets["focus"], "none")
+        self.answer(*jobs[0], "", status="failed")
+        _, again = self.expect("security-reviewer-sensitive", "", status="failed")
+        self.assertEqual(self.sets(*again[0])["focus"], sets["focus"])
+        self.assertEqual(self.sets(*again[0])["leads"], sets["leads"])
+
     def test_the_judge_s_two_modes_fail_apart(self):
         self.ship_ready()
         _, jobs = self.reviewers(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
