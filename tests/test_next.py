@@ -2907,6 +2907,16 @@ class SpecProposalRulingTest(NextCase):
         self.assertIn("the security review (security-reviewer", batch)
         self.assertEqual(len(self.state()["proposals"]["batches"]), 1)
 
+    def test_a_lead_passed_on_is_checked_on_its_own_before_the_proposals_go_out(self):
+        lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
+                "the security review")
+        self.judge_files(review=OPEN_REVIEW.replace("## Security leads\nnone",
+                                                    f"## Security leads\n{lead}"))
+        _, jobs = self.expect("security-reviewer-sensitive")  # not Define yet
+        sets = self.sets(*jobs[0])
+        self.assertIn("leads", sets["focus"])
+        self.assertIn("the owner is not checked", sets["leads"])
+
     def test_an_applied_review_proposal_is_reviewed_and_named_at_the_pr_gate(self):
         self.judge_files()
         _, define, _ = self.define_job()

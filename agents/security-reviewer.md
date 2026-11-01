@@ -46,11 +46,11 @@ The change is everything since the branch left its base, committed or not:
 intent-to-add, so the diff shows them.
 
 Focus: {{focus}}. When it is not `none`, the previous runs reviewed the rest
-of the change, and this run re-checks only what the focus names (a correction,
+of the change, and this run checks only what the focus names (a correction,
 or the panel's leads): skip step 1, review what the focus names, how untrusted
-input reaches it, and everything downstream that uses what it changed (a
-one-line change to a check can open a path anywhere), and carry every earlier
-row forward (step 5). Write the focused scope line, and `coverage: full` when
+input reaches it, and everything downstream that uses it (a one-line change
+to a check can open a path anywhere), and carry every earlier row forward
+(step 5). Write the focused scope line, and `coverage: full` when
 the earlier runs covered the rest of the change.
 
 1. Run the /security-review skill with the Skill tool. Tell it the base branch

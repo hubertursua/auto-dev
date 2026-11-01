@@ -2797,7 +2797,7 @@ def panel_leads(c):
 PASSED_LEAD = "passed to the security review"
 # A run on leads alone: the pass's earlier security run covered the change, so
 # this one skips /security-review and follows only the leads.
-LEADS_FOCUS = "only the code review panel's leads below, which no earlier run was given"
+LEADS_FOCUS = "only the code review panel's leads (the brief's `leads`)"
 
 
 def unreviewed_leads(c, p):
