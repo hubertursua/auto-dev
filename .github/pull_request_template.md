@@ -9,7 +9,7 @@ This PR will be squash-merged, so the title becomes the commit on main. -->
 ## Testing
 
 <!-- What you ran and what you saw. At least: ruff check ., python3
-tools/check-repo.py, python3 -m unittest discover -s tests. For a script change,
+tools/check-repo.py, python3 tools/run-tests.py. For a script change,
 the before/after on a case that shows the fix. Say what was NOT tested (e.g.
 the eval suite end to end). -->
 
