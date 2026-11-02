@@ -84,8 +84,8 @@ see in S2, in order:
    session, `handoff --checkpoint` at a checkpoint), give the user its message,
    stop.
 
-A worker whose result `record` refuses (exit 1) is briefed again by the next
-`next`, with the refused issues. You pass every file on as `next` names it. You never read `SPEC_EVAL.md`,
+A worker whose result `next` refuses (a `RECORDED: … refused` line) is briefed
+again by that `next`, with the refused issues. You pass every file on as `next` names it. You never read `SPEC_EVAL.md`,
 `corrections.md` or the code.
 
 ## Stops in S2

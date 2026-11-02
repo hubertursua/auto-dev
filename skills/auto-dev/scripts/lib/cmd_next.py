@@ -8,6 +8,12 @@ outcomes, the gates, the marks and the Phase 6 fields) and the artifacts, and
 prints the one thing to do now. Run it, do exactly that, run every AFTER
 command, then run `next` again. It never needs you to judge a file.
 
+It records the workers' results itself first: each issued brief whose result
+file exists and isn't recorded yet is recorded as `autodev.py record` would
+(one it can't accept is refused, its issues saved for the retry), so spawned
+workers need no `record` call. A brief with no result file is issued again as
+it is. Run `next` only once every agent of the last spawn returned.
+
 It does the mechanical steps itself rather than asking you to: it writes the
 brief of the worker to spawn, spends a round of the budget before a
 correction, installs the sealed acceptance checks before Phase 5's cleanup,
@@ -67,6 +73,11 @@ Output lines (only the ones that apply):
     AFTER:    a command to run once the action is done; for a question,
               `"<answer>" → <command>`, one per answer
     RULE:     the rule that chose the action (--explain)
+    RECORDED: each worker result `next` recorded before deciding,
+              `<worker>-<n>: <status> <next>`, or `<worker>-<n>: refused
+              (<token>)` (it is then briefed again with the issues). Under
+              --explain nothing is recorded: with a result waiting, the action
+              says `next` would record it first
 
 --explain only looks: it prints the action `next` would take and the rule that
 chose it, but writes no brief, spends no round, applies nothing and saves
@@ -101,7 +112,7 @@ stopped; resuming after a checkpoint lifts no stop, since nothing was fixed in
 between.
 
 A brief issued but not yet recorded is re-issued as the same spawn (after a
-cut-off session, say); one `record` refused is re-issued as a new brief that
+cut-off session, say); one `next` refused is re-issued as a new brief that
 carries the refused issues (as `brief --retry <n>` writes). Spawned three
 times with no usable result, it stops. A stop on a worker (blocked, failed
 twice, never returned) lasts until `resume`: after the user fixes the cause,
@@ -185,6 +196,7 @@ class Ctx:
         self.wt = self.state["worktree"]
         self.p6 = self.state.setdefault("phase6", {})
         self.dirty = False
+        self.recorded = []  # the RECORDED lines of the results this call recorded
         self.readonly = bool(getattr(args, "explain", False))
         self.probing = False
         self.peeked = {}
@@ -293,7 +305,7 @@ def spawn(c, worker, mode=None, sets=None, rule="", budget=None, agent=None):
 
 def spawn_many(c, jobs, rule, budget=None, agent=None):
     """Spawn each (worker, mode, sets[, agent]) job in one message."""
-    agents, briefs_, prompts, after, efforts = [], [], [], [], []
+    agents, briefs_, prompts, efforts = [], [], [], []
     for job in jobs:
         worker, mode, sets = job[:3]
         job_agent = job[3] if len(job) > 3 else agent
@@ -318,9 +330,8 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
         agents.append(job_agent or f"auto-dev:{worker}")
         briefs_.append(str(path))
         prompts.append(cmd_work.prompt_for(path))
-        after.append(c.cmd("record", worker, n))
         efforts.append(effort_for(c, worker))
-    return spawn_lines(agents, briefs_, prompts, after, rule, budget, efforts)
+    return spawn_lines(agents, briefs_, prompts, rule, budget, efforts)
 
 
 def rebase_installed(c):
@@ -336,17 +347,18 @@ def rebase_installed(c):
             sealed.rebase(c.ad, rel, sealed.read(wt / rel))
 
 
-def spawn_lines(agents, briefs_, prompts, after, rule, budget=None, efforts=None):
+def spawn_lines(agents, briefs_, prompts, rule, budget=None, efforts=None):
     """efforts, when any is set, parallels agents ("" for an agent spawned at its
-    own effort)."""
+    own effort). No AFTER line: the next `next` records what they return."""
     efforts = efforts if efforts and any(efforts) else None
     what = (f"spawn {agents[0]} with the PROMPT" if len(agents) == 1 else
             f"spawn these {len(agents)} agents in one message, in parallel, each "
             "with its PROMPT")
+    what += "; once every agent returned, run `next` (it records their results)"
     if efforts:
         what += ", passing its EFFORT as the Agent tool's `effort` parameter"
     return action(what, rule, AGENT=agents, BRIEF=briefs_, PROMPT=prompts,
-                  EFFORT=efforts, BUDGET=budget, AFTER=after)
+                  EFFORT=efforts, BUDGET=budget)
 
 
 def plan_effort(c):
@@ -404,12 +416,15 @@ def main(args):
     except Fail as exc:
         if exc.code == CANNOT_RUN:
             raise
-        # A step `next` could not take is a stop, never exit 1; nothing is saved,
-        # since the step did not happen.
-        return show(stop([f"`next` could not take its step ({exc.token}): {exc}",
-                          ("Tell the user; it is a broken artifact or an auto-dev bug. "
-                           f"State and artifacts: {c.ad}")],
-                         f"a step failed: {exc.token}"), args)
+        # A step `next` could not take is a stop, never exit 1; nothing of the
+        # step is saved, since it did not happen (the results recorded first were).
+        failed = stop([f"`next` could not take its step ({exc.token}): {exc}",
+                       ("Tell the user; it is a broken artifact or an auto-dev bug. "
+                        f"State and artifacts: {c.ad}")],
+                      f"a step failed: {exc.token}")
+        if c.recorded:
+            failed["RECORDED"] = c.recorded
+        return show(failed, args)
     if result.get("code") == NEXT_STOP:
         report = list(result.get("REPORT") or [])
         report += [line for line in proposals.upstream_unsent_lines(c.state)
@@ -452,6 +467,47 @@ def show(result, args):
 
 
 def decide(c):
+    recorded = record_returns(c)
+    if recorded and not c.readonly:
+        # Saved before the step, as a `record` call was: a step that fails keeps
+        # them and saves nothing of its own. Each counted its own event already.
+        st.save(c.dir, c.state, count_event=False)
+    c.recorded, c.dirty = recorded, False
+    result = decide_step(c)
+    if recorded:
+        result["RECORDED"] = recorded
+    return result
+
+
+def record_returns(c):
+    """Record every issued brief whose result file exists and is not logged yet,
+    as `autodev.py record` would: one it can't accept is refused and its issues
+    saved for the retry `pending_briefs` writes. A brief with no result file is
+    left to `pending_briefs`, which issues it again as it is. One line per job.
+    Under --explain it records nothing (recording a tester's result writes
+    files): it says it would record them first, and stops there."""
+    done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
+    refused = c.state.get("refused", {})
+    jobs = [(b["worker"], b["n"]) for b in c.state.get("briefs", [])
+            if (b["worker"], b["n"]) not in done and not b.get("retried_as")
+            and cmd_work.job(b["worker"], b["n"]) not in refused
+            and (c.ad / "returns" / f"{b['worker']}-{b['n']}.json").exists()]
+    if jobs:
+        c.would("record " + ", ".join(f"{w}-{n}" for w, n in jobs) + " first",
+                "a worker's result file is written and not recorded yet")
+    lines = []
+    for worker, n in jobs:
+        token, _, _, data = cmd_work.record_job(c.state, worker, n)
+        # Each is its own event, as a separate `record` save was: later records
+        # and the brief written after them are stamped (seq) after it.
+        c.state["events"] = c.state.get("events", 0) + 1
+        lines.append(f"{worker}-{n}: " + (
+            f"refused ({token})" if token != "RECORDED" else
+            f"{data.get('status')} {data.get('next', '')}".rstrip()))
+    return lines
+
+
+def decide_step(c):
     run_state = st.run_state(c.state)
     if run_state == "finished":
         return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
@@ -546,7 +602,7 @@ def pending_briefs(c):
         tries = b.get("emitted", 1) + 1
         if tries > MAX_EMITS:
             return stop([(f"{b['worker']} #{b['n']} was spawned {MAX_EMITS} times and "
-                         "never left a result that `record` accepts. Tell the user; its "
+                         "never left a result that `next` accepts. Tell the user; its "
                          f"brief is {c.ad}/briefs/{b['worker']}-{b['n']}.md. Once the "
                          "cause is fixed, `auto-dev continue` spawns it again.")],
                         "a worker failed to return three times")
@@ -567,7 +623,6 @@ def pending_briefs(c):
     paths = [c.ad / "briefs" / f"{b['worker']}-{b['n']}.md" for b in open_]
     return spawn_lines(agents, [str(p) for p in paths],
                        [cmd_work.prompt_for(p) for p in paths],
-                       [c.cmd("record", b["worker"], b["n"]) for b in open_],
                        "a brief was issued and its result is not recorded yet: "
                        "spawn it again",
                        efforts=[effort_for(c, b["worker"]) for b in open_])

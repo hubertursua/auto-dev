@@ -51,8 +51,8 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing; in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `init` exit 1 |
 | 4 | the run was started on auto-dev 3.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | Define returns `OVERSIZED` |
-| 6 | a worker stopped on purpose twice running, or failed twice running (lifted by `auto-dev continue`) | `record` logs a second `blocked` or a second `failed` |
-| 7 | a worker was spawned three times and never left a result `record` accepts (lifted by `auto-dev continue`) | `next` |
+| 6 | a worker stopped on purpose twice running, or failed twice running (lifted by `auto-dev continue`) | `next` records a second `blocked` or a second `failed` |
+| 7 | a worker was spawned three times and never left a result `next` accepts (lifted by `auto-dev continue`) | `next` |
 | 8 | a reviewer found blockers but wrote no FIX block | `next` |
 | 9 | the planner judged the spec impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
 | 10 | the quality gate can't be made green | cleanup returns `RED` |
@@ -161,5 +161,4 @@ It never judges whether anything is right. To ask one:
 
 1. `autodev.py brief lookup --set question="<the question>" --dir <artifact-dir>`
 2. Spawn the agent it names with the prompt it prints.
-3. `autodev.py record lookup <n> --dir <artifact-dir>`. Always record it: an
-   unrecorded brief makes `next` re-issue it.
+3. Nothing to record: the next `next` you run records it.

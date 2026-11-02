@@ -35,6 +35,9 @@ brief lookup --out <dir> --set worktree=<repo> --set question="<question>"
     a job `record` did not refuse).
 
 record <worker> <n>
+    `next` does this itself, before it decides, for every issued brief whose
+    result file exists; run it by hand to record one result now and see its
+    verdict, as `next` would.
     Reads returns/<worker>-<n>.json and checks it: `status` is ok, blocked or
     failed; `next`, when given, is one the worker may return; with status ok,
     every key of the worker's `auto-dev-result` block is present. Then, for an
@@ -918,21 +921,9 @@ def record(args):
         state = st.load(args.dir)
     except st.StateError as exc:
         raise Fail(str(exc), CANNOT_RUN, "ERROR") from None
-    ad = Path(state["artifact_dir"])
-    data = None
-    try:
-        data = load_return(ad, args.worker, args.n)
-        try:
-            issues = derive(args.worker, data, ad, state, args.n)
-        except art.ArtifactError as exc:
-            issues = [str(exc)]
-        if issues:
-            raise Refused("MISMATCH", "the return and the artifacts disagree", issues)
-    except Refused as exc:
-        token, message, issues = exc.args
-        state.setdefault("refused", {})[job(args.worker, args.n)] = issues
-        st.add_note(state, f"{args.worker} #{args.n} refused ({token})")
-        st.save(args.dir, state)
+    token, message, issues, data = record_job(state, args.worker, args.n)
+    st.save(args.dir, state)
+    if issues:
         fields = {"issue": issues}
         if data is not None:
             fields["returned"] = json.dumps(data)
@@ -941,9 +932,39 @@ def record(args):
              "these issues. Don't guess",
              **fields)
         return FAILED
-    state.get("refused", {}).pop(job(args.worker, args.n), None)
+    emit(args.json, "RECORDED", f"{args.worker}-{args.n}", status=data.get("status"),
+         next=data.get("next", ""))
+    return 0
+
+
+def record_job(state, worker, n):
+    """Record job <worker>-<n>'s return into `state` (the caller saves it).
+    Returns (token, message, issues, data): RECORDED with no issues, or the
+    refusal (MISSING, MALFORMED, MISMATCH), whose issues are saved for the retry."""
+    ad = Path(state["artifact_dir"])
+    data = None
+    try:
+        data = load_return(ad, worker, n)
+        try:
+            issues = derive(worker, data, ad, state, n)
+        except art.ArtifactError as exc:
+            issues = [str(exc)]
+        if issues:
+            raise Refused("MISMATCH", "the return and the artifacts disagree", issues)
+    except Refused as exc:
+        token, message, issues = exc.args
+        state.setdefault("refused", {})[job(worker, n)] = issues
+        st.add_note(state, f"{worker} #{n} refused ({token})")
+        return token, message, issues, data
+    record_ok(state, ad, worker, n, data)
+    return "RECORDED", f"{worker}-{n}", [], data
+
+
+def record_ok(state, ad, worker, n, data):
+    """Log an accepted return, and what it settles in state."""
+    state.get("refused", {}).pop(job(worker, n), None)
     ok = data.get("status") == "ok"
-    if ok and args.worker == "define" and data.get("next") in ("FITS", "OVERSIZED"):
+    if ok and worker == "define" and data.get("next") in ("FITS", "OVERSIZED"):
         state["size"] = data["next"]
         state["high_risk"] = is_yes(data.get("high_risk"))
         if data["next"] == "OVERSIZED":
@@ -952,7 +973,7 @@ def record(args):
                 st.set_phase(state, number, "n/a", "")
         elif state["high_risk"]:
             state["settings"]["post_plan_gate"] = True
-    if ok and args.worker in ("define", "define-reviewer"):
+    if ok and worker in ("define", "define-reviewer"):
         try:
             if rederive_risk(state, ad / "SPEC.md"):
                 st.add_note(state, "SPEC.md has a Security/Compliance criterion: "
@@ -960,28 +981,24 @@ def record(args):
         except art.ArtifactError:
             pass  # the reviewer's verdict stands; SPEC.md is checked when it is used
     issued = next((b for b in state.get("briefs", [])
-                   if b["worker"] == args.worker and b["n"] == args.n), {})
+                   if b["worker"] == worker and b["n"] == n), {})
     log = state.setdefault("log", [])
-    entry = {"worker": args.worker, "n": args.n, "mode": issued.get("mode"),
+    entry = {"worker": worker, "n": n, "mode": issued.get("mode"),
              "sets": issued.get("sets", {}), "status": data.get("status"),
              "next": data.get("next", ""), "data": data, "seq": st.seq(state)}
-    if ok and args.worker == "planner" and issued.get("plan"):
+    if ok and worker == "planner" and issued.get("plan"):
         entry["steps_changed"] = plan_props.changed_steps(ad, issued["plan"])
-    if ok and args.worker == "acceptance-tester" and issued.get("sealed"):
+    if ok and worker == "acceptance-tester" and issued.get("sealed"):
         entry["checks_changed"] = check_props.changed_conditions(ad, issued["sealed"])
     again = next((i for i, e in enumerate(log)
-                  if e["worker"] == args.worker and e["n"] == args.n), None)
+                  if e["worker"] == worker and e["n"] == n), None)
     if again is None:
         log.append(entry)
     else:  # recorded again: it keeps its place, so `next` reads the same order
         entry["seq"] = log[again].get("seq", entry["seq"])
         log[again] = entry
-    st.add_note(state, f"{args.worker} #{args.n} returned {data.get('status')} "
+    st.add_note(state, f"{worker} #{n} returned {data.get('status')} "
                 f"{data.get('next', '')}".rstrip())
-    st.save(args.dir, state)
-    emit(args.json, "RECORDED", f"{args.worker}-{args.n}", status=data.get("status"),
-         next=data.get("next", ""))
-    return 0
 
 
 # ---------------------------------------------------------------- check-artifact
