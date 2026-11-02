@@ -517,15 +517,19 @@ def clean(text, worktree):
 def condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha):
     checks = [r for r in rows if r["#"].strip() == cond["id"]]
     plain = (row or {}).get("In plain words", "").strip() if row else ""
+    # The verifier's own words (`In plain words`) go inside the quoted region:
+    # they may name a condition ID, and the lint would refuse them there.
     if verdict == "met":
         body.text(f"- [x] **{cond['text']}**")
+        start = body.quote()
+        if plain and not checks:
+            body.text(f"  Checked by running {plain}.")
     else:
         what = "partly met" if verdict == "partial" else "not met"
-        body.text(f"- [ ] **{cond['text']}** — {what}: {plain or 'see the output below'}")
+        body.text(f"- [ ] **{cond['text']}** — {what}:")
+        start = body.quote()
+        body.text(f"  {plain or 'see the output below'}")
     base_run = parse_runs(ad / "acceptance" / "base-run" / f"C{cond['id']}.txt")
-    if verdict == "met" and plain and not checks:
-        body.text(f"  Checked by running {plain}.")
-    start = body.quote()
     for check in checks:
         cell = check["Check (path :: test name)"]
         path = art.check_path(cell) or ""
@@ -592,12 +596,17 @@ def parse_runs(path):
 
 
 def person_checks(manual, na_rows, ev, conditions):
+    """The checks a person makes. What the verifier and the acceptance tester
+    wrote (the steps, why no check can drive it, the proxy run instead) is
+    quoted: it may name a condition ID or a .auto-dev/ path. The checkbox stays
+    outside the region, so ticking it on GitHub doesn't unquote the rest."""
     lines = []
     by_id = {c["id"]: c for c in conditions}
     for cond, row in manual:
         evidence = re.sub(r"^a human must check:\s*", "", row.get("Evidence", "").strip(),
                           flags=re.IGNORECASE)
-        lines += [f"- [ ] **{cond['text']}**", f"  1. {evidence or 'check it by hand'}", ""]
+        lines += [f"- [ ] **{cond['text']}** {QUOTE_OPEN}",
+                  f"  1. {evidence or 'check it by hand'}", QUOTE_CLOSE, ""]
     for row in na_rows:
         rid = row.get("#", "").strip()
         if not rid.endswith("(Edge)"):
@@ -605,12 +614,15 @@ def person_checks(manual, na_rows, ev, conditions):
         cond = by_id.get(rid.split()[0])
         if cond and cond["edge"]:
             proxy = row.get("Proxy a verifier can run", "").strip()
-            lines += [f"- [ ] **{cond['edge']}**",
+            if proxy and proxy.lower() != "none":
+                # A cell that already marks its own code keeps its marks.
+                ran = proxy if "`" in proxy else f"`{proxy}`"
+            else:
+                ran = "nothing could be, because no test can drive it"
+            lines += [f"- [ ] **{cond['edge']}** {QUOTE_OPEN}",
                       f"  1. {row.get('Why no check can drive it', 'check it by hand')}",
                       "",
-                      "  Already checked automatically: " + (
-                          f"`{proxy}`" if proxy and proxy.lower() != "none" else
-                          "nothing could be, because no test can drive it"), ""]
+                      "  Already checked automatically: " + ran, QUOTE_CLOSE, ""]
     return lines
 
 
@@ -712,12 +724,16 @@ def review_lines(ad, state):
         counts = re.search(r"Must-fix:\s*(\d+) open · (\d+) fixed", text)
         opened, fixed = (counts.groups() if counts else ("0", "0"))
         total = int(opened) + int(fixed)
-        out.append(f"- {label} — confidence {level.group(1) if level else 'unknown'}: "
-                   f"{reason}. {total} problems that had to be fixed: {fixed} fixed, "
-                   f"{opened} open")
+        # The reviewers' words (the confidence reason, each open finding) are
+        # quoted: they may name a finding ID, which the lint refuses elsewhere.
+        out += [(f"- {label} — confidence {level.group(1) if level else 'unknown'}: "
+                f"{QUOTE_OPEN}"),
+                (f"  {reason + '. ' if reason else ''}{total} problems that had to be "
+                f"fixed: {fixed} fixed, {opened} open")]
         out += open_findings(text)
         if name == "SECURITY_REVIEW.md":
             out += follow_ups(text, separate_pr(state))
+        out.append(QUOTE_CLOSE)
     return out
 
 
