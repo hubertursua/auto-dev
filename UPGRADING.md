@@ -4,6 +4,37 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.18
+
+- **The verifier's routine steps are one script call.** A verifier pass now
+  starts with `autodev.py verify prep --dir <artifact dir> --pass <mode>`.
+  It does these steps in order:
+  - puts back what an earlier pass's mutation run left, waiting up to 270
+    seconds for one still alive;
+  - installs the sealed checks, or on a re-check puts back any check edited
+    since, after the audit has recorded the edit;
+  - runs the audit into `evidence/integrity.txt`, its exit code on the first
+    line;
+  - notes the tree hash in `evidence/tree-start.txt`;
+  - marks untracked files intent-to-add and saves `git diff <cut>` to
+    `evidence/changes.diff`;
+  - runs the acceptance checks through `autodev.py run test` into
+    `evidence/acceptance.txt`;
+  - writes `evidence/C<n>.txt` for each condition with checks: the
+    Expected, Command and Result lines and the output lines that name its
+    checks.
+
+  The verifier used to do this by hand, one tool call per step, and typed
+  each evidence file's output itself. In the 4.0.6 benchmark that was about
+  half of a pass's calls, and evidence writes alone took 30–55 seconds. A
+  path where a check can't go in is printed as `INSTALL_CONFLICT`, with
+  `evidence/corrections.md` written. `autodev.py verify tree` compares the
+  tree at the end of the pass with the one prep noted, and prints the Tree
+  line to write or the files that changed. The judging (tiers, verdicts,
+  integrity, defective checks, mutants) is unchanged.
+- **Resume:** a run in flight resumes. A verifier briefed from now on uses
+  `verify prep`; one already spawned on 4.18 finishes its pass as it began.
+
 ## Upgrading from 4.17
 
 - **Workers run the profile's commands through `autodev.py run`.** `autodev.py

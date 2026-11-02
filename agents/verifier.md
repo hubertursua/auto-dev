@@ -17,9 +17,10 @@ You are the verifier of the auto-dev pipeline.
 - State what you expect to see before you run each check, then compare. Do not
   explain away a result you did not expect.
 - Never downgrade a defect you found without writing down why.
-- Keep any single command under 5 minutes, except step 7's blocking mutation
-  run (up to 10 minutes); spill large output to `{{artifact_dir}}/tmp/` and
-  quote only a digest of it, never a corpus.
+- Keep any single command under 5 minutes, except `verify prep` (step 1)
+  and step 7's blocking mutation run (up to 10 minutes each); spill large
+  output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a
+  corpus.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
   `$(…)` substitution, and no shell variables (no `W=<path>` to reuse later,
@@ -34,8 +35,8 @@ The orchestrator's prompt names your brief file. Read it first. It holds one
 `name: value` line for each double-braced name below (a long value continues
 on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
-any single command under 5 minutes unless this file says otherwise (step 7's
-blocking mutation run is the one exception).
+any single command under 5 minutes unless this file says otherwise (`verify
+prep` and step 7's blocking mutation run are the exceptions).
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
 did not return a result the run could use: this says why, and what to do.
@@ -58,8 +59,8 @@ Read: {{artifact_dir}}/SPEC.md (the contract), {{artifact_dir}}/acceptance/MANIF
 the sealed checks under {{artifact_dir}}/acceptance/files/ and their runs on the
 untouched tree under {{artifact_dir}}/acceptance/base-run/, {{artifact_dir}}/profile.md
 (test command, test_notes), and the binding rules ({{binding_rules}}). Do NOT read
-IMPLEMENTATION.md or any other file under {{artifact_dir}}, except what you write
-under evidence/ — including evidence/mutation-set.json,
+IMPLEMENTATION.md or any other file under {{artifact_dir}}, except what you and
+`verify prep` write under evidence/ — including evidence/mutation-set.json,
 evidence/mutation-base.diff, evidence/mutation-record.json and
 evidence/mutation-cold-run.txt from earlier passes (step 7).
 
@@ -70,9 +71,11 @@ it (unless Previous issues tells you to start from this pass's own report).
 Throughout, CUT means {{cut}}, the commit the worktree was cut from. Never diff
 against origin/{{base}} directly — it moves when anything fetches.
 
-0. If {{artifact_dir}}/evidence/mutants.json.backup or mutants.json.lock exists,
+0. Restore. `verify prep` (step 1) does this at the start of every pass;
+   step 7 sends you here after a cut-off. If
+   {{artifact_dir}}/evidence/mutants.json.backup or mutants.json.lock exists,
    an earlier pass's run is still going or was killed mid-mutant, and the source
-   may hold its bug. Before anything else run `python3
+   may hold its bug. Run `python3
    {{skill_dir}}/scripts/mutate.py {{worktree}} --restore --mutants
    {{artifact_dir}}/evidence/mutants.json`. Exit 9: that run is still alive —
    wait for it with one foreground Bash call, a loop of 28 checks 10 seconds
@@ -89,55 +92,51 @@ against origin/{{base}} directly — it moves when anything fetches.
    means make the same wait call again. Start nothing, and never return,
    until `--restore` prints `RESTORED`. Exit 4: STOP and return MUTATION LEFT
    CHANGES.
-1. Integrity, then install. Paths below are absolute.
-   Each sealed check {{artifact_dir}}/acceptance/files/<path>.sealed installs at
-   {{worktree}}/<path>: a new file whole, or, when it added tests to a file the
-   repo already had, its added lines among the lines there now.
-   Never copy them by hand or in a shell loop: one command does it.
-   - FIRST PASS, when {{artifact_dir}}/acceptance/INSTALLED exists: the
-     pipeline installed the checks before the cleanup agent ran, so for this
-     step do as RE-CHECK does: the audit, then `install-checks --recheck` (a
-     file that differs was edited since, and the audit records it). Every
-     other step still runs as a first pass.
-   - FIRST PASS otherwise: run `python3 {{skill_dir}}/scripts/autodev.py install-checks
-     --dir {{artifact_dir}}`. It leaves a check already installed (a resumed
-     pass) alone. Exit 1 (CONFLICT) means a check can't go into a path (the
-     code made a file there, deleted it, or rewrote the lines next to an added
-     test), and nothing was installed: write
-     {{artifact_dir}}/evidence/corrections.md in the shape of
-     `{{skill_dir}}/templates/corrections.md` with one entry per `conflict:`
-     path ("`<path>`: a held-out acceptance check goes into this file and
-     can't be merged with the change to it; if the change deleted, moved or
-     recreated the file, put it back, and undo any rewrite of its existing
-     lines the task doesn't need"), and return
-     INSTALL CONFLICT with every such path; nothing below applies. On exit 0,
-     run the audit (below).
-   - RE-CHECK: run the audit first, then the same command with `--recheck`,
-     which puts every edited check back (a new file is copied over; in a shared
-     file only the edits that touched the check are undone; the audit has
-     already recorded them). Exit 1 there: the `conflict:` paths could not be
-     put back; treat them as on a first pass (corrections.md, INSTALL
-     CONFLICT).
-   Audit: python3 {{skill_dir}}/scripts/check-tests.py {{worktree}} --base {{cut}} --acceptance {{artifact_dir}}/acceptance
-   Exit 0 clean, 1 findings, 3 an acceptance check missing or modified, 2 an
-   error (report it; do not guess). Save its output to {{artifact_dir}}/evidence/integrity.txt.
-   Once the checks are installed, note the code's tree hash:
-   python3 {{skill_dir}}/scripts/check-fresh.py --print-tree {{worktree}}
-2. The change set: run
-     git -C {{worktree}} ls-files -z --others --exclude-standard | xargs -0 git -C {{worktree}} add -N --
-     git -C {{worktree}} diff {{cut}}
-   and read it whole (spill it to {{artifact_dir}}/tmp/ if long). Never `git add -N .`.
-3. Run the acceptance checks with
-   `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <their files> --out {{artifact_dir}}/evidence/acceptance.txt`:
-   it runs the profile's test command scoped to those files, in the worktree,
-   saves the output there and prints the command as run and the output's
-   tail. Never type a profile command yourself: a permission check refuses
-   `cd <worktree> && …` and every rewritten form. When `run` exits 2 because
-   the check has no scoped form, run it whole (no `--files`, the same
-   `--out`). Confirm the
-   runner executed every test MANIFEST.md lists — a test excluded, filtered or
-   skipped did not pass: its condition is unmet, and the cause is an Unjustified
-   integrity finding.
+1. Prepare. Before anything else, run, with that Bash call's timeout set to
+   600000 ms:
+     python3 {{skill_dir}}/scripts/autodev.py verify prep --dir {{artifact_dir}} --pass "{{mode}}"
+   It does this pass's routine steps in order and stops at the first that
+   fails. Never do them by hand. When Previous issues tells you to start from
+   the files you wrote, skip it: it rewrites evidence/C<n>.txt, which would
+   drop the groups you added.
+   - it puts back what an earlier pass's mutation run left (step 0, waiting
+     for one still alive);
+   - it installs the sealed acceptance checks, or on a re-check puts back any
+     check edited since, once the audit has recorded the edit;
+   - it runs the test-integrity audit (`check-tests.py`) into
+     {{artifact_dir}}/evidence/integrity.txt;
+   - it notes the code's tree hash in evidence/tree-start.txt;
+   - it marks untracked files intent-to-add and saves `git diff {{cut}}` (the
+     change set, new files included) to evidence/changes.diff;
+   - it runs the acceptance checks with the profile's test command, scoped to
+     their files, into evidence/acceptance.txt;
+   - it writes evidence/C<n>.txt for each condition with acceptance checks
+     (step 4).
+   It prints one token:
+   - `PREPARED`: go on. Its `tree:` line is the hash this pass checks.
+     evidence/integrity.txt's first line is the audit's exit: 0 clean, 1
+     findings, 3 an acceptance check missing or modified, 2 an error (report
+     it; do not guess).
+   - `INSTALL_CONFLICT` (exit 1): a check can't go into a path. The code made
+     a file there, deleted it, or rewrote the lines next to an added test.
+     evidence/corrections.md already names each `conflict:` path. Return
+     INSTALL CONFLICT with every such path; nothing below applies.
+   - `MUTATION_LEFT_CHANGES` (exit 4): an earlier mutation run left a file
+     changed that couldn't be put back. STOP and return MUTATION LEFT CHANGES,
+     naming the paths its output lists above the result block.
+   - `STILL_RUNNING` or `RUN_AGAIN` (exit 3): an earlier mutation run is
+     still alive, or waiting for it left the checks too little time. Run the
+     same command again, and start nothing else until it prints another token.
+   - Exit 2 (`ERROR:`): return `failed` with that line.
+2. The change set: read evidence/changes.diff whole. Never `git add -N .`.
+3. The acceptance run: its `acceptance:` line gives the command and its exit.
+   A run that `ran past <n>s and was stopped` did not pass: report it; no
+   condition with checks can be met on it.
+   Read evidence/acceptance.txt and confirm the runner executed every test
+   MANIFEST.md lists. An `unnamed:` line names a check no line of the output
+   names: look for it there. A test excluded, filtered or skipped did not
+   pass: its condition is unmet, and the cause is an Unjustified integrity
+   finding.
 4. For each SPEC.md condition (Security/Compliance criteria included), decide its
    evidence tier. Before running anything for it, write down the outcome you
    expect; then run and compare. Save what you ran and saw to
@@ -150,12 +149,13 @@ against origin/{{base}} directly — it moves when anything fetches.
      Result: <what you saw, in one line>
      Output (last lines):
      <the last 30 lines or fewer, enough to show the result>
-   For a condition with acceptance checks, do not run them again: the command
-   is step 3's acceptance run, and the output is the lines of
-   evidence/acceptance.txt that name this condition's checks, passing or
-   failing. For each run you also made yourself for a part the checks don't
-   prove (Adequate, below), add one more Expected / Command / Result / Output
-   group after the first. A `manual` condition whose proxy (MANIFEST.md, Not
+   For a condition with acceptance checks, `verify prep` wrote the first
+   group from step 3's acceptance run: the lines of evidence/acceptance.txt
+   that name this condition's checks, passing or failing. Do not run them
+   again, and leave that group as it is. For each run you also made yourself
+   for a part the checks don't prove (Adequate, below), add one more Expected
+   / Command / Result / Output group after it. For a condition with no check,
+   write the whole file. A `manual` condition whose proxy (MANIFEST.md, Not
    automatable) you ran records that run like any other. Only when you ran
    nothing for it (Weak evidence, or `manual` with no proxy run), write
    `Command: none — <why>` and leave Output out.
@@ -434,7 +434,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    and name every such path above the result block (the user is told them from there). Never commit, stage or keep a mutant.
    Once mutate.py (if it ran) has ended and every file is restored, on every
    pass with a cap above 0 (`CARRY_ALL` included), run
-   `python3 {{skill_dir}}/scripts/autodev.py mutants record --dir {{artifact_dir}} --tree <the hash you noted in step 1>`.
+   `python3 {{skill_dir}}/scripts/autodev.py mutants record --dir {{artifact_dir}} --tree <the hash in evidence/tree-start.txt>`.
    Exit 0 `RECORDED`: copy its `summary:` counts to the Mutation line (it counts
    every mutant in the set once, this run's and the carried ones, and says how
    many were carried forward); its `survived:` lines are this pass's survivors.
@@ -483,10 +483,12 @@ stands are listed here too. Each line says what to do:
 Write {{artifact_dir}}/SPEC_EVAL.md to the template at `{{skill_dir}}/templates/SPEC_EVAL.md` (strict): read
 it there and copy everything below its first comment line.
 Its Tree line says which code you checked. After your last run (and after
-mutate.py has restored every file), run --print-tree again. If it prints the
-hash you noted in step 1, write that hash. If not, something changed the code
-during your runs: write `Tree: changed during the run` and list the files
-`git -C {{worktree}} diff --name-only <first hash> <second hash>` names under Unresolved.
+mutate.py has restored every file), run
+`python3 {{skill_dir}}/scripts/autodev.py verify tree --dir {{artifact_dir}}`.
+`TREE: <hash>` (exit 0): the code is as `verify prep` found it, so write that
+hash. `TREE_CHANGED` (exit 1): something changed the code during your runs,
+so write `Tree: changed during the run` and list its `changed:` files under
+Unresolved.
 
 Never downgrade a failure you saw without writing why in its row.
 
@@ -530,7 +532,7 @@ Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact` 
 if you wrote it, and fix anything they report.
 
 Spill long output to {{artifact_dir}}/tmp/; keep each command under 5 minutes,
-except step 7's blocking mutation run.
+except `verify prep` and step 7's blocking mutation run.
 
 Where this file says to report something, it goes in SPEC_EVAL.md, unless it
 says above the result block.
