@@ -2823,7 +2823,11 @@ def review_step(c, p):
     if verify and verified is None:
         return spawn(c, "review-judge", "security-verify",
                      rule="the judge verifies every High or Medium security finding")
-    spent_out = bool(c.p6.get("exhausted"))  # open findings go to the PR gate
+    # With no round left before the commit, open findings went to the PR gate.
+    # That covers only the passes from before the commit: once the user adds
+    # rounds, a later pass's must-fix findings get their correction.
+    spent_out = bool(c.p6.get("exhausted")) and (
+        not c.p6.get("verified_sha") or p["seq"] < c.p6.get("commit_seq", 0))
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(verify) and bool(confirmed_security(c))
     spec = spec_pass_step(c, p, rows, sec if security_open else None)

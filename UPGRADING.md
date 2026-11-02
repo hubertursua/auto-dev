@@ -16,8 +16,17 @@ can resume on the new one. Newest first. The current version is in
   run went past them, and the reports keep naming them. `budget raise` is
   refused unless `next` has just stopped on the budget.
   state.json's `budget` gains `stopped` (set by that stop) and `raises`.
+- **A review pass after the commit no longer ships past its must-fix
+  findings.** When a review correction found no round left before the
+  commit, the open findings went to the PR gate, and every later review pass
+  was skipped the same way, even one after the commit. Now only the passes
+  from before the commit are. A must-fix finding in a pass after the commit
+  gets a correction, or, with no round left, stops the run and is named in
+  the report, as _The iteration budget_ in `references/tables.md` says.
 - **Resume:** a run in flight resumes. A run already stopped on the budget
-  under 4.21 gets the new report, and can be raised, on its next `next`.
+  under 4.21 gets the new report, and can be raised, on its next `next`. The
+  proposals its stopped step had no round for stay unsent after the raise,
+  since that stop came before 4.22 could tell them apart.
 
 ## Upgrading from 4.20
 

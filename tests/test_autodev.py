@@ -656,7 +656,7 @@ class StateCommandsTest(RunCase):
         state = self.state()
         self.assertEqual([u["key"] for u in state["proposals"]["unsent"]], ["pass-1"])
         self.assertEqual([f["job"][1] for f in state["proposals"]["filings"]], [2, 3])
-        self.assertNotIn("exhausted", state["phase6"])
+        self.assertIn("exhausted", state["phase6"])  # the PR gate's call stands
 
     def test_mark_records_a_triage_answer(self):
         r = self.cmd("mark", "triage-S2", "--value", "separate")

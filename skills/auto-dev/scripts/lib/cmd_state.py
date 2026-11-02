@@ -225,10 +225,6 @@ def raise_budget(args, state):
                                        "at": st.now(), "seq": st.seq(state)})
     del b["stopped"]
     forget_unsent(state, stopped["seq"])
-    # Before the commit, a review correction with no round left set this and
-    # went on to the PR gate; with rounds again, a later pass's must-fix
-    # findings get their correction.
-    (state.get("phase6") or {}).pop("exhausted", None)
     st.add_note(state, f"the user raised the iteration budget by {args.by} after it ran "
                 f"out ({CONSUMERS[stopped['consumer']]}): {b['remaining']} of "
                 f"{b['total']} left")

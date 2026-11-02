@@ -2445,6 +2445,33 @@ class CiTest(NextCase):
         self.assertIn("Red checks: test — https://ci/1", report)
         self.assertNotIn("hold", report)
 
+    def test_rounds_added_after_the_commit_fix_ci_not_findings_shipped_past(self):
+        state = self.state()
+        state["settings"]["ci"] = "github"
+        self.write_state(state)
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.next(0)
+        self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        _, jobs = self.expect("triager")
+        # The review pass before the commit ran out of rounds: its must-fix
+        # finding went to the PR gate, and the user opened the PR with it.
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        state = self.state()
+        state["budget"]["remaining"] = 0
+        state["phase6"]["exhausted"] = {"consumer": 4, "seq": 1, "open": ["x"]}
+        self.write_state(state)
+        (self.dir / "triage" / "ci-1.md").write_text("# Required changes\n1. x\n")
+        self.answer(*jobs[0], "CODE", blockers="0", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
+        out = self.next(4)
+        self.raise_from_report(out, 1)
+        out, jobs = self.expect("coder")
+        self.assertIn("spent `ci-1`", out["BUDGET"])
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         str(self.dir / "triage" / "ci-1.md"))
+
 
     @staticmethod
     def checks(started, **extra):
