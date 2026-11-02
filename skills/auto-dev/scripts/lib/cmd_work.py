@@ -273,9 +273,11 @@ def acceptance_paths(ad):
         for run, into_tests in runs:
             if count >= SUPPORT_SHOWN:
                 break
-            part = " + ".join(code_line(x) for x in run[:SUPPORT_SHOWN - count])
+            room = SUPPORT_SHOWN - count
+            part = " + ".join(code_line(x) for x in run[:room])
             count += len(run)
-            shown.append(part + (" + its tests" if into_tests else ""))
+            shown.append(part + (" + …" if len(run) > room else "")
+                         + (" + its tests" if into_tests else ""))
         more = sum(len(run) for run, _ in runs) - SUPPORT_SHOWN
         if not shown:
             return ""
