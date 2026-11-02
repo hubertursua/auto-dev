@@ -180,4 +180,5 @@ see in S1, in order:
 
 Every stop is exit 4 with its reason in `REPORT`. The full list is
 `references/tables.md`, _Stop conditions_. The usual ones here: OVERSIZED,
-budget used up on a review, a worker that stopped or failed twice.
+budget used up on a review (the user can add rounds: `SKILL.md`, _The loop_),
+a worker that didn't return ok twice.

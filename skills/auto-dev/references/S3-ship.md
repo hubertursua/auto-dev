@@ -205,6 +205,10 @@ Every stop is exit 4 with its reason in `REPORT`
 (`references/tables.md`, _Stop conditions_). The ones that need care:
 
 - **CI red at the main gate (#18):** never merge over it; name each red check.
+- **The budget ran out after the commit (#12):** tell the user each open
+  finding or red check the `REPORT` names, and that they can go on with more
+  rounds if they say how many (`references/tables.md`, _The iteration
+  budget_).
 - **Someone pushed to the PR branch (#17):** tell the user what the `REPORT`
   says: to ship those commits, they bring them into the worktree with the
   `git merge --ff-only` command it names and say `auto-dev continue`. `next`
