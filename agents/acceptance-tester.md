@@ -189,6 +189,14 @@ Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact
 
 Do the task above for the conditions {{scope}} names.
 
+Before returning, after `check-artifact`, run `python3 {{skill_dir}}/scripts/autodev.py check-manifest --dir {{artifact_dir}}`,
+the check `next` runs on your return. It prints `OK`, or a `gap:` line for each
+problem (a condition with no check, an Edge with none, a base-run Result
+missing for a check's exact test name, a check left in the worktree, …). Fix
+each gap in a condition {{scope}} names, and run it again. A gap `next` finds
+instead re-spawns you and spends a round. Leave a gap you can't fix after two
+tries, or one in a condition outside the scope: `next` sends it back to you.
+
 After the build (the scope says the checks are installed: SPEC.md changed
 after the code was built, and you rewrite only the named conditions' checks):
 - Never start clean: restore or delete no file you did not write, since the
