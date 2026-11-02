@@ -238,6 +238,65 @@ def intact(ad, rel, current):
     return blks is not None and locate(now, blks) is not None
 
 
+def test_keys(names):
+    """Each test name MANIFEST.md lists, and its last part when that is long
+    enough to mean something: a runner can name a test by its whole path
+    (`todos > shows the due date`, `TestX/case`, `file::test[param]`) where the
+    source holds only the last part."""
+    keys = set()
+    for name in names:
+        name = name.strip()
+        if name:
+            keys.add(name)
+            last = re.sub(r"\[[^\]]*\]$", "", re.split(r" > |::|/", name)[-1]).strip()
+            if len(last) >= 8:
+                keys.add(last)
+    return keys
+
+
+def support_runs(ad, rel, names):
+    """[(lines, into_tests)]: per run of lines the sealed check adds to <path>
+    (a block), the lines besides its tests (`names`), blank ones included: the
+    whole run when it names no test, else the part before its first line
+    naming one (`into_tests`: the run goes on into the tests). An import line
+    the checks need is one: a worker told only the tests' names can't tell it
+    is sealed. [] when no line of the sealed copy names a test: then nothing
+    says where the tests start."""
+    sealed_lines = lines(read(sealed_files(ad)[rel])) or []
+    keys = test_keys(names)
+
+    def names_one(line):
+        return any(k in line for k in keys)
+
+    if not any(names_one(x) for x in sealed_lines):
+        return []
+    runs = []
+    for _k, body in blocks(base_of(ad, rel), sealed_lines) or []:
+        cut = next((i for i, line in enumerate(body) if names_one(line)), None)
+        run = body if cut is None else body[:cut]
+        if any(x.strip() for x in run):
+            runs.append((run, cut is not None))
+    return runs
+
+
+def broken_runs(ad, rel, current):
+    """[{lines, changed, after}]: each run of lines the sealed check adds to
+    <path> that `current` (the worktree's text) no longer holds whole: its
+    lines, the non-blank ones `current` lacks, and the base line it follows
+    (None at the top or in a new file)."""
+    now = lines(current) or []
+    have = set(now)
+    base = base_of(ad, rel) or []
+    out = []
+    for k, body in blocks(base, lines(read(sealed_files(ad)[rel])) or []) or []:
+        n = len(body)
+        if any(now[i:i + n] == body for i in range(len(now) - n + 1)):
+            continue
+        out.append({"lines": body, "after": base[k - 1] if 0 < k <= len(base) else None,
+                    "changed": [x for x in body if x.strip() and x not in have]})
+    return out
+
+
 def adds_only(ad, rel):
     """None when the sealed copy only adds lines to its base, else why not."""
     base = base_of(ad, rel)

@@ -45,8 +45,9 @@ You are the SIMPLIFY + QUALITY-GATE phase. Work inside the worktree at {{worktre
 
 Step 1 — Simplify: run /simplify over the scope `{{scope}}` names (Scopes, below). Never
 simplify, reformat or otherwise edit an acceptance check (these tests, by
-file: {{acceptance_paths}}; other tests in those files are like any test),
-whatever the scope says. Apply
+file: {{acceptance_paths}}, and the lines listed after a file's tests, such as
+an import they need; other tests in those files are like any test), whatever
+the scope says. `record` refuses a result that changed one. Apply
 behavior-preserving simplifications only
 (clarity, DRY, remove dead/over-built code). Do NOT change what the code does.
 

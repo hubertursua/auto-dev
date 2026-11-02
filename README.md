@@ -133,7 +133,10 @@ weakening them. Verification is built around that:
   (`skills/auto-dev/scripts/lib/sealed.py`). When it can't (the coder made the
   same new test file, or rewrote the lines around a check), the acceptance
   tester adds its tests to the coder's file, changing none of the coder's
-  lines.
+  lines. Once the checks are installed, each coder and cleanup brief names
+  each check's tests and lists the other lines it added (an import or setup
+  line it needs), and `record` refuses a result that changed any line of the
+  checks, before a re-check would put it back.
 - **An independent verifier that runs things.** After the build, a fresh
   verifier installs the checks and **runs** them, without seeing the plan or the
   coder's report. Each condition gets a verdict and an evidence tier: **Strong**
