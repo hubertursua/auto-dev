@@ -55,6 +55,7 @@ COLD_CAP = 600      # a cold run past this is no basis for sizing mutants
 WAIT = 270
 POLL = 2
 YOUNG = 30          # seconds a lock without a pid yet counts as a runner starting
+LIVE_CAP = 4 * 3600  # the longest the runner waits on another live mutate.py run
 TIMED_OUT = re.compile(r"timed out after \d+(\.\d+)?s")
 
 # Tokens `run` and `wait` print, and their exit codes.
@@ -141,18 +142,23 @@ def git(wt, *args):
 
 
 def snapshot(wt, cut):
-    """{path: state} for every path the change set or `git status` names: its
-    status line and a hash of its diff, so any file a run changes is named."""
+    """{path: (status, content hash)} for every path the change set or `git
+    status` names, renames as their two paths, so any file a run writes, edits
+    or deletes is named, an untracked one included."""
     status = {}
-    for entry in git(wt, "status", "--porcelain", "-z", "--untracked-files=all").split(b"\0"):
+    for entry in git(wt, "status", "--porcelain", "-z", "--no-renames",
+                     "--untracked-files=all").split(b"\0"):
         if len(entry) > 3:
             status[os.fsdecode(entry[3:])] = entry[:2].decode("utf-8", "replace")
-    names = {os.fsdecode(n) for n in git(wt, "diff", "--name-only", "-z", cut).split(b"\0")
-             if n}
+    names = {os.fsdecode(n) for n in git(wt, "diff", "--name-only", "--no-renames", "-z",
+                                         cut).split(b"\0") if n}
     out = {}
     for name in sorted(names | set(status)):
-        diff = git(wt, "diff", "--no-color", "--no-ext-diff", cut, "--", name)
-        out[name] = (status.get(name, ""), hashlib.sha256(diff).hexdigest())
+        try:
+            digest = hashlib.sha256((Path(wt) / name).read_bytes()).hexdigest()
+        except OSError:
+            digest = "missing"
+        out[name] = (status.get(name, ""), digest)
     return out
 
 
@@ -219,8 +225,9 @@ def restore(ad, wt):
 
 def restore_left(ad, wt, deadline=None):
     """Put back whatever a mutate.py run left, waiting while one is alive (until
-    `deadline`, if given). None when the tree holds no mutant, else an Outcome
-    (LEFT_CHANGES, or RUNNING when the deadline passed)."""
+    `deadline`, if given; LIVE_CAP at most). None when the tree holds no
+    mutant, else an Outcome (LEFT_CHANGES, or RUNNING when `deadline` passed)."""
+    cap = time.monotonic() + LIVE_CAP
     while mutate_backup(ad).exists() or mutate_lock(ad).exists():
         rc, lines = restore(ad, wt)
         if rc == 0:
@@ -233,6 +240,10 @@ def restore_left(ad, wt, deadline=None):
                            "hold a mutant", lines)
         if deadline is not None and time.monotonic() >= deadline:
             return Outcome("RUNNING", "a mutate.py run is still alive")
+        if time.monotonic() >= cap:
+            return Outcome("LEFT_CHANGES", f"a mutate.py run has held {mutate_lock(ad)} "
+                           f"for over {LIVE_CAP // 3600} hours: check that pid, then run "
+                           "`mutate.py --restore`", lines)
         time.sleep(POLL)
     return None
 
@@ -466,7 +477,11 @@ def runner(ad):
         tmp = ev(ad, "result").with_suffix(".tmp")
         tmp.write_text(json.dumps(result), encoding="utf-8")
         os.replace(tmp, ev(ad, "result"))
-        ev(ad, "lock").unlink(missing_ok=True)
+        try:  # only its own: a lock taken over since is another runner's
+            if ev(ad, "lock").read_text().strip() == str(os.getpid()):
+                ev(ad, "lock").unlink()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------- run and wait

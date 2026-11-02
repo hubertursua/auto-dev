@@ -22,7 +22,7 @@ can resume on the new one. Newest first. The current version is in
   - runs `mutants record`.
 
   It prints one token: `DONE`, `INCOMPLETE`, `ALL_INVALID`, `MALFORMED`,
-  `FAILING`, `NOT_RUN`, `KEPT`, `LEFT_CHANGES` or `BUSY`. It never ends
+  `FAILING`, `NOT_RUN`, `KEPT`, `LEFT_CHANGES` or `BUSY` (`wait` with no run started prints `NOT_STARTED`). It never ends
   while a mutant may be in the tree: it waits for a live `mutate.py` run and
   puts back what one left. It re-times at most once a pass, and records an
   all-invalid run only when it is the pass's second. Step 7 of

@@ -2591,6 +2591,13 @@ class VerifyPrepTest(unittest.TestCase):
         (self.ad / "evidence" / "mutation-run.lock").write_text("999999999\n")
         self.assertEqual(self.verify("prep", "--wait", "0").returncode, 0)
 
+    def test_prep_clears_the_last_passs_mutation_run_files(self):
+        for name in ("mutation-run.json", "mutation-run-args.json", "mutation-pass.json"):
+            self.write(f".auto-dev/evidence/{name}", "{}")
+        self.assertEqual(self.verify("prep").returncode, 0)
+        for name in ("mutation-run.json", "mutation-run-args.json", "mutation-pass.json"):
+            self.assertFalse((self.ad / "evidence" / name).exists(), name)
+
     def test_tree_compares_with_the_tree_prep_noted(self):
         self.assertEqual(self.verify("tree").returncode, 2)  # no prep yet
         self.assertEqual(self.verify("prep").returncode, 0)
@@ -2826,6 +2833,39 @@ class MutationRunTest(unittest.TestCase):
         r = self.mutants_cmd("wait", "--wait", "0")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("NOT_STARTED: "), r.stdout)
+
+    def test_a_renamed_file_in_the_change(self):
+        # verify prep marks new files intent-to-add, so git sees a move as a rename.
+        self.write("src/moved.txt", "x\n")
+        self.git("add", "src/moved.txt")
+        self.git("commit", "-q", "-m", "a file to move")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        (self.wt / "src" / "moved.txt").rename(self.wt / "src" / "renamed.txt")
+        self.git("add", "-N", "src/renamed.txt")
+        self.note_tree()
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("DONE: "), r.stdout)
+
+    def test_a_runner_that_died_leaves_no_mutant_behind(self):
+        self.write(".auto-dev/evidence/mutation-run-args.json", json.dumps({"id": "x"}))
+        self.write(".auto-dev/evidence/mutants.json.lock", "999999999\n")
+        r = self.mutants_cmd("wait", "--wait", "5")
+        self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
+        self.assertIn("no mutant is left in the tree", r.stdout)
+        self.assertFalse((self.ad / "evidence" / "mutants.json.lock").exists())
+
+    def test_one_retime_a_pass_even_across_runs(self):
+        self.mutants(MUT_RUN_SET[:1])
+        self.write(".auto-dev/evidence/mutation-cold-run.txt", "1\n")
+        self.write(".auto-dev/evidence/mutation-pass.json", json.dumps({"retimed": "before"}))
+        (self.wt / "slow-baseline").write_text("")
+        self.write(".gitignore", "out-*.txt\nslow-baseline\n")
+        self.note_tree()
+        r = self.mutants_cmd("run", "--files", "check.py")
+        self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
+        self.assertIn("after this pass's re-time", r.stdout)
+        self.assertNotIn("re-timed once", r.stdout)
 
     def test_mutation_off_or_no_prep_does_not_run(self):
         py = shlex.quote(sys.executable)

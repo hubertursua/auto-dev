@@ -283,8 +283,9 @@ against origin/{{base}} directly — it moves when anything fetches.
      line will say). Count this run's results
      (evidence/mutants.json.results.json) plus the selection's `carried:`
      lines yourself.
-   - `BUSY` (exit 10): an earlier pass's run was still going, and nothing
-     started. Run the same `mutants run` again; never `mutants wait` for it.
+   - `BUSY` (exit 10): this pass's run was still going (`mutants run` again
+     after RUNNING, say), and no second one started. Run `mutants wait` until
+     it prints another token, and follow that token.
    - `LEFT_CHANGES` (exit 4): STOP and return MUTATION LEFT CHANGES, naming its
      lines above the result block. Never commit, stage or keep a mutant.
    - Exit 2 (`ERROR:`, or `NOT_STARTED` from a `wait` with no run): a usage

@@ -233,6 +233,17 @@ def restore_all(wt, backup_dir):
 
 
 def pid_alive(pid):
+    if os.name == "nt":
+        # os.kill(pid, 0) sends CTRL_C_EVENT on Windows; ask instead.
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return kernel32.GetLastError() != 87  # ERROR_INVALID_PARAMETER: no such pid
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return not ok or code.value == 259  # STILL_ACTIVE
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

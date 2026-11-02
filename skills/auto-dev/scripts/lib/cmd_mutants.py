@@ -98,8 +98,8 @@ run
       KEPT: the run finished but `record` kept the earlier record
       LEFT_CHANGES: a file may still hold a mutant, or the tree changed
                  during the run — the paths
-      BUSY: an earlier pass's runner was still going after --wait seconds;
-                 nothing started — run `mutants run` again
+      BUSY: a runner was still going after --wait seconds, and no second
+                 one started — `mutants wait` for it
       NOT_STARTED: `wait` with no run started this pass
     A `run` while an earlier runner is alive waits for it to end, then starts
     its own. The runner never ends while a mutant may be in the tree: it
@@ -193,20 +193,20 @@ def run(args):
     scoped = bool(args.files) and cmd_run.PLACEHOLDER in str(check.get("files") or "")
     command = cmd_run.command_for(n, check, wt, args.files if scoped else None)
     opts = {"command": command, "new_set": args.new_set, "extended": args.extended}
+    deadline = time.monotonic() + max(args.wait, 0)
     if not mutation_run.start(ad, opts):
-        deadline = time.monotonic() + max(args.wait, 0)
         while mutation_run.runner_alive(ad) and time.monotonic() < deadline:
             time.sleep(mutation_run.POLL)
         if not mutation_run.start(ad, opts):
-            emit(args.json, "BUSY", "an earlier mutation run is still going; run this "
-                 "`mutants run` again once it ends (never `mutants wait` for it)")
+            emit(args.json, "BUSY", "a mutation run is still going, and no second one "
+                 "started; run `mutants wait` until it ends")
             return mutation_run.CODES["BUSY"]
-    return wait(args)
+    return wait(args, max(deadline - time.monotonic(), 0))
 
 
-def wait(args):
+def wait(args, seconds=None):
     ad = Path(args.dir)
-    result = mutation_run.wait_for(ad, max(args.wait, 0))
+    result = mutation_run.wait_for(ad, max(args.wait if seconds is None else seconds, 0))
     if result is None:
         emit(args.json, "RUNNING", f"the mutation runner is still going; run `mutants "
              f"wait --dir {ad}` (its log: {mutation_run.ev(ad, 'runner')})")
