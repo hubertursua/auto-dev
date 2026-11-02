@@ -1810,13 +1810,19 @@ class PublishTest(NextCase):
 
     def test_what_workers_wrote_is_quoted_so_the_body_passes_its_own_lint(self):
         # A proxy cell naming .auto-dev/, a review's confidence reason and an
-        # open finding naming an ID, and the verifier's plain words naming a
-        # condition: generate copies each word for word, so each is quoted, and
-        # pr publish no longer refuses the text generate wrote itself.
+        # open finding naming an ID, the verifier's plain words and a person's
+        # check naming one, a condition's own title naming one and a gate
+        # command naming .auto-dev/: generate copies each word for word, so
+        # the lint skips each, and pr publish no longer refuses the text
+        # generate wrote itself.
         sha = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
         state = self.state()
         state["phase6"]["verified_sha"] = sha
+        state["settings"]["gate"][0]["command"] = "true --ignore .auto-dev/"
         self.write_state(state)
+        spec = self.dir / "SPEC.md"
+        spec.write_text(spec.read_text().replace("with the earliest first",
+                                                 "with the earliest first, as in S1"))
         manifest = self.dir / "acceptance" / "MANIFEST.md"
         manifest.write_text(manifest.read_text().replace(
             "## Not automatable\nNone.",
@@ -1826,7 +1832,8 @@ class PublishTest(NextCase):
             "| 1 (Edge) | an invalid date is rejected | the formatter, not a test, judges it "
             "| `npm run format:check` must exit 0 and list no file outside `.auto-dev/` |\n"))
         (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()).replace(
-            "must-fix decided 2–1: none", "must-fix decided 2–1: C1"))
+            "must-fix decided 2–1: none", "must-fix decided 2–1: C1").replace(
+            "null due date crashes sort |", "null due date crashes sort, as S1 did |"))
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
             tree=self.tree()).replace("High/Medium verified: 1/1",
                                       "High/Medium verified: 1/1 (S2 confirmed)"))
@@ -1836,7 +1843,11 @@ class PublishTest(NextCase):
             "| Evidence |\n|---|-----------|---------|------|----------|",
             "| Evidence | In plain words |\n"
             "|---|-----------|---------|------|----------|----------------|").replace(
-            "(`evidence/C1.txt`) |", "(`evidence/C1.txt`) | the date shows; S1 still holds |"))
+            "(`evidence/C1.txt`) |",
+            "(`evidence/C1.txt`) | the date shows; S1 still holds |").replace(
+            "| 2 | sorted | met | Adequate | ran the sort |",
+            "| 2 | sorted | manual | Weak | a human must check: see S1 in `.auto-dev/x` | "
+            "none |"))
         self.lint()
         r = self.autodev("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1849,6 +1860,10 @@ class PublishTest(NextCase):
         self.assertIn("must-fix decided 2–1: C1", text)
         self.assertIn("(S2 confirmed)", text)
         self.assertIn("the date shows; S1 still holds", text)
+        self.assertIn("1. see S1 in `.auto-dev/x`", text)
+        self.assertIn("crashes sort, as S1 did", text)
+        self.assertIn("1 problem that had to be fixed", text)
+        self.assertIn("- `true --ignore .auto-dev/`: passed", text)
         written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
         body.write_text(written)
         r = self.autodev("pr-body", "--check", body, "--dir", self.dir)

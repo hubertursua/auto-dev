@@ -47,8 +47,8 @@ are left out below.>
   Checked by running <what, in a few words>: expected <the expectation>, saw
   <the result>. <when no test could drive it: why>
   <details>…the same block…</details>
-- [ ] **<condition>** — <partly met | not met>: <what holds, what doesn't, and
-  why it is being shipped anyway>
+- [ ] **<condition>** — <partly met | not met>:
+  <what holds, what doesn't, and why it is being shipped anyway>
   <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
   old code: <…> · now: <passes | fails: <the failing assertion, one line>>>
   <details>…the same block, when something was run…</details>

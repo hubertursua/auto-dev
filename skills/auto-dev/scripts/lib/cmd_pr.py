@@ -81,8 +81,10 @@ ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 # skips a comment that carries it.
 MARKER = "<!-- auto-dev -->"
 # Around what a description quotes word for word (test names, commands, their
-# output, the verifier's Expected line and its reasons): what the lint skips
-# inside a region generate() wrote is listed at QUOTED_RE in cmd_ship.
+# output, and what the workers wrote: the verifier's Expected line, plain words
+# and reasons, each check for a person, the reviews' reasons and open findings):
+# what the lint skips inside a region generate() wrote is listed at QUOTED_RE
+# in cmd_ship.
 # The opening marker ends the line before the quote, so it doesn't split the
 # list item's paragraph on GitHub.
 QUOTE_OPEN, QUOTE_CLOSE = "<!-- auto-dev:quoted -->", "  <!-- /auto-dev:quoted -->"
@@ -232,6 +234,12 @@ def generate(state, ad, sha):
     text, comment = clean(text, wt), clean(comment, wt)
     from .cmd_ship import quoted_digests
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
+    # What generate copies word for word outside a region, as it shows it: a
+    # checkbox's title (SPEC.md's own words, kept outside so ticking it leaves
+    # the region whole) and each gate command. The lint skips each one.
+    state["phase6"]["verbatim"] = sorted(
+        {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} |
+        {f"`{g['command']}`" for g in state["settings"].get("gate", [])})
     # The headings pr-write.md is written with: splice takes no others.
     state["phase6"]["slots"] = [h for h, b in split_sections(text) if h and WRITE_RE.search(b)]
     path = ad / "pr-body.md"
@@ -615,7 +623,8 @@ def person_checks(manual, na_rows, ev, conditions):
         if cond and cond["edge"]:
             proxy = row.get("Proxy a verifier can run", "").strip()
             if proxy and proxy.lower() != "none":
-                # A cell that already marks its own code keeps its marks.
+                # A cell that marks its own code keeps its marks; wrapping it
+                # would break them.
                 ran = proxy if "`" in proxy else f"`{proxy}`"
             else:
                 ran = "nothing could be, because no test can drive it"
@@ -726,10 +735,11 @@ def review_lines(ad, state):
         total = int(opened) + int(fixed)
         # The reviewers' words (the confidence reason, each open finding) are
         # quoted: they may name a finding ID, which the lint refuses elsewhere.
-        out += [(f"- {label} — confidence {level.group(1) if level else 'unknown'}: "
-                f"{QUOTE_OPEN}"),
-                (f"  {reason + '. ' if reason else ''}{total} problems that had to be "
-                f"fixed: {fixed} fixed, {opened} open")]
+        problems = "problem" if total == 1 else "problems"
+        lead = f"{reason}. " if reason else ""
+        out += [f"- {label} — confidence {level.group(1) if level else 'unknown'}: "
+                + QUOTE_OPEN,
+                f"  {lead}{total} {problems} that had to be fixed: {fixed} fixed, {opened} open"]
         out += open_findings(text)
         if name == "SECURITY_REVIEW.md":
             out += follow_ups(text, separate_pr(state))
