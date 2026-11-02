@@ -96,7 +96,10 @@ read `{{skill_dir}}/templates/rubric.md`: its code review findings and overall r
 
 Write {{artifact_dir}}/review/pass-{{pass}}/{{reviewer}}.md to the template at
 `{{skill_dir}}/templates/R.md` (strict): read it there and copy everything below
-its first comment line.
+its first comment line. Each finding's first line is exactly `<n>. **<title>**
+— `path:line` — <category>`, as below: a script merges the panel's findings
+from it. Then run `python3 {{skill_dir}}/scripts/autodev.py check-artifact
+{{artifact_dir}}/review/pass-{{pass}}/{{reviewer}}.md` and fix what it reports.
 
 Do NOT modify code. Spill long output to {{artifact_dir}}/tmp/ and quote only what matters.
 

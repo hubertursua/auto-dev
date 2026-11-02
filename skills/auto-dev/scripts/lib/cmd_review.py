@@ -51,7 +51,8 @@ review-build
     advisory category is advisory; one that doesn't hold is noise; a
     pre-existing one is counted only. It carries the earlier passes' rows,
     detail blocks, security leads and Passes rows forward (from the report
-    as it stood before this pass, kept in review/pass-<n>/CODE_REVIEW.before.md),
+    as it stood before this pass, kept in review/pass-<n>/CODE_REVIEW.before.md,
+    which `next` takes when it briefs the judge),
     marks each earlier must-fix finding fixed or open as JUDGMENT.md says,
     writes the Tree line (the panel's tree when the code is unchanged, else
     `changed during the run`), the counts and the overall confidence, then
@@ -60,7 +61,8 @@ review-build
     Prints `BUILT` with `next:` (REVOTE, MUST_FIX or CLEAN), `must_fix_open:`
     and `revote:`, the values for the judge's result.
     Exit: 0 built; 1 JUDGMENT.md can't be used (`MALFORMED`, a `problem:`
-    line each; nothing is written); 2 no findings.md, judgment or judge brief.
+    line each; nothing is written); 2 no findings.md, judgment or judge brief,
+    or CODE_REVIEW.md already holds this pass with no snapshot from before it.
 
 gate-summary <post-plan|pr|main> [--pr N]
     Checks the gate's preconditions, then prints the summary and the
@@ -724,13 +726,12 @@ def review_build(args):
     findings = art.read(folder / "findings.md")
     judgment_md = art.read(folder / "JUDGMENT.md")
     report = ad / "CODE_REVIEW.md"
-    before = folder / "CODE_REVIEW.before.md"
-    if not before.exists():
-        earlier = report.read_text(encoding="utf-8") if report.exists() else ""
-        stamp = PASS_RE.search(earlier)
-        if stamp and int(stamp.group(1)) >= n:
-            earlier = ""  # this pass's own, from a build before the snapshot existed
-        before.write_text(earlier, encoding="utf-8")
+    earlier = judgment.snapshot_before(ad, n)
+    if earlier is None:
+        raise Fail(f"CODE_REVIEW.md already holds pass {n} or later and no snapshot of it "
+                   f"before pass {n} was taken ({folder / 'CODE_REVIEW.before.md'}), so "
+                   "the earlier passes' rows can't be carried: tell the user",
+                   CANNOT_RUN, "ERROR")
     panel_tree = str(sets.get("tree") or "").strip()
     tree = panel_tree if panel_tree and print_tree(state["worktree"]) == panel_tree \
         else "changed during the run"
@@ -738,7 +739,7 @@ def review_build(args):
         text, result = judgment.build(
             branch=state.get("branch", ""), pass_n=n, scope=sets.get("scope") or "",
             tree=tree, findings_md=findings, judgment_md=judgment_md,
-            earlier_md=before.read_text(encoding="utf-8"))
+            earlier_md=earlier)
     except judgment.JudgmentError as exc:
         emit(args.json, "MALFORMED", f"{folder / 'JUDGMENT.md'} can't be used; fix it and "
              "run review-build again", problem=str(exc).splitlines())
@@ -746,11 +747,16 @@ def review_build(args):
     coder = [i for i in result["open_ids"]
              if result["categories"].get(i, "").strip("`").lower() != "acceptance-check"]
     corrections = folder / "corrections.md"
-    corrections.write_text("# Required changes\n" + ("" if coder else "None.\n"),
-                           encoding="utf-8")
-    add_corrections(text, corrections, coder)
+    staged = folder / ".corrections.md.build"  # written whole, or not at all
+    staged.write_text("# Required changes\n" + ("" if coder else "None.\n"), encoding="utf-8")
+    try:
+        add_corrections(text, staged, coder)
+    except art.ArtifactError:
+        staged.unlink(missing_ok=True)
+        raise
     tmp = report.with_name(".CODE_REVIEW.md.build")
     tmp.write_text(text, encoding="utf-8")
+    staged.replace(corrections)
     tmp.replace(report)
     emit(args.json, "BUILT", f"{report} and {corrections}", next=result["next"],
          must_fix_open=result["must_fix_open"], revote=result["revote"])

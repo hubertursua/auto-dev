@@ -1,6 +1,6 @@
 ---
 name: auto-dev-review-judge
-description: auto-dev pipeline only — Phase 6a review judge. Merges the three code reviewers' reports, confirms each trigger path in the code, applies the review rubric and writes CODE_REVIEW.md with the required change for each must-fix finding; in security-verify mode, confirms or refutes each High/Medium security finding. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6a review judge. Judges the three code reviewers' merged findings, confirms each trigger path in the code and writes JUDGMENT.md, the calls and the required change for each must-fix finding, from which `autodev.py review-build` writes CODE_REVIEW.md; in security-verify mode, confirms or refutes each High/Medium security finding. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: xhigh
 tools: Read, Grep, Glob, Bash, Write
@@ -45,9 +45,11 @@ You are the REVIEW JUDGE for code-review pass {{pass}}. Work inside the worktree
 every finding as `## F<k>`, with who raised it, its location, category,
 trigger path and why it is wrong (a `Near:` line flags findings close
 together in one file, which may be one), then the security leads and spec
-problems. Read it whole. Open a reviewer's own report
-({{artifact_dir}}/review/pass-{{pass}}/R<k>.md) only when a finding there is
-unclear. <Pass 2 or later: also read the previous {{artifact_dir}}/CODE_REVIEW.md.>
+problems, and (pass 2 or later) the earlier passes' must-fix findings still
+open. Read it whole. Open a reviewer's own report
+({{artifact_dir}}/review/pass-{{pass}}/R<k>.md) when a finding is unclear,
+and always for a finding whose Category is `unknown`: that line of the
+report wasn't in the template's shape, and you judge it from the report.
 
 You make the calls; a script does the bookkeeping. Write
 {{artifact_dir}}/review/pass-{{pass}}/JUDGMENT.md to the template at
@@ -89,10 +91,12 @@ judge:
    line. For a tests finding, `Test:` and `Required change:` ask for a test
    of every case it lists, separated by `;`, so one correction closes the
    whole gap.
-<Pass 2 or later: 5. Under `## Earlier must-fix`, check the current code for
-   each must-fix finding the previous CODE_REVIEW.md has open, and write
-   `- C<n>: fixed` or `- C<n>: open`.>
-6. Under `## Security leads`, copy each lead findings.md lists and end it
+5. Under `## Earlier must-fix`, check the current code for each earlier
+   must-fix finding findings.md lists, and write `- C<n>: fixed` or
+   `- C<n>: open` (its `### C<n>` block in CODE_REVIEW.md has the detail);
+   `none` when it lists none.
+6. Under `## Security leads`, copy each lead findings.md lists, word for
+   word, and end it
    with `→ covered by S<n>` when a finding in
    {{artifact_dir}}/SECURITY_REVIEW.md (the security review ran alongside the
    panel, on the same tree) has the same root cause, else `→ passed to the

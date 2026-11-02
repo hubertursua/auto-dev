@@ -31,7 +31,15 @@ can resume on the new one. Newest first. The current version is in
 - **A reviewer's report is checked against its template.** `check-artifact`
   (and so `record`) now refuses an `R<k>.md` finding that isn't
   `<n>. **<title>** — `path:line` — <category>` with a `Trigger path:`
-  line. The reviewer then fixes its report before the judge sees it.
+  line. The reviewer runs that check itself before it returns. A line that
+  still doesn't parse (a report recorded on 4.20) is never dropped: it
+  becomes a finding of category `unknown` in `findings.md`, and the judge
+  reads the report for it.
+- **`record` refuses a judge's result with no `JUDGMENT.md`** for a pass
+  whose `findings.md` `next` wrote, so the report always comes from
+  `review-build`. `review-build` refuses (exit 2) when `CODE_REVIEW.md`
+  already holds the pass and no snapshot from before it exists, rather than
+  build without the earlier passes.
 - **Resume:** a run in flight resumes. A judge briefed from now on writes
   `JUDGMENT.md`. One already spawned on 4.20 writes `CODE_REVIEW.md` itself,
   which `next` reads as before. A later pass of the same run builds on that

@@ -851,6 +851,11 @@ def derive_judge(data, ad, state):
     if nxt == "VERIFIED":
         return coder_bound(ad / "review" / "security-corrections.md", ad,
                            "review/security-corrections.md")
+    n = state.get("phase6", {}).get("review_pass") or 1
+    folder = ad / "review" / f"pass-{n}"
+    if (folder / "findings.md").exists() and not (folder / "JUDGMENT.md").exists():
+        issues.append(f"no {folder / 'JUDGMENT.md'}: write your calls there and run "
+                      "`autodev.py review-build`, which writes CODE_REVIEW.md")
     text = art.read(ad / "CODE_REVIEW.md")
     open_rows, pending = count_open(text), len(pending_rows(text))
     if as_int(data, "must_fix_open") != open_rows:
@@ -866,7 +871,6 @@ def derive_judge(data, ad, state):
         issues.append(f"next is {nxt} but CODE_REVIEW.md has {open_rows} open must-fix "
                       f"and {pending} pending re-vote rows, which is {want}")
     if nxt == "MUST_FIX":
-        n = state.get("phase6", {}).get("review_pass") or 1
         issues += coder_bound(ad / "review" / f"pass-{n}" / "corrections.md", ad,
                               f"review/pass-{n}/corrections.md")
     return issues

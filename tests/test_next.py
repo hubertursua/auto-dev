@@ -157,6 +157,12 @@ class NextCase(RunCase):
     def answer(self, worker, n, nxt, status="ok", **data):
         if worker == "acceptance-tester" and status == "ok" and nxt in ("REPAIRED", "STANDS"):
             self.rule_on_checks(n, nxt)
+        if worker == "review-judge" and nxt != "VERIFIED" and status == "ok":
+            # The simulated judge's calls; the test writes CODE_REVIEW.md itself.
+            judged = (self.dir / "review" /
+                      f"pass-{self.state()['phase6'].get('review_pass') or 1}" / "JUDGMENT.md")
+            judged.parent.mkdir(parents=True, exist_ok=True)
+            judged.write_text("# Judgment\n")
         path = self.dir / "returns" / f"{worker}-{n}.json"
         path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps({"worker": worker, "status": status, "next": nxt,
@@ -864,12 +870,31 @@ class ShipTest(NextCase):
         # The judge's brief comes with the panel's findings merged.
         findings = (self.dir / "review" / "pass-1" / "findings.md").read_text()
         self.assertIn("Reviewers finished: R1, R2, R3 (3/3)", findings)
-        self.assertIn("No findings.", findings)
+        self.assertIn("No findings:", findings)
         state = self.state()
         seqs = [e["seq"] for e in state["log"][-4:]]
         self.assertEqual(seqs, sorted(set(seqs)))  # each its own event
         judge = state["briefs"][-1]
         self.assertGreater(judge["seq"], seqs[-1])
+
+    def test_a_judge_result_with_no_judgment_is_refused(self):
+        self.ship_ready()
+        _, jobs = self.reviewers(None, 3)
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        _, jobs = self.expect("review-judge")
+        judge = next(j for j in jobs if self.mode(*j) == "consolidate")
+        # The judge wrote CODE_REVIEW.md by hand, with no JUDGMENT.md.
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        path = self.dir / "returns" / f"review-judge-{judge[1]}.json"
+        path.write_text(json.dumps({"worker": "review-judge", "status": "ok", "next": "CLEAN",
+                                    "must_fix_open": "0", "revote": "0", "proposals": "0"}))
+        out = self.next(refused_ok=True)
+        self.assertTrue(any("refused" in ln for ln in out["RECORDED"]), json.dumps(out))
+        brief = (self.dir / "briefs" / f"review-judge-{self.spawned(out)[0][1]}.md").read_text()
+        self.assertIn("JUDGMENT.md: write your calls there", brief)
 
     def correction_re_review(self):
         """Pass 1's must-fix C1, its one-line correction, then pass 2 spawned:
@@ -3694,6 +3719,11 @@ class SpecProposalTest(NextCase):
 
     def record(self, worker, n, nxt, **data):
         """Record job <worker>-<n> without asserting the outcome."""
+        if worker == "review-judge" and nxt != "VERIFIED":  # the judge's calls, as in answer()
+            judged = (self.dir / "review" /
+                      f"pass-{self.state()['phase6'].get('review_pass') or 1}" / "JUDGMENT.md")
+            judged.parent.mkdir(parents=True, exist_ok=True)
+            judged.write_text("# Judgment\n")
         self.write_return(worker, n, {"next": nxt, **data})
         return self.autodev("record", worker, n, "--dir", self.dir)
 

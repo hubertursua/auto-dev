@@ -25,8 +25,8 @@ DETAIL_KEYS = ("Trigger path", "Judge", "Where", "Test", "Required change",
 PANEL = 3
 LEVEL, COUNTS = "\0level\0", "\0counts\0"  # filled in once the rows are known
 
-FINDING_RE = re.compile(r"^\s*(\d+)\.\s+\*\*(.+?)\*\*\s+[—-]+\s+`([^`]+)`\s+[—-]+\s+"
-                        r"([a-z-]+)\s*$")
+FINDING_RE = re.compile(r"^\s*(\d+)\.\s+\*\*(.+?)\*\*\s+[—–-]+\s+`([^`]+)`\s+[—–-]+\s+"
+                        r"`?([A-Za-z-]+)`?\s*$")
 SUB_RE = re.compile(r"^\s+(Trigger path|Why it is wrong):\s*(.*)$")
 NEAR = 5  # lines apart at which two findings in one file are flagged as maybe one
 
@@ -41,6 +41,18 @@ def section(text, name):
     return art.find_section(text, name)
 
 
+def lead_items(text):
+    """The `- ` items of a Security leads section, each with its continuation
+    lines, so a lead is carried word for word."""
+    items = []
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith("- "):
+            items.append(line.strip())
+        elif line.strip() and items:
+            items[-1] += "\n  " + line.strip()
+    return [i for i in items if not i[2:].strip().lower().startswith("none")]
+
+
 def parse_report(text):
     """A reviewer's R<k>.md: {coverage, findings, leads, spec, pre_existing,
     problems}. `problems` lists what doesn't follow templates/R.md."""
@@ -52,13 +64,13 @@ def parse_report(text):
     if body is None:
         problems.append("no `## Findings` section")
         body = ""
-    current = None
+    current, unparsed, none_said = None, [], False
     for line in body.splitlines():
         if not line.strip():
             continue
         match = FINDING_RE.match(line)
         if match:
-            category = match.group(4)
+            category = match.group(4).lower()
             if category not in CATEGORIES:
                 problems.append(f"finding {match.group(1)}: category `{category}` is not one "
                                 f"of {', '.join(CATEGORIES)}")
@@ -74,19 +86,21 @@ def parse_report(text):
             last = "Why it is wrong" if current["Why it is wrong"] else "Trigger path"
             current[last] = (current[last] + " " + line.strip()).strip()
             continue
-        if not findings and line.strip().lower().startswith("none"):
+        if not findings and (none_said or line.strip().lower().startswith("none")):
+            none_said = True  # `none — <what you tried>`, wrapped or not
             continue
+        current = None
+        unparsed.append(line.strip())
         problems.append(f"a line under Findings is not a finding in the template's shape "
                         f"(`<n>. **<title>** — `path:line` — <category>`): {line.strip()[:80]}")
     for f in findings:
         if not f["Trigger path"]:
             problems.append(f"finding `{f['title']}` has no `Trigger path:` line")
-    leads = [ln.strip() for ln in (section(text, "Security leads") or "").splitlines()
-             if ln.strip().startswith("- ")]
+    leads = lead_items(section(text, "Security leads"))
     spec = (section(text, "Spec problems") or "").strip()
     pre = re.search(r"(\d+)", section(text, "Pre-existing") or "")
     return {"coverage": coverage.group(1).strip() if coverage else "full",
-            "findings": findings, "leads": leads,
+            "findings": findings, "unparsed": unparsed, "leads": leads,
             "spec": "" if spec.lower().startswith("none") else spec,
             "pre_existing": int(pre.group(1)) if pre else 0, "problems": problems}
 
@@ -100,12 +114,21 @@ def file_of(location):
     return location.split(":", 1)[0].strip()
 
 
-def findings_text(pass_n, reports):
-    """review/pass-<n>/findings.md from {reviewer: parsed report}."""
+def findings_text(pass_n, reports, earlier_open=()):
+    """review/pass-<n>/findings.md from {reviewer: parsed report}. A line a
+    report's Findings holds that isn't in the template's shape becomes a
+    finding of its own, never dropped. `earlier_open` lists the earlier
+    passes' open must-fix rows, [(id, title, location)]."""
     items = []
     for reviewer in sorted(reports):
         for f in reports[reviewer]["findings"]:
             items.append({**f, "raised_by": reviewer})
+        for line in reports[reviewer].get("unparsed", []):
+            items.append({"title": line, "location": "unknown", "category": "unknown",
+                          "Trigger path": "none given",
+                          "Why it is wrong": f"this line of {reviewer}.md is not in the "
+                          f"template's shape: read {reviewer}.md for it",
+                          "raised_by": reviewer})
     for i, item in enumerate(items, 1):
         item["id"] = f"F{i}"
     finished = len(reports)
@@ -116,7 +139,7 @@ def findings_text(pass_n, reports):
            (f"Reviewers finished: {', '.join(sorted(reports)) or 'none'} ({finished}/{PANEL})"
            f" · coverage: {coverage}"),
            (f"Pre-existing (dropped, counted only): "
-           f"{sum(r['pre_existing'] for r in reports.values())}"), ""]
+           f"{max((r['pre_existing'] for r in reports.values()), default=0)}"), ""]
     for item in items:
         near = [o["id"] for o in items if o is not item
                 and file_of(o["location"]) == file_of(item["location"])
@@ -133,10 +156,12 @@ def findings_text(pass_n, reports):
                        "maybe the same finding)")
         out.append("")
     if not items:
-        out += ["No findings.", ""]
-    out += ["## Security leads"]
+        out += ["No findings: write no `## J<k>` block.", ""]
+    out += ["## Earlier must-fix"]
+    out += [f"- {cid} — {title} ({loc})" for cid, title, loc in earlier_open] or ["none"]
+    out += ["", "## Security leads"]
     leads = [f"{lead} (raised by {r})" for r, rep in sorted(reports.items())
-             for lead in rep["leads"] if not lead[2:].strip().lower().startswith("none")]
+             for lead in rep["leads"]]
     out += leads or ["none"]
     out += ["", "## Spec problems"]
     specs = [f"- {r}: {rep['spec']}" for r, rep in sorted(reports.items()) if rep["spec"]]
@@ -144,8 +169,27 @@ def findings_text(pass_n, reports):
     return "\n".join(out) + "\n"
 
 
+def snapshot_before(ad, pass_n):
+    """review/pass-<n>/CODE_REVIEW.before.md: CODE_REVIEW.md as it stood before
+    pass n, which every build of pass n starts from. Taken once; None when it
+    can't be (the report already holds pass n or later, and no snapshot was
+    taken before it did)."""
+    path = Path(ad) / "review" / f"pass-{pass_n}" / "CODE_REVIEW.before.md"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    report = Path(ad) / "CODE_REVIEW.md"
+    text = report.read_text(encoding="utf-8") if report.exists() else ""
+    stamp = re.search(r"Latest pass:\s*(\d+)", text)
+    if stamp and int(stamp.group(1)) >= pass_n:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return text
+
+
 def write_findings(ad, pass_n, reviewers):
-    """Write review/pass-<n>/findings.md from the named reviewers' reports."""
+    """Write review/pass-<n>/findings.md from the named reviewers' reports, and
+    snapshot the report as it stands before the pass."""
     folder = Path(ad) / "review" / f"pass-{pass_n}"
     reports = {}
     for r in reviewers:
@@ -153,8 +197,12 @@ def write_findings(ad, pass_n, reviewers):
             reports[r] = parse_report(art.read(folder / f"{r}.md"))
         except art.ArtifactError:
             continue
+    earlier = earlier_report(snapshot_before(ad, pass_n) or "")
+    open_rows = [(r["ID"].strip(), r.get("Finding", "").strip(), r.get("Location", "").strip())
+                 for r in (earlier or {}).get("must_fix", [])
+                 if r.get("Status", "").strip().startswith("open")]
     path = folder / "findings.md"
-    path.write_text(findings_text(pass_n, reports), encoding="utf-8")
+    path.write_text(findings_text(pass_n, reports, open_rows), encoding="utf-8")
     return path
 
 
@@ -172,18 +220,17 @@ def parse_findings(text):
                                  "location": fields.get("Location", "").strip("`"),
                                  "category": fields.get("Category", ""),
                                  "raised_by": fields.get("Raised by", "").strip()}
-    head = re.search(r"Reviewers finished: .*\((\d)/\d\) · coverage: (.*)", text)
+    head = re.search(r"Reviewers finished: (.*) \((\d)/\d\) · coverage: (.*)", text)
+    names = [n.strip() for n in head.group(1).split(",")] if head else []
     pre = re.search(r"Pre-existing \(dropped, counted only\): (\d+)", text)
-    leads = [ln for ln in (section(text, "Security leads") or "").splitlines()
-             if ln.startswith("- ")]
-    return (found, int(head.group(1)) if head else 0,
-            head.group(2).strip() if head else "full",
-            int(pre.group(1)) if pre else 0, leads)
+    return (found, [n for n in names if re.fullmatch(r"R\d", n)],
+            head.group(3).strip() if head else "full",
+            int(pre.group(1)) if pre else 0, lead_items(section(text, "Security leads")))
 
 
 # ---------------------------------------------------------------- the judgment
 
-def parse_judgment(text, findings, earlier_open):
+def parse_judgment(text, findings, earlier_open, finding_leads=()):
     """JUDGMENT.md: ([judged finding], {earlier id: fixed|open}, [lead lines]),
     or JudgmentError listing every problem."""
     problems, judged, seen = [], [], {}
@@ -199,7 +246,7 @@ def parse_judgment(text, findings, earlier_open):
                 earlier[fid] = status
             continue
         if head == "Security leads":
-            leads = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("- ")]
+            leads = lead_items(body)
             continue
         if not re.fullmatch(r"J\d+", head):
             problems.append(f"`## {head}`: a judged finding's heading is `## J<k>`")
@@ -250,11 +297,19 @@ def parse_judgment(text, findings, earlier_open):
     for fid in earlier_open:
         if fid not in earlier:
             problems.append(f"Earlier must-fix: say whether {fid} is fixed or open")
+    for fid in earlier:
+        if fid not in earlier_open:
+            problems.append(f"Earlier must-fix: {fid} is not an open must-fix finding of an "
+                            "earlier pass")
     if leads is None:
         problems.append("no `## Security leads` section (write `none` under it when there "
                         "are none)")
         leads = []
-    leads = [ln for ln in leads if not ln[2:].strip().lower().startswith("none")]
+    for lead in finding_leads:
+        first = lead.split("\n", 1)[0].strip()
+        if not any(ln.startswith(first) for ln in leads):
+            problems.append(f"Security leads: `{first[:60]}` (from findings.md) has no line "
+                            "saying where it goes")
     for ln in leads:
         if "→" not in ln:
             problems.append(f"Security leads: `{ln[:60]}` needs `→ passed to the security "
@@ -289,8 +344,7 @@ def earlier_report(text):
     head = art.header_line(text, "**Overall confidence") or ""
     decided = re.search(r"must-fix decided 2[–-]1:\s*([^>*\n]*)", head)
     dropped = re.search(r"Dropped \(pre-existing\):\s*(\d+)", text)
-    leads = [ln for ln in (section(text, "Security leads") or "").splitlines()
-             if ln.startswith("- ")]
+    leads = lead_items(section(text, "Security leads"))
     return {"must_fix": table_rows(text, "Must-fix")[1],
             "must_fix_blocks": detail_blocks(text),
             "advisory": table_rows(text, "Advisory")[1],
@@ -322,12 +376,14 @@ def raisers(item, findings):
 def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
     """(CODE_REVIEW.md text, {next, must_fix_open, revote, new_must_fix: [ids],
     open_ids: [ids]}), or JudgmentError."""
-    findings, finished, coverage, pre, _leads = parse_findings(findings_md)
+    findings, names, coverage, pre, finding_leads = parse_findings(findings_md)
+    finished = len(names)
     earlier = earlier_report(earlier_md)
     earlier_open = [r["ID"].strip() for r in (earlier or {}).get("must_fix", [])
                     if r.get("Status", "").strip().startswith("open")]
-    judged, statuses, new_leads = parse_judgment(judgment_md, findings, earlier_open)
-    used = [int(i[1:]) for i in ids_in(earlier)]
+    judged, statuses, new_leads = parse_judgment(judgment_md, findings, earlier_open,
+                                                 finding_leads)
+    used = [int(m.group(1)) for m in (re.match(r"C(\d+)", i) for i in ids_in(earlier)) if m]
     next_id = max(used, default=0) + 1
     must, pending, advisory, noise, dropped = [], [], [], [], 0
     decided = list((earlier or {}).get("decided", []))
@@ -346,11 +402,10 @@ def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
             advisory.append(item)
         elif len(votes) >= 2:
             must.append(item)
-            if len(votes) == 2:
+            if len(votes) == 2 and finished == PANEL:  # the third reviewer didn't raise it
                 decided.append(item["id"])
         elif finished >= 2:
-            item["revoters"] = [f"R{k}" for k in range(1, PANEL + 1)
-                                if f"R{k}" not in votes][:max(finished - 1, 0)]
+            item["revoters"] = [n for n in names if n not in votes]
             pending.append(item)
         else:
             advisory.append(item)  # no one left to re-vote: one vote of three
@@ -438,7 +493,7 @@ def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
     noise_n = len((earlier or {}).get("noise", [])) + len(noise)
     counts = (f"{len(open_ids)} open · {fixed} fixed   ·   Advisory: {advisory_n}   ·   "
               f"Noise: {noise_n}   ·   Dropped (pre-existing): "
-              f"{(earlier or {}).get('dropped', 0) + pre + dropped}")
+              f"{max((earlier or {}).get('dropped', 0), pre + dropped)}")
     text = text.replace(COUNTS, f"Must-fix: {counts}", 1)
     if not pending:
         if finished < 2:
