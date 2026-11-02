@@ -379,10 +379,10 @@
       "session": "S1 (a result `record` refuses)",
       "setup": "Run eval 1's S1 until `next` prints the first auto-dev:define spawn, and stop the session there without spawning it (its brief issued, its result not recorded). Then, from the worktree, write .auto-dev/returns/define-1.json as {\"worker\": \"define\", \"status\": \"ok\", \"next\": \"FITS\"}, which leaves out keys Define must return (`high_risk`, `reading`), and run `autodev.py record define 1`: it exits 1 and prints MALFORMED with the missing keys. Start a fresh session.",
       "prompt": "auto-dev continue",
-      "expected_output": "`resume` prints RESUME in S1, Phase 2. The orchestrator does nothing about the refused result itself: it runs `next`, which briefs the job again as define #2, a new brief whose previous_issues line names the missing keys, and spawns auto-dev:define with it. The orchestrator never runs `autodev.py brief --retry`, never writes or edits a file under returns/ or briefs/ by hand, and spends no round. Define writes SPEC.md and a full result for #2, `record define 2` accepts it, and S1 runs on as usual to its handoff.",
+      "expected_output": "`resume` prints RESUME in S1, Phase 2. The orchestrator does nothing about the refused result itself: it runs `next`, which briefs the job again as define #2, a new brief whose previous_issues says to start from what the refused return left and fix only the issues, then names the missing keys, and spawns auto-dev:define with it. The orchestrator never runs `autodev.py brief --retry`, never writes or edits a file under returns/ or briefs/ by hand, and spends no round. Define writes SPEC.md and a full result for #2, `record define 2` accepts it, and S1 runs on as usual to its handoff.",
       "files": [],
       "expectations": [
-        "The first worker spawned in the session is auto-dev:define with briefs/define-2.md, whose previous_issues line names `high_risk` and `reading`",
+        "The first worker spawned in the session is auto-dev:define with briefs/define-2.md, whose previous_issues starts by saying the refused return's files are still in place and to fix only the issues listed, then names `high_risk` and `reading`",
         "The orchestrator runs no `autodev.py brief define` (with or without --retry) and writes no file under .auto-dev/returns/ or .auto-dev/briefs/ by hand; returns/define-1.json is as the setup left it",
         "`autodev.py record define 2` exits 0, and state.json's budget has no spend for the retry",
         "S1 ends at the handoff with Phase 2 and Phase 3 done"

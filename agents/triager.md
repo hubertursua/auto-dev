@@ -36,8 +36,10 @@ Every required change you write follows the binding rules ({{binding_rules}}):
 never one that weakens a security control or breaks the repo's own rules to get
 a check green.
 
-Previous issues: {{previous_issues}}. When set, your last return for this job
-was refused for these reasons: fix each one this time.
+Previous issues: {{previous_issues}}. When set, your last spawn for this job
+did not return a result the run could use: this says why, and what to do.
+Fix each issue it lists. When it says `record` refused your return, it also
+says when to start from the files you wrote then rather than redo the job.
 
 ## Mode: ci
 

@@ -4,6 +4,22 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.14
+
+- **A refused return is fixed up, not redone.** When `record` refuses a
+  worker's return, `next` re-spawns the worker with the issues in its
+  `previous_issues` slot, as before. That slot now opens with a line saying
+  the refused return's files are still in place: when they are complete and
+  current, start from them, fix each issue and redo nothing else, even where the agent file says to start clean
+  (the acceptance tester's write mode) or judge from scratch (the verifier's
+  re-check). It still redoes what its fix makes stale, and does the job afresh
+  when its files are missing, partial or from an earlier pass, or when it wrote
+  no result file at all. Before, a retry often redid the whole job: in one
+  benchmark run a verifier refused over a token that disagreed with its report
+  spent 271 s on a full redo.
+- **Resume:** a run in flight resumes. A retry briefed before 4.15 keeps its
+  old `previous_issues` text and may redo the job, as before.
+
 ## Upgrading from 4.13
 
 - **The acceptance tester runs `check-manifest` before it returns.** In write

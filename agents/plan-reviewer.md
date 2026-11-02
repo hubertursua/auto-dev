@@ -22,8 +22,10 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
-Previous issues: {{previous_issues}}. When set, your last return for this job
-was refused for these reasons: fix each one this time.
+Previous issues: {{previous_issues}}. When set, your last spawn for this job
+did not return a result the run could use: this says why, and what to do.
+Fix each issue it lists. When it says `record` refused your return, it also
+says when to start from the files you wrote then rather than redo the job.
 
 ## Your task
 
@@ -60,9 +62,8 @@ is in its FIX block.
 
 Follow the template as you write; you have no shell, so don't look for the
 checker or re-implement it. `autodev.py record` checks your FIX file, if you
-wrote one, when you return. If it finds a problem, you are briefed again with it
-under Previous issues: the file you wrote is still there, so fix only what it
-lists.
+wrote one, when you return. If it finds a problem, you are briefed again
+with it under Previous issues.
 
 ## Result
 

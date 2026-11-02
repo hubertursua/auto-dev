@@ -171,7 +171,13 @@ class BriefTest(WorkCase):
         self.assertEqual(self.cmd("brief", "define", "--mode", "write", "--retry", "1")
                          .returncode, 0)
         text = (self.dir / "briefs" / "define-1.md").read_text()
-        self.assertIn("previous_issues: - SPEC.md has Security/Compliance criteria", text)
+        self.assertIn("\n  - SPEC.md has Security/Compliance criteria", text)
+        # A fix-up, not a redo: the refused return's files are kept.
+        self.assertIn("previous_issues: `record` refused your last return for this job, "
+                      "and the files you wrote for it are still in place.", text)
+        self.assertIn("redo what your fix makes stale", text)
+        self.assertIn("even where your instructions say to start clean", text)
+        self.assertIn("If they are missing, partial or from an earlier pass", text)
         self.cmd("brief", "define", "--mode", "write")
         values = self.brief_values(self.dir / "briefs" / "define-2.md")
         self.assertEqual(values["previous_issues"], "none")
@@ -197,6 +203,9 @@ class BriefTest(WorkCase):
         self.assertIn("you wrote no result file", retry(1, "R1"))
         self.assertNotIn("`leads`", retry(1, "R1"))
         self.assertIn("`leads`", retry(3, "R3"))
+        # Only a return there is to fix up gets the fix-up line: R1 returned nothing.
+        self.assertNotIn("still in place", retry(1, "R1"))
+        self.assertIn("refused your last return for this job, and the files", retry(3, "R3"))
         self.assertEqual(self.cmd("brief", "code-reviewer", "--mode", "review", "--retry",
                                   "2", "--set", "reviewer=R2", "--set", "scope=x")
                          .returncode, 1)
