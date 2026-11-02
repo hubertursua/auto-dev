@@ -9,6 +9,7 @@ it in a temp dir.
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -112,6 +113,14 @@ class InitTest(RunCase):
         self.assertIn("**Base:** main", (self.dir / "profile.md").read_text())
         # Nothing init wrote is visible to git.
         self.assertEqual(self.sh("git", "status", "--porcelain", cwd=self.worktree), "")
+
+    def test_profile_md_lists_each_checks_scoped_form(self):
+        self.profile.write_text(PROFILE.replace(
+            'report: "TEST.md" }', 'report: "TEST.md", files: "run-tests <files>" }'))
+        self.assertEqual(self.init().returncode, 0)
+        profile = (self.dir / "profile.md").read_text()
+        self.assertIn("| 1 | test | `true` | `TEST.md` | `run-tests <files>` |", profile)
+        self.assertEqual(self.state()["settings"]["gate"][0]["files"], "run-tests <files>")
 
     def test_security_docs_are_found_without_being_named(self):
         seed = self.tmp / "seed"
@@ -2115,6 +2124,114 @@ class MutantColdRunFileTest(MutantsCase):
                 calls, left = self.outcome(stored)
                 self.assertEqual(calls, baseline)
                 self.assertEqual(left, stored)
+
+class RunCommandTest(unittest.TestCase):
+    """`autodev.py run`: the profile's own commands, run in the worktree."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wt = self.tmp / "my app"
+        self.ad = self.wt / ".auto-dev"
+        self.ad.mkdir(parents=True)
+        (self.wt / "src").mkdir()
+        (self.wt / "src" / "a b.test.ts").write_text("x\n")
+        (self.wt / "src" / "c.test.ts").write_text("y\n")
+        self.cwd = self.tmp / "elsewhere"
+        self.cwd.mkdir()
+        py = shlex.quote(sys.executable)
+        # Each command prints where it ran and the arguments it got.
+        echo = f"{py} -c 'import os, sys; print(os.getcwd()); print(sys.argv[1:])'"
+        self.gate = [
+            {"kind": "lint", "command": f"{echo} lint", "report": "LINT.md",
+             "files": f"{echo} lint-files <files>"},
+            {"kind": "typecheck", "command": f"{py} -c 'import sys; print(\"boom\"); "
+                                             f"sys.exit(4)'", "report": "TYPECHECK.md"},
+            {"kind": "test", "command": f"{echo} all", "report": "TEST.md",
+             "files": f"{echo} some <files> --verbose"},
+            {"kind": "build", "command": f"{py} -c 'import time; time.sleep(30)'",
+             "report": "BUILD.md"},
+        ]
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+
+    def run_(self, *args):
+        return subprocess.run([sys.executable, str(AUTODEV), "run", *args, "--dir",
+                               str(self.ad)], capture_output=True, text=True,
+                              cwd=self.cwd, check=False)
+
+    def output_of(self, r):
+        line = next(x for x in r.stdout.splitlines() if x.startswith("  output: "))
+        return Path(line[len("  output: "):].rsplit(" (", 1)[0])
+
+    def test_test_runs_the_profiles_command_in_the_worktree(self):
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PASSED: "), r.stdout)
+        self.assertIn(f"`{self.gate[2]['command']}` exited 0", r.stdout)
+        out = self.output_of(r)
+        self.assertEqual(out.parent, (self.ad / "tmp" / "run").resolve())
+        self.assertEqual(out.read_text().splitlines(), [str(self.wt), "['all']"])
+        self.assertIn(f"    {self.wt}", r.stdout)  # the tail is printed
+        # A second run gets its own file.
+        self.assertNotEqual(self.output_of(self.run_("test")), out)
+
+    def test_gate_by_number_or_report_name(self):
+        r = self.run_("gate", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['lint']", r.stdout)
+        self.assertEqual(self.output_of(r).name, "gate-1-1.txt")
+        for name in ("LINT.md", "lint"):
+            self.assertIn("['lint']", self.run_("gate", name).stdout)
+
+    def test_a_failing_command_exits_1_with_its_output(self):
+        r = self.run_("gate", "TYPECHECK", "--json")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual((data["result"], data["exit_code"]), ("FAILED", 4))
+        self.assertEqual(data["tail"], ["boom"])
+
+    def test_files_runs_the_scoped_form_with_quoted_relative_paths(self):
+        r = self.run_("test", "--files", str(self.wt / "src" / "a b.test.ts"),
+                      "src/c.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['some', 'src/a b.test.ts', 'src/c.test.ts', '--verbose']",
+                      r.stdout)
+        self.assertIn(f"    {self.wt}", r.stdout)
+
+    def test_files_is_refused_without_a_scoped_form_or_outside_the_worktree(self):
+        outside = self.tmp / "x.test.ts"
+        outside.write_text("z\n")
+        for args, said in ((("gate", "2", "--files", "src/c.test.ts"), "no scoped form"),
+                           (("test", "--files", str(outside)), "outside the worktree"),
+                           (("test", "--files", "src/../../x.test.ts"),
+                            "outside the worktree"),
+                           (("test", "--files", "src/nope.ts"), "does not exist"),
+                           (("gate", "9"), "no check 9"),
+                           (("gate", "NOPE"), "no gate check has the report"),
+                           (("test", "--out", str(self.tmp / "o.txt")),
+                            "outside the artifact dir")):
+            r = self.run_(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn(said, r.stderr, args)
+        self.assertFalse((self.tmp / "o.txt").exists())
+
+    def test_out_saves_the_output_under_the_artifact_dir(self):
+        target = self.ad / "evidence" / "acceptance.txt"
+        r = self.run_("test", "--files", "src/c.test.ts", "--out", str(target))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("src/c.test.ts", target.read_text())
+
+    def test_a_timeout_stops_the_command_and_exits_3(self):
+        r = self.run_("gate", "BUILD", "--timeout", "1")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("TIMED_OUT: "), r.stdout)
+
+    def test_without_state_it_could_not_run(self):
+        (self.ad / "state.json").unlink()
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 2)
+
 
 class CliTest(unittest.TestCase):
     def test_missing_state_cannot_run(self):

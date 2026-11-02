@@ -141,6 +141,7 @@ All exit 2 when they could not run — never a pass.
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -309,7 +310,9 @@ def auto_values(worker, n, state, ad, mode):
     """Every AUTO slot's value for this run (some depend on the worker)."""
     s = state["settings"]
     test = next((c["command"] for c in s.get("gate", []) if c.get("kind") == "test"), "")
-    gate = "\n".join(f"{i}. `{c['command']}` → {ad}/lint/{c.get('report', '')}"
+    run = f"python3 {shlex.quote(str(SCRIPTS / 'autodev.py'))} run gate"
+    gate = "\n".join(f"{i}. `{c['command']}` → {ad}/lint/{c.get('report', '')}\n"
+                     f"   run: `{run} {i} --dir {shlex.quote(str(ad))}`"
                      for i, c in enumerate(s.get("gate", []), 1))
     phase6 = state.get("phase6", {})
     values = {

@@ -38,6 +38,7 @@ Subcommands:
     record             check a worker's result against its artifacts; update state
     check-artifact     check an artifact against its template before returning it
     mutants   pick which mutants a verifier re-check runs again; record a finished pass
+    run       run one of the profile's gate or test commands in the worktree
     next      print the pipeline's one next action (the orchestrator's loop)
 
 Every subcommand takes --json. Exit codes, the same for all:
@@ -63,6 +64,7 @@ from lib import (
     cmd_pr,
     cmd_resume,
     cmd_review,
+    cmd_run,
     cmd_ship,
     cmd_state,
     cmd_work,
@@ -100,6 +102,7 @@ COMMANDS = {
     "record": (cmd_work, cmd_work.record),
     "check-artifact": (cmd_work, cmd_work.check_artifact),
     "mutants": (cmd_mutants, cmd_mutants.main),
+    "run": (cmd_run, cmd_run.main),
     "next": (cmd_next, cmd_next.main),
     "pr": (cmd_pr, cmd_pr.main),
 }

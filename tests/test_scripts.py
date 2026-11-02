@@ -661,6 +661,16 @@ class ValidateConfigTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("<symbol>", r.stderr)
 
+    def test_gate_files_form_needs_its_placeholder(self):
+        ok = ('gate:\n  - { kind: test, command: "npm test", report: "TEST.md",'
+              ' files: "npx vitest run <files>" }\n')
+        r = self.validate(ok)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.validate(ok.replace(" <files>", ""))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("gate[0].files", r.stderr)
+        self.assertIn("<files>", r.stderr)
+
     def test_symbol_lookup_unknown_field(self):
         r = self.validate('symbol_lookup:\n  lookup: "dexter lookup <symbol>"\n')
         self.assertEqual(r.returncode, 1)

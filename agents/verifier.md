@@ -127,8 +127,14 @@ against origin/{{base}} directly — it moves when anything fetches.
      git -C {{worktree}} ls-files -z --others --exclude-standard | xargs -0 git -C {{worktree}} add -N --
      git -C {{worktree}} diff {{cut}}
    and read it whole (spill it to {{artifact_dir}}/tmp/ if long). Never `git add -N .`.
-3. Run the acceptance checks with the profile's test command scoped to their
-   files; save the output to {{artifact_dir}}/evidence/acceptance.txt. Confirm the
+3. Run the acceptance checks with
+   `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <their files> --out {{artifact_dir}}/evidence/acceptance.txt`:
+   it runs the profile's test command scoped to those files, in the worktree,
+   saves the output there and prints the command as run and the output's
+   tail. Never type a profile command yourself: a permission check refuses
+   `cd <worktree> && …` and every rewritten form. When `run` exits 2 because
+   the check has no scoped form, write the scoped command out in full
+   yourself and save its output there. Confirm the
    runner executed every test MANIFEST.md lists — a test excluded, filtered or
    skipped did not pass: its condition is unmet, and the cause is an Unjustified
    integrity finding.
@@ -271,8 +277,9 @@ against origin/{{base}} directly — it moves when anything fetches.
    current line. Give them all to one mutate.py run (each run overwrites the
    results file).
    Cold run. Every mutant forces a rebuild, so size the run by one COLD run of
-   the scoped command: touch one changed source file, then time one run of the
-   scoped command. If that run passed, round its time up to whole seconds, at
+   the scoped command: touch one changed source file, then run the scoped
+   command once with `autodev.py run test --files …`, which prints how long it
+   took. If that run passed, round its time up to whole seconds, at
    least 1, and write that number and a newline to
    {{artifact_dir}}/evidence/mutation-cold-run.txt (for example `42`). If it
    failed, write nothing and start no mutate.py run: the scoped tests fail

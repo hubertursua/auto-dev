@@ -63,15 +63,22 @@ Find, from the repo itself:
    a config file); list the rest under NOT ADOPTED. There must be at least one
    `kind: test` check; if you find no way to run the tests, say so under
    QUESTIONS rather than invent one.
-3. Test scope: databases or services the suite needs, how to start them, the
+3. Each check's scoped form, in `files`: the same check run on only some
+   files, with `<files>` where the paths go (the workers run it on the files
+   they changed or wrote, as `autodev.py run gate <n> --files <path> …`). For
+   the test check, the form must also name every test it runs and its result
+   (the runner's verbose reporter, if its default only counts passing tests).
+   Take it from how the repo or its runner's docs run one file; omit `files`
+   for a check that can't be scoped (a whole-program type check, say).
+4. Test scope: databases or services the suite needs, how to start them, the
    monorepo or workspace layout, slow tiers. This goes in test_notes.
-4. Gitignored files the suite needs that a fresh worktree won't have (`.env`,
+5. Gitignored files the suite needs that a fresh worktree won't have (`.env`,
    `.env.test`, local config): list them under worktree_files only when they
    exist in {{repo}} and `git -C {{repo}} check-ignore -q -- <file>` exits 0.
-5. A code-index tool for finding a symbol's definition and callers, if the repo
+6. A code-index tool for finding a symbol's definition and callers, if the repo
    or its ecosystem uses one and it is on PATH. Omit symbol_lookup otherwise.
-6. The CI provider: github-actions, circleci, gitlab, or none.
-7. For each tool the profile uses, whether it is on PATH (`command -v`). An
+7. The CI provider: github-actions, circleci, gitlab, or none.
+8. For each tool the profile uses, whether it is on PATH (`command -v`). An
    adopted tool that is missing goes under NOT INSTALLED; keep its check.
 
 Commands run verbatim from the repo root, in order. Write each exactly as a
@@ -86,7 +93,7 @@ PROFILE
 stack: <short name>
 setup: [<install commands, in order>]
 gate:
-  - { kind: <compile|format|lint|typecheck|test|build>, command: "<command>", report: "<KIND>.md" }
+  - { kind: <compile|format|lint|typecheck|test|build>, command: "<command>", report: "<KIND>.md", files: "<command with <files>>" }   # files: omit if it can't be scoped
 test_notes: "<scope hints>"          # omit if none
 worktree_files: [<paths>]            # omit if none
 symbol_lookup:                       # omit if none
@@ -107,12 +114,13 @@ stack: typescript
 setup: ["npm ci"]
 gate:
   - { kind: typecheck, command: "npx tsc --noEmit", report: "TYPECHECK.md" }
-  - { kind: test, command: "npm test", report: "TEST.md" }
+  - { kind: test, command: "npm test", report: "TEST.md", files: "npx vitest run --reporter=verbose <files>" }
 ci: github-actions
 EVIDENCE
 - npm ci: package-lock.json; .github/workflows/ci.yml:18
 - npx tsc --noEmit: .github/workflows/ci.yml:21
 - npm test: package.json:9 ("test": "vitest run"); .github/workflows/ci.yml:24
+- vitest run --reporter=verbose <files>: vitest is the runner (package.json:9); it takes file paths
 NOT ADOPTED — eslint: no config file or dependency
 NOT INSTALLED — none
 QUESTIONS — CI also runs `npm run e2e` against a deployed preview; left out of the gate.

@@ -42,12 +42,16 @@ setup:
 # The quality gate: the ordered checks that must all be green in Phase 5.
 # Each check maps to a lint/<report>.md artifact.
 # kind is advisory (compile|format|lint|typecheck|test|build); `command` is
-# what actually runs; `report` is the .auto-dev/lint/ filename.
+# what actually runs; `report` is the .auto-dev/lint/ filename; optional
+# `files` is the check scoped to some files, with <files> where they go.
 gate:
   - { kind: typecheck, command: "npx tsc --noEmit",       report: "TYPECHECK.md" }
-  - { kind: lint,      command: "npx eslint .",           report: "LINT.md" }
-  - { kind: format,    command: "npx prettier --check .", report: "FORMAT.md" }
-  - { kind: test,      command: "npm test",               report: "TEST.md" }
+  - { kind: lint,      command: "npx eslint .",           report: "LINT.md",
+      files: "npx eslint <files>" }
+  - { kind: format,    command: "npx prettier --check .", report: "FORMAT.md",
+      files: "npx prettier --check <files>" }
+  - { kind: test,      command: "npm test",               report: "TEST.md",
+      files: "npx vitest run --reporter=verbose <files>" }
 # Optional: gitignored files copied from the main checkout into the run's worktree
 # before `setup` runs — env/config a suite needs but git does not track.
 worktree_files: [".env", ".env.test"]
@@ -69,7 +73,14 @@ Fields:
 - **`setup`** (required) — ordered install/activation commands; may be `[]`.
 - **`gate`** (required) — the ordered quality-gate checks. Each is
   `{ kind, command, report }`, and one must be `kind: test`. The pipeline is
-  only "green" when every `command` exits clean.
+  only "green" when every `command` exits clean. A check may add `files`: the
+  same check run on only some files, with `<files>` where the paths go (quoted,
+  relative to the worktree). Workers run a check through `autodev.py run gate
+  <n>` (the test check: `run test`), which runs `command` in the worktree, or
+  `files` with `--files <path> …`. The test check's `files` form must name every
+  test it runs and its result, since a base run and the verifier's acceptance
+  run read the names. Without a `files` form a check only runs whole, and a
+  worker that needs it scoped writes that command itself.
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
   before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.
@@ -170,6 +181,9 @@ Guidance to show (adapt the paths):
 > }
 > ```
 >
+> - The `autodev.py` rule also covers `autodev.py run`, which workers use to
+>   run this profile's gate and test commands in the worktree. It runs only
+>   the commands in the profile you confirmed, never one a worker writes.
 > - One rule per script, so any can be left out. `mutate.py` edits the run's
 >   worktree to plant bugs and restores every file; mutation is on by default,
 >   so without its rule the verifier waits on a prompt. `mutation.max: 0` turns
