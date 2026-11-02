@@ -75,7 +75,9 @@ Output lines (only the ones that apply):
     RULE:     the rule that chose the action (--explain)
     RECORDED: each worker result `next` recorded before deciding,
               `<worker>-<n>: <status> <next>`, or `<worker>-<n>: refused
-              (<token>)` (it is then briefed again with the issues)
+              (<token>)` (it is then briefed again with the issues). Under
+              --explain nothing is recorded: with a result waiting, the action
+              says `next` would record it first
 
 --explain only looks: it prints the action `next` would take and the rule that
 chose it, but writes no brief, spends no round, applies nothing and saves
@@ -194,7 +196,7 @@ class Ctx:
         self.wt = self.state["worktree"]
         self.p6 = self.state.setdefault("phase6", {})
         self.dirty = False
-        self.recorded = False  # results `next` recorded this call, saved even on a stop
+        self.recorded = []  # the RECORDED lines of the results this call recorded
         self.readonly = bool(getattr(args, "explain", False))
         self.probing = False
         self.peeked = {}
@@ -260,12 +262,8 @@ class Ctx:
         self.dirty = True
 
     def save(self):
-        if self.readonly:
-            return
-        if self.dirty:
+        if self.dirty and not self.readonly:
             st.save(self.dir, self.state)
-        elif self.recorded:  # only results: each already counted its event
-            st.save(self.dir, self.state, count_event=False)
 
     def would(self, what, rule):
         """Under --explain, stop before a step that writes a file or git."""
@@ -413,21 +411,20 @@ def main(args):
         raise Fail(f"{exc} — a broken artifact: tell the user and stop (the worker "
                    "that wrote it may need re-running)", CANNOT_RUN, "ERROR") from None
     except AssertionError as exc:
-        c.dirty = False
-        c.save()  # keep the results recorded before the step
         raise Fail(f"next has no rule for this state ({exc}); report it as an "
                    "auto-dev bug", CANNOT_RUN, "ERROR") from None
     except Fail as exc:
         if exc.code == CANNOT_RUN:
             raise
         # A step `next` could not take is a stop, never exit 1; nothing of the
-        # step is saved, since it did not happen, only the results recorded first.
-        c.dirty = False
-        c.save()
-        return show(stop([f"`next` could not take its step ({exc.token}): {exc}",
-                          ("Tell the user; it is a broken artifact or an auto-dev bug. "
-                           f"State and artifacts: {c.ad}")],
-                         f"a step failed: {exc.token}"), args)
+        # step is saved, since it did not happen (the results recorded first were).
+        failed = stop([f"`next` could not take its step ({exc.token}): {exc}",
+                       ("Tell the user; it is a broken artifact or an auto-dev bug. "
+                        f"State and artifacts: {c.ad}")],
+                      f"a step failed: {exc.token}")
+        if c.recorded:
+            failed["RECORDED"] = c.recorded
+        return show(failed, args)
     if result.get("code") == NEXT_STOP:
         report = list(result.get("REPORT") or [])
         report += [line for line in proposals.upstream_unsent_lines(c.state)
@@ -471,7 +468,11 @@ def show(result, args):
 
 def decide(c):
     recorded = record_returns(c)
-    c.recorded, c.dirty = bool(recorded), False  # each record counted its own event
+    if recorded and not c.readonly:
+        # Saved before the step, as a `record` call was: a step that fails keeps
+        # them and saves nothing of its own. Each counted its own event already.
+        st.save(c.dir, c.state, count_event=False)
+    c.recorded, c.dirty = recorded, False
     result = decide_step(c)
     if recorded:
         result["RECORDED"] = recorded

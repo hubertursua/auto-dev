@@ -90,7 +90,7 @@ class NextCase(RunCase):
 
     # -------------------------------------------------------------- driving
 
-    def next(self, expect=None):
+    def next(self, expect=None, refused_ok=False):
         r = self.autodev("next", "--dir", self.dir, "--json")
         try:
             out = json.loads(r.stdout)
@@ -98,6 +98,9 @@ class NextCase(RunCase):
             self.fail(f"next printed no JSON (exit {r.returncode}):\n{r.stdout}{r.stderr}")
         if expect is not None:
             self.assertEqual(out["exit"], expect, json.dumps(out, indent=2))
+        if not refused_ok:  # `answer` no longer runs `record`: a refusal would hide here
+            self.assertFalse([ln for ln in out.get("RECORDED", []) if "refused" in ln],
+                             json.dumps(out, indent=2))
         return out
 
     def spawned(self, out):
@@ -485,7 +488,7 @@ class PlanTest(NextCase):
     def test_next_refuses_a_bad_result_itself_and_briefs_the_job_again(self):
         self.expect("define")
         self.write_return("define", 1, {"next": "FITS"})  # high_risk, reading left out
-        out = self.next(0)
+        out = self.next(0, refused_ok=True)
         self.assertEqual(out["RECORDED"], ["define-1: refused (MALFORMED)"])
         self.assertEqual(self.spawned(out), [("define", 2)])
         self.assertIn("high_risk", (self.dir / "briefs" / "define-2.md").read_text())
@@ -655,7 +658,8 @@ class BuildTest(NextCase):
         self.plan_session()
         self.resume()
         _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
-        self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
+        r = self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = self.autodev("next", "--explain", "--dir", self.dir)
         self.assertIn("install the sealed acceptance checks", out.stdout)
         installed = self.worktree / "src" / "due.acceptance.test.ts"
@@ -6027,7 +6031,8 @@ class RulingLapseTest(NextCase):
         _, jobs = self.expect("planner")
         self.assertEqual(self.mode(*jobs[0]), "blocked")
         self.answer(*jobs[0], "PLAN_REVISED", entry_points_changed="no")
-        self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
+        r = self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.state()["log"][-1]["steps_changed"], ["3"])
         _, jobs = self.expect("coder")
         self.refiles_on_3(jobs[0])
@@ -6108,7 +6113,8 @@ class RulingLapseTest(NextCase):
         _, jobs = self.expect("acceptance-tester")
         self.assertIn("entry point", self.sets(*jobs[0])["scope"])
         self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
-        self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
+        r = self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.state()["log"][-1]["checks_changed"], ["4"])
         _, jobs = self.expect("coder")
         self.repair_on_4(self.built_to_verifier(jobs[0]))
@@ -6148,7 +6154,8 @@ class RulingLapseTest(NextCase):
         self.assertIn("fail the quality gate", self.sets(*jobs[0])["scope"])
         self.rewrite_check_4()
         self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
-        self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
+        r = self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.state()["log"][-1]["checks_changed"], ["4"])
         _, jobs = self.expect("cleanup")
         self.lint()
