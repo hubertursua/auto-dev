@@ -3845,7 +3845,25 @@ class ReviewBuildTest(RunCase):
             "## Security leads")[0] + "## Security leads\nnone\n")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("C7 is not an open must-fix finding", r.stdout)
-        self.assertIn("has no line saying where it goes", r.stdout)
+        self.assertIn("is not copied word for word with where it goes", r.stdout)
+
+    def test_a_lead_with_an_arrow_still_needs_where_it_goes(self):
+        self.panel({"R1": report("", leads="- `src/q.ts:3` — input a → b unescaped")})
+        lead = "- `src/q.ts:3` — input a → b unescaped (raised by R1)"
+        base = "# Judgment — pass 1\n\n## Earlier must-fix\nnone\n\n## Security leads\n"
+        r = self.build(base + lead + "\n")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("needs `→ passed to the security review`", r.stdout)
+        r = self.build(base + lead + " → passed to the security review\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_none_line_never_hides_a_finding(self):
+        parsed = self.judgment.parse_report(report(
+            "None of these block, but:\n2. **x** - src/a.ts:3 - correctness\n"))
+        self.assertEqual(len(parsed["unparsed"]), 1, parsed)
+        self.assertTrue(parsed["problems"])
+        self.assertEqual(self.judgment.lead_items("- nonexistent-user check skipped\n"),
+                         ["- nonexistent-user check skipped"])
 
     def test_no_build_without_the_earlier_passes(self):
         self.three_reports()

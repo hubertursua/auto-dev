@@ -28,6 +28,9 @@ LEVEL, COUNTS = "\0level\0", "\0counts\0"  # filled in once the rows are known
 FINDING_RE = re.compile(r"^\s*(\d+)\.\s+\*\*(.+?)\*\*\s+[—–-]+\s+`([^`]+)`\s+[—–-]+\s+"
                         r"`?([A-Za-z-]+)`?\s*$")
 SUB_RE = re.compile(r"^\s+(Trigger path|Why it is wrong):\s*(.*)$")
+NONE_RE = re.compile(r"none\b", re.IGNORECASE)
+LOOKS_LIKE_FINDING = re.compile(r"^\s*(\d+\.|[-*])\s")
+DISPOSED = re.compile(r"→\s*(passed to the security review|covered by S\d+)\.?\s*$")
 NEAR = 5  # lines apart at which two findings in one file are flagged as maybe one
 
 
@@ -50,7 +53,7 @@ def lead_items(text):
             items.append(line.strip())
         elif line.strip() and items:
             items[-1] += "\n  " + line.strip()
-    return [i for i in items if not i[2:].strip().lower().startswith("none")]
+    return [i for i in items if not NONE_RE.match(i[2:].strip())]
 
 
 def parse_report(text):
@@ -86,7 +89,8 @@ def parse_report(text):
             last = "Why it is wrong" if current["Why it is wrong"] else "Trigger path"
             current[last] = (current[last] + " " + line.strip()).strip()
             continue
-        if not findings and (none_said or line.strip().lower().startswith("none")):
+        if not findings and not LOOKS_LIKE_FINDING.match(line) and (
+                none_said or NONE_RE.match(line.strip())):
             none_said = True  # `none — <what you tried>`, wrapped or not
             continue
         current = None
@@ -306,12 +310,11 @@ def parse_judgment(text, findings, earlier_open, finding_leads=()):
                         "are none)")
         leads = []
     for lead in finding_leads:
-        first = lead.split("\n", 1)[0].strip()
-        if not any(ln.startswith(first) for ln in leads):
-            problems.append(f"Security leads: `{first[:60]}` (from findings.md) has no line "
-                            "saying where it goes")
+        if not any(ln.startswith(lead) for ln in leads):
+            problems.append(f"Security leads: `{lead.split(chr(10))[0][:60]}` (from findings.md) "
+                            "is not copied word for word with where it goes")
     for ln in leads:
-        if "→" not in ln:
+        if not DISPOSED.search(ln):
             problems.append(f"Security leads: `{ln[:60]}` needs `→ passed to the security "
                             "review` or `→ covered by S<n>`")
     if problems:

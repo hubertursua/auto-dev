@@ -747,17 +747,18 @@ def review_build(args):
     coder = [i for i in result["open_ids"]
              if result["categories"].get(i, "").strip("`").lower() != "acceptance-check"]
     corrections = folder / "corrections.md"
-    staged = folder / ".corrections.md.build"  # written whole, or not at all
-    staged.write_text("# Required changes\n" + ("" if coder else "None.\n"), encoding="utf-8")
-    try:
-        add_corrections(text, staged, coder)
-    except art.ArtifactError:
-        staged.unlink(missing_ok=True)
-        raise
+    staged = folder / ".corrections.md.build"  # both written whole, or neither
     tmp = report.with_name(".CODE_REVIEW.md.build")
-    tmp.write_text(text, encoding="utf-8")
-    staged.replace(corrections)
-    tmp.replace(report)
+    try:
+        staged.write_text("# Required changes\n" + ("" if coder else "None.\n"),
+                          encoding="utf-8")
+        add_corrections(text, staged, coder)
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(report)
+        staged.replace(corrections)
+    finally:
+        staged.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
     emit(args.json, "BUILT", f"{report} and {corrections}", next=result["next"],
          must_fix_open=result["must_fix_open"], revote=result["revote"])
     return 0
