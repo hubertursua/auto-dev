@@ -4,6 +4,22 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.15
+
+- **`next` records the workers' results itself.** Before it decides, `next`
+  records each issued brief whose result file exists and isn't recorded yet,
+  as `autodev.py record` would, and prints a `RECORDED: <worker>-<n>: <status>
+  <next>` line for each (or `refused (<token>)`, after which the same `next`
+  briefs the job again with the issues). Each recorded result is still its own
+  event, so results and later briefs keep their order and the checkpoint
+  counts as before. A spawn action no longer prints `AFTER: autodev.py record
+  …` lines: the orchestrator spawns, waits for every agent to return, and runs
+  `next`. That saves one orchestrator turn per worker, a fifth of a run's turns.
+  A brief with no result file is still issued again as it is. `autodev.py
+  record` stays, for a lookup or by hand.
+- **Resume:** a run in flight resumes. A session that already ran `record` for
+  a result is fine: `next` sees it recorded.
+
 ## Upgrading from 4.14
 
 - **A refused return is fixed up, not redone.** When `record` refuses a

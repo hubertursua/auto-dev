@@ -8,6 +8,12 @@ outcomes, the gates, the marks and the Phase 6 fields) and the artifacts, and
 prints the one thing to do now. Run it, do exactly that, run every AFTER
 command, then run `next` again. It never needs you to judge a file.
 
+It records the workers' results itself first: each issued brief whose result
+file exists and isn't recorded yet is recorded as `autodev.py record` would
+(one it can't accept is refused, its issues saved for the retry), so spawned
+workers need no `record` call. A brief with no result file is issued again as
+it is. Run `next` only once every agent of the last spawn returned.
+
 It does the mechanical steps itself rather than asking you to: it writes the
 brief of the worker to spawn, spends a round of the budget before a
 correction, installs the sealed acceptance checks before Phase 5's cleanup,
@@ -67,6 +73,9 @@ Output lines (only the ones that apply):
     AFTER:    a command to run once the action is done; for a question,
               `"<answer>" → <command>`, one per answer
     RULE:     the rule that chose the action (--explain)
+    RECORDED: each worker result `next` recorded before deciding,
+              `<worker>-<n>: <status> <next>`, or `<worker>-<n>: refused
+              (<token>)` (it is then briefed again with the issues)
 
 --explain only looks: it prints the action `next` would take and the rule that
 chose it, but writes no brief, spends no round, applies nothing and saves
@@ -293,7 +302,7 @@ def spawn(c, worker, mode=None, sets=None, rule="", budget=None, agent=None):
 
 def spawn_many(c, jobs, rule, budget=None, agent=None):
     """Spawn each (worker, mode, sets[, agent]) job in one message."""
-    agents, briefs_, prompts, after, efforts = [], [], [], [], []
+    agents, briefs_, prompts, efforts = [], [], [], []
     for job in jobs:
         worker, mode, sets = job[:3]
         job_agent = job[3] if len(job) > 3 else agent
@@ -318,9 +327,8 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
         agents.append(job_agent or f"auto-dev:{worker}")
         briefs_.append(str(path))
         prompts.append(cmd_work.prompt_for(path))
-        after.append(c.cmd("record", worker, n))
         efforts.append(effort_for(c, worker))
-    return spawn_lines(agents, briefs_, prompts, after, rule, budget, efforts)
+    return spawn_lines(agents, briefs_, prompts, rule, budget, efforts)
 
 
 def rebase_installed(c):
@@ -336,17 +344,18 @@ def rebase_installed(c):
             sealed.rebase(c.ad, rel, sealed.read(wt / rel))
 
 
-def spawn_lines(agents, briefs_, prompts, after, rule, budget=None, efforts=None):
+def spawn_lines(agents, briefs_, prompts, rule, budget=None, efforts=None):
     """efforts, when any is set, parallels agents ("" for an agent spawned at its
-    own effort)."""
+    own effort). No AFTER line: the next `next` records what they return."""
     efforts = efforts if efforts and any(efforts) else None
     what = (f"spawn {agents[0]} with the PROMPT" if len(agents) == 1 else
             f"spawn these {len(agents)} agents in one message, in parallel, each "
             "with its PROMPT")
+    what += "; once every agent returned, run `next` (it records their results)"
     if efforts:
         what += ", passing its EFFORT as the Agent tool's `effort` parameter"
     return action(what, rule, AGENT=agents, BRIEF=briefs_, PROMPT=prompts,
-                  EFFORT=efforts, BUDGET=budget, AFTER=after)
+                  EFFORT=efforts, BUDGET=budget)
 
 
 def plan_effort(c):
@@ -452,6 +461,40 @@ def show(result, args):
 
 
 def decide(c):
+    recorded = record_returns(c)
+    result = decide_step(c)
+    if recorded:
+        result["RECORDED"] = recorded
+    return result
+
+
+def record_returns(c):
+    """Record every issued brief whose result file exists and is not logged yet,
+    as `autodev.py record` would: one it can't accept is refused and its issues
+    saved for the retry `pending_briefs` writes. A brief with no result file is
+    left to `pending_briefs`, which issues it again as it is. One line per job.
+    Under --explain the state is changed only in memory, never saved."""
+    done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
+    refused = c.state.get("refused", {})
+    lines = []
+    for b in list(c.state.get("briefs", [])):
+        key = (b["worker"], b["n"])
+        if key in done or b.get("retried_as") or cmd_work.job(*key) in refused:
+            continue
+        if not (c.ad / "returns" / f"{b['worker']}-{b['n']}.json").exists():
+            continue
+        token, _, _, data = cmd_work.record_job(c.state, *key)
+        # Each is its own event, as a separate `record` save was: later records
+        # and the brief written after them are stamped (seq) after it.
+        c.state["events"] = c.state.get("events", 0) + 1
+        c.dirty = True
+        lines.append(f"{b['worker']}-{b['n']}: " + (
+            f"refused ({token})" if token != "RECORDED" else
+            f"{data.get('status')} {data.get('next', '')}".rstrip()))
+    return lines
+
+
+def decide_step(c):
     run_state = st.run_state(c.state)
     if run_state == "finished":
         return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
@@ -567,7 +610,6 @@ def pending_briefs(c):
     paths = [c.ad / "briefs" / f"{b['worker']}-{b['n']}.md" for b in open_]
     return spawn_lines(agents, [str(p) for p in paths],
                        [cmd_work.prompt_for(p) for p in paths],
-                       [c.cmd("record", b["worker"], b["n"]) for b in open_],
                        "a brief was issued and its result is not recorded yet: "
                        "spawn it again",
                        efforts=[effort_for(c, b["worker"]) for b in open_])

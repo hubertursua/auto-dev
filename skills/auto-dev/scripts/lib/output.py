@@ -16,7 +16,7 @@ NEXT_ACTION, NEXT_COMPLETE, NEXT_STOP, NEXT_ASK, NEXT_BOUNDARY = 0, 3, 4, 5, 6
 
 # The lines an action is printed as, in this order; empty ones are left out.
 ACTION_KEYS = ("ACTION", "AGENT", "BRIEF", "PROMPT", "EFFORT", "BUDGET", "SUMMARY", "QUESTION",
-               "REPORT", "AFTER", "RULE")
+               "REPORT", "AFTER", "RECORDED", "RULE")
 
 
 class Fail(Exception):

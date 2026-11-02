@@ -99,7 +99,7 @@ Its exit code says what kind of step it is:
 
 | Exit | Meaning | Do |
 |---|---|---|
-| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel. A command in backticks: run it. Then the `AFTER` lines |
+| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned. A command in backticks: run it. Then the `AFTER` lines |
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed, and stop. Do nothing more |
@@ -117,14 +117,14 @@ apostrophe ’), and change nothing else on the line.
 `RULE:` line naming why, but writes no brief and saves nothing. Use it when the
 user asks why; run `next` without it to act.
 
-**After a worker returns**, its `AFTER` line is `autodev.py record <worker>
-<n>`. If `record` exits 1 (`MISSING`, `MALFORMED` or `MISMATCH`, printed on
-stdout with the issues), run `next`: it briefs that job again with those
-issues in its `previous_issues` slot. Never write the retry brief yourself
-(`brief --retry`) and never fix the worker's file yourself.
+**After a worker returns**, just run `next`: it records each result first
+(its `RECORDED` lines say what it found). A result it can't accept is refused,
+and the same `next` briefs that job again with the issues in its
+`previous_issues` slot. Never write the retry brief yourself (`brief --retry`)
+and never fix the worker's file yourself.
 
 **A stop on a worker** (it stopped on purpose twice, failed twice, or never left a
-result `record` accepts) and a stop at `pr publish` last until the user fixes
+result `next` accepts) and a stop at `pr publish` last until the user fixes
 the cause and says `auto-dev continue`: the new session spawns that worker, or
 publishes, again. A stop on a result (a red quality gate, an impossible spec, a
 mutation that may have left changes, the budget used up) stays: a resumed run

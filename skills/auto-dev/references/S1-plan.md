@@ -168,8 +168,8 @@ see in S1, in order:
 4. `planner`, then `plan-reviewer` the same way.
 5. `acceptance-tester`. It may be spawned again for listed conditions, or send
    `define` a question about a condition that reads two ways.
-   A worker whose result `record` refuses (exit 1) is briefed again by the
-   next `next`, with the refused issues: just run `next`.
+   A worker whose result `next` refuses (a `RECORDED: … refused` line) is
+   briefed again by that `next`, with the refused issues.
 6. The post-plan gate (exit 5) when the task is high-risk or the repo turns it
    on.
 7. Exit 6: run its `AFTER` command exactly as printed (`handoff` at the end of the

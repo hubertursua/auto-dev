@@ -251,8 +251,9 @@ never asked to judge, so any model can run it.
 The orchestrator's context is the real cost: every added turn makes every later
 turn more expensive. So it delegates reads to workers, and each worker's reply
 is its result block alone (its files hold the rest; a few lines above the block
-only when it stopped, or has something the user must be told). `record` checks
-each result against the worker's files; a refused one goes back to the same
+only when it stopped, or has something the user must be told). `next` records
+each result itself before it decides, checking it against the worker's files,
+so a worker costs no extra orchestrator turn; a refused one goes back to the same
 worker, which fixes the listed issues in what it wrote rather than redoing the
 job. `next` also ends a long
 session at a **checkpoint** after 80 recorded events (about 35 workers;

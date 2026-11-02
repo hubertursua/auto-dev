@@ -455,11 +455,52 @@ class PlanTest(NextCase):
         self.assertIn("MALFORMED", r.stdout)
         out = self.next(0)
         self.assertEqual(self.spawned(out), [("define", 2)])
-        self.assertIn("record define 2", " ".join(out["AFTER"]))
+        self.assertNotIn("AFTER", out)  # `next` records define #2's result itself
         brief = (self.dir / "briefs" / "define-2.md").read_text()
         self.assertIn("high_risk", brief)  # the refused issues ride along
         self.next(0)
         self.assertIn("spawned 3 times", " ".join(self.next(4)["REPORT"]))
+
+    def test_next_records_a_returned_worker_itself(self):
+        self.expect("define")
+        self.write_return("define", 1, {"next": "FITS", "high_risk": "yes",
+                                        "reading": "none"})
+        before = self.state()["events"]
+        out = self.next(0)  # no `record` call
+        self.assertEqual(out["RECORDED"], ["define-1: ok FITS"])
+        self.assertEqual(self.spawned(out), [("define-reviewer", 1)])
+        state = self.state()
+        self.assertEqual([(e["worker"], e["n"], e["next"]) for e in state["log"]],
+                         [("define", 1, "FITS")])
+        self.assertEqual(state["size"], "FITS")
+        # Two events, as `record` then `next` were: the result is stamped before
+        # the brief written after it, so `next` orders them as before.
+        self.assertEqual(state["events"], before + 2)
+        entry = next(b for b in state["briefs"] if b["worker"] == "define-reviewer")
+        self.assertLess(state["log"][0]["seq"], entry["seq"])
+        self.assertNotIn("RECORDED", self.next(0))  # recorded once
+        # A brief with no result file is issued again as it is, not refused.
+        self.assertEqual(self.spawned(self.next(0)), [("define-reviewer", 1)])
+        self.assertNotIn("define-reviewer-1", self.state().get("refused", {}))
+
+    def test_next_refuses_a_bad_result_itself_and_briefs_the_job_again(self):
+        self.expect("define")
+        self.write_return("define", 1, {"next": "FITS"})  # high_risk, reading left out
+        out = self.next(0)
+        self.assertEqual(out["RECORDED"], ["define-1: refused (MALFORMED)"])
+        self.assertEqual(self.spawned(out), [("define", 2)])
+        self.assertIn("high_risk", (self.dir / "briefs" / "define-2.md").read_text())
+
+    def test_explain_records_only_in_memory(self):
+        self.expect("define")
+        self.write_return("define", 1, {"next": "FITS", "high_risk": "yes",
+                                        "reading": "none"})
+        r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("RECORDED: define-1: ok FITS", r.stdout)
+        self.assertIn("define-reviewer", r.stdout)  # what it would do after recording
+        self.assertEqual(self.state().get("log", []), [])  # nothing saved
+        self.assertEqual(self.next(0)["RECORDED"], ["define-1: ok FITS"])
 
     def test_explain_only_looks(self):
         for _ in range(4):
@@ -780,6 +821,31 @@ class ShipTest(NextCase):
 
     def test_review_must_fix_runs_a_correction_then_reviews_its_files(self):
         self.correction_re_review()
+
+    def test_next_records_the_panel_s_parallel_results_in_spawn_order(self):
+        self.ship_ready()
+        out = self.next(0)
+        jobs = self.spawned(out)
+        self.assertEqual(len(jobs), 4, out)
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        for w, n in jobs:  # every result written, none recorded by hand
+            if w == "code-reviewer":
+                (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
+                 ).write_text(r_report("none"))
+                self.write_return(w, n, {"next": "REVIEWED", "findings": "0",
+                                         "leads": "0"})
+            else:
+                self.write_return(w, n, {"next": "CLEAN", "must_fix": "0",
+                                         "pre_existing": "0"})
+        out = self.next(0)
+        self.assertEqual([line.split(":")[0] for line in out["RECORDED"]],
+                         [f"{w}-{n}" for w, n in jobs])
+        self.assertEqual([w for w, _ in self.spawned(out)], ["review-judge"])
+        state = self.state()
+        seqs = [e["seq"] for e in state["log"][-4:]]
+        self.assertEqual(seqs, sorted(set(seqs)))  # each its own event
+        judge = state["briefs"][-1]
+        self.assertGreater(judge["seq"], seqs[-1])
 
     def correction_re_review(self):
         """Pass 1's must-fix C1, its one-line correction, then pass 2 spawned:
@@ -3279,10 +3345,13 @@ class QuoteTest(RunCase):
         r = self.init()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(self.autodev("next", "--dir", self.dir, "--json").stdout)
-        r = subprocess.run(out["AFTER"][0], shell=True, capture_output=True, text=True,
-                           env=self.env, cwd=self.tmp, check=False)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)  # it ran: no result yet
-        self.assertIn("MISSING", r.stdout)
+        self.assertTrue(Path(out["BRIEF"][0]).is_file(), out)
+        # `next` records the result under the path with a space.
+        (self.dir / "returns" / "define-1.json").write_text(json.dumps(
+            {"worker": "define", "status": "ok", "next": "FITS"}))
+        out = json.loads(self.autodev("next", "--dir", self.dir, "--json").stdout)
+        self.assertEqual(out["RECORDED"], ["define-1: refused (MALFORMED)"])
+        self.assertTrue(Path(out["BRIEF"][0]).is_file(), out)
 
 
 class TextOutputTest(NextCase):
@@ -3294,8 +3363,8 @@ class TextOutputTest(NextCase):
         self.assertEqual(lines[1], "AGENT: auto-dev:define")
         self.assertTrue(lines[2].startswith(f"BRIEF: {self.dir}/briefs/define-1.md"))
         self.assertTrue(lines[3].startswith("PROMPT: Your brief is at"))
-        self.assertTrue(lines[4].startswith("AFTER: python3 "))
-        self.assertIn("record define 1", lines[4])
+        self.assertEqual(len(lines), 4)  # no AFTER: the next `next` records the result
+        self.assertIn("run `next` (it records their results)", lines[0])
         self.assertFalse(any(ln.startswith("RULE:") for ln in lines))
         r = self.autodev("next", "--dir", self.dir, "--explain")
         self.assertIn("RULE: a brief was issued", r.stdout)
