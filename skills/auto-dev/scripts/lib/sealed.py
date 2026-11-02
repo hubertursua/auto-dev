@@ -238,32 +238,66 @@ def intact(ad, rel, current):
     return blks is not None and locate(now, blks) is not None
 
 
-def support_lines(ad, rel, names):
-    """The lines the sealed check adds to <path> besides its tests (`names`, the
-    test names MANIFEST.md lists): every non-blank line of a block that names
-    no test, and those before the first line naming one in a block that does.
-    An import line the checks need is one: a worker told only the tests' names
-    can't tell it is sealed."""
+def test_keys(names):
+    """Each test name MANIFEST.md lists, and its last part: a runner can name a
+    test by its whole path (`todos > shows the due date`, `TestX/case`,
+    `file::test[param]`) where the source holds only the last part."""
+    keys = set()
+    for name in names:
+        name = name.strip()
+        if name:
+            keys.add(name)
+            last = re.sub(r"\[[^\]]*\]$", "", re.split(r" > |::|/", name)[-1]).strip()
+            if last:
+                keys.add(last)
+    return keys
+
+
+def support_runs(ad, rel, names):
+    """[[lines]]: per run of lines the sealed check adds to <path> (a block),
+    the ones besides its tests (`names`): a run that names no test, or the
+    part of one before its first line naming one, without blank lines at
+    either end. An import line the checks need is one: a worker told only the
+    tests' names can't tell it is sealed. [] when no line of the sealed copy
+    names a test: then nothing says where the tests start."""
     sealed_lines = lines(read(sealed_files(ad)[rel])) or []
-    blks = blocks(base_of(ad, rel), sealed_lines) or []
-    out = []
-    for _k, body in blks:
+    keys = test_keys(names)
+
+    def names_one(line):
+        return any(k in line for k in keys)
+
+    if not any(names_one(x) for x in sealed_lines):
+        return []
+    runs = []
+    for _k, body in blocks(base_of(ad, rel), sealed_lines) or []:
+        run = []
         for line in body:
-            if any(name and name in line for name in names):
+            if names_one(line):
                 break
-            if line.strip() and line not in out:
-                out.append(line)
-    return out
+            run.append(line)
+        while run and not run[-1].strip():
+            run.pop()
+        while run and not run[0].strip():
+            run.pop(0)
+        if run:
+            runs.append(run)
+    return runs
 
 
-def missing_lines(ad, rel, current):
-    """The non-blank lines of <path>'s sealed blocks that `current` (the
-    worktree's text) no longer holds: what a worker changed or removed."""
-    now = set(lines(current) or [])
-    blks = blocks(base_of(ad, rel), lines(read(sealed_files(ad)[rel])) or []) or []
+def broken_runs(ad, rel, current):
+    """[(first, last, changed)]: each run of lines the sealed check adds to
+    <path> that `current` (the worktree's text) no longer holds whole, by its
+    first and last non-blank lines, with its non-blank lines `current` lacks."""
+    now = lines(current) or []
+    have = set(now)
     out = []
-    for _k, body in blks:
-        out += [x for x in body if x.strip() and x not in now and x not in out]
+    for _k, body in blocks(base_of(ad, rel), lines(read(sealed_files(ad)[rel])) or []) or []:
+        n = len(body)
+        if any(now[i:i + n] == body for i in range(len(now) - n + 1)):
+            continue
+        real = [x for x in body if x.strip()]
+        if real:
+            out.append((real[0], real[-1], [x for x in real if x not in have]))
     return out
 
 

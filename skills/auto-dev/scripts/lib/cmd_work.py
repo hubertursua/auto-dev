@@ -266,16 +266,21 @@ def acceptance_paths(ad):
         if path not in files:
             return ""
         try:
-            extra = sealed.support_lines(ad, path, names[path])
+            runs = sealed.support_runs(ad, path, names[path])
         except sealed.SealError:
             return ""
-        if not extra:
+        shown, count = [], 0
+        for run in runs:
+            real = [x for x in run if x.strip()]
+            shown.append(" + ".join(code_line(x) for x in real[:SUPPORT_SHOWN - count]))
+            count += len(real)
+            if count >= SUPPORT_SHOWN:
+                break
+        more = sum(len([x for x in run if x.strip()]) for run in runs) - SUPPORT_SHOWN
+        if not shown:
             return ""
-        shown = " · ".join(f"``{x.strip()}``" if "`" in x else f"`{x.strip()}`"
-                           for x in extra[:SUPPORT_SHOWN])
-        more = len(extra) - SUPPORT_SHOWN
-        return (f"; and these lines they add besides the tests: {shown}"
-                + (f" and {more} more" if more > 0 else ""))
+        return ("; and the lines they add besides the tests, each run (joined by +) "
+                f"kept whole: {' | '.join(shown)}" + (f" and {more} more" if more > 0 else ""))
 
     return "; ".join(f"{p} (tests: " + ", ".join(f'"{n}"' for n in names[p])
                      + support(p) + ")"
@@ -723,6 +728,11 @@ def whole_checks(state, ad):
     return out
 
 
+def code_line(line):
+    """A line as inline code, its indentation kept: whitespace counts."""
+    return f"`` {line} ``" if "`" in line else f"`{line}`"
+
+
 def edited_check_issues(worker, ad, state, whole):
     """Each check file, whole when the coder or cleanup was briefed (`whole`),
     whose held-out lines it changed. `verify prep` would put them back and
@@ -736,19 +746,34 @@ def edited_check_issues(worker, ad, state, whole):
         try:
             if sealed.intact(ad, rel, current):
                 continue
-            gone = sealed.missing_lines(ad, rel, current)
+            broken = sealed.broken_runs(ad, rel, current) if current is not None else []
         except sealed.SealError as exc:
             raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
-        what = ("; ".join(f"`{x.strip()}`" for x in gone[:5])
-                + (f" and {len(gone) - 5} more" if len(gone) > 5 else "")
-                if gone else "they are all there, but moved, split or with a line "
-                "added among them")
+        if current is None:
+            what = (f"{rel} was removed or moved: put it back at that path; if a check "
+                    "in it is wrong, propose that instead")
+        elif broken:
+            parts = []
+            for first, last, changed in broken[:5]:
+                part = (f"the line {code_line(first)}" if first == last else
+                        f"the run of lines from {code_line(first)} to {code_line(last)}")
+                if changed:
+                    part += (", of which these are changed or gone: "
+                             + "; ".join(code_line(x) for x in changed[:5])
+                             + (f" and {len(changed) - 5} more" if len(changed) > 5 else ""))
+                parts.append(part)
+            what = (f"you changed lines of the held-out acceptance checks in {rel} "
+                    "(whitespace and blank lines count): " + "; ".join(parts)
+                    + (f"; and {len(broken) - 5} more runs" if len(broken) > 5 else ""))
+        else:
+            what = (f"you moved lines of the held-out acceptance checks in {rel}: each "
+                    "run of them is whole, but not in its place or order")
         issues.append(
-            f"you changed lines of the held-out acceptance checks in {rel}: {what}. "
-            "Put each back exactly as it was, with nothing added among them, and "
-            "make your own code fit them: when your test needs more from a module "
-            "one of their import lines names, add your own import line next to "
-            "theirs, never edit theirs"
+            f"{what}. Put each back exactly as it was, with nothing added among them, "
+            "and make your own code fit them: when your test needs more from a module "
+            "one of their import lines names, add your own import line above the first "
+            "or below the last line of a run of theirs, never between two of them "
+            "(and keep an import sorter from moving it there), never edit theirs"
             + (". If the quality gate then fails on one of their lines as it is, "
                "return ACCEPTANCE_CHECK_FAILS_GATE" if worker == "cleanup" else ""))
     return issues

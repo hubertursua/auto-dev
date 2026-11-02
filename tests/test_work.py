@@ -772,8 +772,9 @@ class RecordTest(WorkCase):
         n = self.job("coder", "correction",
                      corrections_file=self.write("evidence/corrections.md", CORRECTION))
         paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('src/todos.test.ts (tests: "shows the due date"; and these lines they '
-                      'add besides the tests: `import { due } from "./due";`)', paths)
+        self.assertIn('src/todos.test.ts (tests: "shows the due date"; and the lines they '
+                      'add besides the tests, each run (joined by +) kept whole: '
+                      '`import { due } from "./due";`)', paths)
         # The lines don't hide a file from the check files the brief listed.
         sys.path.insert(0, str(SCRIPTS))
         from lib import check_props
@@ -792,8 +793,19 @@ class RecordTest(WorkCase):
         r = self.cmd("record", "coder", n)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("you changed lines of the held-out acceptance checks in "
-                      'src/todos.test.ts: `import { due } from "./due";`', r.stdout)
-        self.assertIn("add your own import line next to theirs", r.stdout)
+                      "src/todos.test.ts (whitespace and blank lines count): the line "
+                      '`import { due } from "./due";`, of which these are changed or gone',
+                      r.stdout)
+        self.assertIn("add your own import line above the first or below the last line",
+                      r.stdout)
+        # A retry is held to the same checks.
+        r = self.cmd("brief", "coder", "--mode", "correction", "--retry", str(n), "--set",
+                     f"corrections_file={self.dir}/evidence/corrections.md")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.returned("coder", n + 1, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", str(n + 1))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('the line `import { due } from "./due";`', r.stdout)
         target.write_text(good.replace('import { due } from "./due";',
                                        'import { due } from "./due";\n'
                                        'import type { Due } from "./due";'))
@@ -807,8 +819,41 @@ class RecordTest(WorkCase):
         self.returned("cleanup", 1, next="GREEN")
         r = self.cmd("record", "cleanup", "1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("expect(due()).toBe(\"2026-01-01\");`", r.stdout)
+        # The indentation shows: the line the formatter re-indented is still
+        # in the file, without it.
+        self.assertIn('`    expect(due()).toBe("2026-01-01");`', r.stdout)
         self.assertIn("return ACCEPTANCE_CHECK_FAILS_GATE", r.stdout)
+
+    def test_a_line_added_inside_a_check_names_the_run_it_broke(self):
+        target = self.installed_shared_check()
+        n = self.job("coder", "correction",
+                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
+        target.write_text(target.read_text().replace(
+            '    expect(due()).toBe("2026-01-01");\n',
+            '    expect(due()).toBe("2026-01-01");\n    expect(1).toBe(1);\n'))
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", n)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('the run of lines from `  it("shows the due date", () => {` to `  });`',
+                      r.stdout)
+        target.unlink()
+        r = self.cmd("record", "coder", n)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("src/todos.test.ts was removed or moved: put it back", r.stdout)
+
+    def test_a_check_named_by_its_whole_path_lists_only_the_lines_besides_it(self):
+        # The runner names the test `todos > shows the due date`; the source
+        # holds only the last part, so the test's body is not listed.
+        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
+            '`src/due.acceptance.test.ts` :: "shows the due date"',
+            '`src/todos.test.ts` :: "todos > shows the due date"'))
+        self.shared_check()
+        self.assertEqual(self.cmd("install-checks").returncode, 0)
+        n = self.job("coder", "correction",
+                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
+        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
+        self.assertIn('kept whole: `import { due } from "./due";`)', paths)
+        self.assertNotIn("expect(due())", paths)
 
     def test_a_check_not_whole_when_the_worker_was_briefed_is_not_its_doing(self):
         # Before the install, the checks are not in the worktree: the coder's
