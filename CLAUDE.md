@@ -16,8 +16,11 @@ same on Python 3.9 and 3.13, and a PR isn't ready until they pass.
 ```
 ruff check .                              # lint (config: ruff.toml)
 python3 tools/check-repo.py               # files agree with each other
-python3 -m unittest discover -s tests     # helper-script tests
+python3 tools/run-tests.py                # helper-script tests, a process per test class
 ```
+
+`run-tests.py` runs the test classes in parallel, one per CPU; `python3 -m
+unittest discover -s tests` runs the same tests one after another.
 
 Once per clone, turn on the pre-commit hook with `git config core.hooksPath
 .githooks`. It runs `python3 tools/check-identity.py --staged`, which fails when
@@ -59,6 +62,7 @@ that a script can check, add it there.
   `tests/test_next.py` (`next`, `pr publish`), `tests/test_parsers.py` (the
   artifact parsers), `tests/test_check_repo.py` (`tools/check-repo.py`),
   `tests/test_check_identity.py` (`tools/check-identity.py`),
+  `tests/test_run_tests.py` (`tools/run-tests.py`),
   `tests/test_eval_run.py` (`tools/eval-run.py`) or
   `tests/test_eval_fixtures.py` (the eval fixtures;
   regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest

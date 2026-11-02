@@ -685,6 +685,7 @@ tests/                  unit tests for the helper scripts, tools/ and the eval f
 tools/check-repo.py     checks that the repo's files agree with each other
 tools/check-pr.py       checks a branch name and PR title against the conventions
 tools/check-identity.py checks that no file names the person committing (run by the pre-commit hook)
+tools/run-tests.py      runs the test suite with its test classes in parallel
 tools/eval-run.py       gives each pipeline eval its own branches of the fixture repo, and cleans them up
 ruff.toml               lint config
 .github/                CI workflow and PR template
@@ -700,7 +701,7 @@ Before pushing, run the same checks CI runs:
 ```
 ruff check .
 python3 tools/check-repo.py
-python3 -m unittest discover -s tests
+python3 tools/run-tests.py
 ```
 
 Turn on the pre-commit hook once per clone with `git config core.hooksPath
