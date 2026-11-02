@@ -92,7 +92,8 @@ under {{artifact_dir}}/, never add it to the repo's ignore files or config,
 and never change the command to hide it: those edits would ship in the PR.
 
 For each check, write {{artifact_dir}}/lint/<REPORT>.md, in the shape of
-`{{skill_dir}}/templates/lint.md`: the exact command, final status
+`{{skill_dir}}/templates/lint.md`: the exact command (the profile's, as `run`
+printed it, never the `autodev.py run` line), final status
 (pass/fail), what you fixed, and the last lines (20 at most) of its FINAL run's
 output, whether or not it ever failed: the PR description quotes them. Re-run until every `gate`
 command is green. A check's final run must come after your last edit to any file:
@@ -112,7 +113,8 @@ Heads-up on tests (from profile.md test_notes): {{test_notes}}. Ensure prerequis
 
 Run the quality gate IN FULL — do not scope or sample it; it is the Definition of Done.
 Where a check is slow, run its `run:` command in the background rather than
-blocking on it, and read back only the tail it prints. Never paste a full suite
+blocking on it, with `--timeout <seconds>` added so a check that hangs is
+stopped, and read back only the tail it prints. Never paste a full suite
 or type-checker log into a report.
 
 Each check's final status is in its report. Your result's `next` is `GREEN` (every check passes), `RED` (one can't be made

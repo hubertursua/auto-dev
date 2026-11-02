@@ -50,7 +50,8 @@ it and see it FAIL, then make it pass. Follow existing codebase conventions and
 abstractions closely. Run the relevant tests as you go and get them green with
 `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <test file> …`,
 which runs the profile's test command ({{test_command}}) scoped to those files,
-in the worktree, and saves its output (without `--files`, the whole suite).
+in the worktree, and saves its output (without `--files`, the profile's first
+test check, whole).
 Never type the test command yourself: a permission check refuses `cd
 <worktree> && …` and every rewritten form. When `run` exits 2 because the
 check has no scoped form, run the whole suite. Scope hints: {{test_notes}}. Do NOT

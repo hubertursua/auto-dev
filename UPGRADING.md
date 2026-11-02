@@ -28,10 +28,12 @@ can resume on the new one. Newest first. The current version is in
   test check's form must name every test it runs and its result. The profiler
   now researches it, and profile.md's Quality gate table shows it.
   `validate-config.py` accepts `files` and requires `<files>` in it. A saved
-  profile without it still works: a worker that needs a check scoped writes
-  that command itself, as before. To get the saving, add `files` to the
-  checks in your saved profile, or delete the profile to have the next run
-  research it again.
+  profile without it still works: a worker that wanted a check scoped runs
+  it whole through `run` instead, which is slower on a large suite. To scope
+  them, add `files` to the checks in your saved profile, or delete the
+  profile to have the next run research it again. `run` needs `--dir`, and
+  `--out` writes only under `.auto-dev/`'s `evidence/`,
+  `acceptance/base-run/` or `tmp/`.
 - **Resume:** a run in flight resumes. Its briefs written from now on use
   `autodev.py run`; its gate has no `files` forms unless its profile had them.
 

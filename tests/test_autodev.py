@@ -11,9 +11,11 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -2210,7 +2212,7 @@ class RunCommandTest(unittest.TestCase):
                            (("gate", "9"), "no check 9"),
                            (("gate", "NOPE"), "no gate check has the report"),
                            (("test", "--out", str(self.tmp / "o.txt")),
-                            "outside the artifact dir")):
+                            "is not under")):
             r = self.run_(*args)
             self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
             self.assertIn(said, r.stderr, args)
@@ -2222,10 +2224,109 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("src/c.test.ts", target.read_text())
 
-    def test_a_timeout_stops_the_command_and_exits_3(self):
+    def test_a_timeout_exits_3(self):
         r = self.run_("gate", "BUILD", "--timeout", "1")
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("TIMED_OUT: "), r.stdout)
+
+    def test_out_never_replaces_the_runs_state_or_a_sealed_check(self):
+        state = (self.ad / "state.json").read_text()
+        sealed = self.ad / "acceptance" / "files" / "x.test.ts.sealed"
+        sealed.parent.mkdir(parents=True)
+        sealed.write_text("sealed\n")
+        for target in (self.ad / "state.json", sealed, self.ad / "evidence",
+                       self.ad / "SPEC.md"):
+            r = self.run_("test", "--out", str(target))
+            self.assertEqual(r.returncode, 2, (target, r.stdout, r.stderr))
+            self.assertIn("is not under", r.stderr)
+        self.assertEqual((self.ad / "state.json").read_text(), state)
+        self.assertEqual(sealed.read_text(), "sealed\n")
+        base_run = self.ad / "acceptance" / "base-run" / "C1.txt"
+        self.assertEqual(self.run_("test", "--out", str(base_run)).returncode, 0)
+        self.assertTrue(base_run.exists())
+
+    def test_dir_is_required(self):
+        r = subprocess.run([sys.executable, str(AUTODEV), "run", "test"],
+                           capture_output=True, text=True, cwd=self.wt, check=False)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--dir", r.stderr)
+
+    def test_other_refusals(self):
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate[:2]}}))
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no `kind: test` check", r.stderr)
+        r = self.run_("test", "LINT")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("takes no check name", r.stderr)
+
+    def test_tail_limits_the_printed_lines(self):
+        r = self.run_("test", "--tail", "1")
+        self.assertIn("the last 1 of its lines", r.stdout)
+        self.assertIn("    ['all']", r.stdout)
+        self.assertNotIn(f"    {self.wt}", r.stdout)
+
+    def test_file_names_are_never_shell_syntax_or_options(self):
+        odd = ["src/$(touch PWNED);x.ts", "-x.ts"]
+        for name in odd:
+            (self.wt / name).write_text("z\n")
+        os.symlink("c.test.ts", self.wt / "src" / "link.test.ts")
+        r = self.run_("test", "--files", odd[0], str(self.wt / odd[1]), "src/link.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['some', 'src/$(touch PWNED);x.ts', './-x.ts', "
+                      "'src/link.test.ts', '--verbose']", r.stdout)
+        self.assertFalse((self.wt / "PWNED").exists())
+        self.assertFalse((self.wt / "src" / "PWNED").exists())
+
+    def gone(self, pidfile):
+        """Whether every pid written to pidfile is gone, within a few seconds."""
+        for _ in range(50):
+            pids = [int(p) for p in pidfile.read_text().split()] if pidfile.exists() else []
+            alive = []
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)
+                    alive.append(pid)
+                except OSError:
+                    pass
+            if pids and not alive:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def sleepers(self):
+        """A gate check that starts two sleeps, one in the background, and
+        writes their pids to a file."""
+        pidfile = self.tmp / "pids"
+        self.gate[3]["command"] = (f"sleep 30 & echo $! > {shlex.quote(str(pidfile))}; "
+                                   f"sleep 31 & echo $! >> {shlex.quote(str(pidfile))}; wait")
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        return pidfile
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups")
+    def test_a_timeout_stops_everything_the_command_started(self):
+        pidfile = self.sleepers()
+        r = self.run_("gate", "BUILD", "--timeout", "1")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(self.gone(pidfile))
+
+    @unittest.skipIf(os.name == "nt", "POSIX signals")
+    def test_a_signal_stops_everything_the_command_started(self):
+        pidfile = self.sleepers()
+        proc = subprocess.Popen([sys.executable, str(AUTODEV), "run", "gate", "BUILD",
+                                 "--dir", str(self.ad)], cwd=self.cwd,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(50):
+            if pidfile.exists() and len(pidfile.read_text().split()) == 2:
+                break
+            time.sleep(0.1)
+        proc.send_signal(signal.SIGTERM)
+        _out, err = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 2, err)
+        self.assertIn("was stopped by a signal", err)
+        self.assertTrue(self.gone(pidfile))
 
     def test_without_state_it_could_not_run(self):
         (self.ad / "state.json").unlink()

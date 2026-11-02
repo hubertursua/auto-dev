@@ -2,9 +2,9 @@
 run's worktree, and save its output.
 
 Usage:
-    autodev.py run gate <n | REPORT> [--files <path> ...] [--dir <artifact-dir>]
+    autodev.py run gate <n | REPORT> --dir <artifact-dir> [--files <path> ...]
                         [--out <file>] [--timeout <seconds>] [--tail <lines>] [--json]
-    autodev.py run test [--files <path> ...] [--dir <artifact-dir>]
+    autodev.py run test --dir <artifact-dir> [--files <path> ...]
                         [--out <file>] [--timeout <seconds>] [--tail <lines>] [--json]
 
 A worker's shell doesn't start in the worktree, and a permission check refuses
@@ -18,15 +18,21 @@ gate <n | REPORT>
     table numbers them), or the one whose report is REPORT (`LINT.md` or
     `LINT`, any case).
 test
-    Runs the first `kind: test` check.
+    Runs the first `kind: test` check (`run gate <n>` runs any other).
+--dir is required: it names the run, and a worker's shell isn't in the
+worktree, so a default would find no run, or an old one.
 --files <path> ...
     Runs the check's scoped form instead: its `files` command, with `<files>`
-    replaced by the paths given, quoted, relative to the worktree. Each must
-    exist inside the worktree. A check with no `files` form can't be scoped:
-    exit 2.
+    replaced by the paths given, quoted, relative to the worktree (a relative
+    path is taken from the worktree root). Each must exist inside the
+    worktree. A check with no `files` form can't be scoped: exit 2.
 
-The command's whole output (stdout and stderr together) goes to --out, a file
-under the artifact dir, or else to <artifact-dir>/tmp/run/<gate-<n>|test>-<k>.txt.
+The command's whole output (stdout and stderr together) goes to --out, or else
+to <artifact-dir>/tmp/run/<gate-<n>|test>-<k>.txt. --out must be under the
+artifact dir's evidence/, acceptance/base-run/ or tmp/, so it never replaces
+the run's state or a sealed check; a relative --out is taken from the current
+directory. When `run` is stopped (a timeout, or a signal such as the Bash
+tool's own timeout), the command and everything it started are stopped too.
 The script prints one token, then the command as run, the output file, the
 time taken, and the output's last --tail lines (default 40):
     PASSED: `<command>` exited 0 in <s>s
@@ -47,6 +53,7 @@ import os
 import shlex
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -56,6 +63,13 @@ from .output import CANNOT_RUN, FAILED, OK, Fail
 TIMED_OUT = 3
 PLACEHOLDER = "<files>"
 TAIL = 40
+# Where --out may write, under the artifact dir: never state.json, SPEC.md or a
+# sealed check.
+OUT_DIRS = ("evidence", "acceptance/base-run", "tmp")
+
+
+class Stopped(Exception):
+    """A signal asked `run` to stop."""
 
 
 def add_arguments(parser):
@@ -64,8 +78,9 @@ def add_arguments(parser):
                         help="gate: the check's number or its report name")
     parser.add_argument("--files", nargs="+", default=None,
                         help="run the check's scoped form on these paths")
-    parser.add_argument("--dir", default=".auto-dev", help="the run's .auto-dev/")
-    parser.add_argument("--out", help="the file to save the output to (under --dir)")
+    parser.add_argument("--dir", required=True, help="the run's .auto-dev/")
+    parser.add_argument("--out", help="the file to save the output to (under --dir's "
+                                      "evidence/, acceptance/base-run/ or tmp/)")
     parser.add_argument("--timeout", type=float, help="stop the command after this "
                                                       "many seconds (exit 3)")
     parser.add_argument("--tail", type=int, default=TAIL,
@@ -101,22 +116,32 @@ def pick(gate, what, check):
 
 
 def relative_paths(worktree, files):
-    """Each path as the worktree-relative POSIX path the command is given."""
+    """Each path as the worktree-relative POSIX path the command is given: its
+    own name (a symlink is not swapped for its target), checked to resolve
+    inside the worktree."""
     root = worktree.resolve()
     out = []
     for name in files:
         path = Path(name)
-        full = (path if path.is_absolute() else root / path).resolve()
+        given = path if path.is_absolute() else root / path
         try:
-            rel = full.relative_to(root)
+            given.resolve().relative_to(root)
+            rel = Path(os.path.normpath(given)).relative_to(root)
         except ValueError:
             raise Fail(f"{name} is outside the worktree {root}", CANNOT_RUN,
                        "ERROR") from None
-        if not full.exists():
+        if not given.exists():
             raise Fail(f"{name} does not exist in the worktree {root}", CANNOT_RUN,
                        "ERROR")
-        out.append(rel.as_posix() or ".")
+        text = rel.as_posix() or "."
+        out.append(f"./{text}" if text.startswith("-") else text)  # never an option
     return out
+
+
+def quote(paths):
+    if os.name == "nt":
+        return subprocess.list2cmdline(paths)
+    return " ".join(shlex.quote(p) for p in paths)
 
 
 def command_for(n, check, worktree, files):
@@ -130,22 +155,20 @@ def command_for(n, check, worktree, files):
         raise Fail(f"gate check {n} (`{check.get('command', '')}`) has no scoped form: "
                    f"the profile gives it no `files` command with {PLACEHOLDER}, so "
                    f"it can only run whole (drop --files)", CANNOT_RUN, "ERROR")
-    quoted = " ".join(shlex.quote(p) for p in relative_paths(worktree, files))
-    return form.replace(PLACEHOLDER, quoted)
+    return form.replace(PLACEHOLDER, quote(relative_paths(worktree, files)))
 
 
 def output_file(ad, out, label):
-    """The file to save to: --out (inside the artifact dir), else the next free
+    """The file to save to: --out (under one of OUT_DIRS), else the next free
     tmp/run/<label>-<k>.txt."""
     root = ad.resolve()
     if out:
         path = Path(out)
         path = (path if path.is_absolute() else Path.cwd() / path).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError:
-            raise Fail(f"--out {out} is outside the artifact dir {root}", CANNOT_RUN,
-                       "ERROR") from None
+        if not any(path.is_relative_to(root / d) and path != root / d
+                   for d in OUT_DIRS):
+            raise Fail(f"--out {out} is not under {', '.join(f'{root}/{d}/' for d in OUT_DIRS)}",
+                       CANNOT_RUN, "ERROR")
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
     folder = root / "tmp" / "run"
@@ -161,12 +184,13 @@ def output_file(ad, out, label):
 
 
 def stop(proc):
-    """Stop the command and everything it started."""
-    if proc.poll() is not None:
-        return
+    """Stop everything the command started: its process group (POSIX) or its
+    process tree (Windows), even once the shell itself has exited."""
     try:
         if os.name == "nt":
-            proc.kill()
+            if proc.poll() is None:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                               capture_output=True, check=False)
         else:
             os.killpg(proc.pid, signal.SIGKILL)
     except OSError:
@@ -174,22 +198,39 @@ def stop(proc):
     proc.wait()
 
 
+def on_signal(signum, _frame):
+    raise Stopped(f"signal {signum}")
+
+
 def execute(command, worktree, path, timeout):
     """(exit code or None on a timeout, seconds)."""
     start = time.monotonic()
-    with open(path, "w", encoding="utf-8", errors="replace") as log:
-        try:
-            proc = subprocess.Popen(command, shell=True, cwd=worktree, stdout=log,
-                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                    start_new_session=(os.name != "nt"))
-        except OSError as exc:
-            raise Fail(f"could not start `{command}`: {exc}", CANNOT_RUN, "ERROR") from None
-        try:
-            code = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            code = None
-        finally:
-            stop(proc)
+    caught = [s for s in ("SIGTERM", "SIGHUP", "SIGINT") if hasattr(signal, s)]
+    old = {s: signal.signal(getattr(signal, s), on_signal) for s in caught}
+    try:
+        with open(path, "w", encoding="utf-8", errors="replace") as log:
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+            try:
+                proc = subprocess.Popen(command, shell=True, cwd=worktree, stdout=log,
+                                        stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL, creationflags=flags,
+                                        start_new_session=(os.name != "nt"))
+            except OSError as exc:
+                raise Fail(f"could not start `{command}`: {exc}", CANNOT_RUN,
+                           "ERROR") from None
+            try:
+                code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                code = None
+            except Stopped as exc:
+                stop(proc)
+                raise Fail(f"`{command}` was stopped by a {exc}; nothing it started "
+                           "is left running", CANNOT_RUN, "ERROR") from None
+            finally:
+                stop(proc)
+    finally:
+        for name, handler in old.items():
+            signal.signal(getattr(signal, name), handler)
     return code, round(time.monotonic() - start, 1)
 
 
@@ -219,6 +260,8 @@ def main(args):
                           "exit_code": code, "seconds": seconds, "output": str(path),
                           "lines": len(lines), "tail": tail}, indent=2, sort_keys=True))
         return result
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")  # output that isn't UTF-8 never crashes
     print(f"{token}: {message}")
     print(f"  output: {path} ({len(lines)} lines)")
     if tail:

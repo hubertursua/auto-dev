@@ -134,8 +134,9 @@ For every SPEC.md condition, Security/Compliance criteria included:
    saves the output under {{artifact_dir}}/tmp/run/ and prints the command as
    run and the output's tail. Never type a profile command yourself: a
    permission check refuses `cd <worktree> && …` and every rewritten form.
-   When `run` exits 2 because the check has no scoped form, write the scoped
-   command out in full yourself, output to {{artifact_dir}}/tmp/. A fail-to-pass check must fail FOR THE RIGHT REASON: an assertion,
+   When `run` exits 2 because the check has no scoped form, run it whole
+   (`run test` with no `--files`) and keep the lines that name your checks.
+   A fail-to-pass check must fail FOR THE RIGHT REASON: an assertion,
    or the entry point being absent or returning the wrong result (a compile error
    that names the missing entry point counts). This is what "the right reason"
    means wherever a later step judges a base run. A syntax error, a broken fixture or
@@ -143,8 +144,10 @@ For every SPEC.md condition, Security/Compliance criteria included:
    check must pass. If you cannot make a check behave, drop it and list the
    condition under Not automatable with the reason.
    Then make the check files pass the profile's FORMAT and LINT `gate` commands
-   scoped to those files (`autodev.py run gate <n> --files <your files>`, <n>
-   the check's row in profile.md's Quality gate table) — run the formatter on them if the gate has one (in a
+   scoped to those files (`python3 {{skill_dir}}/scripts/autodev.py run gate <REPORT> --dir {{artifact_dir}} --files <your files>`,
+   <REPORT> the check's report as profile.md's Quality gate table names it,
+   such as LINT; a check with no scoped form runs whole, without `--files`,
+   and only what it flags in your files is yours) — run the formatter on them if the gate has one (in a
    file that was already there, keep only its changes to your own lines). Nobody
    may edit a check after it is sealed. Compile or type errors that come only
    from the entry point not existing yet are expected; never hide them with a
@@ -160,7 +163,8 @@ For every SPEC.md condition, Security/Compliance criteria included:
    the PR description quotes it, so write it in this shape:
      Commit: <git -C {{worktree}} rev-parse HEAD, the untouched tree it ran on>
      Command: <each command as run from the worktree root, with repo-relative
-       paths>
+       paths: the command `run` printed after `PASSED:` or `FAILED:`, never
+       the `autodev.py run` line>
      Result: <one line per check: <test name>: failed: <reason> | passed>
      Output:
      <the run's output; over 100 lines, keep the lines that name this
@@ -322,9 +326,11 @@ The coder's file, as it is now, is the base: it is saved as
    at that path; never bring back the coder's old lines from your sealed
    copy.
 3. Make the file pass the profile's FORMAT and LINT `gate` commands scoped to
-   it (`autodev.py run gate <n> --files <path>`, as in step 3 of the task),
+   it (`python3 {{skill_dir}}/scripts/autodev.py run gate <REPORT> --dir {{artifact_dir}} --files <path>`, as in
+   step 3 of the task),
    changing only your own lines.
-4. Run your tests in it with `autodev.py run test --files <path>`, to learn whether they
+4. Run your tests in it with
+   `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <path>`, to learn whether they
    run (they may pass or fail: the code is built, and the verifier judges
    them). A test that no longer runs because of how you placed it is yours to
    fix.

@@ -513,9 +513,9 @@ TypeScript:
 ```
 
 A rule matches the command's text, so copy the commands exactly as the profile
-lists them. Workers run the gate through `autodev.py run`; these rules cover the
-commands a worker still writes itself, such as a check with no scoped form run
-on a few files. Optional: `Bash(gh run list *)`, `Bash(gh run view *)`,
+lists them. Workers run the gate through `autodev.py run`, which these rules
+don't need; they cover the commands you or the orchestrator run by hand.
+Optional: `Bash(gh run list *)`, `Bash(gh run view *)`,
 `Bash(gh pr view *)` and `Bash(gh repo view *)` for the CI and PR lookups
 (`gh api` can also write, so allow it only if you accept that), the Jira tools
 if you use a ticket (`mcp__<server>__getJiraIssue` and the transition tools),
@@ -623,7 +623,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `WORK_LOG.md` | generated from `state.json` | the same, for people to read |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
-| `tmp/` | workers | long command output |
+| `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output |
 | `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |

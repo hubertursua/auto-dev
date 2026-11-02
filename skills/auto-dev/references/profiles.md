@@ -79,8 +79,9 @@ Fields:
   <n>` (the test check: `run test`), which runs `command` in the worktree, or
   `files` with `--files <path> …`. The test check's `files` form must name every
   test it runs and its result, since a base run and the verifier's acceptance
-  run read the names. Without a `files` form a check only runs whole, and a
-  worker that needs it scoped writes that command itself.
+  run read the names. Without a `files` form a check only runs whole: a
+  worker that wanted it scoped runs it whole and reads the lines about its
+  files.
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
   before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.

@@ -65,7 +65,7 @@ Find, from the repo itself:
    QUESTIONS rather than invent one.
 3. Each check's scoped form, in `files`: the same check run on only some
    files, with `<files>` where the paths go (the workers run it on the files
-   they changed or wrote, as `autodev.py run gate <n> --files <path> …`). For
+   they changed or wrote, through `autodev.py run`). For
    the test check, the form must also name every test it runs and its result
    (the runner's verbose reporter, if its default only counts passing tests).
    Take it from how the repo or its runner's docs run one file; omit `files`
