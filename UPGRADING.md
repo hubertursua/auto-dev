@@ -4,6 +4,42 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.19
+
+- **A script runs the verifier's mutation run.** The verifier still chooses
+  the mutants (writing `evidence/mutation-set.json` and the ones to run in
+  `evidence/mutants.json`) and judges the survivors. Everything between is
+  now `autodev.py mutants run --dir <artifact dir> --files <tests>
+  [--new-set | --extended]`, which starts a runner in the background, and
+  `autodev.py mutants wait` while it prints `RUNNING`. The runner:
+  - saves the base diff;
+  - takes the scoped test command from the profile;
+  - times the cold run, or reuses the saved time;
+  - runs `mutate.py`, and runs it again after leftover backups, a live run
+    or an interruption;
+  - re-times once by the same rules as before, and checks that the tree is
+    as it was;
+  - runs `mutants record`.
+
+  It prints one token: `DONE`, `INCOMPLETE`, `ALL_INVALID`, `MALFORMED`,
+  `FAILING`, `NOT_RUN`, `KEPT`, `LEFT_CHANGES` or `BUSY` (`wait` with no
+  run started prints `NOT_STARTED`). It never ends
+  while a mutant may be in the tree: it waits for a live `mutate.py` run and
+  puts back what one left. It re-times at most once a pass, and records an
+  all-invalid run only when it is the pass's second. Step 7 of
+  `agents/verifier.md` shrinks from 17k to 6k characters, and the verifier's
+  file from 37k to 25k. The hand-written timing, `sha256sum` pipes, redirects
+  and wait loops are gone. In the 4.0.6 benchmark they were 18 of the
+  verifier's refused commands and several turns a pass.
+- **No `mutate.py` permission rule is needed.** `autodev.py` runs it, so the
+  `autodev.py` rule covers mutation testing. The `mutate.py` rule can be
+  dropped from your settings.
+- **`verify prep` waits for a mutation runner still going** from an earlier
+  pass, as it already did for `mutate.py`.
+- **Resume:** a run in flight resumes. A verifier briefed from now on uses
+  `mutants run`. One already spawned on 4.19 finishes its pass the old way;
+  its files are the ones the runner reads.
+
 ## Upgrading from 4.18
 
 - **The verifier's routine steps are one script call.** A verifier pass now

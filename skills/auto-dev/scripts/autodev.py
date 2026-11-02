@@ -144,6 +144,9 @@ def build_parser():
     # The detached setup runner init starts; not for direct use.
     runner = sub.add_parser("_run-setup")
     runner.add_argument("artifact_dir")
+    # The detached mutation runner `mutants run` starts; not for direct use.
+    mutants = sub.add_parser("_mutants-runner")
+    mutants.add_argument("artifact_dir")
     return parser
 
 
@@ -155,6 +158,10 @@ def main(argv=None):
         return CANNOT_RUN
     if args.command == "_run-setup":
         return cmd_init.run_setup(args.artifact_dir)
+    if args.command == "_mutants-runner":
+        from lib import mutation_run
+        mutation_run.runner(args.artifact_dir)
+        return 0
     _, handler = COMMANDS[args.command]
     try:
         return handler(args)

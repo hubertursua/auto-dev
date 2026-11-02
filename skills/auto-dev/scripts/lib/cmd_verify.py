@@ -11,10 +11,11 @@ worktree's index (intent-to-add, as the verifier's own diff would).
 
 prep
     In order, stopping at the first that fails:
-    1. An earlier pass's mutation run that left a backup or a lock
-       (evidence/mutants.json.backup, .lock) is put back with `mutate.py
-       --restore`. A run still alive is waited for, up to --wait seconds
-       (default 270), then restored.
+    1. An earlier pass's mutation run still going (`mutants run`'s runner, or
+       mutate.py) is waited for, up to --wait seconds (default 270); then a
+       backup or lock it left (evidence/mutants.json.backup, .lock) is put
+       back with `mutate.py --restore`. The earlier pass's mutation-run.json,
+       mutation-run-args.json and mutation-pass.json are deleted.
     2. The sealed acceptance checks: on a re-check (`--pass re-check`), or a
        first pass whose checks went in before cleanup (acceptance/INSTALLED),
        the audit runs first and then `install-checks --recheck` puts back any
@@ -72,7 +73,7 @@ import time
 from pathlib import Path
 
 from . import artifacts as art
-from . import cmd_checks, cmd_run, cmd_work, sealed
+from . import cmd_checks, cmd_run, cmd_work, mutation_run, sealed
 from . import state as st
 from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
@@ -128,9 +129,18 @@ def restore(ad, wt, wait):
     evidence = ad / "evidence"
     mutants = evidence / "mutants.json"
     backup, lock = Path(f"{mutants}.backup"), Path(f"{mutants}.lock")
+    deadline = time.monotonic() + wait
+    # An earlier pass's mutation runner (`mutants run`) may still be going.
+    while mutation_run.runner_alive(ad):
+        if time.monotonic() >= deadline:
+            return ("STILL_RUNNING", STILL_RUNNING,
+                    (f"an earlier mutation run is still alive after {wait}s; run "
+                     "`verify prep` again"), [])
+        time.sleep(POLL)
+    for key in ("result", "args", "pass"):  # an earlier pass's, never this one's
+        mutation_run.ev(ad, key).unlink(missing_ok=True)
     if not backup.exists() and not lock.exists():
         return None
-    deadline = time.monotonic() + wait
     while True:
         code, out, err = script("mutate.py", wt, "--restore", "--mutants", mutants)
         if code == 0:
