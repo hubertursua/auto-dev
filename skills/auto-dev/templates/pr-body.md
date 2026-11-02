@@ -36,8 +36,9 @@ is under _Checks for a person_. Checked at commit <sha>.">
   <the expectation>, and the same kind of block>
   </details>
   <!-- /auto-dev:quoted -->
-<Every condition's test lines and output block sit between the two
-auto-dev:quoted markers, as above; they are left out below.>
+<Every line under a condition's checkbox line (its plain words, test lines
+and output block) sits between the two auto-dev:quoted markers, as above; they
+are left out below.>
 - [x] **<condition no test written before the code checks in full>**
   <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
   <it covers only part of this | it was wrong and was corrected, so it never ran on the old code |
@@ -46,8 +47,8 @@ auto-dev:quoted markers, as above; they are left out below.>
   Checked by running <what, in a few words>: expected <the expectation>, saw
   <the result>. <when no test could drive it: why>
   <details>…the same block…</details>
-- [ ] **<condition>** — <partly met | not met>: <what holds, what doesn't, and
-  why it is being shipped anyway>
+- [ ] **<condition>** — <partly met | not met>:
+  <what holds, what doesn't, and why it is being shipped anyway>
   <when there is one: Test written before the code: [`<path>` › <test name>](<link>) —
   old code: <…> · now: <passes | fails: <the failing assertion, one line>>>
   <details>…the same block, when something was run…</details>
@@ -55,12 +56,13 @@ auto-dev:quoted markers, as above; they are left out below.>
 ### Checks for a person
 <"None: every requirement was checked automatically." — or, per requirement or
 edge case no automated check could observe:>
-- [ ] **<condition, or the edge case, in the spec's own words>**
+- [ ] **<condition, or the edge case, in the spec's own words>** <!-- auto-dev:quoted -->
   1. <what to do>
   2. <what you should see>
 
   Already checked automatically: <what was run instead and what it showed |
   nothing could be, because <reason>>
+  <!-- /auto-dev:quoted -->
 
 ### Changes to tests
 <"No existing test was deleted, skipped or weakened, and every new test checks
@@ -93,14 +95,18 @@ The repo's own checks, run on commit <short sha>:
   <!-- /auto-dev:quoted -->
 
 ## Review
-- Code review (<n> independent reviewers) — confidence <High | Medium | Low>:
+- Code review (<n> independent reviewers) — confidence <High | Medium | Low>: <!-- auto-dev:quoted -->
   <its one-line reason>. <n> problems that had to be fixed: <n> fixed, <n> open
-- Security review — confidence <High | Medium | Low>: <its one-line reason>.
-  <n> problems that had to be fixed: <n> fixed, <n> open
-<then one line per problem still open: what it is, where, and why it is being
-shipped anyway. Minor suggestions stay out. A security problem that predates
-this change appears here only if the user chose `Separate PR` at the PR gate,
-listed as a follow-up.>
+  <then one line per problem still open: what it is, where, and why it is
+  being shipped anyway>
+  <!-- /auto-dev:quoted -->
+- Security review — confidence <High | Medium | Low>: <!-- auto-dev:quoted -->
+  <its one-line reason>. <n> problems that had to be fixed: <n> fixed, <n> open
+  <the same lines for each problem still open>
+  <!-- /auto-dev:quoted -->
+<Minor suggestions stay out. A security problem that predates this change
+appears here only if the user chose `Separate PR` at the PR gate, listed as a
+follow-up.>
 
 <only when the repo has a default PR template: each of its sections this body
 lacks, under its own heading — a testing section points at the checks above, a
