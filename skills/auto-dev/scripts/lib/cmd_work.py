@@ -270,13 +270,13 @@ def acceptance_paths(ad):
         except sealed.SealError:
             return ""
         shown, count = [], 0
-        for run in runs:
-            real = [x for x in run if x.strip()]
-            shown.append(" + ".join(code_line(x) for x in real[:SUPPORT_SHOWN - count]))
-            count += len(real)
+        for run, into_tests in runs:
             if count >= SUPPORT_SHOWN:
                 break
-        more = sum(len([x for x in run if x.strip()]) for run in runs) - SUPPORT_SHOWN
+            part = " + ".join(code_line(x) for x in run[:SUPPORT_SHOWN - count])
+            count += len(run)
+            shown.append(part + (" + its tests" if into_tests else ""))
+        more = sum(len(run) for run, _ in runs) - SUPPORT_SHOWN
         if not shown:
             return ""
         return ("; and the lines they add besides the tests, each run (joined by +) "
@@ -730,7 +730,27 @@ def whole_checks(state, ad):
 
 def code_line(line):
     """A line as inline code, its indentation kept: whitespace counts."""
+    if not line.strip():
+        return "(blank line)"
     return f"`` {line} ``" if "`" in line else f"`{line}`"
+
+
+def broken_run(run):
+    """What a worker broke in one run of a check's lines, in its words."""
+    body, changed = run["lines"], run["changed"]
+    real = [x for x in body if x.strip()]
+    if not real:
+        where = f"after {code_line(run['after'])}" if run["after"] else "at the top"
+        return (f"the {len(body)} blank line(s) they add {where} are gone or changed")
+    out = (f"the line {code_line(real[0])}" if len(real) == 1 else
+           f"the run of lines from {code_line(real[0])} to {code_line(real[-1])}")
+    if changed:
+        return out + (", of which these are changed or gone: "
+                      + "; ".join(code_line(x) for x in changed[:5])
+                      + (f" and {len(changed) - 5} more" if len(changed) > 5 else ""))
+    shown = " + ".join(code_line(x) for x in body[:8]) + (" + …" if len(body) > 8 else "")
+    return (out + ": a line was added inside it, or a blank line in it added or removed;"
+            f" it reads {shown}")
 
 
 def edited_check_issues(worker, ad, state, whole):
@@ -753,17 +773,9 @@ def edited_check_issues(worker, ad, state, whole):
             what = (f"{rel} was removed or moved: put it back at that path; if a check "
                     "in it is wrong, propose that instead")
         elif broken:
-            parts = []
-            for first, last, changed in broken[:5]:
-                part = (f"the line {code_line(first)}" if first == last else
-                        f"the run of lines from {code_line(first)} to {code_line(last)}")
-                if changed:
-                    part += (", of which these are changed or gone: "
-                             + "; ".join(code_line(x) for x in changed[:5])
-                             + (f" and {len(changed) - 5} more" if len(changed) > 5 else ""))
-                parts.append(part)
             what = (f"you changed lines of the held-out acceptance checks in {rel} "
-                    "(whitespace and blank lines count): " + "; ".join(parts)
+                    "(whitespace and blank lines count): "
+                    + "; ".join(broken_run(run) for run in broken[:5])
                     + (f"; and {len(broken) - 5} more runs" if len(broken) > 5 else ""))
         else:
             what = (f"you moved lines of the held-out acceptance checks in {rel}: each "
@@ -772,7 +784,8 @@ def edited_check_issues(worker, ad, state, whole):
             f"{what}. Put each back exactly as it was, with nothing added among them, "
             "and make your own code fit them: when your test needs more from a module "
             "one of their import lines names, add your own import line above the first "
-            "or below the last line of a run of theirs, never between two of them "
+            "line of a run of theirs, or below its last line when the run doesn't go on "
+            "into its tests, never between two of them "
             "(and keep an import sorter from moving it there), never edit theirs"
             + (". If the quality gate then fails on one of their lines as it is, "
                "return ACCEPTANCE_CHECK_FAILS_GATE" if worker == "cleanup" else ""))

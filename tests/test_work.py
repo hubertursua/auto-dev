@@ -796,8 +796,8 @@ class RecordTest(WorkCase):
                       "src/todos.test.ts (whitespace and blank lines count): the line "
                       '`import { due } from "./due";`, of which these are changed or gone',
                       r.stdout)
-        self.assertIn("add your own import line above the first or below the last line",
-                      r.stdout)
+        self.assertIn("add your own import line above the first line of a run of theirs, "
+                      "or below its last line", r.stdout)
         # A retry is held to the same checks.
         r = self.cmd("brief", "coder", "--mode", "correction", "--retry", str(n), "--set",
                      f"corrections_file={self.dir}/evidence/corrections.md")
@@ -854,6 +854,73 @@ class RecordTest(WorkCase):
         paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
         self.assertIn('kept whole: `import { due } from "./due";`)', paths)
         self.assertNotIn("expect(due())", paths)
+
+    GROUP_BASE = ('import { one } from "./one";\n\ndescribe("todos", () => {\n'
+                  '  it("adds", () => {});\n});\n')
+    GROUP_SEALED = ('import { one } from "./one";\n\nimport { due } from "./due";\n\n'
+                    'describe("todos", () => {\n  it("adds", () => {});\n'
+                    '  it("shows the due date", () => {});\n});\n')
+
+    def grouped_check(self, rel="src/todos.test.ts", base=GROUP_BASE, sealed=GROUP_SEALED):
+        """A check whose import starts a group of its own, with its blank line."""
+        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
+            '`src/due.acceptance.test.ts` :: "shows the due date"',
+            f'`{rel}` :: "shows the due date"'))
+        self.write(f"acceptance/files/{rel}.sealed", sealed)
+        if base is not None:
+            self.write(f"acceptance/files/{rel}.base", base)
+        target = self.worktree / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if base is not None:
+            target.write_text(base)
+        self.assertEqual(self.cmd("install-checks").returncode, 0)
+        n = self.job("coder", "correction",
+                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
+        return target, n
+
+    def test_a_run_s_blank_line_is_listed_and_named_when_split(self):
+        # "Below the last line" means after the blank line the run ends with.
+        target, n = self.grouped_check()
+        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
+        self.assertIn('kept whole: `import { due } from "./due";` + (blank line))', paths)
+        target.write_text(target.read_text().replace(
+            'import { due } from "./due";\n',
+            'import { due } from "./due";\nimport type { Due } from "./due";\n'))
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", n)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('the line `import { due } from "./due";`: a line was added inside it, '
+                      'or a blank line in it added or removed; it reads '
+                      '`import { due } from "./due";` + (blank line)', r.stdout)
+        target.write_text(target.read_text().replace(
+            'import type { Due } from "./due";\n', "").replace(
+            'import { due } from "./due";\n\n', 'import { due } from "./due";\n\n'
+            'import type { Due } from "./due";\n'))
+        self.assertEqual(self.cmd("record", "coder", n).returncode, 0)
+
+    def test_a_run_that_goes_on_into_its_tests_says_so(self):
+        # A new check file is one run: nothing may go below its imports.
+        _target, n = self.grouped_check(
+            rel="src/due.check.test.ts", base=None,
+            sealed='import { due } from "./due";\n\ndescribe("due", () => {\n'
+                   '  it("shows the due date", () => {});\n});\n')
+        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
+        self.assertIn('kept whole: `import { due } from "./due";` + (blank line) + '
+                      '`describe("due", () => {` + its tests)', paths)
+
+    def test_a_blank_line_a_check_adds_is_named_by_the_line_before_it(self):
+        target, n = self.grouped_check(
+            base='import { one } from "./one";\ndescribe("todos", () => {\n'
+                 '  it("adds", () => {});\n});\n',
+            sealed='import { one } from "./one";\n\ndescribe("todos", () => {\n'
+                   '  it("adds", () => {});\n  it("shows the due date", () => {});\n});\n')
+        target.write_text(target.read_text().replace(
+            'import { one } from "./one";\n\n', 'import { one } from "./one";\n'))
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", n)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('the 1 blank line(s) they add after `import { one } from "./one";` '
+                      "are gone or changed", r.stdout)
 
     def test_a_check_not_whole_when_the_worker_was_briefed_is_not_its_doing(self):
         # Before the install, the checks are not in the worktree: the coder's
