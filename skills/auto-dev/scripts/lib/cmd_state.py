@@ -27,9 +27,10 @@ consumer, and exits 3.
 
 `budget raise` adds <n> rounds (1 to 10) to a run `next` stopped because no
 round was left (references/tables.md, _The iteration budget_), and is refused
-otherwise. It also forgets the proposals that stop left unsent (since the
-commit, once there is one), so the next `next` sends them and takes the step
-that stopped, spending the new rounds as usual. It prints `RAISED`.
+otherwise. It also forgets the proposals the stopped step had no round to send,
+so the next `next` takes that step and sends them, spending the new rounds as
+usual. Proposals an earlier step left unsent stay unsent (the run went past
+them) and stay named in the reports. It prints `RAISED`.
 
 `mark` records a step done outside autodev.py, so `next` moves past it. Steps:
 jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
@@ -223,7 +224,11 @@ def raise_budget(args, state):
     b.setdefault("raises", []).append({"by": args.by, "consumer": stopped["consumer"],
                                        "at": st.now(), "seq": st.seq(state)})
     del b["stopped"]
-    forget_unsent(state)
+    forget_unsent(state, stopped["seq"])
+    # Before the commit, a review correction with no round left set this and
+    # went on to the PR gate; with rounds again, a later pass's must-fix
+    # findings get their correction.
+    (state.get("phase6") or {}).pop("exhausted", None)
     st.add_note(state, f"the user raised the iteration budget by {args.by} after it ran "
                 f"out ({CONSUMERS[stopped['consumer']]}): {b['remaining']} of "
                 f"{b['total']} left")
@@ -233,17 +238,17 @@ def raise_budget(args, state):
     return 0
 
 
-def forget_unsent(state):
-    """Drop the marks of proposals no round was left to send, so `next` sends
-    them now. Once the code is committed, only the marks made since: earlier
-    ones were left for the PR gate, and the user opened the PR with them."""
-    since = (state.get("phase6") or {}).get("commit_seq", 0)
+def forget_unsent(state, since):
+    """Drop the marks of proposals the stopped step had no round to send (made
+    at seq `since` or later), so `next` sends them as it takes that step.
+    Earlier marks stay: the run went past those proposals, which `next` won't
+    look at again, so the reports and gate summaries keep naming them."""
     found = state.get("proposals") or {}
     if found.get("unsent"):
-        found["unsent"] = [u for u in found["unsent"] if u.get("seq", 0) <= since]
+        found["unsent"] = [u for u in found["unsent"] if u.get("seq", 0) < since]
     if found.get("filings"):
         found["filings"] = [f for f in found["filings"]
-                            if f.get("status") != "unsent" or f.get("seq", 0) <= since]
+                            if f.get("status") != "unsent" or f.get("seq", 0) < since]
 
 
 def spend_round(state, consumer, spend_id, what=""):

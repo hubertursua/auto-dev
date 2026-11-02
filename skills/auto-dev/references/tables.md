@@ -23,7 +23,8 @@ When none is left, the stop's `REPORT` names `autodev.py budget raise --by
 <n>`. Run it only when the user asks for more rounds and gives the number (1
 to 10; it is refused unless `next` just stopped on the budget). Then `next`
 takes the step that stopped, spending the new rounds as usual, and sends the
-proposals that stop left unsent.
+proposals that step had no round for. Proposals an earlier step left unsent
+stay unsent, since the run went past them, and the reports keep naming them.
 
 | Consumer | Spends a round on | When none is left |
 |---|---|---|

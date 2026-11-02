@@ -3042,7 +3042,8 @@ class SpecProposalRulingTest(NextCase):
     def test_rounds_added_after_the_stop_send_the_proposals_it_left(self):
         job = self.to_first_pass(remaining=0)
         self.file_from_verifier(job, PROPOSAL_ON_2)
-        out = self.next(4)
+        self.next(4)
+        out = self.next(4)  # stopped again on the same step: its marks still go
         self.raise_from_report(out, 1)
         self.assertEqual(self.state()["proposals"]["unsent"], [])
         out, _, sets = self.define_job()
@@ -4858,6 +4859,51 @@ def condition_statements(spec):
 
 
 class PlanAndCheckProposalTest(NextCase):
+    def test_a_raise_leaves_a_proposal_an_earlier_step_left_unsent(self):
+        coder = self.building_coder(remaining=0)
+        planners = len(self.briefs_of("planner"))
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        self.coder_files(coder, step_proposal(1, {3: STEP_3_NEW}))
+        _, jobs = self.expect("cleanup")
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        out = self.next(4)
+        self.raise_from_report(out, 2)
+        self.assertTrue(self.state()["proposals"]["unsent"])  # still named
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertIn("spent `verifier-1`", out["BUDGET"])
+        self.assertEqual(len(self.briefs_of("planner")), planners)
+
+    def test_a_raise_pays_the_step_that_stopped_not_an_earlier_filing(self):
+        self.plan_session()
+        self.set_budget(1, 1)
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        _, jobs = self.first_pass()
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        _, jobs = self.expect("coder")  # spends the one round
+        self.coder_files(jobs[0], step_proposal(1, {3: STEP_3_NEW}))  # left unsent
+        _, jobs = self.expect("cleanup")
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        out = self.next(4)
+        self.raise_from_report(out, 1)
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertIn("spent `verifier-2`", out["BUDGET"])
+
     """The coder proposes changes to the plan and to the held-out checks; the
     planner and the acceptance tester rule on them, in order, on one round."""
 

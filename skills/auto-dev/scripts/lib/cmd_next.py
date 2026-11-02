@@ -202,6 +202,7 @@ class Ctx:
         self.readonly = bool(getattr(args, "explain", False))
         self.probing = False
         self.peeked = {}
+        self.prev_stopped = None  # the budget stop the last `next` saved, if any
 
     # ------------------------------------------------------------ reading
 
@@ -395,8 +396,11 @@ def ask(c, gate, summary, questions, answers, rule):
 
 def exhausted(c, consumer, rule, extra=""):
     # Saved with the stop, so `budget raise` knows the run stopped here; the
-    # next `next` clears it first (decide).
-    c.state["budget"]["stopped"] = {"consumer": consumer, "seq": c.seq()}
+    # next `next` clears it first (decide). Its seq is the first `next` that
+    # stopped here, so a raise forgets only the marks of this step.
+    first = c.prev_stopped if (c.prev_stopped or {}).get("consumer") == consumer else None
+    c.state["budget"]["stopped"] = {"consumer": consumer,
+                                    "seq": first["seq"] if first else c.seq()}
     c.dirty = True
     return stop([f"The iteration budget is used up ({c.state['budget']['total']} "
                  f"rounds): {ON_EXHAUSTED[consumer]}." + (f" {extra}" if extra else ""),
@@ -482,8 +486,11 @@ def decide(c):
         # them and saves nothing of its own. Each counted its own event already.
         st.save(c.dir, c.state, count_event=False)
     c.recorded, c.dirty = recorded, False
-    if c.state["budget"].pop("stopped", None) is not None:
-        c.dirty = True  # set again if this step stops on the budget too
+    c.prev_stopped = c.state["budget"].pop("stopped", None)
+    if c.prev_stopped is not None and not c.readonly:
+        # Saved now, so a step that fails leaves it cleared too; exhausted()
+        # sets it again if this step stops on the budget once more.
+        st.save(c.dir, c.state, count_event=False)
     result = decide_step(c)
     if recorded:
         result["RECORDED"] = recorded
