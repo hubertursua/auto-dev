@@ -46,6 +46,8 @@ prep
                  — its output follows
       STILL_RUNNING: an earlier mutation run is still alive after --wait
                  seconds; run prep again
+      RUN_AGAIN: the acceptance run ran out of time that the wait for an
+                 earlier mutation run took; run prep again
 tree
     Compares the tree hash now with evidence/tree-start.txt.
       TREE: <hash> — the code is as it was when prep ran: write this hash on
@@ -58,10 +60,11 @@ Exit codes:
     1  INSTALL_CONFLICT, or TREE_CHANGED
     2  could not run (no state, no sealed checks, git or a script failing) —
        `ERROR: …`, never a pass
-    3  STILL_RUNNING
+    3  STILL_RUNNING or RUN_AGAIN
     4  MUTATION_LEFT_CHANGES
 """
 
+import argparse
 import os
 import subprocess
 import sys
@@ -95,6 +98,7 @@ def add_arguments(parser):
     parser.add_argument("--pass", dest="pass_", default="first pass",
                         choices=("first pass", "re-check"),
                         help="prep: the brief's mode (`first pass` or `re-check`)")
+    parser.add_argument("--budget", type=int, default=BUDGET, help=argparse.SUPPRESS)
     parser.add_argument("--wait", type=int, default=WAIT,
                         help="prep: seconds to wait for a live mutation run")
 
@@ -203,16 +207,18 @@ def check_names(rows):
 
 
 def line_owners(lines, names):
-    """{line index: {condition id}}: each output line goes to the condition(s)
-    whose check name it holds, the longest such name only, so `keeps the date`
-    never takes the line of `keeps the date when edited`."""
+    """{line index: {(check name, condition id)}}: each output line goes to the
+    checks whose name it holds, less a name that is only part of a longer one
+    it holds, so `keeps the date` never takes the line of `keeps the date when
+    edited`, while a line naming two unrelated checks goes to both."""
     pairs = [(name, cid) for cid, ns in names.items() for name in ns if name]
     owners = {}
     for i, line in enumerate(lines):
         found = [(name, cid) for name, cid in pairs if name in line]
-        if found:
-            longest = max(len(name) for name, _ in found)
-            owners[i] = {(name, cid) for name, cid in found if len(name) == longest}
+        kept = {(n, c) for n, c in found
+                if not any(n != m and n in m for m, _ in found)}
+        if kept:
+            owners[i] = kept
     return owners
 
 
@@ -232,8 +238,8 @@ def acceptance_run(ad, wt, state, budget):
 
 def ran(code, budget):
     if code is None:
-        return f"ran past {budget:g}s and was stopped"
-    return "passed" if code == 0 else f"exited {code} (any failing check fails it)"
+        return f"ran past {budget}s and was stopped"
+    return "passed" if code == 0 else f"exited {code}"
 
 
 def write_evidence(ad, conditions, names, command, code, lines, owners, budget):
@@ -246,7 +252,8 @@ def write_evidence(ad, conditions, names, command, code, lines, owners, budget):
         hits = [lines[i] for i, who in sorted(owners.items())
                 if any(c == cid for _, c in who)]
         output = hits[-TAIL:] if hits else lines[-TAIL:]
-        result = f"the run {ran(code, budget)}" + (
+        failed = " (any failing check fails it)" if code not in (0, None) else ""
+        result = f"the run {ran(code, budget)}{failed}" + (
             "; the lines naming this condition's checks are below" if hits else
             "; no line of its output names this condition's checks, so its last "
             "lines are below")
@@ -286,8 +293,15 @@ def prep(args):
     diff_lines, diff_files = change_set(ad, wt, cut)
     rows, _na = art.manifest(ad / "acceptance" / "MANIFEST.md")
     names = check_names(rows)
-    budget = max(BUDGET - (time.monotonic() - started), MIN_RUN)
+    waited = time.monotonic() - started
+    budget = int(max(args.budget - waited, min(MIN_RUN, args.budget)))
     command, code, seconds, lines, scoped = acceptance_run(ad, wt, state, budget)
+    if code is None and budget < args.budget and waited >= POLL:
+        # The wait for a mutation run took the time: a fresh call gets it all.
+        emit(args.json, "RUN_AGAIN", f"the acceptance run ran past {budget}s, cut short "
+             f"by {int(waited)}s spent on an earlier mutation run; run `verify prep` "
+             "again")
+        return STILL_RUNNING
     conditions = art.spec_conditions(ad / "SPEC.md")
     owners = line_owners(lines, names)
     written = write_evidence(ad, conditions, names, command, code, lines, owners, budget)
@@ -301,7 +315,8 @@ def prep(args):
          tree=tree_hash, cut=cut,
          integrity=f"{evidence / 'integrity.txt'} (check-tests.py exit {audit_code})",
          changes=f"{evidence / 'changes.diff'} ({diff_lines} lines, {diff_files} files)",
-         acceptance=(f"{evidence / 'acceptance.txt'} — `{command}` {how} in {seconds:g}s"
+         acceptance=(f"{evidence / 'acceptance.txt'} — `{command}` {how}"
+                     + (f" in {seconds:g}s" if code is not None else "")
                      + ("" if scoped else " (the whole suite: the test check has no "
                                           "scoped form)")),
          evidence=", ".join(written) or "none", unnamed=unnamed)

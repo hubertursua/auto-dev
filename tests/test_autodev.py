@@ -2551,6 +2551,28 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit "))
         self.assertFalse((self.ad / "evidence" / "acceptance.txt").exists())
 
+    def test_a_line_naming_two_unrelated_checks_goes_to_both(self):
+        self.write(".auto-dev/acceptance/files/tests/due.test.ts.sealed",
+                   "test: an old test\ntest: keeps the due date\n"
+                   "test: flags an overdue todo\n"
+                   "summary: keeps the due date, flags an overdue todo\n")
+        self.write("runner.py", RUNNER.replace(
+            'print("done")', 'print("summary: keeps the due date, flags an overdue todo")'))
+        self.git("add", "runner.py")
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("unnamed:", r.stdout)
+        for name in ("C1.txt", "C2.txt"):
+            self.assertIn("summary: keeps the due date, flags an overdue todo",
+                          self.evidence(name))
+
+    def test_a_run_past_its_budget_is_stopped_and_said_so(self):
+        self.write("runner.py", "import time\ntime.sleep(30)\n")
+        r = self.verify("prep", "--budget", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("acceptance run ran past 1s and was stopped", r.stdout)
+        self.assertIn("Result: the run ran past 1s and was stopped;", self.evidence("C1.txt"))
+
     def test_without_a_scoped_form_the_whole_test_check_runs(self):
         state = json.loads((self.ad / "state.json").read_text())
         del state["settings"]["gate"][0]["files"]
