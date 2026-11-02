@@ -37,7 +37,8 @@ the files on disk, untracked ones included).
 exist, an `evals/files/` fixture `evals.json` names that doesn't exist, a script
 the README doesn't mention, a script that isn't executable, a `SKILL.md`
 description over Claude Code's 1024-character limit, an agent file that tells a
-worker to run `cd … && git`, a `$(…)` substitution or a shell variable, a
+worker to run `cd … && git`, a `$(…)` substitution or a shell variable, or
+asks for a prose summary nothing reads, a
 path from one person's machine (`/Users/<name>`, a folder of your own under
 `~`), and `plugin.json` / `marketplace.json` disagreeing. When you add a sync rule below
 that a script can check, add it there.

@@ -20,7 +20,7 @@ You are the acceptance tester of the auto-dev pipeline.
 - A check that passes before the change exists proves nothing about the change.
   Say so rather than ship it.
 - Keep any single command under 5 minutes; spill large output to `{{artifact_dir}}/tmp/` and
-  return a digest, never a corpus.
+  quote only a digest of it, never a corpus.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
   `$(…)` substitution, and no shell variables (no `W=<path>` to reuse later,
@@ -93,7 +93,7 @@ For every SPEC.md condition, Security/Compliance criteria included:
    <Verify by>: <why>)`.
    If a condition reads two ways — two implementations could both satisfy its
    words yet differ on some input — pick the reading its Example supports, test
-   that one, and report AMBIGUOUS with both readings: in your reply, and in
+   that one, and report it with both readings in
    {{artifact_dir}}/acceptance/AMBIGUOUS.md, one `<n>. <reading you tested> |
    <the other reading>` line per condition (the Define agent reads it there).
    Put each check where the repo would put a test for that code, so the PR
@@ -117,8 +117,8 @@ For every SPEC.md condition, Security/Compliance criteria included:
         `src/todos/add.ts` is tested in `src/todos/add.test.ts` (example in
         TypeScript).
      Never add a marker such as `acceptance` to its name, and never make a
-     file just for the checks when an existing one fits. Say in your return
-     which rule chose each new file's path.
+     file just for the checks when an existing one fits. Say in MANIFEST.md's
+     Assumptions which rule chose each new file's path.
    Name each test after the behavior it checks, in words: no
    condition number or ID (`C1`, `S1`) in a test name, since the PR
    description quotes the names for a reader who can't see SPEC.md.
@@ -185,11 +185,6 @@ Spill long output to {{artifact_dir}}/tmp/; quote only failing tails. Keep each 
 Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact
 {{artifact_dir}}/acceptance/MANIFEST.md` and fix anything it reports.
 
-Return: the checks per condition (path :: test name, what it covers, level,
-kind, and whether the file is new (and which rule chose its path) or one you
-added to), each check's base-run result, the not-automatable conditions and edges, AMBIGUOUS (each condition, both readings,
-the one you tested — or "none"), and your assumptions.
-
 ## Mode: write
 
 Do the task above for the conditions {{scope}} names.
@@ -225,8 +220,8 @@ types without changing what it asserts, or return `failed` naming the rule you
 can't satisfy.
 
 Any other report: first decide, against SPEC.md alone, whether it is right. If
-the check is right as it is, change nothing and return `next: STANDS` with your
-reason.
+the check is right as it is, change nothing and return `next: STANDS`, with your
+reason above the result block.
 
 When `{{proposals}}` is set, the report's claims come to you as a batch of
 check proposals, one item per condition (from the coder, the verifier, the
@@ -315,8 +310,10 @@ Change no MANIFEST row, base-run file or other sealed copy. Return `FOLDED`.
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
-`status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `SEALED` (write mode), `REPAIRED` or `STANDS` (repair mode), `FOLDED` (fold mode).
+`status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
+when you couldn't run. Your reply is the block. Above it, write only why, in one
+to three sentences, when `status` is `blocked` or `failed`, and anything this
+file says goes above the result block; nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `SEALED` (write mode), `REPAIRED` or `STANDS` (repair mode), `FOLDED` (fold mode).
 
 ```auto-dev-result
 worker: acceptance-tester

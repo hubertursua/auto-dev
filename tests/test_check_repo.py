@@ -71,6 +71,24 @@ class CheckRepoTest(unittest.TestCase):
         self.assertIn("coder.md:1: gives a `$(…)` substitution", errors[0])
         self.assertIn("coder.md:2: gives a `cd … && git` prefix", errors[1])
 
+    def test_an_agent_asking_for_a_prose_summary_fails(self):
+        errors = self.check_agent_text(
+            "Write SPEC.md.\nReturn: assumptions, key risks.\n"
+            "Do NOT modify code. Return: your votes, one line each.\n"
+            "Return a structured summary:\nReturn the findings.\nSay what you changed.\n"
+            "Report what changed, TEST CHANGES and BLOCKED.\n"
+            "Return `proposals: <k>`, and return `next: STANDS`.\n")
+        self.assertEqual([e.split(": asks")[0] for e in errors],
+                         [f"coder.md:{n}" for n in range(2, 8)], errors)
+
+    def test_a_worker_whose_reply_is_read_may_ask_for_one(self):
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("profiler.md", "lookup.md", "triager.md"):
+                (Path(tmp) / name).write_text("Return: the draft profile.\n", encoding="utf-8")
+            tool.check_agent_commands(Path(tmp))
+        self.assertEqual(tool.errors, [])
+
     def test_a_shell_variable_in_an_agent_fails(self):
         errors = self.check_agent_text("Spill output to `$TMPDIR`.\nThen `echo $? > x`.\n"
                                        "Or `cat ${W}/a`.\nOr `echo $1`.\n")
@@ -193,14 +211,14 @@ class CheckRepoTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("NO-SUCH-RULINGS.md", result.stdout)
 
-    def test_the_release_is_4_12_with_notes_on_upgrading_from_4_11(self):
+    def test_the_release_is_4_13_with_notes_on_upgrading_from_4_12(self):
         root = TOOL.parent.parent
         plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
-        self.assertRegex(plugin["version"], r"^4\.12\.\d+$")  # a patch keeps the notes
+        self.assertRegex(plugin["version"], r"^4\.13\.\d+$")  # a patch keeps the notes
         upgrading = (root / "UPGRADING.md").read_text(encoding="utf-8")
         first = re.search(r"^## (.*)$", upgrading, re.MULTILINE)
-        self.assertEqual(first.group(1).strip(), "Upgrading from 4.11")
-        section = re.search(r"^## Upgrading from 4\.11\b.*?(?=^## |\Z)", upgrading,
+        self.assertEqual(first.group(1).strip(), "Upgrading from 4.12")
+        section = re.search(r"^## Upgrading from 4\.12\b.*?(?=^## |\Z)", upgrading,
                             re.MULTILINE | re.DOTALL)
         self.assertRegex(section.group(0), r"(?i)resum")
 

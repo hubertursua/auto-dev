@@ -247,7 +247,9 @@ that run; elsewhere, it asks when several runs are open. Each session follows a 
 never asked to judge, so any model can run it.
 
 The orchestrator's context is the real cost: every added turn makes every later
-turn more expensive. So it delegates reads to workers, and `next` ends a long
+turn more expensive. So it delegates reads to workers, each worker's reply is its
+result block alone (its files hold the rest; a few lines above the block only
+when it stopped, or has something the user must be told), and `next` ends a long
 session at a **checkpoint** after 80 recorded events (about 35 workers;
 `checkpoint_events` in `.auto-dev.yml` changes it). Nothing crosses a session
 boundary except `.auto-dev/` and the git tree, which also makes an interrupted

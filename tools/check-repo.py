@@ -17,7 +17,10 @@ Checks:
   `next` tokens briefs.RESULTS allows, and every templates/<file> it names
   exists; every worker in briefs.RESULTS has an agent file and vice versa;
 - no agent file tells a worker to run `cd … && git`, a `$(…)`
-  substitution or a shell variable, which a headless permission check refuses;
+  substitution or a shell variable, which a headless permission check refuses,
+  or (outside profiler, lookup and triager, whose reply is read) to end with a
+  prose summary (`Return: …`, `Say what you changed`), which nothing reads: a
+  worker's reply is its result block;
 - every template a script parses exists in templates/;
 - every evals/files/ path a string in evals/evals.json names exists (the
   setup and expectations as well as each eval's `files`);
@@ -139,6 +142,12 @@ REFUSED_FORMS = [(re.compile(r"\$\((?!…\))"), "a `$(…)` substitution"),
                  (re.compile(r"\bcd (?!<path>)[^`\n]*&&\s*git\b"), "a `cd … && git` prefix"),
                  (re.compile(r"\$(?:[A-Za-z_?@#*]|\{|\d)"), "a shell variable")]
 
+# The orchestrator reads a worker's result block and files, never a summary
+# above it; writing one costs the worker time and the orchestrator context.
+REPLY_READ = {"profiler.md", "lookup.md", "triager.md"}  # their reply is the answer
+SUMMARY_ASK = re.compile(r"\bReturn(?::\s| a (?:structured )?summary| the findings)"
+                         r"|\b(?:Say|Report) what (?:you )?changed")
+
 
 def check_agent_commands(agents_dir=ROOT / "agents"):
     for path in sorted(agents_dir.glob("*.md")):
@@ -147,6 +156,9 @@ def check_agent_commands(agents_dir=ROOT / "agents"):
                 if pattern.search(line):
                     fail(f"{path.name}:{n}: gives {what}; write the command plainly "
                          "(`git -C <path>`, a literal value from the brief)")
+            if path.name not in REPLY_READ and SUMMARY_ASK.search(line):
+                fail(f"{path.name}:{n}: asks for a prose summary nothing reads; put it in "
+                     "an artifact or the result block, or say what goes above the block")
 
 
 PATH_REF = re.compile(r"(?:skills/auto-dev/)?((?:references|scripts|templates)/[\w.-]+\.(?:md|py))")

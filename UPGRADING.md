@@ -4,6 +4,22 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.12
+
+- **Workers reply with their result block alone.** The agent files no longer
+  ask for a prose summary ("Return: …"). Nothing read it: most of it repeated
+  the worker's artifacts, and the rest (risks, the coder's deviations from the
+  plan, cleanup's reverted simplifications) reached no step. A worker writes a
+  few lines above the block only for why it is `blocked` or `failed`, a
+  reviewer's blocker with no FIX block, the planner's reasons for
+  `SPEC_IMPOSSIBLE`, the tester's reason for `STANDS`, and the paths a
+  mutation run may have left changed (`MUTATION_LEFT_CHANGES`). The coder's TEST CHANGES go in the result's
+  `test_changes` and its BLOCKED steps in the blocked file, as before; the
+  tester records which rule chose a new test file's path in `MANIFEST.md`'s
+  Assumptions. This cuts the time workers spend writing and the text that
+  lands in the orchestrator's context.
+- **Resume:** a run in flight resumes. No state, result key or artifact changed.
+
 ## Upgrading from 4.11
 
 - **The coder proposes against the plan and the checks.** When a step of

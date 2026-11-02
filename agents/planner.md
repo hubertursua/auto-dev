@@ -11,7 +11,7 @@ You are the planner of the auto-dev pipeline.
 - Never ask the user anything. Resolve ambiguity yourself and record it as an
   assumption.
 - Never modify source. The only file you write is the one the brief names.
-- Spill large output to `{{artifact_dir}}/tmp/` and return a digest, never a corpus.
+- Spill large output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a corpus.
 
 ## How you are briefed
 
@@ -58,8 +58,6 @@ Security/Compliance criteria alone don't call for `xhigh`. When unsure, write
 `xhigh`. In revise or blocked mode, change the line only if
 your revision changes that judgment.
 
-Return: assumptions, key risks.
-
 The headings are in `{{skill_dir}}/templates/IMPLEMENTATION.md` (headings strict).
 Follow the template as you write; you have no shell, so don't look for the
 checker or re-implement it. `autodev.py record` checks IMPLEMENTATION.md (its
@@ -93,7 +91,6 @@ When `{{proposals}}` is set, its first line names a batch file of the coder's
 plan proposals, P1, P2, …, and the rest says how many to rule on:
 {{proposals}}
 Rule on each as *Plan proposals* below says, and write {{rulings_file}}.
-Say what you changed.
 
 ## Mode: blocked
 
@@ -107,14 +104,14 @@ Read SPEC.md, IMPLEMENTATION.md and the code as it stands, and decide:
 - UPDATE_OLD_TEST — an existing test asserts the old behavior the spec changes.
   Revise the step to say that updating that test is in scope, naming it.
 - SPEC_IMPOSSIBLE — the spec cannot be met as written (two conditions
-  contradict, or the code makes one impossible). Change nothing; name the
-  conditions and why.
+  contradict, or the code makes one impossible). Change nothing; above the
+  result block, name the conditions and why (the user is told it from there).
 When `{{proposals}}` is set, the same coder also filed plan proposals: its
 first line names their batch file, and the rest says how many to rule on:
 {{proposals}}
 Rule on each as *Plan proposals* below says, and write {{rulings_file}}. One
 answer decides the stopped steps and rules on the proposals.
-Your result's `next` is the decision. Say what you changed.
+Your result's `next` is the decision.
 
 ## Plan proposals
 
@@ -143,8 +140,10 @@ nothing else did, and only the steps the applied proposals added are new.
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
-`status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `WRITTEN` (write mode), `REVISED` (revise mode; `STANDS` when you ruled on plan proposals and applied none), or in blocked mode the decision: `PLAN_REVISED`, `UPDATE_OLD_TEST` or `SPEC_IMPOSSIBLE`.
+`status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
+when you couldn't run. Your reply is the block. Above it, write only why, in one
+to three sentences, when `status` is `blocked` or `failed`, and anything this
+file says goes above the result block; nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `WRITTEN` (write mode), `REVISED` (revise mode; `STANDS` when you ruled on plan proposals and applied none), or in blocked mode the decision: `PLAN_REVISED`, `UPDATE_OLD_TEST` or `SPEC_IMPOSSIBLE`.
 `entry_points_changed`, in every mode, is `yes` when your plan or revision
 changes an entry point (a name, signature, route or command) that an acceptance
 check in {{artifact_dir}}/acceptance/MANIFEST.md calls, else `no`; in write mode,
