@@ -61,10 +61,13 @@ pr-body
     links the ticket when the run has one, and adds the sections of the repo's
     PR template it lacks: a testing section points at the checks, a checklist
     is copied unticked with a WRITE line to tick the boxes the run shows are
-    true, and any other section gets a WRITE line of its own.
-    Links point at the commit; worktree and home paths are hidden and lines that
-    look like secrets dropped; output blocks are cut, then moved to
-    pr-output-comment.md, to keep it under 60,000 characters. `next` runs it.
+    true, and any other section gets a WRITE line of its own. It also writes
+    <artifact-dir>/pr-write.md: the text those lines draw on, quoted, then only
+    the sections holding a WRITE line, which the orchestrator fills in there and
+    `pr publish` puts into the description. Links point at the commit;
+    worktree and home paths are hidden and lines that look like secrets
+    dropped; output blocks are cut, then moved to pr-output-comment.md, to keep
+    it under 60,000 characters. `next` runs it.
     Exit: 0 written; 1 no verified commit yet.
 
 pr-body --check <file>
@@ -550,7 +553,8 @@ def pr_body(args):
         state["phase6"]["body"] = {"sha": sha, "path": str(path), "seq": st.seq(state)}
         st.save(args.dir, state)
         emit(args.json, "WRITTEN", str(path), commit=sha,
-             then="replace its WRITE lines, then `autodev.py pr publish`")
+             then="replace the WRITE lines in pr-write.md beside it, then "
+                  "`autodev.py pr publish`")
         return 0
     try:
         text = Path(args.check).read_text(encoding="utf-8")

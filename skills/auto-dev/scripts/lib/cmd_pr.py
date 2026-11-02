@@ -4,7 +4,10 @@ Usage:
     autodev.py pr publish [--dir <artifact-dir>] [--title TEXT] [--json]
 
 Publishes the PR description `next` generated (`<artifact-dir>/pr-body.md`,
-from templates/pr-body.md and the run's artifacts) for the verified commit:
+from templates/pr-body.md and the run's artifacts) for the verified commit,
+with each section of `<artifact-dir>/pr-write.md` (the sections that hold a
+WRITE line, which the orchestrator fills in there) put in place of the section
+of the same heading:
 
  - It refuses while the description still holds a `<!-- WRITE: ... -->` line
    (the Summary, the Assumptions, any section the repo's PR template adds and
@@ -38,7 +41,9 @@ from templates/pr-body.md and the run's artifacts) for the verified commit:
 Exit codes:
     0  published; the PR number and URL are printed (and how the findings
        were posted, when inline comments are on)
-    1  refused: a WRITE line is left, the lint failed, or GitHub did not take it
+    1  refused: a WRITE line is left; pr-write.md lost its mark line, or a
+       heading in it is not one it was written with, or leaves a section
+       unwritten; the lint failed; or GitHub did not take it
     2  could not run (no state, no description generated yet, gh missing, signed
        out or offline, or the PR could not be read back)
 """
@@ -47,6 +52,7 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from . import artifacts as art
@@ -58,6 +64,16 @@ from .proc import git, run
 BODY_LIMIT = 60000
 TAIL = 10
 WRITE_RE = re.compile(r"<!-- WRITE: .*?-->")
+WRITE_FILE = "pr-write.md"  # only the sections with a WRITE line, for the orchestrator
+SLOTS_MARK = "<!-- auto-dev: the sections you write start here; keep this line -->"
+SOURCE_LIMIT = 3000  # characters of one quoted source
+WRITE_HEAD = ("<!-- The parts of the PR description you write. The quoted sources first "
+              "are for you to draw on; they are not published. Below the line that "
+              "says your sections start, replace each WRITE line as it asks, in plain "
+              "words for a developer who has never heard of auto-dev, and change "
+              "nothing else. Keep each `## ` heading as it is, and start no line of an "
+              "answer with `## `: `pr publish` puts each section into the description "
+              "by its heading. -->")
 STRICT = ("Acceptance conditions", "Quality gate", "Review")
 COMMENT_HEAD = "Command output for commit"
 ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
@@ -216,8 +232,11 @@ def generate(state, ad, sha):
     text, comment = clean(text, wt), clean(comment, wt)
     from .cmd_ship import quoted_digests
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
+    # The headings pr-write.md is written with: splice takes no others.
+    state["phase6"]["slots"] = [h for h, b in split_sections(text) if h and WRITE_RE.search(b)]
     path = ad / "pr-body.md"
     path.write_text(text, encoding="utf-8")
+    (ad / WRITE_FILE).write_text(write_slots(text, ad, state["task"]), encoding="utf-8")
     comment_path = ad / "pr-output-comment.md"
     if comment:
         comment_path.write_text(f"{COMMENT_HEAD} {sha[:12]}\n\n{comment.rstrip()}\n\n"
@@ -225,6 +244,102 @@ def generate(state, ad, sha):
     elif comment_path.exists():
         comment_path.unlink()
     return path
+
+
+def write_slots(text, ad, task):
+    """pr-write.md: the text the WRITE lines draw on (SPEC.md's Context and
+    Assumptions, the task, and the description's requirements, Quality gate and
+    Review), each line quoted so no heading in it counts, then SLOTS_MARK and
+    each section of the description that holds a WRITE line, as it stands but
+    for the closing attribution: the orchestrator writes them without reading
+    the whole description."""
+    out = [WRITE_HEAD, ""]
+
+    def source(title, body):
+        body = (body or "none").strip() or "none"
+        if len(body) > SOURCE_LIMIT:
+            body = body[:SOURCE_LIMIT - 1].rstrip() + "…"
+        out.extend([f"### Source: {title}",
+                    *[f"> {ln}" if ln.strip() else ">" for ln in body.splitlines()], ""])
+
+    try:
+        spec = art.read(ad / "SPEC.md")
+    except art.ArtifactError:
+        spec = ""
+    for name in ("Context", "Assumptions"):
+        source(f"SPEC.md {name}", art.find_section(spec, name) if spec else None)
+    source("the task", task.get("text"))
+    ask = (task.get("ask") or "").strip()
+    if ask and ask != (task.get("text") or "").strip():
+        source("what the user asked for", ask)
+    asked = re.findall(r"^- \[[ x]\] \*\*(.+?)\*\*", section_of(text, "Acceptance conditions"),
+                       re.MULTILINE)
+    source("the requirements this description says were checked",
+           "\n".join(f"- {a}" for a in asked) or None)
+    for name in ("Quality gate", "Review"):
+        source(f"this description's {name}", section_of(text, name))
+    out += [SLOTS_MARK, ""]
+    for heading, body in split_sections(text):
+        if heading and WRITE_RE.search(body):
+            lines = [ln for ln in body.split("\n") if ln.strip() not in (ATTRIBUTION, MARKER)]
+            out += [heading, "\n".join(lines).rstrip("\n"), ""]
+    return "\n".join(out).rstrip() + "\n"
+
+
+def splice_written(text, ad, slots=None):
+    """The description with each section pr-write.md holds below SLOTS_MARK put
+    in place of the section of the same heading (in order, when a heading
+    repeats) that still holds a WRITE line; one already written in pr-body.md
+    (by hand, or by a session before 4.17) stands. Refused (UNWRITTEN, so the
+    orchestrator fixes pr-write.md) when the mark line is gone, text sits
+    between it and the first heading, a heading there is not one pr-write.md
+    was written with (`slots`, saved by generate; before 4.17, any of the
+    description's), or a section still holding a WRITE line has no section
+    there. With no pr-write.md, the text as it is."""
+    path = Path(ad) / WRITE_FILE
+    if not path.exists():
+        return text
+    parts = re.split(rf"^{re.escape(SLOTS_MARK)}[ \t]*$", path.read_text(encoding="utf-8"),
+                     maxsplit=1, flags=re.MULTILINE)
+    if len(parts) < 2:
+        raise Fail(f"{path} has lost its line `{SLOTS_MARK}`: put it back, alone on its "
+                   "line, above your sections", FAILED, "UNWRITTEN")
+    split = split_sections(parts[1])
+    if split and not split[0][0] and split[0][1].strip():
+        raise Fail(f"{path} has text between its line `{SLOTS_MARK}` and its first "
+                   "`## ` heading: move it into a section", FAILED, "UNWRITTEN")
+    mine = [(h, b) for h, b in split if h]
+    sections = split_sections(text)
+    have = Counter(h for h, _ in mine)
+    allowed = Counter(slots) if slots is not None else Counter(h for h, _ in sections if h)
+    need = Counter(h for h, b in sections if h and WRITE_RE.search(b))
+    problems = []
+    for heading in have:
+        if have[heading] > allowed[heading]:
+            problems.append(f"{path} has {have[heading]} `{heading}` section(s) where it "
+                            f"was written with {allowed[heading]}: keep each heading as it "
+                            "is, and start no line of an answer with `## `")
+    for heading in need:
+        if have[heading] < need[heading]:
+            problems.append(f"the description's `{heading}` is not written: {path} has "
+                            "no section left under that heading (was it renamed or "
+                            "removed?)")
+    if problems:
+        raise Fail("; ".join(problems), FAILED, "UNWRITTEN")
+    queue = {}
+    for heading, body in mine:
+        queue.setdefault(heading, []).append(body.rstrip("\n") + "\n")
+    out = []
+    for heading, body in sections:
+        if queue.get(heading):
+            written = queue[heading].pop(0)
+            if WRITE_RE.search(body):
+                body = written
+        out.append((heading, body))
+    text = "\n".join((f"{h}\n" if h else "") + b for h, b in out)
+    # The attribution and the marker close the description, as generate wrote it.
+    kept = [ln for ln in text.split("\n") if ln.strip() not in (ATTRIBUTION, MARKER)]
+    return "\n".join(kept).rstrip() + f"\n\n{ATTRIBUTION}\n{MARKER}\n"
 
 
 def ticket_link(task):
@@ -753,7 +868,7 @@ def publish_body(args, state):
         raise Fail("no description generated for the verified commit: run "
                    "`autodev.py next`", CANNOT_RUN, "ERROR")
     path = Path(body["path"])
-    text = path.read_text(encoding="utf-8")
+    text = splice_written(path.read_text(encoding="utf-8"), ad, p6.get("slots"))
     pr = p6.get("pr") or existing_pr(wt, state["branch"])
     live = ""
     if pr:
@@ -763,7 +878,11 @@ def publish_body(args, state):
         live = json.loads(out).get("body", "")
         text = merge_live(live, text)
     if WRITE_RE.search(text):
-        raise Fail(f"{path} still holds a `<!-- WRITE: ... -->` line: replace each one "
+        slots = ad / WRITE_FILE
+        mine = slots.read_text(encoding="utf-8").split(SLOTS_MARK, 1)[-1] \
+            if slots.exists() else ""
+        where = slots if WRITE_RE.search(mine) else path
+        raise Fail(f"{where} still holds a `<!-- WRITE: ... -->` line: replace each one "
                    "(the Summary, the Assumptions, a section or checklist the repo's PR "
                    "template adds) first", FAILED, "UNWRITTEN")
     # Once the PR has a description, its checklist is the live one: edits stand.

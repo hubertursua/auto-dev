@@ -87,20 +87,29 @@ If the push is rejected, tell the user what git printed and stop; don't run the
 
 ## 5. The PR body
 
-`next` names `pr-body.md`. It holds lines like `<!-- WRITE: ... -->`: always
-one for the Summary and one for the Assumptions, and one for each section of
-the repo's own PR template the script couldn't fill, or whose checklist is
-yours to tick. Replace each with plain sentences for a developer who has never
-heard of auto-dev:
+`next` names `pr-write.md`: the sections of the generated `pr-body.md` that
+are yours to write, after the sources they draw on, quoted: `SPEC.md`'s
+Context and Assumptions, the task, and the description's checked requirements,
+Quality gate and Review. Edit `pr-write.md` below its line `<!-- auto-dev: the
+sections you write start here; keep this line -->`, never `pr-body.md`, and
+don't read `pr-body.md`: `pr publish` puts each of your sections into it by
+heading, and refuses when a heading is changed, missing or added (start no
+line of an answer with `## `).
+(A run whose `next` names `pr-body.md` alone predates this file: edit that.)
+Each section holds a line like `<!-- WRITE: ... -->`: always one for the
+Summary and one for the Assumptions, and one for each section of the repo's
+own PR template the script couldn't fill, or whose checklist is yours to tick.
+Replace each with plain sentences for a developer who has never heard of
+auto-dev, and keep every `## ` heading as it is:
 
 - **Summary:** what changed and why, 2–4 sentences, from `SPEC.md`'s Context.
 - **Assumptions:** the open assumptions from `SPEC.md`'s Assumptions section a
   reviewer should check, one bullet each, or `None.`
 - **A template section:** answer what its WRITE line asks, from `SPEC.md` or
   `HANDOFF.md`. If neither says, write `N/A`. Never read the code to answer it.
-- **A template checklist:** tick a box (`- [x]`) when `SPEC.md`, `HANDOFF.md`
-  or the description's own sections show it is true, and leave it unticked when
-  they don't, or when only a person can confirm it (a manual test, a sign-off).
+- **A template checklist:** tick a box (`- [x]`) when the sources, `SPEC.md`
+  or `HANDOFF.md` show it is true, and leave it unticked when they don't, or
+  when only a person can confirm it (a manual test, a sign-off).
   Never read the code to decide. Add no note saying why: the code and the rest
   of the description show it. Keep every item's words, and don't add, drop or
   reorder one (`pr publish` refuses that). Then delete the WRITE line. This
@@ -110,9 +119,10 @@ heard of auto-dev:
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
 "verifier" or "pipeline". What the description quotes word for word (test
 names, commands and their output, the verifier's reasons under Changes to
-tests and Test strength, between the `<!-- auto-dev:quoted -->` markers) is exempt from the ID, `.auto-dev/` path, term and tier checks, and is not yours to
-edit. Change nothing else in the file: the follow-ups the user sent to a
-separate PR at the PR gate are already listed in it.
+tests and Test strength, between the `<!-- auto-dev:quoted -->` markers) is exempt from the ID, `.auto-dev/` path, term and tier checks; it is not in
+`pr-write.md`, and not yours to edit. Change nothing else in `pr-write.md`:
+the follow-ups the user sent to a separate PR at the PR gate are already listed
+in the description.
 `pr publish` ends everything it posts with `<!-- auto-dev -->`, which tells
 the triager to skip it; never post on the PR yourself. Then run the `AFTER`
 line, `autodev.py pr publish`:
@@ -120,7 +130,7 @@ line, `autodev.py pr publish`:
 | Exit | Do |
 |---|---|
 | 0 | published: run `next`. A failure to post the review findings (its `inline_comments` line) is saved; `next`'s final-report step names it |
-| 1 | IF it names a WRITE line or a problem in a section you wrote, fix them and run it again. ELSE tell the user what it printed and stop |
+| 1 | IF it names a WRITE line or a problem in a section you wrote, fix them in `pr-write.md` and run it again. ELSE tell the user what it printed and stop |
 | 2 | tell the user the error and stop |
 
 ## 6. Jira

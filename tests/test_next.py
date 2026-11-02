@@ -953,6 +953,123 @@ class ShipTest(NextCase):
         self.assertEqual(self.state()["phase6"]["pr"], 12)
         return sha, url
 
+    def published(self):
+        """The description `pr create` or `pr edit` was last given."""
+        log = [json.loads(ln) for ln in (self.tmp / "gh.log").read_text().splitlines()]
+        sent = [e["files"] for e in log if e["args"][:2] in (["pr", "create"],
+                                                              ["pr", "edit"])]
+        return "".join(sent[-1].values())
+
+    MARK = "<!-- auto-dev: the sections you write start here; keep this line -->"
+
+    def slots(self, fill="Todos can carry a due date."):
+        """pr-write.md split at its mark: (sources, sections), the WRITE lines in
+        the sections replaced with `fill` when given."""
+        sources, mine = (self.dir / "pr-write.md").read_text().split(self.MARK)
+        if fill is not None:
+            mine = re.sub(r"<!-- WRITE: .*?-->", fill, mine)
+        return sources, mine
+
+    def write_slots(self, sources, mine):
+        (self.dir / "pr-write.md").write_text(sources + self.MARK + mine)
+
+    def test_the_orchestrator_writes_only_the_sections_in_pr_write_md(self):
+        sha, _, out, body = self.to_body()
+        slots = self.dir / "pr-write.md"
+        self.assertIn(str(slots), out["ACTION"])
+        generated = body.read_text()
+        sources, mine = self.slots(fill=None)
+        self.assertIn("## Summary\n<!-- WRITE:", mine)
+        self.assertIn("## Assumptions\n<!-- WRITE:", mine)
+        self.assertNotIn("## Acceptance conditions", mine)  # the script's own sections
+        self.assertNotIn("<!-- auto-dev -->", mine)  # the closing lines stay put
+        self.assertLess(len(slots.read_text()), len(generated) // 2)
+        spec = (self.dir / "SPEC.md").read_text()
+        context = spec.split("## Context", 1)[1].split("\n## ", 1)[0].strip()
+        self.assertIn("### Source: SPEC.md Context\n> " + context.splitlines()[0], sources)
+        self.assertIn("### Source: the task\n> ", sources)
+        self.assertIn("### Source: this description's Quality gate\n> ", sources)
+        self.assertIn("> - A todo can carry a due date", sources)  # a checked requirement
+        self.assertNotIn("\n## ", sources)  # quoted: no heading of theirs counts
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("pr-write.md still holds", r.stderr)
+        self.write_slots(*self.slots())
+        self.after(out)
+        self.assertEqual(self.state()["phase6"]["pr"], 12)
+        self.assertEqual(body.read_text(), generated)  # spliced in memory only
+        sent = self.published()
+        self.assertIn("## Summary\nTodos can carry a due date.", sent)
+        self.assertIn(f"Checked at commit {sha}", sent)
+        self.assertNotIn("WRITE", sent)
+        self.assertNotIn("### Source:", sent)  # the sources stay out
+        self.assertTrue(sent.endswith("Generated with [Claude Code]"
+                                      "(https://claude.com/claude-code)\n<!-- auto-dev -->\n"))
+
+    def test_a_section_written_in_pr_body_md_stands(self):
+        _, _, out, body = self.to_body()
+        body.write_text(body.read_text().replace(
+            "## Summary\n<!-- WRITE:", "## Summary\nBy hand.\n<!-- gone:", 1).replace(
+            "<!-- gone: what changed and why, 2–4 sentences, drawn from SPEC.md's "
+            "Context -->", "", 1))
+        self.write_slots(*self.slots("From the slots."))
+        self.after(out)
+        sent = self.published()
+        self.assertIn("## Summary\nBy hand.", sent)
+        self.assertNotIn("## Summary\nFrom the slots.", sent)
+        self.assertIn("## Assumptions\nFrom the slots.", sent)
+
+    def test_a_heading_in_the_task_text_never_reaches_the_description(self):
+        _, _, out, _ = self.to_body()
+        state = self.state()
+        state["task"]["text"] = ("Ticket body\n## Summary\nThe ticket's own summary\n"
+                                 "## Assumptions\nticket notes")
+        self.write_state(state)
+        r = self.autodev("pr-body", "--dir", self.dir)  # generated again from the task
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("pr-write.md", r.stdout)
+        self.write_slots(*self.slots())
+        self.after(out)
+        sent = self.published()
+        self.assertIn("## Summary\nTodos can carry a due date.", sent)
+        self.assertNotIn("The ticket's own summary", sent)
+        self.assertNotIn("ticket notes", sent)
+
+    def test_a_stray_or_renamed_heading_or_a_lost_mark_is_refused(self):
+        self.to_body()
+        sources, mine = self.slots()
+
+        def publish(text):
+            (self.dir / "pr-write.md").write_text(text)
+            r = self.autodev("pr", "publish", "--dir", self.dir)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            return r.stderr
+        stray = mine.replace("Todos can carry a due date.", "Todos can carry a due date."
+                             "\n## Assumptions\nextra", 1)
+        self.assertIn("start no line of an answer with `## `",
+                      publish(sources + self.MARK + stray))
+        renamed = mine.replace("## Assumptions", "## assumptions")
+        err = publish(sources + self.MARK + renamed)
+        self.assertIn("`## Assumptions` is not written", err)
+        self.assertIn("`## assumptions` section(s) where it was written with 0", err)
+        self.assertIn("has lost its line", publish(sources + mine))
+        # A heading of the description that pr-write.md was not written with.
+        review = mine.replace("Todos can carry a due date.", "Line one.\n## Review\nlost", 1)
+        self.assertIn("`## Review` section(s) where it was written with 0",
+                      publish(sources + self.MARK + review))
+        self.assertIn("text between its line", publish(sources + self.MARK + "\nloose\n"
+                                                        + mine))
+        # The write step `next` goes back to says what was refused.
+        self.assertIn("refused the last one", self.next(0)["ACTION"])
+        self.assertEqual(self.state()["phase6"]["publish_attempt"]["result"], "unwritten")
+
+    def test_a_body_with_no_pr_write_md_is_named_as_before(self):
+        _, _, _, body = self.to_body()
+        (self.dir / "pr-write.md").unlink()  # as a description generated before 4.17
+        out = self.next(0)
+        self.assertIn(f"fill in the PR body {body}", out["ACTION"])
+        self.assertNotIn("pr-write.md", out["ACTION"])
+
     def test_planted_bug_count_spans_carried_and_rerun_mutants(self):
         # A re-check's Mutation line counts the whole set once, run again or
         # carried forward; the carried count must not be added to the total.

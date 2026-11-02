@@ -3180,14 +3180,20 @@ def body_step(c, sha):
             return stop([(f"`pr publish` refused the PR description "
                           f"({attempt['result']}). Tell the user what it found:"),
                          *attempt.get("problems", []),
-                         (f"The description is {body['path']}. Once the cause is "
-                          "fixed (the description edited, or GitHub working again), "
-                          "`auto-dev continue` publishes it again.")],
+                         (f"The description is {body['path']}"
+                          + (f", and the sections the orchestrator writes are in "
+                             f"{Path(body['path']).parent / 'pr-write.md'}"
+                             if (Path(body['path']).parent / 'pr-write.md').exists()
+                             else "")
+                          + ". Once the cause is fixed (the description edited, or "
+                          "GitHub working again), `auto-dev continue` publishes it "
+                          "again.")],
                         "pr publish was refused")
         if "rewrite" not in body:
             body["rewrite"] = attempt["seq"]
             c.dirty = True
-        return write_body(c, body, "the description still holds a WRITE line")
+        return write_body(c, body, "the description still holds a WRITE line",
+                          refused=attempt.get("problems"))
     if c.p6.get("pr"):
         return action(f"publish the refreshed PR body: run `{c.cmd('pr', 'publish')}`",
                       "a new commit was pushed: the PR body describes the old one",
@@ -3195,12 +3201,17 @@ def body_step(c, sha):
     return write_body(c, body, "the commit is pushed: the PR opens next")
 
 
-def write_body(c, body, rule):
-    return action(f"fill in the PR body {body['path']}: "
+def write_body(c, body, rule, refused=None):
+    slots = Path(body["path"]).parent / "pr-write.md"
+    target = (f"{slots}, the sections you write of the PR body {body['path']} "
+              "(don't read that file: pr publish puts them in)" if slots.exists() else
+              f"the PR body {body['path']}")
+    return action(f"fill in {target}: "
                   "replace every `<!-- WRITE: ... -->` line (references/S3-ship.md, "
                   "_The PR body_), in plain words for a "
                   "developer who has never heard of auto-dev; change nothing else. Then "
-                  "run AFTER", rule, AFTER=[c.cmd("pr", "publish")])
+                  "run AFTER" + (". `pr publish` refused the last one: " + "; ".join(refused)
+                                 if refused else ""), rule, AFTER=[c.cmd("pr", "publish")])
 
 
 def ci_watch(c, rule):
