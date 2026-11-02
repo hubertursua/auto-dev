@@ -15,7 +15,8 @@ Subcommands:
     phase     set a phase's status
     note      record a decision or assumption
     size      record the Define agent's size check (FITS or OVERSIZED)
-    budget    show the iteration budget, or spend one round before a correction
+    budget    show the iteration budget, spend one round before a correction, or
+              add rounds after the budget ran out
     gate      record a gate decision
     mark      record a step done outside autodev.py (a Jira move, the push)
     handoff   write HANDOFF.md and print the message that ends the session

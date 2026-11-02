@@ -19,6 +19,13 @@ One budget of revise rounds per task: `iteration_budget` in `.auto-dev.yml`,
 default 4. `next` spends a round before the action that needs it and prints a
 `BUDGET:` line when it does. You never spend one yourself.
 
+When none is left, the stop's `REPORT` names `autodev.py budget raise --by
+<n>`. Run it only when the user asks for more rounds and gives the number (1
+to 10; it is refused unless `next` just stopped on the budget). Then `next`
+takes the step that stopped, spending the new rounds as usual, and sends the
+proposals that step had no round for. Proposals an earlier step left unsent
+stay unsent, since the run went past them, and the reports keep naming them.
+
 | Consumer | Spends a round on | When none is left |
 |---|---|---|
 | 1 | a Define re-review after its FIX blocks applied | stop; report the Define review's open blockers one by one |
@@ -57,7 +64,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 9 | the planner judged the spec impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
 | 10 | the quality gate can't be made green | cleanup returns `RED` |
 | 11 | the mutation step may have left a planted change in the source | verifier returns `MUTATION_LEFT_CHANGES` |
-| 12 | the budget ran out (consumers 1–3; 4 and 5 after the commit) | `next`, per the table above |
+| 12 | the budget ran out (consumers 1–3; 4 and 5 after the commit). Lifted when the user adds rounds (`budget raise`, above) | `next`, per the table above |
 | 13 | a report is stale again right after its own re-run | `check-fresh`, inside `next` |
 | 14 | no code reviewer wrote a usable report, twice | `next` |
 | 15 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
@@ -90,7 +97,9 @@ the next session:
   lift, so a worker that failed once before it and once after still stops.
 - A stop on a **result** stays: a red quality gate (#10), an impossible spec
   (#9), a mutation that may have left changes (#11), the budget used up (#12).
-  A resumed run stops at the same place.
+  A resumed run stops at the same place. The budget stop is lifted only when
+  the user adds rounds: `budget raise`, then `next` takes the step that
+  stopped.
 
 ## What each gate option does
 

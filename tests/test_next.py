@@ -108,6 +108,16 @@ class NextCase(RunCase):
                              json.dumps(out, indent=2))
         return out
 
+    def raise_from_report(self, out, n):
+        """Run the `budget raise` command a budget stop's report names, for n rounds."""
+        line = next(ln for ln in out["REPORT"] if "budget raise" in ln)
+        command = re.search(r"`([^`]*budget raise[^`]*)`", line).group(1)
+        r = subprocess.run(command.replace("'<n>'", str(n)), shell=True,
+                           capture_output=True, text=True, env=self.env, cwd=self.tmp,
+                           check=False)
+        self.assertEqual(r.returncode, 0, command + "\n" + r.stdout + r.stderr)
+        self.assertIn("RAISED", r.stdout)
+
     def spawned(self, out):
         """[(worker, n)] the action asks to spawn."""
         return [(Path(b).stem.rsplit("-", 1)[0], int(Path(b).stem.rsplit("-", 1)[1]))
@@ -838,6 +848,43 @@ class BuildTest(NextCase):
         out = self.next(4)
         self.assertIn("budget is used up", " ".join(out["REPORT"]))
 
+    def test_rounds_added_after_the_stop_take_the_step_that_stopped(self):
+        self.plan_session()
+        state = self.state()
+        state["budget"].update(total=1, remaining=0)
+        self.write_state(state)
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.first_pass()
+        self.spec_eval(v1="unmet")
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "corrections.md").write_text("# Required changes\n1. x\n")
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        self.next(4)
+        out = self.next(4)  # a resumed run stops at the same place
+        self.raise_from_report(out, 2)
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertIn("spent `verifier-1`", out["BUDGET"])
+        self.assertIn("1 of 3 left", out["BUDGET"])
+        budget = self.state()["budget"]
+        self.assertNotIn("stopped", budget)
+        self.assertEqual([r["by"] for r in budget["raises"]], [2])
+        self.assertIn("raised the iteration budget by 2", (self.dir / "WORK_LOG.md").read_text())
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)  # no longer stopped on the budget
+
+    def test_a_step_past_a_budget_stop_clears_it(self):
+        self.plan_session()
+        state = self.state()
+        state["budget"]["stopped"] = {"consumer": 3, "seq": 1}
+        self.write_state(state)
+        self.resume()
+        self.expect("coder")
+        self.assertNotIn("stopped", self.state()["budget"])
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
+
 
 class ShipTest(NextCase):
     def ship_ready(self):
@@ -1140,6 +1187,32 @@ class ShipTest(NextCase):
             "missing due date\n")
         self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
         out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
+
+    def test_no_budget_for_a_re_check_after_open_pr_goes_to_the_pr_gate_again(self):
+        self.test_no_budget_for_a_review_fix_goes_to_the_pr_gate()
+        out = self.next(5)
+        self.after(out, "Open PR")
+        (self.worktree / "due.ts").write_text("export const due = 2;\n")  # outside edit
+        self.next(0)
+        r = self.autodev("commit", "--message", "feat: due dates", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)  # the reports are stale
+        self.expect("cleanup", "GREEN")
+        self.lint()
+        _, jobs = self.expect("verifier")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        _, jobs = self.reviewers()
+        pass_dir = self.dir / "review" / f"pass-{self.state()['phase6']['review_pass']}"
+        for w, n in jobs:
+            (pass_dir / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (pass_dir / "corrections.md").write_text("# Required changes\n1. C1: guard\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        out = self.next(5)  # the pass after Open PR, before the commit: the gate again
         self.assertIn("pr gate", out["QUESTION"])
         self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
 
@@ -2398,6 +2471,33 @@ class CiTest(NextCase):
         self.assertIn("Red checks: test — https://ci/1", report)
         self.assertNotIn("hold", report)
 
+    def test_rounds_added_after_the_commit_fix_ci_not_findings_shipped_past(self):
+        state = self.state()
+        state["settings"]["ci"] = "github"
+        self.write_state(state)
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.next(0)
+        self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        _, jobs = self.expect("triager")
+        # The review pass before the commit ran out of rounds: its must-fix
+        # finding went to the PR gate, and the user opened the PR with it.
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        state = self.state()
+        state["budget"]["remaining"] = 0
+        state["phase6"]["exhausted"] = {"consumer": 4, "seq": 1, "open": ["x"]}
+        self.write_state(state)
+        (self.dir / "triage" / "ci-1.md").write_text("# Required changes\n1. x\n")
+        self.answer(*jobs[0], "CODE", blockers="0", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
+        out = self.next(4)
+        self.raise_from_report(out, 1)
+        out, jobs = self.expect("coder")
+        self.assertIn("spent `ci-1`", out["BUDGET"])
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         str(self.dir / "triage" / "ci-1.md"))
+
 
     @staticmethod
     def checks(started, **extra):
@@ -2991,6 +3091,17 @@ class SpecProposalRulingTest(NextCase):
         self.assertIn("condition 2 (the verifier)", report)
         self.assertFalse(any(b["worker"] == "define" and b["n"] > 1
                              for b in self.state()["briefs"]))
+
+    def test_rounds_added_after_the_stop_send_the_proposals_it_left(self):
+        job = self.to_first_pass(remaining=0)
+        self.file_from_verifier(job, PROPOSAL_ON_2)
+        self.next(4)
+        out = self.next(4)  # stopped again on the same step: its marks still go
+        self.raise_from_report(out, 1)
+        self.assertEqual(self.state()["proposals"]["unsent"], [])
+        out, _, sets = self.define_job()
+        self.assertIn("spent `verifier-1`", out["BUDGET"])
+        self.assertIn("condition 2", Path(sets["proposals"].split("\n")[0]).read_text())
 
     # -------------------------------------------------------------- C5, C4
 
@@ -4801,6 +4912,51 @@ def condition_statements(spec):
 
 
 class PlanAndCheckProposalTest(NextCase):
+    def test_a_raise_leaves_a_proposal_an_earlier_step_left_unsent(self):
+        coder = self.building_coder(remaining=0)
+        planners = len(self.briefs_of("planner"))
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        self.coder_files(coder, step_proposal(1, {3: STEP_3_NEW}))
+        _, jobs = self.expect("cleanup")
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        out = self.next(4)
+        self.raise_from_report(out, 2)
+        self.assertTrue(self.state()["proposals"]["unsent"])  # still named
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertIn("spent `verifier-1`", out["BUDGET"])
+        self.assertEqual(len(self.briefs_of("planner")), planners)
+
+    def test_a_raise_pays_the_step_that_stopped_not_an_earlier_filing(self):
+        self.plan_session()
+        self.set_budget(1, 1)
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        _, jobs = self.first_pass()
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        _, jobs = self.expect("coder")  # spends the one round
+        self.coder_files(jobs[0], step_proposal(1, {3: STEP_3_NEW}))  # left unsent
+        _, jobs = self.expect("cleanup")
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval(verdicts={"4": "partial"})
+        self.corrections()
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        out = self.next(4)
+        self.raise_from_report(out, 1)
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertIn("spent `verifier-2`", out["BUDGET"])
+
     """The coder proposes changes to the plan and to the held-out checks; the
     planner and the acceptance tester rule on them, in order, on one round."""
 

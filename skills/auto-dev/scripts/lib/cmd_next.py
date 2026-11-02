@@ -117,7 +117,9 @@ carries the refused issues (as `brief --retry <n>` writes). Spawned three
 times with no usable result, it stops. A stop on a worker (blocked, failed
 twice, never returned) lasts until `resume`: after the user fixes the cause,
 the next session spawns that worker again. A stop on a result (a red quality
-gate, an impossible spec, the budget used up) stays.
+gate, an impossible spec) stays. The budget used up stays too, until the user
+adds rounds with `autodev.py budget raise --by <n>`: the next `next` takes the
+step that stopped, spending one of them.
 """
 
 import copy
@@ -200,6 +202,7 @@ class Ctx:
         self.readonly = bool(getattr(args, "explain", False))
         self.probing = False
         self.peeked = {}
+        self.prev_stopped = None  # the budget stop the last `next` saved, if any
 
     # ------------------------------------------------------------ reading
 
@@ -392,9 +395,19 @@ def ask(c, gate, summary, questions, answers, rule):
 
 
 def exhausted(c, consumer, rule, extra=""):
+    # Saved with the stop, so `budget raise` knows the run stopped here; the
+    # next `next` clears it first (decide). Its seq is the first `next` that
+    # stopped here, so a raise forgets only the marks of this step.
+    first = c.prev_stopped if (c.prev_stopped or {}).get("consumer") == consumer else None
+    c.state["budget"]["stopped"] = {"consumer": consumer,
+                                    "seq": first["seq"] if first else c.seq()}
+    c.dirty = True
     return stop([f"The iteration budget is used up ({c.state['budget']['total']} "
                  f"rounds): {ON_EXHAUSTED[consumer]}." + (f" {extra}" if extra else ""),
                  *proposals.unsent_lines(c.state),
+                 ("The user can add rounds and go on from this step: run "
+                  f"`{c.cmd('budget', 'raise', '--by', '<n>')}` with the number they "
+                  "give, then `next`. Or they leave the run here; the worktree stays."),
                  f"State and artifacts: {c.ad}"], rule)
 
 
@@ -473,6 +486,11 @@ def decide(c):
         # them and saves nothing of its own. Each counted its own event already.
         st.save(c.dir, c.state, count_event=False)
     c.recorded, c.dirty = recorded, False
+    c.prev_stopped = c.state["budget"].pop("stopped", None)
+    if c.prev_stopped is not None and not c.readonly:
+        # Saved now, so a step that fails leaves it cleared too; exhausted()
+        # sets it again if this step stops on the budget once more.
+        st.save(c.dir, c.state, count_event=False)
     result = decide_step(c)
     if recorded:
         result["RECORDED"] = recorded
@@ -2805,7 +2823,15 @@ def review_step(c, p):
     if verify and verified is None:
         return spawn(c, "review-judge", "security-verify",
                      rule="the judge verifies every High or Medium security finding")
-    spent_out = bool(c.p6.get("exhausted"))  # open findings go to the PR gate
+    # With no round left before the commit, open findings go to the PR gate,
+    # for every pass until the commit. After it, that covers only the passes
+    # the user opened the PR with: once they add rounds, a later pass's
+    # must-fix findings get their correction.
+    opened = next((g for g in c.state["gates"]
+                   if g["gate"] == "pr" and g["choice"] == "proceed"), None)
+    spent_out = bool(c.p6.get("exhausted")) and (
+        not c.p6.get("verified_sha") or opened is None
+        or p["seq"] < opened.get("seq", 0))
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(verify) and bool(confirmed_security(c))
     spec = spec_pass_step(c, p, rows, sec if security_open else None)
