@@ -47,7 +47,9 @@ GATE_KINDS = {"compile", "format", "lint", "typecheck", "test", "build"}
 # The pipeline milestones that trigger a Jira transition.
 JIRA_STATES = {"in_progress", "in_review", "done"}
 # Every key a gate check may carry; anything else is flagged as unknown.
-GATE_FIELDS = {"kind", "command", "report"}
+# `files` is optional: the check scoped to some files, with FILES_PLACEHOLDER
+# where `autodev.py run --files` puts them.
+GATE_FIELDS = {"kind", "command", "report", "files"}
 # The subset of GATE_FIELDS each check must set. Kept separate so a new
 # optional field can join GATE_FIELDS without becoming required.
 GATE_REQUIRED = ("kind", "command", "report")
@@ -96,6 +98,7 @@ MUTATION_MAX = 50
 # Each symbol-lookup command is run with <symbol> replaced by the name sought.
 SYMBOL_LOOKUP = {"definition": str, "references": str}
 SYMBOL_PLACEHOLDER = "<symbol>"
+FILES_PLACEHOLDER = "<files>"
 
 errors: list[str] = []
 warnings: list[str] = []
@@ -160,8 +163,11 @@ def check_gate(gate, profile=False):
         for key, val in check.items():
             if key not in GATE_FIELDS:
                 unknown_key(key, GATE_FIELDS, where)
-            else:
-                check_type(val, str, f"{where}.{key}")
+            elif (check_type(val, str, f"{where}.{key}") and key == "files"
+                  and FILES_PLACEHOLDER not in val):
+                errors.append(f"{where}.files: the command must contain "
+                              f"{FILES_PLACEHOLDER}, which is replaced by the paths "
+                              f"it runs on")
         kind = check.get("kind")
         if isinstance(kind, str):
             kinds.add(kind)

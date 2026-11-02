@@ -127,8 +127,14 @@ against origin/{{base}} directly — it moves when anything fetches.
      git -C {{worktree}} ls-files -z --others --exclude-standard | xargs -0 git -C {{worktree}} add -N --
      git -C {{worktree}} diff {{cut}}
    and read it whole (spill it to {{artifact_dir}}/tmp/ if long). Never `git add -N .`.
-3. Run the acceptance checks with the profile's test command scoped to their
-   files; save the output to {{artifact_dir}}/evidence/acceptance.txt. Confirm the
+3. Run the acceptance checks with
+   `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <their files> --out {{artifact_dir}}/evidence/acceptance.txt`:
+   it runs the profile's test command scoped to those files, in the worktree,
+   saves the output there and prints the command as run and the output's
+   tail. Never type a profile command yourself: a permission check refuses
+   `cd <worktree> && …` and every rewritten form. When `run` exits 2 because
+   the check has no scoped form, run it whole (no `--files`, the same
+   `--out`). Confirm the
    runner executed every test MANIFEST.md lists — a test excluded, filtered or
    skipped did not pass: its condition is unmet, and the cause is an Unjustified
    integrity finding.
@@ -139,7 +145,8 @@ against origin/{{base}} directly — it moves when anything fetches.
    it, for a reader who has only the PR):
      Expected: <the outcome you wrote down, in words, with no condition ID>
      Command: <each command as run from the worktree root, with repo-relative
-       paths, so a reader can run it too>
+       paths, so a reader can run it too: for a `run`, the command it printed
+       after `PASSED:` or `FAILED:`, never the `autodev.py run` line>
      Result: <what you saw, in one line>
      Output (last lines):
      <the last 30 lines or fewer, enough to show the result>
@@ -271,8 +278,14 @@ against origin/{{base}} directly — it moves when anything fetches.
    current line. Give them all to one mutate.py run (each run overwrites the
    results file).
    Cold run. Every mutant forces a rebuild, so size the run by one COLD run of
-   the scoped command: touch one changed source file, then time one run of the
-   scoped command. If that run passed, round its time up to whole seconds, at
+   the scoped command: touch one changed source file, then run the scoped
+   command once with `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <the change's
+   tests and the acceptance checks>` (no `--files` when the check has no
+   scoped form), which prints how long it took and the command it ran: that
+   command is the scoped command, which mutate.py's `--cmd` below is given
+   exactly. A pass that measures nothing gets it from the same `run` line
+   with `--show` added, which prints `COMMAND: <the command>` and runs
+   nothing. If that run passed, round its time up to whole seconds, at
    least 1, and write that number and a newline to
    {{artifact_dir}}/evidence/mutation-cold-run.txt (for example `42`). If it
    failed, write nothing and start no mutate.py run: the scoped tests fail
@@ -332,7 +345,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    value read from the file up first): 42 stored gives `--timeout 126`.
    Save `git -C {{worktree}} status --porcelain` and
    `git -C {{worktree}} diff {{cut}} | sha256sum`, then run:
-     python3 {{skill_dir}}/scripts/mutate.py {{worktree}} --mutants {{artifact_dir}}/evidence/mutants.json --max <cap> --timeout <3× the cold-run seconds (see Cold run above)> --cmd "<the profile's test command, scoped to the change's tests and the acceptance checks>" --exit-file {{artifact_dir}}/evidence/mutate.exit > {{artifact_dir}}/evidence/mutate.log 2>&1
+     python3 {{skill_dir}}/scripts/mutate.py {{worktree}} --mutants {{artifact_dir}}/evidence/mutants.json --max <cap> --timeout <3× the cold-run seconds (see Cold run above)> --cmd "<the scoped command `run` printed>" --exit-file {{artifact_dir}}/evidence/mutate.exit > {{artifact_dir}}/evidence/mutate.log 2>&1
    Blocking or background. N is the number of entries in this run's
    mutants.json: the whole set on a first pass or after `RERUN_ALL`, the
    `rerun:` mutants still in the set after `RERUN`, the retry's list after

@@ -402,6 +402,14 @@ one in this order:
 `.auto-dev.yml` is applied on top in every case. The schema is in
 `skills/auto-dev/references/profiles.md`.
 
+Workers run the profile's checks through `autodev.py run gate|test`, which runs
+the command exactly as the profile lists it, in the run's worktree, and saves
+its output. A worker's shell doesn't start in the worktree, and a permission
+check refuses `cd <worktree> && …`, so before this a worker's rewritten command
+was often refused. A check can also give a scoped form (`files`, with
+`<files>` where the paths go), so a worker can run it on only the files it
+changed or wrote; the profiler looks for one.
+
 ### Where saved profiles live
 
 A saved profile is a YAML file on your machine, outside every checkout, named
@@ -470,6 +478,9 @@ works in a worktree next to your repo, so both need rules too. Add these to
 }
 ```
 
+- The `autodev.py` rule also lets workers run the profile's gate and test
+  commands through `autodev.py run`. It runs only the commands in the profile
+  you confirmed, never one a worker writes.
 - One rule per script, not `scripts/*`, so you can leave one out. `mutate.py`
   edits files in the run's worktree to plant bugs and restores them; mutation
   is on by default, so without that rule the verifier waits on a prompt. Drop
@@ -502,7 +513,9 @@ TypeScript:
 ```
 
 A rule matches the command's text, so copy the commands exactly as the profile
-lists them. Optional: `Bash(gh run list *)`, `Bash(gh run view *)`,
+lists them. Workers run the gate through `autodev.py run`, which these rules
+don't need; they cover the commands you or the orchestrator run by hand.
+Optional: `Bash(gh run list *)`, `Bash(gh run view *)`,
 `Bash(gh pr view *)` and `Bash(gh repo view *)` for the CI and PR lookups
 (`gh api` can also write, so allow it only if you accept that), the Jira tools
 if you use a ticket (`mcp__<server>__getJiraIssue` and the transition tools),
@@ -610,7 +623,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `WORK_LOG.md` | generated from `state.json` | the same, for people to read |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
-| `tmp/` | workers | long command output |
+| `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output |
 | `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |

@@ -6,6 +6,7 @@ Run: python3 -m unittest discover -s tests -v   (from the repo root)
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -145,6 +146,20 @@ class BriefTest(WorkCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         values = self.brief_values(self.dir / "briefs" / "cleanup-2.md")
         self.assertEqual(values["cut"], cut)
+
+    def test_cleanup_brief_gives_a_run_command_for_each_gate_check(self):
+        # The worker runs each check through `autodev.py run`, never by typing
+        # the profile's command (a permission check refuses `cd <wt> && …`).
+        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = (self.dir / "briefs" / "cleanup-1.md").read_text()
+        runs = re.findall(r"run: `([^`]+)`", text)
+        self.assertEqual(len(runs), 1, text)
+        self.assertIn(" run gate 1 --dir ", runs[0])
+        done = subprocess.run(runs[0], shell=True, cwd=self.tmp, env=self.env,
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertTrue(done.stdout.startswith("PASSED: `true` exited 0"), done.stdout)
 
     def test_cut_without_the_base_cannot_run(self):
         self.sh("git", "-C", str(self.worktree), "update-ref", "-d",

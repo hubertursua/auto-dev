@@ -128,8 +128,15 @@ For every SPEC.md condition, Security/Compliance criteria included:
 2. Classify each check: `fail-to-pass` (new or changed behavior — must FAIL on
    this untouched tree) or `pass-to-pass` (behavior the change must preserve —
    must PASS on it).
-3. Run your checks with the profile's test command scoped to your files, output
-   to {{artifact_dir}}/tmp/. A fail-to-pass check must fail FOR THE RIGHT REASON: an assertion,
+3. Run your checks with
+   `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <your files>`:
+   it runs the profile's test command scoped to those files, in the worktree,
+   saves the output under {{artifact_dir}}/tmp/run/ and prints the command as
+   run and the output's tail. Never type a profile command yourself: a
+   permission check refuses `cd <worktree> && …` and every rewritten form.
+   When `run` exits 2 because the check has no scoped form, run it whole
+   (`run test` with no `--files`) and keep the lines that name your checks.
+   A fail-to-pass check must fail FOR THE RIGHT REASON: an assertion,
    or the entry point being absent or returning the wrong result (a compile error
    that names the missing entry point counts). This is what "the right reason"
    means wherever a later step judges a base run. A syntax error, a broken fixture or
@@ -137,22 +144,28 @@ For every SPEC.md condition, Security/Compliance criteria included:
    check must pass. If you cannot make a check behave, drop it and list the
    condition under Not automatable with the reason.
    Then make the check files pass the profile's FORMAT and LINT `gate` commands
-   scoped to those files — run the formatter on them if the gate has one (in a
-   file that was already there, keep only its changes to your own lines). Nobody
+   scoped to those files (`python3 {{skill_dir}}/scripts/autodev.py run gate <REPORT> --dir {{artifact_dir}} --files <your files>`,
+   <REPORT> the report profile.md's Quality gate table gives each FORMAT and
+   LINT check it has (skip one it lacks); a check with no scoped form runs
+   whole, without `--files`, and only what it flags in your files is yours).
+   Fix what they flag by editing your own lines (in a file that was already
+   there, change no other line), never by typing a formatter's command. Nobody
    may edit a check after it is sealed. Compile or type errors that come only
    from the entry point not existing yet are expected; never hide them with a
    suppression (`@ts-expect-error`, `# type: ignore`, a cast), which would turn
    into an error once the code exists.
    Last, with the checks in their final form, run each condition's checks once
    more on this same untouched tree, scoped to the files that hold them, with
-   the runner set to name every test it runs and its result (its verbose
-   reporter, if the default one only counts passing tests), and save that run
+   the runner set to name every test it runs and its result (the profile's
+   scoped form does; else its verbose reporter, if the default one only counts
+   passing tests), and save that run
    to {{artifact_dir}}/acceptance/base-run/C<n>.txt, where <n> is the row's # as
    written (C2.txt, CS1.txt). It is the proof that the change was needed, and
    the PR description quotes it, so write it in this shape:
      Commit: <git -C {{worktree}} rev-parse HEAD, the untouched tree it ran on>
      Command: <each command as run from the worktree root, with repo-relative
-       paths>
+       paths: the command `run` printed after `PASSED:` or `FAILED:`, never
+       the `autodev.py run` line>
      Result: <one line per check: <test name>: failed: <reason> | passed>
      Output:
      <the run's output; over 100 lines, keep the lines that name this
@@ -314,8 +327,11 @@ The coder's file, as it is now, is the base: it is saved as
    at that path; never bring back the coder's old lines from your sealed
    copy.
 3. Make the file pass the profile's FORMAT and LINT `gate` commands scoped to
-   it, changing only your own lines.
-4. Run your tests in it with the profile's test command, to learn whether they
+   it (`python3 {{skill_dir}}/scripts/autodev.py run gate <REPORT> --dir {{artifact_dir}} --files <path>`, as in
+   step 3 of the task),
+   changing only your own lines.
+4. Run your tests in it with
+   `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <path>`, to learn whether they
    run (they may pass or fail: the code is built, and the verifier judges
    them). A test that no longer runs because of how you placed it is yours to
    fix.

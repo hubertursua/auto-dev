@@ -4,6 +4,39 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.17
+
+- **Workers run the profile's commands through `autodev.py run`.** `autodev.py
+  run gate <n | REPORT>` and `autodev.py run test` run a quality-gate check's
+  command exactly as the profile lists it, with the run's worktree as its
+  directory, save the whole output under `.auto-dev/tmp/run/` (or `--out`, a
+  file under `.auto-dev/`), and print `PASSED`, `FAILED` or `TIMED_OUT` with
+  the time taken and the output's tail. A worker's shell doesn't start in the
+  worktree, so workers used to rewrite the commands as `cd <worktree> && …` or
+  with the worktree's path, which a permission check refuses: 44 of the cleanup
+  agent's 45 refused commands in the 4.0.6 benchmark were that one pattern, and
+  a twice-refused command makes the worker return `blocked` and be spawned
+  again. Cleanup's brief now gives a `run:` command under each gate check, and
+  the coder, acceptance tester and verifier run tests through `run test`. It
+  runs only the profile's commands, so the existing `autodev.py *` permission
+  rule covers it.
+- **A gate check can give a scoped form.** The optional `files` field of a
+  `gate` check is the same check run on only some files, with `<files>` where
+  the paths go (for example `npx vitest run --reporter=verbose <files>`, in
+  TypeScript). `autodev.py run … --files <path> …` runs it with the paths
+  quoted and relative to the worktree, and refuses a path outside it. The
+  test check's form must name every test it runs and its result. The profiler
+  now researches it, and profile.md's Quality gate table shows it.
+  `validate-config.py` accepts `files` and requires `<files>` in it. A saved
+  profile without it still works: a worker that wanted a check scoped runs
+  it whole through `run` instead, which is slower on a large suite. To scope
+  them, add `files` to the checks in your saved profile, or delete the
+  profile to have the next run research it again. `run` needs `--dir`, and
+  `--out` writes only under `.auto-dev/`'s `evidence/`,
+  `acceptance/base-run/` or `tmp/`.
+- **Resume:** a run in flight resumes. Its briefs written from now on use
+  `autodev.py run`; its gate has no `files` forms unless its profile had them.
+
 ## Upgrading from 4.16
 
 - **The orchestrator writes the PR description's prose in a small file.**

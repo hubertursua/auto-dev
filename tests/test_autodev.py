@@ -9,10 +9,13 @@ it in a temp dir.
 
 import json
 import os
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -112,6 +115,14 @@ class InitTest(RunCase):
         self.assertIn("**Base:** main", (self.dir / "profile.md").read_text())
         # Nothing init wrote is visible to git.
         self.assertEqual(self.sh("git", "status", "--porcelain", cwd=self.worktree), "")
+
+    def test_profile_md_lists_each_checks_scoped_form(self):
+        self.profile.write_text(PROFILE.replace(
+            'report: "TEST.md" }', 'report: "TEST.md", files: "run-tests <files>" }'))
+        self.assertEqual(self.init().returncode, 0)
+        profile = (self.dir / "profile.md").read_text()
+        self.assertIn("| 1 | test | `true` | `TEST.md` | `run-tests <files>` |", profile)
+        self.assertEqual(self.state()["settings"]["gate"][0]["files"], "run-tests <files>")
 
     def test_security_docs_are_found_without_being_named(self):
         seed = self.tmp / "seed"
@@ -2115,6 +2126,242 @@ class MutantColdRunFileTest(MutantsCase):
                 calls, left = self.outcome(stored)
                 self.assertEqual(calls, baseline)
                 self.assertEqual(left, stored)
+
+class RunCommandTest(unittest.TestCase):
+    """`autodev.py run`: the profile's own commands, run in the worktree."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wt = self.tmp / "my app"
+        self.ad = self.wt / ".auto-dev"
+        self.ad.mkdir(parents=True)
+        (self.wt / "src").mkdir()
+        (self.wt / "src" / "a b.test.ts").write_text("x\n")
+        (self.wt / "src" / "c.test.ts").write_text("y\n")
+        self.cwd = self.tmp / "elsewhere"
+        self.cwd.mkdir()
+        py = shlex.quote(sys.executable)
+        # Each command prints where it ran and the arguments it got.
+        echo = f"{py} -c 'import os, sys; print(os.getcwd()); print(sys.argv[1:])'"
+        self.gate = [
+            {"kind": "lint", "command": f"{echo} lint", "report": "LINT.md",
+             "files": f"{echo} lint-files <files>"},
+            {"kind": "typecheck", "command": f"{py} -c 'import sys; print(\"boom\"); "
+                                             f"sys.exit(4)'", "report": "TYPECHECK.md"},
+            {"kind": "test", "command": f"{echo} all", "report": "TEST.md",
+             "files": f"{echo} some <files> --verbose"},
+            {"kind": "build", "command": f"{py} -c 'import time; time.sleep(30)'",
+             "report": "BUILD.md"},
+        ]
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+
+    def run_(self, *args):
+        return subprocess.run([sys.executable, str(AUTODEV), "run", *args, "--dir",
+                               str(self.ad)], capture_output=True, text=True,
+                              cwd=self.cwd, check=False)
+
+    def output_of(self, r):
+        line = next(x for x in r.stdout.splitlines() if x.startswith("  output: "))
+        return Path(line[len("  output: "):].rsplit(" (", 1)[0])
+
+    def test_test_runs_the_profiles_command_in_the_worktree(self):
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PASSED: "), r.stdout)
+        self.assertIn(f"`{self.gate[2]['command']}` exited 0", r.stdout)
+        out = self.output_of(r)
+        self.assertEqual(out.parent, (self.ad / "tmp" / "run").resolve())
+        self.assertEqual(out.read_text().splitlines(), [str(self.wt), "['all']"])
+        self.assertIn(f"    {self.wt}", r.stdout)  # the tail is printed
+        # A second run gets its own file.
+        self.assertNotEqual(self.output_of(self.run_("test")), out)
+
+    def test_gate_by_number_or_report_name(self):
+        r = self.run_("gate", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['lint']", r.stdout)
+        self.assertEqual(self.output_of(r).name, "gate-1-1.txt")
+        for name in ("LINT.md", "lint"):
+            self.assertIn("['lint']", self.run_("gate", name).stdout)
+
+    def test_a_failing_command_exits_1_with_its_output(self):
+        r = self.run_("gate", "TYPECHECK", "--json")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual((data["result"], data["exit_code"]), ("FAILED", 4))
+        self.assertEqual(data["tail"], ["boom"])
+
+    def test_files_runs_the_scoped_form_with_quoted_relative_paths(self):
+        r = self.run_("test", "--files", str(self.wt / "src" / "a b.test.ts"),
+                      "src/c.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['some', 'src/a b.test.ts', 'src/c.test.ts', '--verbose']",
+                      r.stdout)
+        self.assertIn(f"    {self.wt}", r.stdout)
+
+    def test_files_is_refused_without_a_scoped_form_or_outside_the_worktree(self):
+        outside = self.tmp / "x.test.ts"
+        outside.write_text("z\n")
+        for args, said in ((("gate", "2", "--files", "src/c.test.ts"), "no scoped form"),
+                           (("test", "--files", str(outside)), "outside the worktree"),
+                           (("test", "--files", "src/../../x.test.ts"),
+                            "outside the worktree"),
+                           (("test", "--files", "src/nope.ts"), "does not exist"),
+                           (("gate", "9"), "no check 9"),
+                           (("gate", "NOPE"), "no gate check has the report"),
+                           (("test", "--out", str(self.tmp / "o.txt")),
+                            "is not under")):
+            r = self.run_(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn(said, r.stderr, args)
+        self.assertFalse((self.tmp / "o.txt").exists())
+
+    def test_out_saves_the_output_under_the_artifact_dir(self):
+        target = self.ad / "evidence" / "acceptance.txt"
+        r = self.run_("test", "--files", "src/c.test.ts", "--out", str(target))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("src/c.test.ts", target.read_text())
+
+    def test_a_timeout_exits_3(self):
+        r = self.run_("gate", "BUILD", "--timeout", "1")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("TIMED_OUT: "), r.stdout)
+
+    def test_out_never_replaces_the_runs_state_or_a_sealed_check(self):
+        state = (self.ad / "state.json").read_text()
+        sealed = self.ad / "acceptance" / "files" / "x.test.ts.sealed"
+        sealed.parent.mkdir(parents=True)
+        sealed.write_text("sealed\n")
+        for target in (self.ad / "state.json", sealed, self.ad / "evidence",
+                       self.ad / "SPEC.md"):
+            r = self.run_("test", "--out", str(target))
+            self.assertEqual(r.returncode, 2, (target, r.stdout, r.stderr))
+            self.assertIn("is not under", r.stderr)
+        self.assertEqual((self.ad / "state.json").read_text(), state)
+        self.assertEqual(sealed.read_text(), "sealed\n")
+        base_run = self.ad / "acceptance" / "base-run" / "C1.txt"
+        self.assertEqual(self.run_("test", "--out", str(base_run)).returncode, 0)
+        self.assertTrue(base_run.exists())
+
+    def test_dir_is_required(self):
+        r = subprocess.run([sys.executable, str(AUTODEV), "run", "test"],
+                           capture_output=True, text=True, cwd=self.wt, check=False)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--dir", r.stderr)
+
+    def test_other_refusals(self):
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate[:2]}}))
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no `kind: test` check", r.stderr)
+        r = self.run_("test", "LINT")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("takes no check name", r.stderr)
+
+    def test_tail_limits_the_printed_lines(self):
+        r = self.run_("test", "--tail", "1")
+        self.assertIn("the last 1 of its lines", r.stdout)
+        self.assertIn("    ['all']", r.stdout)
+        self.assertNotIn(f"    {self.wt}", r.stdout)
+
+    def test_file_names_are_never_shell_syntax_or_options(self):
+        odd = ["src/$(touch PWNED);x.ts", "-x.ts"]
+        for name in odd:
+            (self.wt / name).write_text("z\n")
+        os.symlink("c.test.ts", self.wt / "src" / "link.test.ts")
+        r = self.run_("test", "--files", odd[0], str(self.wt / odd[1]), "src/link.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['some', 'src/$(touch PWNED);x.ts', './-x.ts', "
+                      "'src/link.test.ts', '--verbose']", r.stdout)
+        self.assertFalse((self.wt / "PWNED").exists())
+        self.assertFalse((self.wt / "src" / "PWNED").exists())
+
+    def gone(self, pidfile):
+        """Whether every pid written to pidfile is gone, within a few seconds."""
+        for _ in range(50):
+            pids = [int(p) for p in pidfile.read_text().split()] if pidfile.exists() else []
+            alive = []
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)
+                    alive.append(pid)
+                except OSError:
+                    pass
+            if pids and not alive:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def sleepers(self):
+        """A gate check that starts two sleeps, one in the background, and
+        writes their pids to a file."""
+        pidfile = self.tmp / "pids"
+        self.gate[3]["command"] = (f"sleep 30 & echo $! > {shlex.quote(str(pidfile))}; "
+                                   f"sleep 31 & echo $! >> {shlex.quote(str(pidfile))}; wait")
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        return pidfile
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups")
+    def test_a_timeout_stops_everything_the_command_started(self):
+        pidfile = self.sleepers()
+        r = self.run_("gate", "BUILD", "--timeout", "1")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(self.gone(pidfile))
+
+    @unittest.skipIf(os.name == "nt", "POSIX signals")
+    def test_a_signal_stops_everything_the_command_started(self):
+        pidfile = self.sleepers()
+        proc = subprocess.Popen([sys.executable, str(AUTODEV), "run", "gate", "BUILD",
+                                 "--dir", str(self.ad)], cwd=self.cwd,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(50):
+            if pidfile.exists() and len(pidfile.read_text().split()) == 2:
+                break
+            time.sleep(0.1)
+        proc.send_signal(signal.SIGTERM)
+        _out, err = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 2, err)
+        self.assertIn("was stopped by a signal", err)
+        self.assertTrue(self.gone(pidfile))
+
+    def test_show_prints_the_command_and_runs_nothing(self):
+        r = self.run_("test", "--files", "src/c.test.ts", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(),
+                         "COMMAND: " + self.gate[2]["files"].replace("<files>", "src/c.test.ts"))
+        self.assertFalse((self.ad / "tmp").exists())
+
+    def test_gate_by_kind_when_no_report_matches(self):
+        r = self.run_("gate", "typecheck")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("boom", r.stdout)
+
+    def test_an_absolute_path_through_a_symlinked_folder(self):
+        link = self.tmp / "linked"
+        os.symlink(self.tmp, link)
+        r = self.run_("test", "--files", str(link / "my app" / "src" / "c.test.ts"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("'src/c.test.ts'", r.stdout)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups")
+    def test_a_passing_command_leaves_nothing_running(self):
+        pidfile = self.tmp / "pids"
+        self.gate[3]["command"] = f"sleep 30 & echo $! > {shlex.quote(str(pidfile))}"
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        r = self.run_("gate", "BUILD")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.gone(pidfile))
+
+    def test_without_state_it_could_not_run(self):
+        (self.ad / "state.json").unlink()
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 2)
+
 
 class CliTest(unittest.TestCase):
     def test_missing_state_cannot_run(self):

@@ -53,8 +53,13 @@ behavior-preserving simplifications only
 Follow the binding rules ({{binding_rules}}) in both steps.
 
 Step 2 — Quality gate (the Definition of Done, from {{artifact_dir}}/profile.md `gate`).
-Run each command IN ORDER, verbatim, and make it clean:
+Run each check IN ORDER, with the `run:` command listed under it, and make it
+clean:
 {{gate_commands}}
+That command runs the profile's command exactly as written, in the worktree,
+saves its whole output under {{artifact_dir}}/tmp/run/, and prints the exit
+code and the output's last lines. Never type a profile command yourself: a
+permission check refuses `cd <worktree> && …` and every rewritten form.
 
 How you fix a failure depends on what caused it:
 - Failure in code YOUR simplification changed — **revert that simplification.** A
@@ -87,7 +92,8 @@ under {{artifact_dir}}/, never add it to the repo's ignore files or config,
 and never change the command to hide it: those edits would ship in the PR.
 
 For each check, write {{artifact_dir}}/lint/<REPORT>.md, in the shape of
-`{{skill_dir}}/templates/lint.md`: the exact command, final status
+`{{skill_dir}}/templates/lint.md`: the exact command (the profile's, as `run`
+printed it, never the `autodev.py run` line), final status
 (pass/fail), what you fixed, and the last lines (20 at most) of its FINAL run's
 output, whether or not it ever failed: the PR description quotes them. Re-run until every `gate`
 command is green. A check's final run must come after your last edit to any file:
@@ -106,9 +112,10 @@ in the report.
 Heads-up on tests (from profile.md test_notes): {{test_notes}}. Ensure prerequisites are up before running.
 
 Run the quality gate IN FULL — do not scope or sample it; it is the Definition of Done.
-Where a command is slow, run it in the background rather than blocking on it, and
-redirect its output to a file under {{artifact_dir}}/tmp/, reading back only its tail.
-Never paste a full suite or type-checker log into a report.
+Where a check is slow, run its `run:` command in the background rather than
+blocking on it, with `--timeout <seconds>` added so a check that hangs is
+stopped, and read back only the tail it prints. Never paste a full suite
+or type-checker log into a report.
 
 Each check's final status is in its report. Your result's `next` is `GREEN` (every check passes), `RED` (one can't be made
 green; its report says why), or `ACCEPTANCE_CHECK_FAILS_GATE` (a check fails only because
