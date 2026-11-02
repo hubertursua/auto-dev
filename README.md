@@ -125,7 +125,9 @@ weakening them. Verification is built around that:
   developer would put that test: into the test file the code already has, or
   a new test file only for code that has none, so the PR adds no test files
   just for the checks. The checks are then sealed out of the worktree; the
-  coder never sees them.
+  coder never sees them. Before it returns, the tester runs `autodev.py
+  check-manifest`, the coverage check `next` runs on its return, and fixes any gap
+  it lists, so a gap costs a fix instead of a re-spawn.
 - **Merged back in after the build.** The pipeline puts each check back into
   its file among the coder's own changes to it
   (`skills/auto-dev/scripts/lib/sealed.py`). When it can't (the coder made the

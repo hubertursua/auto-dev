@@ -189,6 +189,20 @@ Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact
 
 Do the task above for the conditions {{scope}} names.
 
+Before returning, after `check-artifact`, run `python3
+{{skill_dir}}/scripts/autodev.py check-manifest --dir {{artifact_dir}}`, the
+check `next` runs on your return. It prints `OK: …`, or `GAPS: …` with a
+`gap: <condition>: <why>` line for each problem (a condition with no check, an
+Edge with none, a base-run Result missing for a check's exact test name, a
+check left in the worktree, …). Fix each gap in a condition {{scope}} names by
+redoing the step above that produced it (re-run and re-save the base run,
+re-seal the file), then run it again. Never fix one by writing a Result the run
+didn't show, or by changing a check's Kind to fit its result: a check that
+passes on the untouched tree follows step 3. A gap `next` finds instead
+re-spawns you (in S1 at the cost of a round) or stops the run. Leave a gap you
+can't fix after two tries, or one in a condition outside the scope. An `ERROR:`
+or `MALFORMED:` result is not a gap: return as you would without it.
+
 After the build (the scope says the checks are installed: SPEC.md changed
 after the code was built, and you rewrite only the named conditions' checks):
 - Never start clean: restore or delete no file you did not write, since the

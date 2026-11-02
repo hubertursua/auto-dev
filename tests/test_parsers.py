@@ -9,6 +9,7 @@ skills/auto-dev/templates/. Examples are in TypeScript, as CLAUDE.md asks.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -86,6 +87,31 @@ class CheckManifestTest(ArtifactCase):
         r = self.cmd("check-manifest")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("OK: 3 condition(s)", r.stdout)
+
+    def test_the_command_the_tester_is_given_in_write_mode_finds_a_gap(self):
+        # The tester runs check-manifest itself before it returns, as written in
+        # its agent file, so a gap costs a fix there instead of a re-spawn. Only
+        # write mode: `next` runs the check after no other mode.
+        agent = (Path(__file__).resolve().parents[1] / "agents" / "acceptance-tester.md")
+        text = " ".join(agent.read_text().split())
+        write = text.split("## Mode: write", 1)[1].split("## Mode: repair", 1)[0]
+        found = re.search(r"`(python3 \{\{skill_dir\}\}/scripts/autodev\.py "
+                          r"check-manifest[^`]*)`", write)
+        self.assertIsNotNone(found, "write mode gives no check-manifest command")
+        self.assertEqual(text.count("autodev.py check-manifest"), 1)
+        command = found.group(1)
+        argv = command.replace("{{skill_dir}}", str(SCRIPTS.parent)) \
+                      .replace("{{artifact_dir}}", str(self.dir)).split()
+        self.assertEqual(argv[:2], ["python3", str(AUTODEV)])
+        def run():
+            return subprocess.run([sys.executable, *argv[1:]], capture_output=True,
+                                  text=True, cwd=self.tmp, check=False)
+        r = run()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (self.dir / "acceptance" / "base-run" / "C2.txt").unlink()
+        r = run()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("gap: 2:", r.stdout)
 
     def test_a_check_added_to_an_existing_file_only_adds_lines(self):
         files = self.dir / "acceptance" / "files" / "src"

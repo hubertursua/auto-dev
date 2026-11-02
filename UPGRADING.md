@@ -4,6 +4,19 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.13
+
+- **The acceptance tester runs `check-manifest` before it returns.** In write
+  mode it runs `autodev.py check-manifest --dir <artifact dir>`, the check
+  `next` runs on its return, and fixes each gap it lists in the conditions its
+  scope names (a missing base-run Result for a check's exact test name, an Edge
+  with no check, …) by redoing the step that produced it, never by editing a
+  record to fit. Before, `next` found these gaps after the tester had
+  returned, and re-spawned it at the cost of a round: 4 of 18 benchmark runs
+  did, for 1.5–2.5 min each. `next` still runs the same check, so a gap the
+  tester leaves is handled as before.
+- **Resume:** a run in flight resumes. No state, result key or artifact changed.
+
 ## Upgrading from 4.12
 
 - **Workers reply with their result block alone.** The agent files no longer
