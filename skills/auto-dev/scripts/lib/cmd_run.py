@@ -30,8 +30,7 @@ worktree, so a default would find no run, or an old one.
     worktree. A check with no `files` form can't be scoped: exit 2.
 
 --show prints `COMMAND: <the command>` and runs nothing (exit 0), so a caller
-that passes the command on uses the
-one `run` would run.
+that passes the command on uses the one `run` would run.
 
 The command's whole output (stdout and stderr together) goes to --out, or else
 to <artifact-dir>/tmp/run/<gate-<n>|test>-<k>.txt. --out must be under the

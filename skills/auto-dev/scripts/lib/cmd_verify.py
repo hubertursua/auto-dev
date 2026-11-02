@@ -14,7 +14,8 @@ prep
     1. An earlier pass's mutation run still going (`mutants run`'s runner, or
        mutate.py) is waited for, up to --wait seconds (default 270); then a
        backup or lock it left (evidence/mutants.json.backup, .lock) is put
-       back with `mutate.py --restore`.
+       back with `mutate.py --restore`. The earlier pass's mutation-run.json,
+       mutation-run-args.json and mutation-pass.json are deleted.
     2. The sealed acceptance checks: on a re-check (`--pass re-check`), or a
        first pass whose checks went in before cleanup (acceptance/INSTALLED),
        the audit runs first and then `install-checks --recheck` puts back any
@@ -136,6 +137,8 @@ def restore(ad, wt, wait):
                     (f"an earlier mutation run is still alive after {wait}s; run "
                      "`verify prep` again"), [])
         time.sleep(POLL)
+    for key in ("result", "args", "pass"):  # an earlier pass's, never this one's
+        mutation_run.ev(ad, key).unlink(missing_ok=True)
     if not backup.exists() and not lock.exists():
         return None
     while True:

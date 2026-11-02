@@ -2612,7 +2612,7 @@ import os, sys, time
 code = open("src/calc.txt").read()
 if os.environ.get("MUT_WRITE") or os.path.exists("write-files"):
     open("out-%d.txt" % time.time_ns(), "w").close()
-if "SLEEP" in code:
+if "SLEEP" in code or os.path.exists("slow-baseline"):
     time.sleep(4)
 if "BROKEN" in code:
     sys.exit(1)
@@ -2646,11 +2646,15 @@ class MutationRunTest(unittest.TestCase):
         py = shlex.quote(sys.executable)
         self.state(mutation_max=20, files=f"{py} check.py <files>", command=f"{py} check.py")
         self.write("src/calc.txt", "if (limit < 5) return;\nreturn count + 1;\nfast\n// changed\n")
+        self.note_tree()
+        self.mutants(MUT_RUN_SET)
+
+    def note_tree(self):
+        """evidence/tree-start.txt, as `verify prep` writes it."""
         tree = subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"), "--print-tree",
                                str(self.wt)], capture_output=True, text=True,
                               check=True).stdout.strip()
         self.write(".auto-dev/evidence/tree-start.txt", tree + "\n")
-        self.mutants(MUT_RUN_SET)
 
     def state(self, mutation_max, files, command):
         self.write(".auto-dev/state.json", json.dumps({
@@ -2748,6 +2752,80 @@ class MutationRunTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("no mutant to run", r.stdout)
         self.assertIn("1 carried forward", r.stdout)
+
+    def test_a_saved_time_too_short_for_the_baseline_is_retimed(self):
+        self.mutants(MUT_RUN_SET[:1])
+        self.write(".auto-dev/evidence/mutation-cold-run.txt", "1\n")
+        (self.wt / "slow-baseline").write_text("")
+        self.write(".gitignore", "out-*.txt\nslow-baseline\n")
+        self.note_tree()
+        r = self.mutants_cmd("run", "--files", "check.py")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("re-timed once (the unmutated scoped command ran past the timeout)",
+                      r.stdout)
+        self.assertGreater(float(self.evidence("mutation-cold-run.txt")), 1)
+        self.assertNotIn("FAILING", r.stdout)
+
+    def test_a_test_saying_timed_out_is_a_failing_test(self):
+        # A saved time skips the cold run, so mutate.py's baseline meets it.
+        self.write(".auto-dev/evidence/mutation-cold-run.txt", "5\n")
+        self.write("check.py", 'print("test timed out after 10m0s"); raise SystemExit(1)\n')
+        self.note_tree()
+        r = self.mutants_cmd("run", "--files", "check.py")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertNotIn("re-tim", r.stdout)
+
+    def test_an_all_invalid_run_is_recorded_only_the_second_time(self):
+        bad = [{"id": "M9", "file": "src/calc.txt", "line": 1, "find": "nowhere",
+                "replace": "x", "condition": "1"}]
+        self.mutants(bad)
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 8, r.stdout + r.stderr)
+        self.assertIn("nothing is recorded yet", r.stdout)
+        self.assertFalse((self.ad / "evidence" / "mutation-record.json").exists())
+        r = self.mutants_cmd("run", "--files", "check.py")
+        self.assertEqual(r.returncode, 8, r.stdout + r.stderr)
+        self.assertIn("the pass is recorded", r.stdout)
+        self.assertTrue((self.ad / "evidence" / "mutation-record.json").exists())
+
+    def test_code_changed_since_prep_is_kept(self):
+        self.mutants(MUT_RUN_SET[:1])
+        self.write("src/calc.txt", self.evidence("../../src/calc.txt") + "// later\n")
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 9, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("KEPT: "), r.stdout)
+
+    def test_a_mutant_named_but_not_run_is_incomplete(self):
+        self.mutants(MUT_RUN_SET, to_run=MUT_RUN_SET[:1])
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("missing: M2", r.stdout)
+
+    def test_a_live_mutate_run_is_waited_for_never_reported(self):
+        lock = self.ad / "evidence" / "mutants.json.lock"
+        lock.write_text(f"{os.getpid()}\n")
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set", "--wait", "3")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        lock.unlink()
+        r = self.mutants_cmd("wait", "--wait", "60")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("DONE: "), r.stdout)
+
+    def test_a_bad_files_path_is_a_usage_error(self):
+        r = self.mutants_cmd("run", "--files", "nope.py", "--new-set")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("does not exist", r.stderr)
+
+    def test_a_run_while_an_earlier_runner_holds_the_lock_is_busy(self):
+        self.write(".auto-dev/evidence/mutation-run.lock", f"{os.getpid()}\n")
+        r = self.mutants_cmd("run", "--files", "check.py", "--wait", "0")
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("BUSY: "), r.stdout)
+
+    def test_wait_with_no_run_started(self):
+        r = self.mutants_cmd("wait", "--wait", "0")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("NOT_STARTED: "), r.stdout)
 
     def test_mutation_off_or_no_prep_does_not_run(self):
         py = shlex.quote(sys.executable)

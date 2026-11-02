@@ -98,7 +98,14 @@ run
       KEPT: the run finished but `record` kept the earlier record
       LEFT_CHANGES: a file may still hold a mutant, or the tree changed
                  during the run — the paths
-    A second `run` while a runner is alive starts nothing and waits for it.
+      BUSY: an earlier pass's runner was still going after --wait seconds;
+                 nothing started — run `mutants run` again
+      NOT_STARTED: `wait` with no run started this pass
+    A `run` while an earlier runner is alive waits for it to end, then starts
+    its own. The runner never ends while a mutant may be in the tree: it
+    waits for a live mutate.py run and restores what one left. It re-times
+    at most once a pass, and an all-invalid run is recorded only when it is
+    the pass's second (evidence/mutation-pass.json; `verify prep` clears it).
 wait
     Waits up to --wait seconds for the runner, then prints as `run` does.
 
@@ -109,7 +116,7 @@ Exit codes:
        record without --tree) — `ERROR: …`; carry nothing forward
     3  record: KEPT — nothing recorded; run/wait: RUNNING
     run/wait also: 1 INCOMPLETE, 4 LEFT_CHANGES, 5 FAILING, 6 NOT_RUN,
-       7 MALFORMED, 8 ALL_INVALID, 9 KEPT
+       7 MALFORMED, 8 ALL_INVALID, 9 KEPT, 10 BUSY; 2 NOT_STARTED
 """
 
 import json
@@ -117,9 +124,10 @@ import os
 import posixpath
 import re
 import tempfile
+import time
 from pathlib import Path
 
-from . import mutation_run, proc, sealed, testfiles
+from . import cmd_run, mutation_run, proc, sealed, testfiles
 from . import state as st
 from .cmd_checks import worktree_of
 from .cmd_work import print_tree
@@ -179,9 +187,20 @@ def run(args):
     if not state["settings"].get("mutation_max", 20):
         emit(args.json, "NOT_RUN", "mutation is off (`mutation.max: 0`)")
         return mutation_run.CODES["NOT_RUN"]
-    files = [str(Path(f)) for f in args.files] if args.files else None
-    mutation_run.start(ad, {"files": files, "new_set": args.new_set,
-                            "extended": args.extended})
+    # The scoped command, resolved now: a bad --files path is a usage error.
+    wt = Path(state["worktree"])
+    n, check = cmd_run.pick(state["settings"].get("gate", []), "test", None)
+    scoped = bool(args.files) and cmd_run.PLACEHOLDER in str(check.get("files") or "")
+    command = cmd_run.command_for(n, check, wt, args.files if scoped else None)
+    opts = {"command": command, "new_set": args.new_set, "extended": args.extended}
+    if not mutation_run.start(ad, opts):
+        deadline = time.monotonic() + max(args.wait, 0)
+        while mutation_run.runner_alive(ad) and time.monotonic() < deadline:
+            time.sleep(mutation_run.POLL)
+        if not mutation_run.start(ad, opts):
+            emit(args.json, "BUSY", "an earlier mutation run is still going; run this "
+                 "`mutants run` again once it ends (never `mutants wait` for it)")
+            return mutation_run.CODES["BUSY"]
     return wait(args)
 
 

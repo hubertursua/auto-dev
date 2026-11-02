@@ -223,7 +223,8 @@ against origin/{{base}} directly — it moves when anything fetches.
      changed, or there is no usable record of the last pass.
      `RERUN` — run only its `rerun:` mutants. Each `carried:` mutant keeps its
      earlier killed or timeout result and is not run.
-     `CARRY_ALL` — every mutant keeps its earlier result: run none.
+     `CARRY_ALL` — every mutant keeps its earlier result: write `[]` to
+     mutants.json and still run `mutants run` below, which records the pass.
      Exit 2 — when its `ERROR:` line names a problem in mutation-set.json
      that you can repair (for example two entries for one id: rename the newer
      one), repair it and run `select` again, so that `record` later repeats
@@ -248,7 +249,9 @@ against origin/{{base}} directly — it moves when anything fetches.
    run, with that Bash call's timeout set to 300000 ms:
      python3 {{skill_dir}}/scripts/autodev.py mutants run --dir {{artifact_dir}} --files <the change's tests and the acceptance checks> [--new-set | --extended]
    `--new-set` on a pass that chose the set, `--extended` on a re-check that
-   added mutants to it, neither otherwise. It does the run's mechanics in the
+   added mutants to it, neither otherwise, and neither on a second
+   `mutants run` in the same pass (after INCOMPLETE, ALL_INVALID or
+   MALFORMED below). It does the run's mechanics in the
    background and never leaves a mutant in the tree: it times one cold run of
    the profile's test command scoped to those files (or reuses the time a
    kept set saved), sets each mutant's timeout from it, runs mutate.py, re-times
@@ -265,22 +268,29 @@ against origin/{{base}} directly — it moves when anything fetches.
      from the set any `missing:` mutant whose code is gone, write all the
      selection's `rerun:` mutants still in the set to mutants.json (never the
      missing ones alone) and run `mutants run` again.
-   - `ALL_INVALID` (exit 8): every mutant was invalid. Re-read the lines and
-     rewrite mutants.json, then run again once. If it is all invalid again:
-     when the selection carried nothing forward, write the mutation check as
-     "not run" with the reason; otherwise copy the summary.
+   - `ALL_INVALID` (exit 8): every mutant was invalid, so nothing was tested.
+     The first time in a pass nothing is recorded: re-read the lines, rewrite
+     mutants.json and run again. The second time the pass is recorded: when
+     the selection carried nothing forward, write the mutation check as "not
+     run" with the reason; otherwise copy its summary.
    - `MALFORMED` (exit 7): mutants.json is wrong; fix what it says and run again.
    - `FAILING` (exit 5): the scoped tests fail on the unmutated code. That is
      unmet: name the failing test from its lines. Never write the mutation
      check as "not run" for it.
    - `NOT_RUN` (exit 6): write the mutation check as "not run" with its reason.
-   - `KEPT` (exit 9): nothing was recorded, because the code changed during the
-     pass (the Tree line will say so): count this run's results
+   - `KEPT` (exit 9): the run finished but nothing was recorded; its lines
+     say why (most often the code changed during the pass, which the Tree
+     line will say). Count this run's results
      (evidence/mutants.json.results.json) plus the selection's `carried:`
      lines yourself.
+   - `BUSY` (exit 10): an earlier pass's run was still going, and nothing
+     started. Run the same `mutants run` again; never `mutants wait` for it.
    - `LEFT_CHANGES` (exit 4): STOP and return MUTATION LEFT CHANGES, naming its
      lines above the result block. Never commit, stage or keep a mutant.
-   - Exit 2 (`ERROR:`): report it; write the mutation check as "not run".
+   - Exit 2 (`ERROR:`, or `NOT_STARTED` from a `wait` with no run): a usage
+     error, such as a `--files` path that doesn't exist. Fix the arguments and
+     run again; if it can't run at all, write the mutation check as "not
+     run" with that line.
    Judge each survivor: Equivalent (no input can tell the mutant from the code —
    say why) or a Test gap. A carried-forward mutant was caught: it is never a
    survivor or a Test gap. A timeout counts as caught: the mutant made the code

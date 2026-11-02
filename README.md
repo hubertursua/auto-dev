@@ -174,7 +174,7 @@ weakening them. Verification is built around that:
   least twice the first. A time is saved only from a timed run that passed;
   a failing one is reported as a failing test. The runner also checks that
   the run left the tree as it found it, then records the pass. The detail is
-  in `skills/auto-dev/scripts/lib/cmd_mutants.py`.
+  in `skills/auto-dev/scripts/lib/cmd_mutants.py` and `lib/mutation_run.py`.
 - **A spec that can be corrected, but only by its owner.** When late work
   shows `SPEC.md` itself is wrong or incomplete, the verifier, the review judge
   (on the panel's behalf), the security reviewer or the triager (from a PR
@@ -572,7 +572,7 @@ library, except where they read YAML:
 | `check-staged.py` | before each commit, checks nothing under `.auto-dev/` is staged |
 | `check-fresh.py` | checks each report was produced on the code as it is now |
 | `check-tests.py` | the verifier's test-integrity audit |
-| `mutate.py` | the verifier's mutation testing; restores every file afterwards |
+| `mutate.py` | the verifier's mutation testing, run by `autodev.py mutants run`; restores every file afterwards |
 
 ## Models and effort
 
@@ -632,7 +632,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `acceptance/` | Phase 3 | the sealed held-out checks (`files/<path>.sealed`, with `<path>.base`, the file a check adds to, and `<path>.installed`, that file as it was with the check whole), their `MANIFEST.md`, and their runs on the old code |
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
 | `lint/` | Phase 5 | one report per quality-gate check |
-| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran (`verify prep` writes the audit, the change set, the acceptance run and the tree it started on: `evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`), its required changes (`evidence/corrections.md`), the mutants it keeps across passes (`evidence/mutation-set.json`) and the last finished pass's tree and mutant results (`evidence/mutation-record.json`), the cold test-run time `mutants run` sizes mutant runs by (`evidence/mutation-cold-run.txt`), the scoped command it ran (`evidence/mutation-cmd.txt`) and its result (`evidence/mutation-run.json`) |
+| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran (`verify prep` writes the audit, the change set, the acceptance run and the tree it started on: `evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`), its required changes (`evidence/corrections.md`), the mutants it keeps across passes (`evidence/mutation-set.json`) and the last finished pass's tree and mutant results (`evidence/mutation-record.json`), the cold test-run time `mutants run` sizes mutant runs by (`evidence/mutation-cold-run.txt`), the scoped command it ran (`evidence/mutation-cmd.txt`), its result (`evidence/mutation-run.json`), its options, log and per-pass notes (`mutation-run-args.json`, `mutation-run.log`, `mutation-pass.json`) and the cold run's output (`mutation-cold.log`) |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports, the judge's code review, the security review, and the review's required changes for the coder |
 | `pr-body.md`, `pr-write.md`, `pr-output-comment.md` | Phase 6 | the generated PR description; the sections of it the orchestrator writes (the Summary, the Assumptions, a template section), with the text they draw on, which `pr publish` puts into the description; and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments |
