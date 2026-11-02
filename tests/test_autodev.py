@@ -2328,6 +2328,35 @@ class RunCommandTest(unittest.TestCase):
         self.assertIn("was stopped by a signal", err)
         self.assertTrue(self.gone(pidfile))
 
+    def test_show_prints_the_command_and_runs_nothing(self):
+        r = self.run_("test", "--files", "src/c.test.ts", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(),
+                         "COMMAND: " + self.gate[2]["files"].replace("<files>", "src/c.test.ts"))
+        self.assertFalse((self.ad / "tmp").exists())
+
+    def test_gate_by_kind_when_no_report_matches(self):
+        r = self.run_("gate", "typecheck")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("boom", r.stdout)
+
+    def test_an_absolute_path_through_a_symlinked_folder(self):
+        link = self.tmp / "linked"
+        os.symlink(self.tmp, link)
+        r = self.run_("test", "--files", str(link / "my app" / "src" / "c.test.ts"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("'src/c.test.ts'", r.stdout)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process groups")
+    def test_a_passing_command_leaves_nothing_running(self):
+        pidfile = self.tmp / "pids"
+        self.gate[3]["command"] = f"sleep 30 & echo $! > {shlex.quote(str(pidfile))}"
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        r = self.run_("gate", "BUILD")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.gone(pidfile))
+
     def test_without_state_it_could_not_run(self):
         (self.ad / "state.json").unlink()
         r = self.run_("test")

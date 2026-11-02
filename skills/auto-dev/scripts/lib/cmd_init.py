@@ -561,8 +561,9 @@ def setup_and_gate_lines(settings):
     lines = [SETUP_HEADING]
     lines += [f"{i}. `{cmd}`" for i, cmd in enumerate(settings["setup"], 1)] or ["none"]
     lines += ["", "## Quality gate — run in order, verbatim (the Definition of Done)",
-              ("Run check <n> with `autodev.py run gate <n>` (the test check: "
-               "`run test`); add `--files <path> …` to run its scoped form."), "",
+              ("Run check <n> with `autodev.py run gate <n> --dir <artifact dir>` (the "
+               "test check: `run test --dir <artifact dir>`); add `--files <path> …` to "
+               "run its scoped form."), "",
               "| # | kind | command | report | scoped form |",
               "|---|------|---------|--------|-------------|"]
     lines += [f"| {i} | {c.get('kind', '')} | `{c.get('command', '')}` | "

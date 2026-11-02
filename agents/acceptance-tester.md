@@ -145,10 +145,11 @@ For every SPEC.md condition, Security/Compliance criteria included:
    condition under Not automatable with the reason.
    Then make the check files pass the profile's FORMAT and LINT `gate` commands
    scoped to those files (`python3 {{skill_dir}}/scripts/autodev.py run gate <REPORT> --dir {{artifact_dir}} --files <your files>`,
-   <REPORT> the check's report as profile.md's Quality gate table names it,
-   such as LINT; a check with no scoped form runs whole, without `--files`,
-   and only what it flags in your files is yours) — run the formatter on them if the gate has one (in a
-   file that was already there, keep only its changes to your own lines). Nobody
+   <REPORT> the report profile.md's Quality gate table gives each FORMAT and
+   LINT check it has (skip one it lacks); a check with no scoped form runs
+   whole, without `--files`, and only what it flags in your files is yours).
+   Fix what they flag by editing your own lines (in a file that was already
+   there, change no other line), never by typing a formatter's command. Nobody
    may edit a check after it is sealed. Compile or type errors that come only
    from the entry point not existing yet are expected; never hide them with a
    suppression (`@ts-expect-error`, `# type: ignore`, a cast), which would turn

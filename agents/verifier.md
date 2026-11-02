@@ -283,7 +283,9 @@ against origin/{{base}} directly — it moves when anything fetches.
    tests and the acceptance checks>` (no `--files` when the check has no
    scoped form), which prints how long it took and the command it ran: that
    command is the scoped command, which mutate.py's `--cmd` below is given
-   exactly. If that run passed, round its time up to whole seconds, at
+   exactly. A pass that measures nothing gets it from the same `run` line
+   with `--show` added, which prints `COMMAND: <the command>` and runs
+   nothing. If that run passed, round its time up to whole seconds, at
    least 1, and write that number and a newline to
    {{artifact_dir}}/evidence/mutation-cold-run.txt (for example `42`). If it
    failed, write nothing and start no mutate.py run: the scoped tests fail
@@ -343,7 +345,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    value read from the file up first): 42 stored gives `--timeout 126`.
    Save `git -C {{worktree}} status --porcelain` and
    `git -C {{worktree}} diff {{cut}} | sha256sum`, then run:
-     python3 {{skill_dir}}/scripts/mutate.py {{worktree}} --mutants {{artifact_dir}}/evidence/mutants.json --max <cap> --timeout <3× the cold-run seconds (see Cold run above)> --cmd "<the command the cold run's `run` printed>" --exit-file {{artifact_dir}}/evidence/mutate.exit > {{artifact_dir}}/evidence/mutate.log 2>&1
+     python3 {{skill_dir}}/scripts/mutate.py {{worktree}} --mutants {{artifact_dir}}/evidence/mutants.json --max <cap> --timeout <3× the cold-run seconds (see Cold run above)> --cmd "<the scoped command `run` printed>" --exit-file {{artifact_dir}}/evidence/mutate.exit > {{artifact_dir}}/evidence/mutate.log 2>&1
    Blocking or background. N is the number of entries in this run's
    mutants.json: the whole set on a first pass or after `RERUN_ALL`, the
    `rerun:` mutants still in the set after `RERUN`, the retry's list after
