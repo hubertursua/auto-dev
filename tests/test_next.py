@@ -1190,6 +1190,32 @@ class ShipTest(NextCase):
         self.assertIn("pr gate", out["QUESTION"])
         self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
 
+    def test_no_budget_for_a_re_check_after_open_pr_goes_to_the_pr_gate_again(self):
+        self.test_no_budget_for_a_review_fix_goes_to_the_pr_gate()
+        out = self.next(5)
+        self.after(out, "Open PR")
+        (self.worktree / "due.ts").write_text("export const due = 2;\n")  # outside edit
+        self.next(0)
+        r = self.autodev("commit", "--message", "feat: due dates", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)  # the reports are stale
+        self.expect("cleanup", "GREEN")
+        self.lint()
+        _, jobs = self.expect("verifier")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        _, jobs = self.reviewers()
+        pass_dir = self.dir / "review" / f"pass-{self.state()['phase6']['review_pass']}"
+        for w, n in jobs:
+            (pass_dir / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (pass_dir / "corrections.md").write_text("# Required changes\n1. C1: guard\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        out = self.next(5)  # the pass after Open PR, before the commit: the gate again
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
+
     def test_ship_session_runs_to_the_merge(self):
         sha, _ = self.open_pr()
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
