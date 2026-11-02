@@ -88,9 +88,13 @@ If the push is rejected, tell the user what git printed and stop; don't run the
 ## 5. The PR body
 
 `next` names `pr-write.md`: the sections of the generated `pr-body.md` that
-are yours to write, after the sources they draw on (`SPEC.md`'s Context and
-Assumptions, and the task). Edit `pr-write.md`, never `pr-body.md`, and don't
-read `pr-body.md`: `pr publish` puts each of your sections into it by heading.
+are yours to write, after the sources they draw on, quoted: `SPEC.md`'s
+Context and Assumptions, the task, and the description's checked requirements,
+Quality gate and Review. Edit `pr-write.md` below its line `<!-- auto-dev: the
+sections you write start here; keep this line -->`, never `pr-body.md`, and
+don't read `pr-body.md`: `pr publish` puts each of your sections into it by
+heading, and refuses when a heading is changed, missing or added (start no
+line of an answer with `## `).
 (A run whose `next` names `pr-body.md` alone predates this file: edit that.)
 Each section holds a line like `<!-- WRITE: ... -->`: always one for the
 Summary and one for the Assumptions, and one for each section of the repo's
@@ -104,7 +108,8 @@ auto-dev, and keep every `## ` heading as it is:
 - **A template section:** answer what its WRITE line asks, from `SPEC.md` or
   `HANDOFF.md`. If neither says, write `N/A`. Never read the code to answer it.
 - **A template checklist:** tick a box (`- [x]`) when the sources, `SPEC.md`
-  or `HANDOFF.md` show it is true, and leave it unticked when they don't, or when only a person can confirm it (a manual test, a sign-off).
+  or `HANDOFF.md` show it is true, and leave it unticked when they don't, or
+  when only a person can confirm it (a manual test, a sign-off).
   Never read the code to decide. Add no note saying why: the code and the rest
   of the description show it. Keep every item's words, and don't add, drop or
   reorder one (`pr publish` refuses that). Then delete the WRITE line. This

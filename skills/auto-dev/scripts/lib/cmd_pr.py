@@ -50,6 +50,7 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from . import artifacts as art
@@ -62,12 +63,15 @@ BODY_LIMIT = 60000
 TAIL = 10
 WRITE_RE = re.compile(r"<!-- WRITE: .*?-->")
 WRITE_FILE = "pr-write.md"  # only the sections with a WRITE line, for the orchestrator
-WRITE_HEAD = ("<!-- The parts of the PR description you write. The sources first are "
-              "for you to draw on; they are not published. Then, under each `## ` "
-              "heading, replace each WRITE line as it asks, in plain words for a "
-              "developer who has never heard of auto-dev, and change nothing else. "
-              "Keep each `## ` heading as it is: `pr publish` puts each section back "
-              "into the description by its heading. -->")
+SLOTS_MARK = "<!-- auto-dev: the sections you write start here; keep this line -->"
+SOURCE_LIMIT = 3000  # characters of one quoted source
+WRITE_HEAD = ("<!-- The parts of the PR description you write. The quoted sources first "
+              "are for you to draw on; they are not published. Below the line that "
+              "says your sections start, replace each WRITE line as it asks, in plain "
+              "words for a developer who has never heard of auto-dev, and change "
+              "nothing else. Keep each `## ` heading as it is, and start no line of an "
+              "answer with `## `: `pr publish` puts each section into the description "
+              "by its heading. -->")
 STRICT = ("Acceptance conditions", "Quality gate", "Review")
 COMMENT_HEAD = "Command output for commit"
 ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
@@ -239,47 +243,92 @@ def generate(state, ad, sha):
 
 
 def write_slots(text, ad, task):
-    """pr-write.md: the SPEC.md and task text the WRITE lines draw on, under
-    `### ` headings (before any `## ` one, so `pr publish` never takes them),
-    then each section of the description that holds a WRITE line, as it stands:
-    the orchestrator writes them without reading the whole description."""
+    """pr-write.md: the text the WRITE lines draw on (SPEC.md's Context and
+    Assumptions, the task, and the description's requirements, Quality gate and
+    Review), each line quoted so no heading in it counts, then SLOTS_MARK and
+    each section of the description that holds a WRITE line, as it stands but
+    for the closing attribution: the orchestrator writes them without reading
+    the whole description."""
     out = [WRITE_HEAD, ""]
+
+    def source(title, body):
+        body = (body or "none").strip() or "none"
+        if len(body) > SOURCE_LIMIT:
+            body = body[:SOURCE_LIMIT - 1].rstrip() + "…"
+        out.extend([f"### Source: {title}",
+                    *[f"> {ln}" if ln.strip() else ">" for ln in body.splitlines()], ""])
+
     try:
         spec = art.read(ad / "SPEC.md")
     except art.ArtifactError:
         spec = ""
     for name in ("Context", "Assumptions"):
-        found = art.find_section(spec, name) if spec else None
-        out += [f"### Source: SPEC.md {name}", (found or "none").strip(), ""]
-    out += ["### Source: the task", (task.get("text") or "none").strip(), ""]
-    if (task.get("ask") or "").strip():
-        out += ["### Source: what the user asked for", task["ask"].strip(), ""]
+        source(f"SPEC.md {name}", art.find_section(spec, name) if spec else None)
+    source("the task", task.get("text"))
+    ask = (task.get("ask") or "").strip()
+    if ask and ask != (task.get("text") or "").strip():
+        source("what the user asked for", ask)
+    asked = re.findall(r"^- \[[ x]\] \*\*(.+?)\*\*", section_of(text, "Acceptance conditions"),
+                       re.MULTILINE)
+    source("the requirements this description says were checked",
+           "\n".join(f"- {a}" for a in asked) or None)
+    for name in ("Quality gate", "Review"):
+        source(f"this description's {name}", section_of(text, name))
+    out += [SLOTS_MARK, ""]
     for heading, body in split_sections(text):
         if heading and WRITE_RE.search(body):
-            out += [heading, body.rstrip("\n"), ""]
+            lines = [ln for ln in body.split("\n") if ln.strip() not in (ATTRIBUTION, MARKER)]
+            out += [heading, "\n".join(lines).rstrip("\n"), ""]
     return "\n".join(out).rstrip() + "\n"
 
 
 def splice_written(text, ad):
-    """The description with each section pr-write.md holds put in place of the
-    section of the same heading (in order, when a heading repeats) that still
-    holds a WRITE line; one already written in pr-body.md (by hand, or by a
-    session before 4.17) stands. With no pr-write.md, the text as it is."""
+    """The description with each section pr-write.md holds below SLOTS_MARK put
+    in place of the section of the same heading (in order, when a heading
+    repeats) that still holds a WRITE line; one already written in pr-body.md
+    (by hand, or by a session before 4.17) stands. Refused (UNWRITTEN, so the
+    orchestrator fixes pr-write.md) when the mark is gone, or a heading there
+    matches no section of the description or leaves one unwritten. With no
+    pr-write.md, the text as it is."""
     path = Path(ad) / WRITE_FILE
     if not path.exists():
         return text
-    queue = {}  # the sources sit before the first `## ` heading: never taken
-    for heading, body in split_sections(path.read_text(encoding="utf-8")):
-        if heading:
-            queue.setdefault(heading, []).append(body.rstrip("\n") + "\n")
+    raw = path.read_text(encoding="utf-8")
+    if SLOTS_MARK not in raw:
+        raise Fail(f"{path} has lost its line `{SLOTS_MARK}`: put it back, alone on its "
+                   "line, above your sections", FAILED, "UNWRITTEN")
+    mine = [(h, b) for h, b in split_sections(raw.split(SLOTS_MARK, 1)[1]) if h]
+    sections = split_sections(text)
+    have = Counter(h for h, _ in mine)
+    there = Counter(h for h, _ in sections if h)
+    need = Counter(h for h, b in sections if h and WRITE_RE.search(b))
+    problems = []
+    for heading in have:
+        if have[heading] > there[heading]:
+            problems.append(f"{path} has {have[heading]} `{heading}` section(s) and the "
+                            f"description {there[heading]}: keep each heading as it is, "
+                            "and start no line of an answer with `## `")
+    for heading in need:
+        if have[heading] < need[heading]:
+            problems.append(f"the description's `{heading}` is not written: {path} has "
+                            "no section left under that heading (was it renamed or "
+                            "removed?)")
+    if problems:
+        raise Fail("; ".join(problems), FAILED, "UNWRITTEN")
+    queue = {}
+    for heading, body in mine:
+        queue.setdefault(heading, []).append(body.rstrip("\n") + "\n")
     out = []
-    for heading, body in split_sections(text):
+    for heading, body in sections:
         if queue.get(heading):
-            mine = queue[heading].pop(0)
+            written = queue[heading].pop(0)
             if WRITE_RE.search(body):
-                body = mine
+                body = written
         out.append((heading, body))
-    return "\n".join((f"{h}\n" if h else "") + b for h, b in out)
+    text = "\n".join((f"{h}\n" if h else "") + b for h, b in out)
+    # The attribution and the marker close the description, as generate wrote it.
+    kept = [ln for ln in text.split("\n") if ln.strip() not in (ATTRIBUTION, MARKER)]
+    return "\n".join(kept).rstrip() + f"\n\n{ATTRIBUTION}\n{MARKER}\n"
 
 
 def ticket_link(task):
