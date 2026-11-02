@@ -287,9 +287,14 @@ twice, at the same time, and you have seen the results:
 
 1. **Code review panel.** Three reviewers run `/code-review` on the changed
    files independently, at the effort the plan sets for the review (see
-   [*Models and effort*](#models-and-effort)). A judge merges their findings and
-   checks each one's trigger path in the code. A finding that could be must-fix
-   but only one reviewer raised goes to the other two for a re-vote.
+   [*Models and effort*](#models-and-effort)). `next` merges their reports into
+   one list, and a judge decides which findings are one, checks each one's
+   trigger path in the code and writes the fix for each must-fix finding, in a
+   short `JUDGMENT.md`. `autodev.py review-build` then applies the rubric's
+   vote table and writes `CODE_REVIEW.md` with its counts, history and
+   overall confidence, so the judge never retypes the report. A finding that
+   could be must-fix but only one reviewer raised goes to the other two for a
+   re-vote.
 2. **Security review.** A security reviewer runs `/security-review` over the
    whole change, and the judge double-checks every High or Medium finding.
 
@@ -633,7 +638,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
 | `lint/` | Phase 5 | one report per quality-gate check |
 | `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts, what it ran (`verify prep` writes the audit, the change set, the acceptance run and the tree it started on: `evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`), its required changes (`evidence/corrections.md`), the mutants it keeps across passes (`evidence/mutation-set.json`) and the last finished pass's tree and mutant results (`evidence/mutation-record.json`), the cold test-run time `mutants run` sizes mutant runs by (`evidence/mutation-cold-run.txt`), the scoped command it ran (`evidence/mutation-cmd.txt`), its result (`evidence/mutation-run.json`), its options, log and per-pass notes (`mutation-run-args.json`, `mutation-run.log`, `mutation-pass.json`) and the cold run's output (`mutation-cold.log`) |
-| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports, the judge's code review, the security review, and the review's required changes for the coder |
+| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports and their merged list (`review/pass-<n>/findings.md`), the judge's calls (`JUDGMENT.md`), the code review built from them (with the report as it stood before the pass, `CODE_REVIEW.before.md`), the security review, and the review's required changes for the coder |
 | `pr-body.md`, `pr-write.md`, `pr-output-comment.md` | Phase 6 | the generated PR description; the sections of it the orchestrator writes (the Summary, the Assumptions, a template section), with the text they draw on, which `pr publish` puts into the description; and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments |
 | `proposals/` | Phases 4–6 | the filers' spec proposals (`<worker>-<n>.md`) and the coder's plan and check proposals (`coder-<n>.md`); each batch sent to the Define agent (`batch-<k>.md`), the planner (`plan-<k>.md`) or the acceptance tester (`checks-<k>.md`), and its rulings (`…-<k>-rulings.md`); copies of `SPEC.md` taken when a filer or the Define agent was briefed (`spec-<sha>.md`), and of the plan and the sealed checks taken when the planner or the tester was briefed to change them (`snapshots/`) |

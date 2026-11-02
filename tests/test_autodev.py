@@ -3553,5 +3553,326 @@ class StaleMutantRecordTest(StaleMutantRepoCase):
         self.assertIn("tests/a.test.ts", out["reason"] or "", out)
 
 
+def r_finding(n, title, loc, category="correctness"):
+    return (f"{n}. **{title}** — `{loc}` — {category}\n"
+            f"   Trigger path: `src/api.ts:3` → {title}\n"
+            f"   Why it is wrong: it breaks\n")
+
+
+def report(findings, leads="none", pre="0", coverage="full"):
+    return (f"# Code review R1 — pass 1\n\nScope: whole change\n/code-review xhigh: ran"
+            f"   ·   Coverage: {coverage}\n\n## Findings\n{findings or 'none — read it all'}\n"
+            f"## Security leads\n{leads}\n\n## Spec problems\nnone\n\n## Pre-existing\n"
+            f"{pre} problems seen in code this change did not introduce (count only).\n")
+
+
+def judged(label, sources, title, category="correctness", holds="yes", detail=True):
+    lines = [f"## {label}", f"- From: {sources}", f"- Finding: {title}",
+             "- Location: `src/sort.ts:4`", f"- Category: {category}", f"- Holds: {holds}"]
+    if detail:
+        lines += ["- Trigger path: `src/api.ts:3` → sort → throws",
+                  "- Judge: the sort reads `due` without a check",
+                  "- Where: `src/sort.ts:4` — the comparator",
+                  "- Test: a todo with no due date sorts last",
+                  f"- Required change: make the comparator handle a missing due date ({title})",
+                  "- In plain words: sorting no longer crashes on a todo with no date"]
+    return "\n".join(lines) + "\n\n"
+
+
+class ReviewBuildTest(RunCase):
+    """The panel's reports merged for the judge (findings.md), and
+    `autodev.py review-build` turning the judge's JUDGMENT.md into
+    CODE_REVIEW.md and corrections.md."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.init().returncode, 0)
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import judgment
+        self.judgment = judgment
+        self.folder = self.dir / "review" / "pass-1"
+        self.folder.mkdir(parents=True)
+        self.tree = subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"),
+                                    "--print-tree", str(self.worktree)], capture_output=True,
+                                   text=True, check=True).stdout.strip()
+        self.set_pass(1)
+
+    def set_pass(self, n, tree=None):
+        state = self.state()
+        state.setdefault("phase6", {})["review_pass"] = n
+        state.setdefault("briefs", []).append(
+            {"worker": "review-judge", "mode": "consolidate", "n": len(state["briefs"]) + 1,
+             "sets": {"scope": "whole change" if n == 1 else "the correction's files",
+                      "tree": tree or self.tree, "reviewers": "R1, R2, R3"}})
+        self.write_state(state)
+        self.folder = self.dir / "review" / f"pass-{n}"
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+    def panel(self, reports):
+        for slot, text in reports.items():
+            (self.folder / f"{slot}.md").write_text(text)
+        return self.judgment.write_findings(self.dir, int(self.folder.name.split("-")[1]),
+                                            sorted(reports)).read_text()
+
+    def build(self, judgment_text):
+        (self.folder / "JUDGMENT.md").write_text(judgment_text)
+        return self.autodev("review-build", "--dir", self.dir)
+
+    def three_reports(self):
+        crash = "null due date crashes sort"
+        return self.panel({
+            "R1": report(r_finding(1, crash, "src/sort.ts:4") +
+                         r_finding(2, "names are long", "src/names.ts:9", "conventions"),
+                         leads="- `src/export.ts:31` — writes the user's file path",
+                         pre="2"),
+            "R2": report(r_finding(1, "sort throws on no date", "src/sort.ts:6") +
+                         r_finding(2, "an empty list is mishandled", "src/list.ts:12")),
+            "R3": report(r_finding(1, "comparator reads undefined", "src/sort.ts:5") +
+                         r_finding(2, "a log line is wrong", "src/log.ts:2"), pre="1")})
+
+    def test_findings_merge_the_panels_reports(self):
+        text = self.three_reports()
+        self.assertIn("Reviewers finished: R1, R2, R3 (3/3) · coverage: full", text)
+        self.assertIn("Pre-existing (dropped, counted only): 2", text)  # the most one saw
+        self.assertIn("## F1 — null due date crashes sort\n- Raised by: R1", text)
+        self.assertIn("## F6 — a log line is wrong\n- Raised by: R3", text)
+        self.assertIn("- Near: F3, F5 (the same file", text)  # F1 at sort.ts:4
+        self.assertIn("- `src/export.ts:31` — writes the user's file path (raised by R1)",
+                      text)
+
+    def judgment_one(self):
+        return ("# Judgment — pass 1\n\n"
+                + judged("J1", "F1, F3, F5", "null due date crashes sort")
+                + judged("J2", "F4", "an empty list is mishandled")
+                + judged("J3", "F2", "names are long", category="conventions", detail=False)
+                + judged("J4", "F6", "a log line is wrong", holds="no — the line is right",
+                         detail=False)
+                + "## Earlier must-fix\nnone\n\n## Security leads\n"
+                  "- `src/export.ts:31` — writes the user's file path (raised by R1) → passed "
+                  "to the security review\n")
+
+    def test_build_applies_the_rubric_and_writes_the_report(self):
+        self.three_reports()
+        r = self.build(self.judgment_one())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("next: REVOTE", r.stdout)
+        self.assertIn("must_fix_open: 1", r.stdout)
+        self.assertIn("revote: 1", r.stdout)
+        text = (self.dir / "CODE_REVIEW.md").read_text()
+        self.assertIn("**Overall confidence: provisional (re-votes pending)** — reviewers "
+                      "finished: 3/3; coverage: full; must-fix decided 2–1: none", text)
+        self.assertIn(f"Tree: {self.tree}", text)
+        self.assertIn("Must-fix: 1 open · 0 fixed   ·   Advisory: 1   ·   Noise: 1   ·   "
+                      "Dropped (pre-existing): 2", text)
+        self.assertIn("| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | "
+                      "3/3 | High | open |", text)
+        self.assertIn("| C2 | an empty list is mishandled | `src/sort.ts:4` | correctness | R2 "
+                      "| R1, R3 |  |", text)
+        self.assertIn("| C3 | names are long", text)
+        self.assertIn("| C4 | a log line is wrong | R3 | the line is right |", text)
+        self.assertIn("### C1 — null due date crashes sort\nTrigger path:", text)
+        self.assertIn("passed to the security review", text)
+        self.assertIn("| 1 | whole change | 3/3 | 1 | 1 |", text)
+        # Every reader of CODE_REVIEW.md still reads it.
+        check = self.autodev("check-artifact", self.dir / "CODE_REVIEW.md")
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        plan = self.autodev("votes", "--plan", "--dir", self.dir)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        self.assertIn("C2", plan.stdout)
+        corrections = (self.folder / "corrections.md").read_text()
+        self.assertTrue(corrections.startswith("# Required changes\n1. C1: make the "
+                                               "comparator handle"), corrections)
+        self.assertNotIn("C2", corrections)
+
+    def test_a_judgment_that_cant_be_used_writes_nothing(self):
+        self.three_reports()
+        bad = self.judgment_one().replace("F4", "F9").replace(
+            "- Required change: make the comparator handle a missing due date "
+            "(null due date crashes sort)\n", "").replace("conventions", "naming")
+        r = self.build(bad)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("MALFORMED: "), r.stdout)
+        for said in ("F4 is judged nowhere", "names `F9`", "needs `Required change:`",
+                     "Category `naming`"):
+            self.assertIn(said, r.stdout)
+        self.assertFalse((self.dir / "CODE_REVIEW.md").exists())
+
+    def test_a_later_pass_carries_the_earlier_rows_forward(self):
+        self.three_reports()
+        first = ("# Judgment — pass 1\n\n"
+                 + judged("J1", "F1, F3, F5", "null due date crashes sort")
+                 + judged("J2", "F2, F4, F6", "names are long", category="conventions",
+                          detail=False)
+                 + "## Earlier must-fix\nnone\n\n## Security leads\n- `src/export.ts:31` — "
+                   "writes the user's file path (raised by R1) → passed to the security "
+                   "review\n")
+        self.assertEqual(self.build(first).returncode, 0)
+        self.set_pass(2)
+        self.panel({"R1": report(r_finding(1, "the fix misses a null id", "src/sort.ts:8")),
+                    "R2": report(r_finding(1, "a null id still throws", "src/sort.ts:8"))})
+        second = ("# Judgment — pass 2\n\n"
+                  + judged("J1", "F1, F2", "a null id still throws")
+                  + "## Earlier must-fix\n- C1: fixed\n\n## Security leads\nnone\n")
+        r = self.build(second)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = (self.dir / "CODE_REVIEW.md").read_text()
+        self.assertIn("| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | "
+                      "3/3 | High | fixed (pass 2) |", text)
+        self.assertIn("| C3 | a null id still throws | `src/sort.ts:4` | correctness | 2/3 | "
+                      "Medium | open |", text)
+        self.assertIn("### C1 — null due date crashes sort", text)
+        self.assertIn("must-fix decided 2–1: none", text)  # 2 of 2 finished, not 2-1
+        self.assertIn("**Overall confidence: Medium**", text)
+        self.assertIn("file path (raised by R1) → passed to the security review", text)
+        self.assertIn("| 1 | whole change | 3/3 | 1 | 0 |\n| 2 | the correction's files | "
+                      "2/3 | 1 | 0 |", text)
+        # Built again, the pass gives the same report: it starts from the one before it.
+        again = self.build(second)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual((self.dir / "CODE_REVIEW.md").read_text(), text)
+        # An earlier must-fix finding left out is a problem.
+        r = self.build(second.replace("- C1: fixed\n", "none\n"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("say whether C1 is fixed or open", r.stdout)
+
+    def test_code_changed_since_the_panel_reviewed_it(self):
+        self.three_reports()
+        self.set_pass(1, tree="0" * 40)
+        r = self.build(self.judgment_one())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Tree: changed during the run", (self.dir / "CODE_REVIEW.md").read_text())
+
+    def test_a_report_with_a_loose_finding_is_refused(self):
+        path = self.folder / "R1.md"
+        path.write_text(report("- null due date crashes sort\n"))
+        r = self.autodev("check-artifact", path)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not a finding in the template's shape", r.stdout + r.stderr)
+        path.write_text(report(r_finding(1, "null due date crashes sort", "src/sort.ts:4")))
+        r = self.autodev("check-artifact", path)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_finding_out_of_the_templates_shape_is_kept_for_the_judge(self):
+        text = self.panel({
+            "R1": report("- the sort crashes on a todo with no date\n"),
+            "R2": report("1. **Sort throws** – `src/sort.ts:4` – Correctness\n"
+                         "   Trigger path: `src/api.ts:3` → sort\n   Why it is wrong: throws\n"),
+            "R3": report("none — read every changed file and\n  traced each caller\n")})
+        self.assertIn("## F2 — Sort throws\n- Raised by: R2\n- Location: `src/sort.ts:4`\n"
+                      "- Category: correctness", text)
+        self.assertIn("## F1 — - the sort crashes on a todo with no date\n- Raised by: R1\n"
+                      "- Location: `unknown`\n- Category: unknown", text)
+        self.assertIn("read R1.md for it", text)
+        self.assertEqual(text.count("## F"), 2)  # R3's wrapped `none` is no finding
+
+    def test_a_lone_finding_is_revoted_by_the_reviewers_who_finished(self):
+        self.panel({"R1": report(r_finding(1, "null due date crashes sort", "src/sort.ts:4")),
+                    "R3": report("")})
+        r = self.build("# Judgment — pass 1\n\n"
+                       + judged("J1", "F1", "null due date crashes sort")
+                       + "## Earlier must-fix\nnone\n\n## Security leads\nnone\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = (self.dir / "CODE_REVIEW.md").read_text()
+        self.assertIn("| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | R1 "
+                      "| R3 |  |", text)
+        plan = self.autodev("votes", "--plan", "--dir", self.dir)
+        self.assertIn("R3", plan.stdout)
+        self.assertNotIn("R2", plan.stdout)
+
+    def test_votes_apply_then_the_next_pass_carry_everything(self):
+        self.three_reports()
+        self.assertEqual(self.build(self.judgment_one()).returncode, 0)
+        (self.folder / "VOTES-R1.md").write_text(
+            "# Re-votes R1 — pass 1\n\n| Finding | Vote | Reason |\n|---|---|---|\n"
+            "| C2 | agree | `src/list.ts:12` — the empty list throws |\n")
+        (self.folder / "VOTES-R3.md").write_text(
+            "# Re-votes R3 — pass 1\n\n| Finding | Vote | Reason |\n|---|---|---|\n"
+            "| C2 | disagree | `src/list.ts:12` — guarded upstream |\n")
+        applied = self.autodev("votes", "--apply", "--dir", self.dir)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.set_pass(2)
+        self.panel({"R1": report(""), "R2": report(""), "R3": report("")})
+        findings = (self.folder / "findings.md").read_text()
+        self.assertIn("- C1 — null due date crashes sort", findings)
+        self.assertIn("- C2 — an empty list is mishandled", findings)
+        r = self.build("# Judgment — pass 2\n\n## Earlier must-fix\n- C1: fixed\n- C2: open\n"
+                       "\n## Security leads\nnone\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("next: MUST_FIX", r.stdout)
+        text = (self.dir / "CODE_REVIEW.md").read_text()
+        self.assertIn("| C2 | an empty list is mishandled | `src/sort.ts:4` | correctness | "
+                      "2/3 (re-vote) | Medium | open |", text)
+        self.assertIn("### C2 — an empty list is mishandled", text)
+        corrections = (self.folder / "corrections.md").read_text()
+        self.assertIn("1. C2: make the comparator handle", corrections)
+
+    def test_an_earlier_report_written_by_hand(self):
+        # A pass the 4.20 judge wrote itself, carried by the 4.21 build.
+        (self.dir / "CODE_REVIEW.md").write_text(
+            "# Code review — feat/due-dates\n\n**Overall confidence: High** — reviewers "
+            "finished: 3/3; coverage: full; must-fix decided 2–1: none\nLatest pass: 1 — "
+            "scope: whole change\nTree: x\nMust-fix: 1 open · 0 fixed   ·   Advisory: 0   ·"
+            "   Noise: 0   ·   Dropped (pre-existing): 0\n\n## Must-fix\n| ID | Finding | "
+            "Location | Category | Votes | Confidence | Status |\n|----|---------|----------|"
+            "----------|-------|------------|--------|\n| C1 | null due date crashes sort | "
+            "`src/sort.ts:4` | correctness | 3/3 | High | open |\n\n### C1 — null due date "
+            "crashes sort\nTrigger path: sort\nJudge: yes\nWhere: `src/sort.ts:4`\nTest: one"
+            "\nRequired change: handle a missing date\nIn plain words: no crash\n\n## "
+            "Pending re-vote\n| ID | Finding | Location | Category | Raised by | Re-voters | "
+            "Votes |\n|----|---------|----------|----------|-----------|-----------|-------|\n"
+            "\n## Advisory\n| ID | Finding | Location | Category | Votes | Confidence | Why "
+            "advisory |\n|----|---------|----------|----------|-------|------------|---------"
+            "-----|\n\n## Noise\nnone\n\n## Security leads\n- `src/x.ts:3` — reads a path\n"
+            "  (raised by R2) → passed to the security review\n\n## Passes\n| Pass | Scope | "
+            "Reviewers finished | Must-fix found | Re-votes |\n|------|-------|----------------"
+            "----|----------------|----------|\n| 1 | whole change | 3/3 | 1 | 0 |\n")
+        self.set_pass(2)
+        self.panel({"R1": report(""), "R2": report(""), "R3": report("")})
+        r = self.build("# Judgment — pass 2\n\n## Earlier must-fix\n- C1: fixed\n\n"
+                       "## Security leads\nnone\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("next: CLEAN", r.stdout)
+        text = (self.dir / "CODE_REVIEW.md").read_text()
+        self.assertIn("| fixed (pass 2) |", text)
+        self.assertIn("- `src/x.ts:3` — reads a path\n  (raised by R2) → passed to the security "
+                      "review", text)
+        self.assertIn("**Overall confidence: High**", text)
+
+    def test_a_lead_left_out_or_an_unknown_earlier_id_is_refused(self):
+        self.three_reports()
+        r = self.build(self.judgment_one().replace(
+            "## Earlier must-fix\nnone", "## Earlier must-fix\n- C7: fixed").split(
+            "## Security leads")[0] + "## Security leads\nnone\n")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("C7 is not an open must-fix finding", r.stdout)
+        self.assertIn("is not copied word for word with where it goes", r.stdout)
+
+    def test_a_lead_with_an_arrow_still_needs_where_it_goes(self):
+        self.panel({"R1": report("", leads="- `src/q.ts:3` — input a → b unescaped")})
+        lead = "- `src/q.ts:3` — input a → b unescaped (raised by R1)"
+        base = "# Judgment — pass 1\n\n## Earlier must-fix\nnone\n\n## Security leads\n"
+        r = self.build(base + lead + "\n")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("needs `→ passed to the security review`", r.stdout)
+        r = self.build(base + lead + " → passed to the security review\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_none_line_never_hides_a_finding(self):
+        parsed = self.judgment.parse_report(report(
+            "None of these block, but:\n2. **x** - src/a.ts:3 - correctness\n"))
+        self.assertEqual(len(parsed["unparsed"]), 1, parsed)
+        self.assertTrue(parsed["problems"])
+        self.assertEqual(self.judgment.lead_items("- nonexistent-user check skipped\n"),
+                         ["- nonexistent-user check skipped"])
+
+    def test_no_build_without_the_earlier_passes(self):
+        self.three_reports()
+        (self.folder / "CODE_REVIEW.before.md").unlink()
+        (self.dir / "CODE_REVIEW.md").write_text("Latest pass: 1\n")
+        r = self.build(self.judgment_one())
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no snapshot", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

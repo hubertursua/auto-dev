@@ -129,7 +129,7 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import check_props, cmd_checks, cmd_review, cmd_work, plan_props, proposals, sealed
+from . import check_props, cmd_checks, cmd_review, cmd_work, judgment, plan_props, proposals, sealed
 from . import state as st
 from .cmd_ship import changed_paths
 from .cmd_state import ON_EXHAUSTED, spend_round
@@ -2788,6 +2788,8 @@ def review_step(c, p):
         if not usable:
             return stop([("No code reviewer wrote a usable report, twice. Tell the user; "
                          f"see {c.ad}/review/pass-{p['n']}/.")], "the panel produced nothing")
+        if not c.readonly:  # the panel's findings, merged for the judge
+            judgment.write_findings(c.ad, p["n"], usable)
         jobs = [("review-judge", "consolidate", {
             "reviewers": ", ".join(usable), "scope": scope_text(p), "tree": p["tree"]})]
         if verify and verified is None:
@@ -2885,7 +2887,7 @@ def unreviewed_leads(c, p):
                      for r in c.recs(SECURITY, after=p["seq"], ok=False))
     refuted = refuted_security(c)
     items = []
-    for item in lead_items(panel_leads(c)):
+    for item in judgment.lead_items(panel_leads(c)):
         covered = re.search(r"covered by (S\d+)", item)
         if PASSED_LEAD not in item and not (covered and covered.group(1) in refuted):
             continue
@@ -2893,18 +2895,6 @@ def unreviewed_leads(c, p):
             continue  # the template's placeholder, or seen already
         items.append(item)
     return "\n".join(items)
-
-
-def lead_items(text):
-    """The `- ` list items of a Security leads section, each with its
-    continuation lines."""
-    items = []
-    for line in text.splitlines():
-        if line.lstrip().startswith("- "):
-            items.append(line.strip())
-        elif line.strip() and items:
-            items[-1] += "\n" + line.strip()
-    return items
 
 
 def refuted_security(c):
