@@ -2363,6 +2363,165 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
 
 
+VERIFY_SPEC = """\
+# Spec
+
+## Conditions
+1. A todo can have a due date.
+   - Example: Given a todo, when a due date is set, then it is kept.
+   - Edge: none
+   - Verify by: unit
+2. An overdue todo is flagged.
+   - Example: Given a past due date, when listed, then it is flagged.
+   - Edge: none
+   - Verify by: unit
+"""
+
+VERIFY_MANIFEST = """\
+# Acceptance checks
+
+| # | Check (path :: test name) | Kind | Base run | Covers | Level |
+|---|---------------------------|------|----------|--------|-------|
+| 1 | `tests/due.test.ts` :: "keeps the due date" | fail-to-pass | failed | Example | unit |
+| 2 | `tests/due.test.ts` :: "flags an overdue todo" | fail-to-pass | failed | Example | unit |
+
+## Not automatable
+None.
+"""
+
+# The "runner": prints each test name in the files it is given, from the lines
+# that start with `test:`; exits 1 when a line says `FAIL`.
+RUNNER = """\
+import sys
+bad = 0
+for path in sys.argv[1:]:
+    for line in open(path):
+        if line.startswith("test:"):
+            print("ok  " + line[5:].strip())
+        if "FAIL" in line:
+            bad = 1
+print("done")
+sys.exit(bad)
+"""
+
+
+class VerifyPrepTest(unittest.TestCase):
+    """`autodev.py verify prep|tree`: the verifier's routine steps."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wt = self.tmp / "app"
+        self.ad = self.wt / ".auto-dev"
+        self.wt.mkdir()
+        self.git("init", "-q", "-b", "main")
+        self.write("src/todo.ts", "export const todo = 1;\n")
+        self.write("tests/due.test.ts", "test: an old test\n")
+        self.write("runner.py", RUNNER)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "init")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.write(".auto-dev/.gitignore", "*\n")
+        self.write(".auto-dev/SPEC.md", VERIFY_SPEC)
+        self.write(".auto-dev/acceptance/MANIFEST.md", VERIFY_MANIFEST)
+        self.write(".auto-dev/acceptance/files/tests/due.test.ts.sealed",
+                   "test: an old test\ntest: keeps the due date\n")
+        self.write(".auto-dev/acceptance/files/tests/due.test.ts.base",
+                   "test: an old test\n")
+        py = shlex.quote(sys.executable)
+        (self.ad / "state.json").write_text(json.dumps({
+            "schema": 4, "worktree": str(self.wt), "repo": {"base": "main"},
+            "settings": {"gate": [{"kind": "test", "command": f"{py} runner.py tests",
+                                   "report": "TEST.md",
+                                   "files": f"{py} runner.py <files>"}]}}))
+        # The coder's change: an edited file and a new one.
+        self.write("src/todo.ts", "export const todo = 2;\n")
+        self.write("src/due.ts", "export const due = 1;\n")
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.wt), *args], env=BASE_ENV,
+                              capture_output=True, text=True, check=True).stdout
+
+    def write(self, rel, text):
+        path = self.wt / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def verify(self, *args):
+        return subprocess.run([sys.executable, str(AUTODEV), "verify", *args, "--dir",
+                               str(self.ad)], capture_output=True, text=True,
+                              cwd=self.tmp, env=BASE_ENV, check=False)
+
+    def evidence(self, name):
+        return (self.ad / "evidence" / name).read_text()
+
+    def test_prep_does_the_first_pass_steps(self):
+        r = self.verify("prep", "--pass", "first pass")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
+        # The check is installed among the file's lines, then audited.
+        self.assertIn("keeps the due date", (self.wt / "tests/due.test.ts").read_text())
+        self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit "))
+        tree = subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"),
+                               "--print-tree", str(self.wt)], capture_output=True,
+                              text=True, check=True).stdout.strip()
+        self.assertEqual(self.evidence("tree-start.txt").strip(), tree)
+        self.assertIn(f"  tree: {tree}", r.stdout)
+        # The change set holds the new file too (intent-to-add).
+        diff = self.evidence("changes.diff")
+        self.assertIn("src/due.ts", diff)
+        self.assertIn("export const todo = 2;", diff)
+        # The acceptance run is scoped to the check files and names its tests.
+        self.assertIn("ok  keeps the due date", self.evidence("acceptance.txt"))
+        c1 = self.evidence("C1.txt").splitlines()
+        self.assertTrue(c1[0].startswith("Expected: "))
+        self.assertIn("runner.py tests/due.test.ts", c1[1])
+        self.assertIn("ok  keeps the due date", c1)
+        self.assertNotIn("ok  an old test", c1)
+        # Condition 2's check isn't in the sealed file: no line names it.
+        self.assertIn('  unnamed: 2: flags an overdue todo', r.stdout)
+        self.assertIn("C1.txt, C2.txt", r.stdout)
+
+    def test_a_check_that_cant_go_in_writes_the_corrections(self):
+        # The coder deleted the file the check adds to.
+        (self.wt / "tests" / "due.test.ts").unlink()
+        r = self.verify("prep", "--pass", "first pass")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("INSTALL_CONFLICT: "), r.stdout)
+        self.assertIn("  conflict: tests/due.test.ts", r.stdout)
+        text = self.evidence("corrections.md")
+        self.assertTrue(text.startswith("# Required changes\n1. `tests/due.test.ts`: "))
+        self.assertFalse((self.ad / "evidence" / "acceptance.txt").exists())
+
+    def test_a_recheck_audits_before_it_puts_an_edited_check_back(self):
+        self.assertEqual(self.verify("prep").returncode, 0)
+        self.write("tests/due.test.ts", "test: an old test\ntest: keeps the date\n")
+        r = self.verify("prep", "--pass", "re-check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ACCEPTANCE_MODIFIED", self.evidence("integrity.txt"))
+        self.assertIn("keeps the due date", (self.wt / "tests/due.test.ts").read_text())
+
+    def test_a_live_mutation_run_is_waited_for(self):
+        self.write(".auto-dev/evidence/mutants.json", "[]")
+        self.write(".auto-dev/evidence/mutants.json.lock", f"{os.getpid()}\n")
+        r = self.verify("prep", "--wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("STILL_RUNNING: "), r.stdout)
+        self.assertFalse((self.ad / "evidence" / "tree-start.txt").exists())
+
+    def test_tree_compares_with_the_tree_prep_noted(self):
+        self.assertEqual(self.verify("tree").returncode, 2)  # no prep yet
+        self.assertEqual(self.verify("prep").returncode, 0)
+        r = self.verify("tree")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.split(": ")[0], "TREE")
+        self.write("src/todo.ts", "export const todo = 3;\n")
+        r = self.verify("tree")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("TREE_CHANGED: "), r.stdout)
+        self.assertIn("  changed: src/todo.ts", r.stdout)
+
+
 class CliTest(unittest.TestCase):
     def test_missing_state_cannot_run(self):
         with tempfile.TemporaryDirectory() as tmp:

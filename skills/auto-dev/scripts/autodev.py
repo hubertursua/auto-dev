@@ -39,6 +39,7 @@ Subcommands:
     check-artifact     check an artifact against its template before returning it
     mutants   pick which mutants a verifier re-check runs again; record a finished pass
     run       run one of the profile's gate or test commands in the worktree
+    verify    the verifier's routine steps: prep a pass, then compare the tree
     next      print the pipeline's one next action (the orchestrator's loop)
 
 Every subcommand takes --json. Exit codes, the same for all:
@@ -67,6 +68,7 @@ from lib import (
     cmd_run,
     cmd_ship,
     cmd_state,
+    cmd_verify,
     cmd_work,
 )
 from lib.output import CANNOT_RUN, Fail, report_failure
@@ -103,6 +105,7 @@ COMMANDS = {
     "check-artifact": (cmd_work, cmd_work.check_artifact),
     "mutants": (cmd_mutants, cmd_mutants.main),
     "run": (cmd_run, cmd_run.main),
+    "verify": (cmd_verify, cmd_verify.main),
     "next": (cmd_next, cmd_next.main),
     "pr": (cmd_pr, cmd_pr.main),
 }
