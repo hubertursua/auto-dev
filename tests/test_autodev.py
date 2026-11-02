@@ -621,6 +621,41 @@ class StateCommandsTest(RunCase):
         self.assertEqual(self.state()["budget"]["remaining"], 0)
         self.assertIn("(0 remaining)", (self.dir / "WORK_LOG.md").read_text())
 
+    def test_budget_raise_only_after_a_budget_stop(self):
+        r = self.cmd("budget", "raise", "--by", "2")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("not stopped on the budget", r.stderr + r.stdout)
+        state = self.state()
+        state["budget"].update(total=2, remaining=0, stopped={"consumer": 3, "seq": 4})
+        self.write_state(state)
+        for by in ("0", "11"):
+            self.assertEqual(self.cmd("budget", "raise", "--by", by).returncode, 1, by)
+        self.assertEqual(self.cmd("budget", "raise").returncode, 1)
+        self.assertEqual(self.state()["budget"]["remaining"], 0)
+        r = self.cmd("budget", "raise", "--by", "3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("3 of 5 left", r.stdout)
+        budget = self.state()["budget"]
+        self.assertEqual((budget["total"], budget["remaining"]), (5, 3))
+        self.assertNotIn("stopped", budget)
+        self.assertIn("(3 remaining)", (self.dir / "WORK_LOG.md").read_text())
+
+    def test_budget_raise_forgets_unsent_proposals_since_the_commit(self):
+        state = self.state()
+        state["budget"].update(remaining=0, stopped={"consumer": 5, "seq": 30})
+        state["phase6"] = {"commit_seq": 20}
+        state["proposals"] = {
+            "unsent": [{"key": "pass-1", "seq": 12, "items": []},
+                       {"key": "human-1", "seq": 25, "items": []}],
+            "filings": [{"job": ["coder", 2], "status": "unsent", "seq": 14},
+                        {"job": ["coder", 3], "status": "sent", "seq": 22},
+                        {"job": ["coder", 4], "status": "unsent", "seq": 28}]}
+        self.write_state(state)
+        self.assertEqual(self.cmd("budget", "raise", "--by", "1").returncode, 0)
+        found = self.state()["proposals"]
+        self.assertEqual([u["key"] for u in found["unsent"]], ["pass-1"])
+        self.assertEqual([f["job"][1] for f in found["filings"]], [2, 3])
+
     def test_mark_records_a_triage_answer(self):
         r = self.cmd("mark", "triage-S2", "--value", "separate")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

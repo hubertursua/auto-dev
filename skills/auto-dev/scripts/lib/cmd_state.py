@@ -7,6 +7,7 @@ Usage (each takes `--dir <artifact-dir>`, default `./.auto-dev`, and `--json`):
     autodev.py size <FITS|OVERSIZED> --high-risk <yes|no>
     autodev.py budget show
     autodev.py budget spend --consumer <1-5> --id <correction-id> [--what TEXT]
+    autodev.py budget raise --by <n>
     autodev.py gate <gate> <choice> [--reason TEXT] [--condition <n>]
     autodev.py mark <step> [--value TEXT]
 
@@ -23,6 +24,12 @@ dispatched. Consumers (references/tables.md): 1 Define re-review,
 already spent is a no-op (exit 0, `ALREADY-SPENT`), so a resumed run never pays
 twice. At zero it spends nothing, prints `EXHAUSTED` and what to do for that
 consumer, and exits 3.
+
+`budget raise` adds <n> rounds (1 to 10) to a run `next` stopped because no
+round was left (references/tables.md, _The iteration budget_), and is refused
+otherwise. It also forgets the proposals that stop left unsent (since the
+commit, once there is one), so the next `next` sends them and takes the step
+that stopped, spending the new rounds as usual. It prints `RAISED`.
 
 `mark` records a step done outside autodev.py, so `next` moves past it. Steps:
 jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
@@ -46,7 +53,8 @@ Exit codes:
     1  refused: a bad value, a choice the gate doesn't offer, or a `mark` step
        that is not one of those above (or a triage answer not separate/ignore),
        or a deviation gate with no condition or accepting one on a security
-       criterion
+       criterion, or a `budget raise` when the run is not stopped on the budget
+       or <n> is not 1 to 10
     2  could not run (no state.json, unreadable) — not a pass
     3  `budget spend` only: the budget is exhausted; nothing was spent
 """
@@ -57,6 +65,7 @@ from . import state as st
 from .output import FAILED, Fail, emit
 
 EXIT_EXHAUSTED = 3
+MAX_RAISE = 10
 
 # The deviation gate is asked in Phase 5 or 6: its phase is the run's open one.
 GATE_PHASE = {"post-plan": 3, "pr": 6, "main": 6, "profile": 1, "jira": 2,
@@ -104,10 +113,11 @@ def add_arguments(parser, name):
         parser.add_argument("size", choices=("FITS", "OVERSIZED"))
         parser.add_argument("--high-risk", choices=("yes", "no"), required=True)
     elif name == "budget":
-        parser.add_argument("action", choices=("show", "spend"))
+        parser.add_argument("action", choices=("show", "spend", "raise"))
         parser.add_argument("--consumer", type=int, choices=sorted(CONSUMERS))
         parser.add_argument("--id", dest="spend_id")
         parser.add_argument("--what", default="")
+        parser.add_argument("--by", type=int, help="raise only: rounds to add")
     elif name == "mark":
         parser.add_argument("step", help=f"one of {', '.join(MARKS)}, or triage-<ID>")
         parser.add_argument("--value", default="done")
@@ -181,6 +191,8 @@ def budget(args):
         emit(args.json, "BUDGET", f"{b['remaining']} of {b['total']} remaining",
              spent=[f"#{s['consumer']} {s['id']}" for s in b["spends"]])
         return 0
+    if args.action == "raise":
+        return raise_budget(args, state)
     if args.consumer is None or not args.spend_id:
         raise Fail("budget spend needs --consumer and --id", FAILED, "ERROR")
     outcome = spend_round(state, args.consumer, args.spend_id, args.what)
@@ -196,6 +208,42 @@ def budget(args):
     emit(args.json, "SPENT", f"`{args.spend_id}` — {b['remaining']} of {b['total']} left",
          remaining=b["remaining"])
     return 0
+
+
+def raise_budget(args, state):
+    b = state["budget"]
+    stopped = b.get("stopped")
+    if not stopped:
+        raise Fail("the run is not stopped on the budget: rounds are added only after "
+                   "`next` stopped because none was left", FAILED, "ERROR")
+    if args.by is None or not 1 <= args.by <= MAX_RAISE:
+        raise Fail(f"budget raise needs --by <n>, 1 to {MAX_RAISE}", FAILED, "ERROR")
+    b["total"] += args.by
+    b["remaining"] += args.by
+    b.setdefault("raises", []).append({"by": args.by, "consumer": stopped["consumer"],
+                                       "at": st.now(), "seq": st.seq(state)})
+    del b["stopped"]
+    forget_unsent(state)
+    st.add_note(state, f"the user raised the iteration budget by {args.by} after it ran "
+                f"out ({CONSUMERS[stopped['consumer']]}): {b['remaining']} of "
+                f"{b['total']} left")
+    st.save(args.dir, state)
+    emit(args.json, "RAISED", f"{b['remaining']} of {b['total']} left",
+         after="run `next`: it takes the step that stopped")
+    return 0
+
+
+def forget_unsent(state):
+    """Drop the marks of proposals no round was left to send, so `next` sends
+    them now. Once the code is committed, only the marks made since: earlier
+    ones were left for the PR gate, and the user opened the PR with them."""
+    since = (state.get("phase6") or {}).get("commit_seq", 0)
+    found = state.get("proposals") or {}
+    if found.get("unsent"):
+        found["unsent"] = [u for u in found["unsent"] if u.get("seq", 0) <= since]
+    if found.get("filings"):
+        found["filings"] = [f for f in found["filings"]
+                            if f.get("status") != "unsent" or f.get("seq", 0) <= since]
 
 
 def spend_round(state, consumer, spend_id, what=""):

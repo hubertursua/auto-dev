@@ -117,7 +117,9 @@ carries the refused issues (as `brief --retry <n>` writes). Spawned three
 times with no usable result, it stops. A stop on a worker (blocked, failed
 twice, never returned) lasts until `resume`: after the user fixes the cause,
 the next session spawns that worker again. A stop on a result (a red quality
-gate, an impossible spec, the budget used up) stays.
+gate, an impossible spec) stays. The budget used up stays too, until the user
+adds rounds with `autodev.py budget raise --by <n>`: the next `next` takes the
+step that stopped, spending one of them.
 """
 
 import copy
@@ -392,9 +394,16 @@ def ask(c, gate, summary, questions, answers, rule):
 
 
 def exhausted(c, consumer, rule, extra=""):
+    # Saved with the stop, so `budget raise` knows the run stopped here; the
+    # next `next` clears it first (decide).
+    c.state["budget"]["stopped"] = {"consumer": consumer, "seq": c.seq()}
+    c.dirty = True
     return stop([f"The iteration budget is used up ({c.state['budget']['total']} "
                  f"rounds): {ON_EXHAUSTED[consumer]}." + (f" {extra}" if extra else ""),
                  *proposals.unsent_lines(c.state),
+                 ("The user can add rounds and go on from this step: run "
+                  f"`{c.cmd('budget', 'raise', '--by', '<n>')}` with the number they "
+                  "give, then `next`. Or they leave the run here; the worktree stays."),
                  f"State and artifacts: {c.ad}"], rule)
 
 
@@ -473,6 +482,8 @@ def decide(c):
         # them and saves nothing of its own. Each counted its own event already.
         st.save(c.dir, c.state, count_event=False)
     c.recorded, c.dirty = recorded, False
+    if c.state["budget"].pop("stopped", None) is not None:
+        c.dirty = True  # set again if this step stops on the budget too
     result = decide_step(c)
     if recorded:
         result["RECORDED"] = recorded

@@ -657,7 +657,10 @@ Autonomous but bounded:
   proposals sent to the Define agent (the redo after it costs nothing more).
   A coder result's plan and check proposals cost one round, from the consumer
   that pays for that coder run, covering the owners' rulings and the coder's
-  next run; a result that is also `BLOCKED` still costs one.
+  next run; a result that is also `BLOCKED` still costs one. When the budget
+  runs out the run stops and names what is still open. You can tell it to go
+  on with more rounds (say how many): it adds them and carries on from the
+  step that stopped. It never adds rounds unasked.
 - **A later step can only propose a spec change.** Only the verifier, the
   review judge, the security reviewer and the triager may file one; a
   Security/Compliance criterion can be added, never edited or removed; PR
@@ -694,7 +697,7 @@ a worker (it stopped on purpose twice, failed twice, or never left a usable
 result), a refused `pr publish`, and red CI the code can't fix. A push to the PR
 branch stops the run until you bring those commits into the worktree, where
 they are checked again. A stop on a result (a red gate, an impossible spec, a
-possibly planted bug, the budget used up) stays.
+possibly planted bug) stays. The budget used up stays too, until you add rounds.
 
 ## Repository layout
 

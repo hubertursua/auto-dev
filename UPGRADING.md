@@ -4,6 +4,21 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.21
+
+- **You can add rounds after the budget runs out.** The stop for a used-up
+  iteration budget now says you can go on with more rounds. Say how many,
+  right after the stop or as `auto-dev continue with <n> more rounds`. The
+  orchestrator then runs the new `autodev.py budget raise --by <n>` (1 to 10)
+  and `next`, which takes the step that stopped and spends the new rounds as
+  usual. Spec, plan and check proposals that stop left unsent are sent now.
+  Once the code is committed, only the ones left unsent since the commit are
+  sent, so proposals you shipped past at the PR gate stay as they were.
+  `budget raise` is refused unless `next` has just stopped on the budget.
+  state.json's `budget` gains `stopped` (set by that stop) and `raises`.
+- **Resume:** a run in flight resumes. A run already stopped on the budget
+  under 4.21 gets the new report, and can be raised, on its next `next`.
+
 ## Upgrading from 4.20
 
 - **The review judge makes the calls; a script writes the report.** When it

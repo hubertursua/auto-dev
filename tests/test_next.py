@@ -108,6 +108,16 @@ class NextCase(RunCase):
                              json.dumps(out, indent=2))
         return out
 
+    def raise_from_report(self, out, n):
+        """Run the `budget raise` command a budget stop's report names, for n rounds."""
+        line = next(ln for ln in out["REPORT"] if "budget raise" in ln)
+        command = re.search(r"`([^`]*budget raise[^`]*)`", line).group(1)
+        r = subprocess.run(command.replace("'<n>'", str(n)), shell=True,
+                           capture_output=True, text=True, env=self.env, cwd=self.tmp,
+                           check=False)
+        self.assertEqual(r.returncode, 0, command + "\n" + r.stdout + r.stderr)
+        self.assertIn("RAISED", r.stdout)
+
     def spawned(self, out):
         """[(worker, n)] the action asks to spawn."""
         return [(Path(b).stem.rsplit("-", 1)[0], int(Path(b).stem.rsplit("-", 1)[1]))
@@ -837,6 +847,43 @@ class BuildTest(NextCase):
         self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
         out = self.next(4)
         self.assertIn("budget is used up", " ".join(out["REPORT"]))
+
+    def test_rounds_added_after_the_stop_take_the_step_that_stopped(self):
+        self.plan_session()
+        state = self.state()
+        state["budget"].update(total=1, remaining=0)
+        self.write_state(state)
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.first_pass()
+        self.spec_eval(v1="unmet")
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "corrections.md").write_text("# Required changes\n1. x\n")
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        self.next(4)
+        out = self.next(4)  # a resumed run stops at the same place
+        self.raise_from_report(out, 2)
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertIn("spent `verifier-1`", out["BUDGET"])
+        self.assertIn("1 of 3 left", out["BUDGET"])
+        budget = self.state()["budget"]
+        self.assertNotIn("stopped", budget)
+        self.assertEqual([r["by"] for r in budget["raises"]], [2])
+        self.assertIn("raised the iteration budget by 2", (self.dir / "WORK_LOG.md").read_text())
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)  # no longer stopped on the budget
+
+    def test_a_step_past_a_budget_stop_clears_it(self):
+        self.plan_session()
+        state = self.state()
+        state["budget"]["stopped"] = {"consumer": 3, "seq": 1}
+        self.write_state(state)
+        self.resume()
+        self.expect("coder")
+        self.assertNotIn("stopped", self.state()["budget"])
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
 
 
 class ShipTest(NextCase):
@@ -2991,6 +3038,16 @@ class SpecProposalRulingTest(NextCase):
         self.assertIn("condition 2 (the verifier)", report)
         self.assertFalse(any(b["worker"] == "define" and b["n"] > 1
                              for b in self.state()["briefs"]))
+
+    def test_rounds_added_after_the_stop_send_the_proposals_it_left(self):
+        job = self.to_first_pass(remaining=0)
+        self.file_from_verifier(job, PROPOSAL_ON_2)
+        out = self.next(4)
+        self.raise_from_report(out, 1)
+        self.assertEqual(self.state()["proposals"]["unsent"], [])
+        out, _, sets = self.define_job()
+        self.assertIn("spent `verifier-1`", out["BUDGET"])
+        self.assertIn("condition 2", Path(sets["proposals"].split("\n")[0]).read_text())
 
     # -------------------------------------------------------------- C5, C4
 

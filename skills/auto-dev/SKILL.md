@@ -102,7 +102,7 @@ Its exit code says what kind of step it is:
 | 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned (not on the first agent's notification). A command in backticks: run it. Then the `AFTER` lines |
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
-| 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed, and stop. Do nothing more |
+| 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed, and stop. Do nothing more (one exception: more rounds after a budget stop, below) |
 | 5 | ask the user | Show the `SUMMARY` lines, then call AskUserQuestion with the `QUESTION` JSON as given. Run the `AFTER` line whose label matches the answer, filling in any `<…>` with what the user said |
 | 6 | end of session, or a checkpoint | Run the `AFTER` command, give the user the message it prints, and stop. Do not start the next phase |
 
@@ -128,7 +128,11 @@ result `next` accepts) and a stop at `pr publish` last until the user fixes
 the cause and says `auto-dev continue`: the new session spawns that worker, or
 publishes, again. A stop on a result (a red quality gate, an impossible spec, a
 mutation that may have left changes, the budget used up) stays: a resumed run
-stops at the same place (`references/tables.md`, _Hold and Stop_).
+stops at the same place (`references/tables.md`, _Hold and Stop_). The one way
+past the budget stop: when the user asks for more rounds and says how many
+(right after the stop, or as `auto-dev continue with <n> more rounds`), run
+the `budget raise` command its `REPORT` names with their number, then `next`.
+Never add rounds they didn't ask for.
 
 **Never skip a step or run one `next` didn't print**, except the ones in your
 session's runbook.
