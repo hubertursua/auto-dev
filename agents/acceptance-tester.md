@@ -37,8 +37,10 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
-Previous issues: {{previous_issues}}. When set, your last return for this job
-was refused for these reasons: fix each one this time.
+Previous issues: {{previous_issues}}. When set, your last spawn for this job
+was refused or stopped, and this says why and what to do: fix each issue it
+lists. After a refused return, start from what you wrote then, and redo only
+what an issue names.
 
 ## Your task
 
@@ -57,7 +59,8 @@ Inputs:
 Binding rules: {{binding_rules}}. Use synthetic test data only.
 
 Scope: {{scope}} (ALL CONDITIONS, or ONLY the conditions it names, and why).
-- ALL CONDITIONS, in write mode: start clean. If {{artifact_dir}}/acceptance/
+- ALL CONDITIONS, in write mode: start clean (not on a retry after a refused
+  return: see Previous issues). If {{artifact_dir}}/acceptance/
   exists from an earlier, cut-off run, delete it. Then undo whatever that run
   left in the worktree: only test files, since no code is written yet. For each
   test file `git -C {{worktree}} status --porcelain --untracked-files=all`

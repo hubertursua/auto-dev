@@ -32,8 +32,10 @@ on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
-Previous issues: {{previous_issues}}. When set, your last return for this job
-was refused for these reasons: fix each one this time.
+Previous issues: {{previous_issues}}. When set, your last spawn for this job
+was refused or stopped, and this says why and what to do: fix each issue it
+lists. After a refused return, start from what you wrote then, and redo only
+what an issue names.
 
 ## Mode: consolidate
 

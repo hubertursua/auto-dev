@@ -12,7 +12,8 @@ brief lookup --out <dir> --set worktree=<repo> --set question="<question>"
     from --set. The review judge's `tree` is the tree the panel reviewed, so
     the caller passes it (`--set tree=<hash noted before the panel>`). `--retry N` marks the brief
     as a re-spawn of job <worker>-N, which `record` refused: its
-    `previous_issues` slot carries the issues saved for that job (--set
+    `previous_issues` slot carries the issues saved for that job, after a line
+    telling the worker to fix up its refused return rather than redo the job (--set
     overrides), and job N is marked replaced, so `next` never re-spawns it
     too. Without --retry it is `none`. It refuses when a slot the worker needs has no value.
     A brief for a spec-proposal filer (the verifier, the review judge, the
@@ -360,15 +361,22 @@ def blocked_last(state, worker, mode=None):
         log[-1].get("status") == "blocked"
 
 
+REFUSED_RETRY = ("Your last return for this job was refused, and whatever you wrote for "
+                 "it is still in place. Start from it: fix each issue below and return "
+                 "again. Redo no work an issue doesn't name, even where your instructions "
+                 "say to start clean or judge from scratch.")
+
+
 def saved_issues(state, worker, retry):
-    """The issues record saved for job <worker>-<retry>; None without --retry."""
+    """The issues record saved for job <worker>-<retry>, after a line saying to
+    fix up the refused return rather than redo the job; None without --retry."""
     if retry is None:
         return None
     issues = state.get("refused", {}).get(job(worker, retry))
     if not issues:
         raise Fail(f"--retry {retry}: record refused no return for {job(worker, retry)}",
                    FAILED, "REFUSED")
-    return issues_text(issues)
+    return REFUSED_RETRY + "\n" + issues_text(issues)
 
 
 LAZY = {"acceptance_paths": acceptance_paths, "survivors": survivors,

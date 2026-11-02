@@ -171,7 +171,11 @@ class BriefTest(WorkCase):
         self.assertEqual(self.cmd("brief", "define", "--mode", "write", "--retry", "1")
                          .returncode, 0)
         text = (self.dir / "briefs" / "define-1.md").read_text()
-        self.assertIn("previous_issues: - SPEC.md has Security/Compliance criteria", text)
+        self.assertIn("\n  - SPEC.md has Security/Compliance criteria", text)
+        # A fix-up, not a redo: the refused return's files are kept.
+        self.assertIn("previous_issues: Your last return for this job was refused, and "
+                      "whatever you wrote for it is still in place. Start from it", text)
+        self.assertIn("even where your instructions say to start clean", text)
         self.cmd("brief", "define", "--mode", "write")
         values = self.brief_values(self.dir / "briefs" / "define-2.md")
         self.assertEqual(values["previous_issues"], "none")
