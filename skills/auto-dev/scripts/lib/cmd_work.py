@@ -240,9 +240,13 @@ def seal_bases(state, ad):
     return issues
 
 
+SUPPORT_SHOWN = 12  # lines the checks add besides their tests, per file
+
+
 def acceptance_paths(ad):
     """Each file that holds acceptance checks, with the checks' test names: a
-    file can hold the coder's own tests too."""
+    file can hold the coder's own tests too. Then the lines the checks add
+    besides them (an import, a shared setup), which are sealed as well."""
     try:
         rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
     except art.ArtifactError:
@@ -256,7 +260,25 @@ def acceptance_paths(ad):
             names.setdefault(path, [])
             if name and name not in names[path]:
                 names[path].append(name)
-    return "; ".join(f"{p} (tests: " + ", ".join(f'"{n}"' for n in names[p]) + ")"
+    files = sealed.sealed_files(ad)
+
+    def support(path):
+        if path not in files:
+            return ""
+        try:
+            extra = sealed.support_lines(ad, path, names[path])
+        except sealed.SealError:
+            return ""
+        if not extra:
+            return ""
+        shown = " · ".join(f"``{x.strip()}``" if "`" in x else f"`{x.strip()}`"
+                           for x in extra[:SUPPORT_SHOWN])
+        more = len(extra) - SUPPORT_SHOWN
+        return (f"; and these lines they add besides the tests: {shown}"
+                + (f" and {more} more" if more > 0 else ""))
+
+    return "; ".join(f"{p} (tests: " + ", ".join(f'"{n}"' for n in names[p])
+                     + support(p) + ")"
                      if names[p] else p for p in sorted(names)) or "none"
 
 
@@ -497,6 +519,8 @@ def write_brief(state, where, worker, mode, given, retry=None):
         entry = {"worker": worker, "n": n, "mode": mode, "sets": given, "at": st.now(),
                  "retry": retry, "seq": st.seq(state)}
         watch_spec(state, ad, worker, given, retry, entry)
+        if retry is None and worker in ("coder", "cleanup"):
+            entry["whole"] = whole_checks(state, ad)
         if retry is None:
             watch_owner(state, ad, worker, mode, given, entry, n)
         state.setdefault("briefs", []).append(entry)
@@ -514,7 +538,7 @@ def watch_spec(state, ad, worker, given, retry, entry):
     if retry is not None:
         old = next((b for b in state.get("briefs", [])
                     if b["worker"] == worker and b["n"] == retry), {})
-        for key in ("spec", "held", "plan", "sealed"):
+        for key in ("spec", "held", "plan", "sealed", "whole"):
             if key in old:
                 entry[key] = old[key]
         return
@@ -681,6 +705,52 @@ def derive(worker, data, ad, state, n):
         issues += check_props.answer_issues(ad, sets, issued, data.get("next"))
     if worker == "acceptance-tester" and issued.get("held"):
         issues += proposals.held_issues(ad, issued["held"])
+    if worker in ("coder", "cleanup"):
+        issues += edited_check_issues(worker, ad, state, issued.get("whole", []))
+    return issues
+
+
+def whole_checks(state, ad):
+    """The check files whose held-out lines are whole in the worktree now: the
+    ones a coder or cleanup briefed now must leave whole."""
+    out = []
+    for rel in sealed.sealed_files(ad):
+        try:
+            if sealed.intact(ad, rel, sealed.read(Path(state["worktree"]) / rel)):
+                out.append(rel)
+        except sealed.SealError:
+            pass
+    return out
+
+
+def edited_check_issues(worker, ad, state, whole):
+    """Each check file, whole when the coder or cleanup was briefed (`whole`),
+    whose held-out lines it changed. `verify prep` would put them back and
+    break the worker's own lines that relied on the change, on every pass."""
+    issues = []
+    files = sealed.sealed_files(ad)
+    for rel in whole:
+        if rel not in files:
+            continue
+        current = sealed.read(Path(state["worktree"]) / rel)
+        try:
+            if sealed.intact(ad, rel, current):
+                continue
+            gone = sealed.missing_lines(ad, rel, current)
+        except sealed.SealError as exc:
+            raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
+        what = ("; ".join(f"`{x.strip()}`" for x in gone[:5])
+                + (f" and {len(gone) - 5} more" if len(gone) > 5 else "")
+                if gone else "they are all there, but moved, split or with a line "
+                "added among them")
+        issues.append(
+            f"you changed lines of the held-out acceptance checks in {rel}: {what}. "
+            "Put each back exactly as it was, with nothing added among them, and "
+            "make your own code fit them: when your test needs more from a module "
+            "one of their import lines names, add your own import line next to "
+            "theirs, never edit theirs"
+            + (". If the quality gate then fails on one of their lines as it is, "
+               "return ACCEPTANCE_CHECK_FAILS_GATE" if worker == "cleanup" else ""))
     return issues
 
 

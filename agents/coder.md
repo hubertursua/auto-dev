@@ -142,7 +142,11 @@ entry's `Test:` line can list several cases: add a test for each one.
 
 These tests are held-out acceptance checks, by file: {{acceptance_paths}}.
 Do NOT modify, move or remove them, or edit the lines right around them; make
-the code satisfy them. Other tests in the same files are like any test. The rules on keeping tests honest
+the code satisfy them. The lines listed after a file's tests (an import, a
+shared setup) are part of the checks too: never change one or add a line among
+them. When your own test needs more from a module one of them imports, add
+your own import line next to it. `record` refuses a result that changed any of
+these lines. Other tests in the same files are like any test. The rules on keeping tests honest
 in the task above still apply, and so does BLOCKED: if a change cannot be
 made honestly, stop and say why.
 

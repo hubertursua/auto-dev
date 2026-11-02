@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_autodev import RunCase
+from test_autodev import SCRIPTS, RunCase
 from test_autodev import RunCase as InitCase
 from test_parsers import CODE_REVIEW, FIXTURES, MANIFEST, SPEC, SPEC_EVAL
 
@@ -38,6 +38,12 @@ class WorkCase(RunCase):
                 name, _, value = line.partition(": ")
                 values[name] = value
         return values
+
+    def job(self, worker, as_mode=None, **sets):
+        args = [a for k, v in sets.items() for a in ("--set", f"{k}={v}")]
+        r = self.cmd("brief", worker, *(("--mode", as_mode) if as_mode else ()), *args)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return int(Path(r.stdout.split("BRIEF:")[1].split()[0]).stem.rsplit("-", 1)[1])
 
     def returned(self, worker, n, status="ok", **data):
         path = self.dir / "returns" / f"{worker}-{n}.json"
@@ -749,6 +755,73 @@ class RecordTest(WorkCase):
         r = self.cmd("install-checks", "--recheck")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("conflict: src/todos.test.ts", r.stdout)
+
+    def installed_shared_check(self):
+        """The shared check of shared_check(), listed in MANIFEST.md and installed."""
+        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
+            '`src/due.acceptance.test.ts` :: "shows the due date"',
+            '`src/todos.test.ts` :: "shows the due date"'))
+        target = self.shared_check()
+        self.assertEqual(self.cmd("install-checks").returncode, 0)
+        return target
+
+    def test_a_brief_lists_the_lines_a_check_adds_besides_its_tests(self):
+        # The check's own import line is sealed too: a coder told only the
+        # test's name edited it for its own test, and every re-check put it back.
+        self.installed_shared_check()
+        n = self.job("coder", "correction",
+                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
+        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
+        self.assertIn('src/todos.test.ts (tests: "shows the due date"; and these lines they '
+                      'add besides the tests: `import { due } from "./due";`)', paths)
+        # The lines don't hide a file from the check files the brief listed.
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import check_props
+        self.assertEqual(check_props.shown_paths(self.dir, "coder", n),
+                         {"src/due.acceptance.test.ts", "src/sort.acceptance.test.ts",
+                          "src/todos.test.ts"})
+
+    def test_a_coder_that_edits_a_check_s_import_line_is_refused(self):
+        target = self.installed_shared_check()
+        good = target.read_text()
+        n = self.job("coder", "correction",
+                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
+        target.write_text(good.replace('import { due } from "./due";',
+                                       'import { due, type Due } from "./due";'))
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", n)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("you changed lines of the held-out acceptance checks in "
+                      'src/todos.test.ts: `import { due } from "./due";`', r.stdout)
+        self.assertIn("add your own import line next to theirs", r.stdout)
+        target.write_text(good.replace('import { due } from "./due";',
+                                       'import { due } from "./due";\n'
+                                       'import type { Due } from "./due";'))
+        r = self.cmd("record", "coder", n)  # its own line beside theirs is fine
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_cleanup_that_edits_a_check_line_is_told_to_say_so(self):
+        target = self.installed_shared_check()
+        self.job("cleanup", scope="phase5")
+        target.write_text(target.read_text().replace("    expect(due())", "  expect(due())"))
+        self.returned("cleanup", 1, next="GREEN")
+        r = self.cmd("record", "cleanup", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("expect(due()).toBe(\"2026-01-01\");`", r.stdout)
+        self.assertIn("return ACCEPTANCE_CHECK_FAILS_GATE", r.stdout)
+
+    def test_a_check_not_whole_when_the_worker_was_briefed_is_not_its_doing(self):
+        # Before the install, the checks are not in the worktree: the coder's
+        # result is not held to them.
+        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
+            '`src/due.acceptance.test.ts` :: "shows the due date"',
+            '`src/todos.test.ts` :: "shows the due date"'))
+        self.shared_check()
+        n = self.job("coder", "correction",
+                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", n)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_a_check_is_not_anchored_on_punctuation_alone(self):
         # The coder rewrote everything around the check but a closing line:
@@ -2033,12 +2106,6 @@ class PlanAndCheckProposalRecordTest(WorkCase):
         self.write("acceptance/MANIFEST.md", PROPOSAL_MANIFEST.replace(
             '`src/four.acceptance.test.ts` :: "refuses a past due date"', CART_CHECK))
         self.write("IMPLEMENTATION.md", step_plan())
-
-    def job(self, worker, as_mode=None, **sets):
-        args = [a for k, v in sets.items() for a in ("--set", f"{k}={v}")]
-        r = self.cmd("brief", worker, *(("--mode", as_mode) if as_mode else ()), *args)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        return int(Path(r.stdout.split("BRIEF:")[1].split()[0]).stem.rsplit("-", 1)[1])
 
     def proposal_file(self, worker, n):
         values = self.brief_values(self.dir / "briefs" / f"{worker}-{n}.md")

@@ -238,6 +238,35 @@ def intact(ad, rel, current):
     return blks is not None and locate(now, blks) is not None
 
 
+def support_lines(ad, rel, names):
+    """The lines the sealed check adds to <path> besides its tests (`names`, the
+    test names MANIFEST.md lists): every non-blank line of a block that names
+    no test, and those before the first line naming one in a block that does.
+    An import line the checks need is one: a worker told only the tests' names
+    can't tell it is sealed."""
+    sealed_lines = lines(read(sealed_files(ad)[rel])) or []
+    blks = blocks(base_of(ad, rel), sealed_lines) or []
+    out = []
+    for _k, body in blks:
+        for line in body:
+            if any(name and name in line for name in names):
+                break
+            if line.strip() and line not in out:
+                out.append(line)
+    return out
+
+
+def missing_lines(ad, rel, current):
+    """The non-blank lines of <path>'s sealed blocks that `current` (the
+    worktree's text) no longer holds: what a worker changed or removed."""
+    now = set(lines(current) or [])
+    blks = blocks(base_of(ad, rel), lines(read(sealed_files(ad)[rel])) or []) or []
+    out = []
+    for _k, body in blks:
+        out += [x for x in body if x.strip() and x not in now and x not in out]
+    return out
+
+
 def adds_only(ad, rel):
     """None when the sealed copy only adds lines to its base, else why not."""
     base = base_of(ad, rel)
