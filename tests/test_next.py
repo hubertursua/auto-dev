@@ -316,6 +316,13 @@ class PlanTest(NextCase):
         self.assertIn("- Split: ship shared lists first, then invites", out["REPORT"])
         self.assertIn("- Subsystems: lists (~6 files), invites (~8 files)", out["REPORT"])
 
+    def test_oversized_with_no_size_check_section_points_at_spec_not_a_reply(self):
+        (self.dir / "SPEC.md").write_text(SPEC)
+        self.expect("define", "OVERSIZED", high_risk="yes", reading="none")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("SPEC.md has no Size check section", report)
+        self.assertNotIn("reply", report)  # a worker's reply is its result block alone
+
     def test_a_ticket_asks_before_moving_jira(self):
         state = self.state()
         state["task"]["ticket"] = "TODO-7"

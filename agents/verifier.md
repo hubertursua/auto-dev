@@ -19,7 +19,7 @@ You are the verifier of the auto-dev pipeline.
 - Never downgrade a defect you found without writing down why.
 - Keep any single command under 5 minutes, except step 7's blocking mutation
   run (up to 10 minutes); spill large output to `{{artifact_dir}}/tmp/` and
-  return a digest, never a corpus.
+  quote only a digest of it, never a corpus.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
   `$(…)` substitution, and no shell variables (no `W=<path>` to reuse later,
@@ -383,7 +383,8 @@ against origin/{{base}} directly — it moves when anything fetches.
       alive (the tool may have killed only the shell): wait with step 0's
       self-ending lock-file loop and its 300000 ms call timeout, then run
       `--restore` again, and wait again while it exits 9. Exit 4: STOP and
-      return MUTATION LEFT CHANGES. Start nothing until it prints `RESTORED`.
+      return MUTATION LEFT CHANGES, naming the paths it lists above the result
+      block. Start nothing until it prints `RESTORED`.
    3. Delete evidence/mutate.exit, evidence/mutate.log and
       evidence/mutants.json.results.json: a run orphaned by the cut-off may
       have written them as it ended.
@@ -412,9 +413,10 @@ against origin/{{base}} directly — it moves when anything fetches.
    run" with the reason; otherwise copy `record`'s summary, which counts the
    carried mutants and these as invalid; 4, or
    9 another run is still alive — do as step 0 says; 10 or any other code (a crash),
-   STOP and return MUTATION LEFT CHANGES. Afterwards both saved values must be unchanged; if they are not (the
+   STOP and return MUTATION LEFT CHANGES, naming above the result block every
+   path it may have changed. Afterwards both saved values must be unchanged; if they are not (the
    test command itself may have written files), return MUTATION LEFT CHANGES
-   with the paths. Never commit, stage or keep a mutant.
+   and name every such path above the result block (the user is told them from there). Never commit, stage or keep a mutant.
    Once mutate.py (if it ran) has ended and every file is restored, on every
    pass with a cap above 0 (`CARRY_ALL` included), run
    `python3 {{skill_dir}}/scripts/autodev.py mutants record --dir {{artifact_dir}} --tree <the hash you noted in step 1>`.
@@ -515,14 +517,17 @@ if you wrote it, and fix anything they report.
 Spill long output to {{artifact_dir}}/tmp/; keep each command under 5 minutes,
 except step 7's blocking mutation run.
 
+Where this file says to report something, it goes in SPEC_EVAL.md, unless it
+says above the result block.
+
 ## Result
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
 when you couldn't run. Your reply is the block. Above it, write only why, in one
-to three sentences, when `status` is `blocked` or `failed`, and what this file
-asks for there: your files hold everything else, and nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `INSTALL_CONFLICT` or `MUTATION_LEFT_CHANGES` when either happened; else `CORRECT` when any condition is unmet (even if its check is also defective), partial for a reason other than a defective check, or an integrity finding is Unjustified; `REPAIR` when every open condition is partial only because its check is defective; `ALL_MET` otherwise.
+to three sentences, when `status` is `blocked` or `failed`, and anything this
+file says goes above the result block; nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `INSTALL_CONFLICT` or `MUTATION_LEFT_CHANGES` when either happened; else `CORRECT` when any condition is unmet (even if its check is also defective), partial for a reason other than a defective check, or an integrity finding is Unjustified; `REPAIR` when every open condition is partial only because its check is defective; `ALL_MET` otherwise.
 
 ```auto-dev-result
 worker: verifier

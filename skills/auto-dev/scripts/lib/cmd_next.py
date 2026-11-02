@@ -524,8 +524,8 @@ def size_check(c):
         section = None
     lines = [ln.strip() for ln in (section or "").splitlines() if ln.strip()]
     if not lines:
-        return [("SPEC.md has no Size check section; Define's reply gave the reasons "
-                 f"({c.ad}/SPEC.md).")]
+        return [("SPEC.md has no Size check section; its Context says what the task "
+                 f"touches ({c.ad}/SPEC.md).")]
     return ["Define's size check (SPEC.md):", *lines]
 
 

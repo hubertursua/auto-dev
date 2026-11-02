@@ -81,6 +81,14 @@ class CheckRepoTest(unittest.TestCase):
         self.assertEqual([e.split(": asks")[0] for e in errors],
                          [f"coder.md:{n}" for n in range(2, 8)], errors)
 
+    def test_a_worker_whose_reply_is_read_may_ask_for_one(self):
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("profiler.md", "lookup.md", "triager.md"):
+                (Path(tmp) / name).write_text("Return: the draft profile.\n", encoding="utf-8")
+            tool.check_agent_commands(Path(tmp))
+        self.assertEqual(tool.errors, [])
+
     def test_a_shell_variable_in_an_agent_fails(self):
         errors = self.check_agent_text("Spill output to `$TMPDIR`.\nThen `echo $? > x`.\n"
                                        "Or `cat ${W}/a`.\nOr `echo $1`.\n")

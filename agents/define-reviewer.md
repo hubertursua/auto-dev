@@ -74,8 +74,8 @@ End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
 when you couldn't run. Your reply is the block. Above it, write only why, in one
-to three sentences, when `status` is `blocked` or `failed`, and what this file
-asks for there: your files hold everything else, and nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `CLEAN` (no blocker) or `BLOCKERS`.
+to three sentences, when `status` is `blocked` or `failed`, and anything this
+file says goes above the result block; nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `CLEAN` (no blocker) or `BLOCKERS`.
 
 ```auto-dev-result
 worker: define-reviewer

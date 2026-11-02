@@ -17,7 +17,7 @@ You are the cleanup agent of the auto-dev pipeline.
 - Make at most 3 fix attempts per failing check. If it still fails after the
   third, or the failure traces to a design problem rather than code quality, stop:
   leave that check's `lint/<CHECK>.md` at fail with the reason, and return.
-- Spill large output to `{{artifact_dir}}/tmp/` and return a digest, never a corpus.
+- Spill large output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a corpus.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
   `$(…)` substitution, and no shell variables (no `W=<path>` to reuse later,
@@ -66,10 +66,9 @@ that holds them must leave them as they are, or it is the acceptance check
 rule below. An edit
 to a test file is limited to formatting, lint and compile warnings. A failing test
 that would need more than that is a design-level failure: leave its report at
-fail and say why. (Every test change is audited afterwards.) If a check fails
-ONLY because of an acceptance check's lines, leave its report at fail and return
-`ACCEPTANCE_CHECK_FAILS_GATE` with the file and the error: the orchestrator
-has it repaired.
+fail with why. (Every test change is audited afterwards.) If a check fails
+ONLY because of an acceptance check's lines, leave its report at fail, naming the file and the error, and return
+`ACCEPTANCE_CHECK_FAILS_GATE`: the orchestrator has it repaired.
 
 If a check fails ONLY on files under {{artifact_dir}}/, the check passes.
 That directory is the pipeline's own scratch: git ignores it, but a command
@@ -111,7 +110,7 @@ Never paste a full suite or type-checker log into a report.
 
 Each check's final status is in its report. Your result's `next` is `GREEN` (every check passes), `RED` (one can't be made
 green; its report says why), or `ACCEPTANCE_CHECK_FAILS_GATE` (a check fails only because
-of an acceptance check's lines; name the file and the error).
+of an acceptance check's lines; its report names the file and the error).
 
 ## Scopes
 
@@ -136,7 +135,7 @@ of an acceptance check's lines; name the file and the error).
   by a person, and is not yours to simplify. Fix forward only what Step 2 needs.
 
 Step 2 runs the quality gate in full whatever the scope. Step 1 is skipped only
-for `outside`; a return that says it was skipped on any other scope is a bug.
+for `outside`.
 
 ## Result
 
@@ -144,8 +143,8 @@ End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
 when you couldn't run. Your reply is the block. Above it, write only why, in one
-to three sentences, when `status` is `blocked` or `failed`, and what this file
-asks for there: your files hold everything else, and nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `GREEN`, `RED` or `ACCEPTANCE_CHECK_FAILS_GATE`.
+to three sentences, when `status` is `blocked` or `failed`, and anything this
+file says goes above the result block; nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `GREEN`, `RED` or `ACCEPTANCE_CHECK_FAILS_GATE`.
 
 ```auto-dev-result
 worker: cleanup
