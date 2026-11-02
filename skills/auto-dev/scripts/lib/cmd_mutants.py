@@ -1,9 +1,13 @@
-"""autodev.py mutants select / record — which mutants a verifier re-check runs
-again, and the record of each finished mutation pass.
+"""autodev.py mutants select / record / run / wait — which mutants a verifier
+re-check runs again, the mutation run itself, and the record of each finished
+mutation pass.
 
 Usage:
     autodev.py mutants select [--dir <artifact-dir>] [--json]
     autodev.py mutants record --tree <hash> [--dir <artifact-dir>] [--json]
+    autodev.py mutants run --dir <artifact-dir> [--files <path> ...]
+                           [--new-set | --extended] [--wait <seconds>] [--json]
+    autodev.py mutants wait --dir <artifact-dir> [--wait <seconds>] [--json]
 
 The verifier keeps one fixed set of mutants across its passes
 (`<artifact-dir>/evidence/mutation-set.json`). `record` saves, after each
@@ -61,12 +65,51 @@ record --tree <hash>
                  (`evidence/mutate.exit` missing or not 0, 1 or 8), or this run's
                  results can't be read
 
+run
+    Runs evidence/mutants.json (the mutants the verifier chose to run; `[]`
+    for none) in a runner of its own, in the background, and waits for it up
+    to --wait seconds (default 270). The runner (lib/mutation_run.py):
+    deletes the last run's mutate.exit, mutate.log and results; with
+    --new-set (this pass chose the set) or --extended (it added mutants),
+    saves `git diff <cut>` as evidence/mutation-base.diff; takes the scoped
+    command from the profile's test check (its `files` form on --files, else
+    the check whole) and saves it to evidence/mutation-cmd.txt; sizes the run
+    by one cold run of it (a pass with --new-set always measures; otherwise a
+    number above 0 in evidence/mutation-cold-run.txt is reused), with a
+    per-mutant timeout of 3 x that; runs mutate.py once on mutants.json,
+    again once after leftover backups (restored first), a live run, or an
+    interruption; re-times once when the timeout was likely too short (the
+    baseline timed out; more than half the applied mutants timed out; a
+    survivor of the last finished pass timed out; or, with a reused value, a
+    mutant timed out that the last pass did not record as `timeout`), with a
+    timeout the larger of 3 x the new value and 2 x the old one; checks that
+    `git status` and the change set's diff are as they were; and runs
+    `record --tree <evidence/tree-start.txt>`. It writes
+    evidence/mutation-run.json, which `run` and `wait` print as one token:
+      DONE: the pass is recorded — `record`'s summary and survived lines,
+                 after `cold run:` and any `re-timed once (…)` line
+      RUNNING: the runner is still going; run `mutants wait`
+      INCOMPLETE: `record` found mutants named to run with no result
+      ALL_INVALID: every mutant was invalid; the pass is recorded
+      MALFORMED: mutants.json can't be run as written
+      FAILING: the scoped tests fail on the unmutated code — its output
+      NOT_RUN: <why> — mutation off, interrupted twice, an I/O error, the
+                 baseline timing out after a re-time, the cold run too slow
+      KEPT: the run finished but `record` kept the earlier record
+      LEFT_CHANGES: a file may still hold a mutant, or the tree changed
+                 during the run — the paths
+    A second `run` while a runner is alive starts nothing and waits for it.
+wait
+    Waits up to --wait seconds for the runner, then prints as `run` does.
+
 Exit codes:
-    0  select: a selection is printed; record: RECORDED
+    0  select: a selection is printed; record: RECORDED; run/wait: DONE
     1  record: INCOMPLETE — run the named mutants again in one run, then record
     2  could not run (no or unreadable mutation-set.json, not a git worktree,
        record without --tree) — `ERROR: …`; carry nothing forward
-    3  record: KEPT — nothing recorded
+    3  record: KEPT — nothing recorded; run/wait: RUNNING
+    run/wait also: 1 INCOMPLETE, 4 LEFT_CHANGES, 5 FAILING, 6 NOT_RUN,
+       7 MALFORMED, 8 ALL_INVALID, 9 KEPT
 """
 
 import json
@@ -76,7 +119,8 @@ import re
 import tempfile
 from pathlib import Path
 
-from . import proc, sealed, testfiles
+from . import mutation_run, proc, sealed, testfiles
+from . import state as st
 from .cmd_checks import worktree_of
 from .cmd_work import print_tree
 from .output import CANNOT_RUN, Fail, emit
@@ -97,13 +141,58 @@ EVERY = "every mutant runs again"
 
 
 def add_arguments(parser):
-    parser.add_argument("action", choices=("select", "record"))
+    parser.add_argument("action", choices=("select", "record", "run", "wait"))
     parser.add_argument("--dir", default=".auto-dev", help="the run's .auto-dev/")
     parser.add_argument("--tree", help="record: the tree hash noted at the start of the pass")
+    parser.add_argument("--files", nargs="+", default=None,
+                        help="run: the test files the scoped command runs")
+    chosen = parser.add_mutually_exclusive_group()
+    chosen.add_argument("--new-set", action="store_true",
+                        help="run: this pass chose the set (measure the cold run anew)")
+    chosen.add_argument("--extended", action="store_true",
+                        help="run: this pass added mutants to the set")
+    parser.add_argument("--wait", type=int, default=mutation_run.WAIT,
+                        help="run/wait: seconds to wait for the runner")
 
 
 def main(args):
-    return select(args) if args.action == "select" else record(args)
+    return {"select": select, "record": record, "run": run,
+            "wait": wait}[args.action](args)
+
+
+def show(args, result):
+    """Print the runner's result; its exit code."""
+    token = result["token"]
+    emit(args.json, token, result.get("message", ""), output=result.get("lines", []))
+    return mutation_run.CODES.get(token, CANNOT_RUN)
+
+
+def run(args):
+    ad = Path(args.dir)
+    state = st.load(ad)
+    if not (ad / "evidence" / "tree-start.txt").exists():
+        raise Fail("evidence/tree-start.txt does not exist: run `verify prep` first",
+                   CANNOT_RUN, "ERROR")
+    if not mutation_run.ev(ad, "mutants").exists():
+        raise Fail("evidence/mutants.json does not exist: write the mutants to run "
+                   "(`[]` for none)", CANNOT_RUN, "ERROR")
+    if not state["settings"].get("mutation_max", 20):
+        emit(args.json, "NOT_RUN", "mutation is off (`mutation.max: 0`)")
+        return mutation_run.CODES["NOT_RUN"]
+    files = [str(Path(f)) for f in args.files] if args.files else None
+    mutation_run.start(ad, {"files": files, "new_set": args.new_set,
+                            "extended": args.extended})
+    return wait(args)
+
+
+def wait(args):
+    ad = Path(args.dir)
+    result = mutation_run.wait_for(ad, max(args.wait, 0))
+    if result is None:
+        emit(args.json, "RUNNING", f"the mutation runner is still going; run `mutants "
+             f"wait --dir {ad}` (its log: {mutation_run.ev(ad, 'runner')})")
+        return mutation_run.CODES["RUNNING"]
+    return show(args, result)
 
 
 def git(wt, *args, check=True):

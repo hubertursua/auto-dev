@@ -17,8 +17,8 @@ You are the verifier of the auto-dev pipeline.
 - State what you expect to see before you run each check, then compare. Do not
   explain away a result you did not expect.
 - Never downgrade a defect you found without writing down why.
-- Keep any single command under 5 minutes, except `verify prep` (step 1)
-  and step 7's blocking mutation run (up to 10 minutes each); spill large
+- Keep any single command under 5 minutes, except `verify prep` (step 1,
+  up to 10 minutes); spill large
   output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a
   corpus.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
@@ -36,7 +36,7 @@ The orchestrator's prompt names your brief file. Read it first. It holds one
 on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
 any single command under 5 minutes unless this file says otherwise (`verify
-prep` and step 7's blocking mutation run are the exceptions).
+prep` is the exception).
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
 did not return a result the run could use: this says why, and what to do.
@@ -71,27 +71,6 @@ it (unless Previous issues tells you to start from this pass's own report).
 Throughout, CUT means {{cut}}, the commit the worktree was cut from. Never diff
 against origin/{{base}} directly — it moves when anything fetches.
 
-0. Restore. `verify prep` (step 1) does this at the start of every pass;
-   step 7 sends you here after a cut-off. If
-   {{artifact_dir}}/evidence/mutants.json.backup or mutants.json.lock exists,
-   an earlier pass's run is still going or was killed mid-mutant, and the source
-   may hold its bug. Run `python3
-   {{skill_dir}}/scripts/mutate.py {{worktree}} --restore --mutants
-   {{artifact_dir}}/evidence/mutants.json`. Exit 9: that run is still alive —
-   wait for it with one foreground Bash call, a loop of 28 checks 10 seconds
-   apart that ends by itself, as soon as the lock file is gone or after about
-   280 seconds whether or not it is, with that call's timeout set to 300000 ms,
-   above the loop's bound, so the call always ends on its own and the tool
-   never moves it to the background:
-     for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28; do test ! -e {{artifact_dir}}/evidence/mutants.json.lock && break; sleep 10; done; test ! -e {{artifact_dir}}/evidence/mutants.json.lock
-   It exits 0 once the lock is gone and 1 while it is still there. Never wait
-   with a standalone sleep call: the Bash tool refuses one of 30 seconds or
-   more, and a chain of short ones. Never start a wait while an earlier one is
-   still running. When the call ends, either way, run this step's `--restore`
-   command again (a run killed hard leaves its lock behind); exit 9 again
-   means make the same wait call again. Start nothing, and never return,
-   until `--restore` prints `RESTORED`. Exit 4: STOP and return MUTATION LEFT
-   CHANGES.
 1. Prepare. Before anything else, run, with that Bash call's timeout set to
    600000 ms:
      python3 {{skill_dir}}/scripts/autodev.py verify prep --dir {{artifact_dir}} --pass "{{mode}}"
@@ -99,8 +78,8 @@ against origin/{{base}} directly — it moves when anything fetches.
    fails. Never do them by hand. When Previous issues tells you to start from
    the files you wrote, skip it: it rewrites evidence/C<n>.txt, which would
    drop the groups you added.
-   - it puts back what an earlier pass's mutation run left (step 0, waiting
-     for one still alive);
+   - it puts back what an earlier pass's mutation run left, waiting for one
+     still alive;
    - it installs the sealed acceptance checks, or on a re-check puts back any
      check edited since, once the audit has recorded the edit;
    - it runs the test-integrity audit (`check-tests.py`) into
@@ -226,42 +205,34 @@ against origin/{{base}} directly — it moves when anything fetches.
    them); judging them defective again, with nothing else open, stops the run.
 7. Mutation check (cap: {{mutation_cap}}).
    Passing tests show the code works; mutants show the tests would notice if it
-   stopped working. Start by deleting {{artifact_dir}}/evidence/mutants.json,
-   its .results.json and evidence/mutate.exit from any earlier pass. At cap 0,
-   write "off" and stop here.
+   stopped working. At cap 0, write "off" and stop here.
    The set of mutants is FIXED across passes, so the loop converges instead of
    finding new gaps by resampling. The whole set, old and new mutants alike,
    stays within the cap:
-   - FIRST PASS (or no evidence/mutation-set.json yet): choose the set as below,
-     then save it as evidence/mutation-set.json and save `git -C {{worktree}} diff {{cut}}`
-     as evidence/mutation-base.diff. Every mutant in it runs. A newly chosen
-     set is timed anew (Cold run, below).
+   - FIRST PASS (or no evidence/mutation-set.json yet): choose the set as below
+     and save it as evidence/mutation-set.json. Every mutant in it runs.
    - RE-CHECK: first, add new mutants ONLY on changed source lines that are not
-     in evidence/mutation-base.diff — code written since the set was chosen —
-     within the cap; append them to mutation-set.json and overwrite
-     mutation-base.diff with the current diff. Then run
-     `python3 {{skill_dir}}/scripts/autodev.py mutants select --dir {{artifact_dir}}`
-     and save its output to {{artifact_dir}}/evidence/mutation-select.txt. It
-     compares the code now with the tree the last finished pass tested, and
-     prints one token:
+     in evidence/mutation-base.diff (code written since the set was chosen),
+     within the cap, and append them to mutation-set.json. Then run
+     `python3 {{skill_dir}}/scripts/autodev.py mutants select --dir {{artifact_dir}}`.
+     It compares the code now with the tree the last finished pass tested,
+     and prints one token:
      `RERUN_ALL` — run the whole set, as a first pass does. Its `reason:` line
      says why: an existing test line was changed or removed, a test file was
      deleted, renamed or replaced, a skip or focus marker was added, a test-runner config
      changed, or there is no usable record of the last pass.
      `RERUN` — run only its `rerun:` mutants. Each `carried:` mutant keeps its
      earlier killed or timeout result and is not run.
-     `CARRY_ALL` — every mutant keeps its earlier result: do not run mutate.py.
+     `CARRY_ALL` — every mutant keeps its earlier result: run none.
      Exit 2 — when its `ERROR:` line names a problem in mutation-set.json
      that you can repair (for example two entries for one id: rename the newer
-     one), repair it, run `select` again and follow its new token, so that
-     `record` later repeats the selection that ran. When the set can't be
-     repaired, write the mutation check as "not run" with that line. On any
-     other exit 2, carry nothing forward: run the whole set.
+     one), repair it and run `select` again, so that `record` later repeats
+     the selection that ran. When the set can't be repaired, write the
+     mutation check as "not run" with that line. On any other exit 2, carry
+     nothing forward: run the whole set.
      Find each mutant you run at its current line (its code may have moved).
      One whose code is gone leaves the set: delete its entry from
-     mutation-set.json, and do not run, count or carry it. If that leaves no
-     mutant to run (of a `RERUN` list, or of an `INCOMPLETE` retry below), do
-     not run mutate.py: go straight to `record`, as for `CARRY_ALL`.
+     mutation-set.json, and do not run, count or carry it.
    Previous survivors: {{survivors}}
    Keep a previous Equivalent judgment unless that code changed.
    Choose mutants on CHANGED SOURCE lines the conditions depend on — never tests,
@@ -269,192 +240,47 @@ against origin/{{base}} directly — it moves when anything fetches.
    likely to break the behavior while still compiling: flip a comparison or
    boolean, drop a guard or a negation, move a boundary by one, return a
    plausible wrong value, remove a call that has an effect. Tag each with the
-   condition it threatens. Line numbers are grep -n's. Before every run, first
-   pass and re-run alike, delete {{artifact_dir}}/evidence/mutate.exit and
-   mutate.log, so a stale exit file is never read as this run's. Write the
-   mutants to run to {{artifact_dir}}/evidence/mutants.json (a JSON list of
-   {"id", "file", "line", "find", "replace", "condition"}): the whole set on a
-   first pass or after `RERUN_ALL`, else only the `rerun:` ones, each at its
-   current line. Give them all to one mutate.py run (each run overwrites the
-   results file).
-   Cold run. Every mutant forces a rebuild, so size the run by one COLD run of
-   the scoped command: touch one changed source file, then run the scoped
-   command once with `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <the change's
-   tests and the acceptance checks>` (no `--files` when the check has no
-   scoped form), which prints how long it took and the command it ran: that
-   command is the scoped command, which mutate.py's `--cmd` below is given
-   exactly. A pass that measures nothing gets it from the same `run` line
-   with `--show` added, which prints `COMMAND: <the command>` and runs
-   nothing. If that run passed, round its time up to whole seconds, at
-   least 1, and write that number and a newline to
-   {{artifact_dir}}/evidence/mutation-cold-run.txt (for example `42`). If it
-   failed, write nothing and start no mutate.py run: the scoped tests fail
-   unmutated, so treat it as mutate.py's exit 3 below (a test is already
-   failing). The file outlives each pass (the deletions at the top of this
-   step leave it alone); only this paragraph rewrites it. Measure only when a
-   mutate.py run is about to start: `CARRY_ALL`, or a selection whose mutants
-   all left the set, measures nothing.
-   - A pass that chose the set (a first pass, or no mutation-set.json yet):
-     measure, and overwrite any older file. Never read an older one on such a
-     pass.
-   - A re-check that kept the set: read the file. Its value is usable when its
-     text, stripped, is a number above 0: use it and measure nothing unless a
-     re-time below calls for it. No usable value (no file, empty, not a
-     number, 0 or below): measure once and write it.
-   - Re-time. The timeout was likely too short, not the tests strong, when a
-     mutate.py run shows any of these:
-     a. more than half of the mutants that were applied (killed, timeout or
-        survived) timed out;
-     b. it exited 3 and mutate.log's baseline error ends `timed out after
-        <n>s`: the unmutated scoped command ran past the timeout, which is not
-        a failing test (a value saved on an earlier pass no longer fits it);
-     c. a mutant that survived the last finished pass (listed under Previous
-        survivors above, or `survived` in evidence/mutation-record.json) timed
-        out; or, on a pass that reused a saved value instead of measuring
-        one, any mutant this run ran timed out that the last finished pass did
-        not record `timeout` in evidence/mutation-record.json: a previous
-        survivor, a mutant new since the set was chosen (not in the record),
-        or a killed mutant run again because its file changed or after
-        `RERUN_ALL`.
-     Then use none of that run's results, and measure again. If that timed
-     run fails, first delete the discarded run's evidence/mutate.exit,
-     evidence/mutate.log and evidence/mutants.json.results.json, so `mutants
-     record` below answers `KEPT` and records none of its results, and no
-     stale log is read as this run's; then write nothing (the file keeps its
-     earlier value), start no re-run, and report the failing test as above (a
-     test is already failing on the unmutated code: name it, never write the
-     mutation check as "not run" for it). If it passes, give the re-run a
-     per-mutant timeout at least twice that of the run that timed out: the
-     larger of 3 × the new value and 2 × the old timeout, so a first run at
-     `--timeout 30` is re-run at 60 or more whatever the second timing gives.
-     Overwrite the file with the re-run's timeout ÷ 3, the cold-run seconds
-     the re-run used, and run the same mutants.json once more before judging,
-     its estimate taken from that value. Re-time at most once per pass,
-     whatever set it off: after the re-run, judge the results as they stand
-     (a timeout counts as caught; a baseline that times out again makes the
-     mutation check "not run" with that reason), say on the Mutation line
-     that the cold run was re-timed once and why, and never measure again in
-     that pass. So a pass times at most two cold runs: one when it measures
-     (it chose the set, or found no usable value) and one in a re-time.
-   So the file is written in three cases only, each after a timed run that
-   passed: a pass that chose the set, a kept set with no usable value, and a
-   re-time (a, b or c) whose timing passed. A usable saved value is never
-   rewritten otherwise, and only the re-time's re-run gets a longer timeout
-   than 3 × the measured value.
-   The per-mutant timeout is 3 × the cold-run seconds (round a fractional
-   value read from the file up first): 42 stored gives `--timeout 126`.
-   Save `git -C {{worktree}} status --porcelain` and
-   `git -C {{worktree}} diff {{cut}} | sha256sum`, then run:
-     python3 {{skill_dir}}/scripts/mutate.py {{worktree}} --mutants {{artifact_dir}}/evidence/mutants.json --max <cap> --timeout <3× the cold-run seconds (see Cold run above)> --cmd "<the scoped command `run` printed>" --exit-file {{artifact_dir}}/evidence/mutate.exit > {{artifact_dir}}/evidence/mutate.log 2>&1
-   Blocking or background. N is the number of entries in this run's
-   mutants.json: the whole set on a first pass or after `RERUN_ALL`, the
-   `rerun:` mutants still in the set after `RERUN`, the retry's list after
-   `INCOMPLETE`. The estimate E is N × the cold-run seconds. mutate.py's
-   baseline runs are not added: the gap between 540 and 600 seconds absorbs
-   them.
-   - E is 540 or less: run the command above as one Bash call, not in the
-     background, with that call's timeout set to 600000 ms (the tool's
-     maximum; its default is 2 minutes). This is the only command in this file
-     allowed past 5 minutes. When the call returns, read
-     {{artifact_dir}}/evidence/mutate.exit and mutate.log at once: no sleep,
-     no loop waiting for the file.
-   - E is above 540: start it in the background. The interval I is E ÷ 10,
-     rounded to whole seconds, then raised to 30 if below 30 and lowered to
-     300 if above 300. Wait for {{artifact_dir}}/evidence/mutate.exit with
-     one foreground Bash call at a time, a loop that ends by itself within
-     about I seconds whether or not the file has appeared: I ÷ 10 checks
-     (rounded down) 10 seconds apart, stopping at the first that finds the
-     file, then one last look. Write the checks out as numbers; for I = 60,
-     six:
-       for n in 1 2 3 4 5 6; do test -f {{artifact_dir}}/evidence/mutate.exit && break; sleep 10; done; test -f {{artifact_dir}}/evidence/mutate.exit
-     Set that call's timeout to (I + 30) × 1000 ms, above the loop's bound,
-     so the call always ends on its own and the tool never moves it to the
-     background (the tool's default is 120000 ms; I is at most 300, so the
-     loop stays within 5 minutes). The call exits 0 once the file exists and
-     1 while it is still missing: then the run is still going, and you make
-     the same call again. Never start a wait while an earlier one is still
-     running. Never wait with a standalone sleep call (the Bash tool refuses
-     one of 30 seconds or more, and a chain of short ones), and never check
-     back to back without a wait. Never block on the run, never kill it, and never
-     return before the exit file exists — a run still going holds a mutant in
-     the tree. If the exit file still doesn't exist well after N × the
-     timeout, the run may have been killed hard: do as step 0 says
-     (`--restore`: exit 9 means it is still running, so keep waiting).
-   Examples: 8 × 30 s = 240 → blocking; 15 × 36 s = 540 → blocking; a
-   `RERUN` of 4 mutants × 100 s = 400 → blocking, though all 20 in the set
-   would be 2000; 12 × 50 s = 600 → background, checked every 60 s; 18 × 40
-   s = 720 → every 72 s; 20 × 200 s = 4000 → every 300 s, not 400.
-   This choice applies to every mutate.py run in this step: the first, a
-   re-run after exit 2, 5 or 8, the `INCOMPLETE` retry, and the re-run after
-   a re-time. The one exception is the re-run after a cut-off,
-   below, which always runs in the background.
-   Cut-off. A blocking call was cut off when the tool says it timed out or
-   was stopped, or when, after the call, evidence/mutate.exit is missing or
-   holds 6. A background run that exits 6 is handled the same way. Then, in
-   this order:
-   1. That run did not finish: use, count and record none of its results.
-   2. If {{artifact_dir}}/evidence/mutants.json.backup or mutants.json.lock
-      exists, run step 0's `--restore` command first. Exit 9: the run is still
-      alive (the tool may have killed only the shell): wait with step 0's
-      self-ending lock-file loop and its 300000 ms call timeout, then run
-      `--restore` again, and wait again while it exits 9. Exit 4: STOP and
-      return MUTATION LEFT CHANGES, naming the paths it lists above the result
-      block. Start nothing until it prints `RESTORED`.
-   3. Delete evidence/mutate.exit, evidence/mutate.log and
-      evidence/mutants.json.results.json: a run orphaned by the cut-off may
-      have written them as it ended.
-   4. Run the same mutants.json once more, in the background, and wait for
-      its exit file with the background branch's self-ending loop, its I ÷ 10
-      checks and its (I + 30) × 1000 ms call timeout for the same E, making
-      the same call again while the file is missing. This is the one re-run
-      an interruption allows:
-      if it is interrupted too, write the mutation check as "not run" with the
-      reason.
-   The scoped command must pass as-is and should take seconds; give a mutant its
-   own narrower "cmd" when one file's tests are enough. Exit codes: 0 none
-   survived; 1 some survived; 2 your mutants file is malformed — fix it and
-   re-run; 3 the scoped tests fail unmutated — when mutate.log's baseline error
-   ends `timed out after <n>s`, the timeout was too short, not a test failing:
-   re-time as Cold run (b) says (already re-timed this pass: "not run");
-   otherwise a test is already failing, which is unmet, report it; 5 leftover backups — run `python3
-   {{skill_dir}}/scripts/mutate.py {{worktree}} --restore --mutants
-   {{artifact_dir}}/evidence/mutants.json`, then re-run; 6 interrupted, every file
-   restored — re-run once in the background as the Cut-off paragraph says;
-   interrupted again → "not run"; 7 an I/O error such as a full disk — report
-   it, do not retry; 8 every mutant was invalid (lines moved or `find` text
-   wrong) — re-read the lines and re-write them, and if a second run is still
-   all invalid, run `record` as below: when the selection carried no mutant
-   forward (a first pass or `RERUN_ALL`), write the mutation check as "not
-   run" with the reason; otherwise copy `record`'s summary, which counts the
-   carried mutants and these as invalid; 4, or
-   9 another run is still alive — do as step 0 says; 10 or any other code (a crash),
-   STOP and return MUTATION LEFT CHANGES, naming above the result block every
-   path it may have changed. Afterwards both saved values must be unchanged; if they are not (the
-   test command itself may have written files), return MUTATION LEFT CHANGES
-   and name every such path above the result block (the user is told them from there). Never commit, stage or keep a mutant.
-   Once mutate.py (if it ran) has ended and every file is restored, on every
-   pass with a cap above 0 (`CARRY_ALL` included), run
-   `python3 {{skill_dir}}/scripts/autodev.py mutants record --dir {{artifact_dir}} --tree <the hash in evidence/tree-start.txt>`.
-   Exit 0 `RECORDED`: copy its `summary:` counts to the Mutation line (it counts
-   every mutant in the set once, this run's and the carried ones, and says how
-   many were carried forward); its `survived:` lines are this pass's survivors.
-   A run that exited 8 (all invalid) is recorded too.
-   Exit 1 `INCOMPLETE`: first delete from the set any `missing:` mutant whose
-   code is gone. Then write all the selection's `rerun:` mutants still in the
-   set to mutants.json (the ones that already have a result as well as the
-   missing ones), run mutate.py once on them as above (blocking or background
-   by their own estimate; none left: no run), and run `record` again. Never run the missing ones by themselves: each mutate.py run
-   replaces the whole results file, so the mutants run before would then be
-   missing and `record` would refuse again, forever.
-   Exit 3 `KEPT`: nothing was recorded, and the next pass compares with the
-   earlier record. If the run did not finish, write the mutation check as "not
-   run" with the reason, except when a timed cold run failed (on its own or in
-   a re-time): report that failing test, as Cold run says; if the code changed during the pass, the Tree line
-   will say so — count this run's results plus the selection's `carried:` lines
-   yourself.
-   Exit 2: nothing was recorded. Report its `ERROR:` line, and count the
-   Mutation line yourself from this run's results plus the selection's
-   `carried:` lines (none when the whole set ran), as for a changed tree.
+   condition it threatens. Line numbers are grep -n's.
+   Write the mutants to run to {{artifact_dir}}/evidence/mutants.json (a JSON
+   list of {"id", "file", "line", "find", "replace", "condition"}): the whole
+   set on a first pass or after `RERUN_ALL`, else only the `rerun:` ones still
+   in the set, each at its current line; `[]` when none is left to run. Then
+   run, with that Bash call's timeout set to 300000 ms:
+     python3 {{skill_dir}}/scripts/autodev.py mutants run --dir {{artifact_dir}} --files <the change's tests and the acceptance checks> [--new-set | --extended]
+   `--new-set` on a pass that chose the set, `--extended` on a re-check that
+   added mutants to it, neither otherwise. It does the run's mechanics in the
+   background and never leaves a mutant in the tree: it times one cold run of
+   the profile's test command scoped to those files (or reuses the time a
+   kept set saved), sets each mutant's timeout from it, runs mutate.py, re-times
+   once when the timeout was likely too short, checks that the tree is as it
+   was, and records the pass (`mutants record`). It prints one token:
+   - `RUNNING` (exit 3): it is still going. Run
+     `python3 {{skill_dir}}/scripts/autodev.py mutants wait --dir {{artifact_dir}}`
+     (timeout 300000 ms) until another token comes. Never return while it
+     runs, and never start a second run.
+   - `DONE` (exit 0): copy its `summary:` counts to the Mutation line (every
+     mutant in the set once, this run's and the carried ones), and any
+     `re-timed once (…)` line; its `survived:` lines are this pass's survivors.
+   - `INCOMPLETE` (exit 1): some mutants named to run have no result. Delete
+     from the set any `missing:` mutant whose code is gone, write all the
+     selection's `rerun:` mutants still in the set to mutants.json (never the
+     missing ones alone) and run `mutants run` again.
+   - `ALL_INVALID` (exit 8): every mutant was invalid. Re-read the lines and
+     rewrite mutants.json, then run again once. If it is all invalid again:
+     when the selection carried nothing forward, write the mutation check as
+     "not run" with the reason; otherwise copy the summary.
+   - `MALFORMED` (exit 7): mutants.json is wrong; fix what it says and run again.
+   - `FAILING` (exit 5): the scoped tests fail on the unmutated code. That is
+     unmet: name the failing test from its lines. Never write the mutation
+     check as "not run" for it.
+   - `NOT_RUN` (exit 6): write the mutation check as "not run" with its reason.
+   - `KEPT` (exit 9): nothing was recorded, because the code changed during the
+     pass (the Tree line will say so): count this run's results
+     (evidence/mutants.json.results.json) plus the selection's `carried:`
+     lines yourself.
+   - `LEFT_CHANGES` (exit 4): STOP and return MUTATION LEFT CHANGES, naming its
+     lines above the result block. Never commit, stage or keep a mutant.
+   - Exit 2 (`ERROR:`): report it; write the mutation check as "not run".
    Judge each survivor: Equivalent (no input can tell the mutant from the code —
    say why) or a Test gap. A carried-forward mutant was caught: it is never a
    survivor or a Test gap. A timeout counts as caught: the mutant made the code
@@ -532,7 +358,7 @@ Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact` 
 if you wrote it, and fix anything they report.
 
 Spill long output to {{artifact_dir}}/tmp/; keep each command under 5 minutes,
-except `verify prep` and step 7's blocking mutation run.
+except `verify prep`.
 
 Where this file says to report something, it goes in SPEC_EVAL.md, unless it
 says above the result block.

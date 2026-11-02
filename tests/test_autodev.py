@@ -2583,6 +2583,14 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertIn("ok  keeps the due date", self.evidence("acceptance.txt"))
         self.assertIn("runner.py tests\n", self.evidence("C1.txt"))
 
+    def test_a_live_mutation_runner_is_waited_for(self):
+        self.write(".auto-dev/evidence/mutation-run.lock", f"{os.getpid()}\n")
+        r = self.verify("prep", "--wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("STILL_RUNNING: "), r.stdout)
+        (self.ad / "evidence" / "mutation-run.lock").write_text("999999999\n")
+        self.assertEqual(self.verify("prep", "--wait", "0").returncode, 0)
+
     def test_tree_compares_with_the_tree_prep_noted(self):
         self.assertEqual(self.verify("tree").returncode, 2)  # no prep yet
         self.assertEqual(self.verify("prep").returncode, 0)
@@ -2594,6 +2602,161 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("TREE_CHANGED: "), r.stdout)
         self.assertIn("  changed: src/todo.ts", r.stdout)
+
+
+# The fake test command for MutationRunTest: fails when `limit < 5` is gone
+# (so M1 is killed), never looks at `count + 1` (M2 survives), sleeps 4 s when
+# the code says SLEEP, and with MUT_WRITE set leaves a new file each run.
+MUT_CHECK = """\
+import os, sys, time
+code = open("src/calc.txt").read()
+if os.environ.get("MUT_WRITE") or os.path.exists("write-files"):
+    open("out-%d.txt" % time.time_ns(), "w").close()
+if "SLEEP" in code:
+    time.sleep(4)
+if "BROKEN" in code:
+    sys.exit(1)
+sys.exit(0 if "limit < 5" in code else 1)
+"""
+MUT_RUN_SET = [
+    {"id": "M1", "file": "src/calc.txt", "line": 1, "find": "limit < 5",
+     "replace": "limit <= 5", "condition": "1"},
+    {"id": "M2", "file": "src/calc.txt", "line": 2, "find": "count + 1",
+     "replace": "count - 1", "condition": "1"},
+]
+
+
+class MutationRunTest(unittest.TestCase):
+    """`autodev.py mutants run|wait`: the verifier's mutation run, scripted."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wt = self.tmp / "app"
+        self.ad = self.wt / ".auto-dev"
+        self.wt.mkdir()
+        self.git("init", "-q", "-b", "main")
+        self.write("src/calc.txt", "if (limit < 5) return;\nreturn count + 1;\nfast\n")
+        self.write("check.py", MUT_CHECK)
+        self.write(".gitignore", "out-*.txt\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "init")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.write(".auto-dev/.gitignore", "*\n")
+        py = shlex.quote(sys.executable)
+        self.state(mutation_max=20, files=f"{py} check.py <files>", command=f"{py} check.py")
+        self.write("src/calc.txt", "if (limit < 5) return;\nreturn count + 1;\nfast\n// changed\n")
+        tree = subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"), "--print-tree",
+                               str(self.wt)], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        self.write(".auto-dev/evidence/tree-start.txt", tree + "\n")
+        self.mutants(MUT_RUN_SET)
+
+    def state(self, mutation_max, files, command):
+        self.write(".auto-dev/state.json", json.dumps({
+            "schema": 4, "worktree": str(self.wt), "repo": {"base": "main"},
+            "settings": {"mutation_max": mutation_max, "gate": [
+                {"kind": "test", "command": command, "report": "TEST.md", "files": files}]}}))
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.wt), *args], env=BASE_ENV,
+                              capture_output=True, text=True, check=True).stdout
+
+    def write(self, rel, text):
+        path = self.wt / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def mutants(self, entries, to_run=None):
+        self.write(".auto-dev/evidence/mutation-set.json", json.dumps(entries))
+        self.write(".auto-dev/evidence/mutants.json",
+                   json.dumps(entries if to_run is None else to_run))
+
+    def evidence(self, name):
+        return (self.ad / "evidence" / name).read_text()
+
+    def mutants_cmd(self, *args):
+        return subprocess.run([sys.executable, str(AUTODEV), "mutants", *args, "--dir",
+                               str(self.ad)], capture_output=True, text=True,
+                              cwd=self.tmp, env=BASE_ENV, check=False)
+
+    def test_a_new_set_is_timed_run_and_recorded(self):
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("DONE: "), r.stdout)
+        self.assertIn("cold run: 1s, measured", r.stdout)
+        self.assertIn("killed", r.stdout)
+        self.assertIn("survived: M2 src/calc.txt:2", r.stdout)
+        self.assertEqual(self.evidence("mutation-cold-run.txt"), "1\n")
+        self.assertIn("// changed", self.evidence("mutation-base.diff"))
+        self.assertTrue(self.evidence("mutation-cmd.txt").strip().endswith("check.py check.py"))
+        record = json.loads(self.evidence("mutation-record.json"))
+        self.assertEqual({r["id"]: r["status"] for r in record["results"]},
+                         {"M1": "killed", "M2": "survived"})
+        # The source is as it was.
+        self.assertIn("limit < 5", (self.wt / "src" / "calc.txt").read_text())
+
+    def test_run_returns_while_the_runner_goes_on_and_wait_gets_the_result(self):
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set", "--wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("RUNNING: "), r.stdout)
+        r = self.mutants_cmd("wait", "--wait", "60")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("DONE: "), r.stdout)
+
+    def test_a_kept_set_reuses_the_saved_cold_run(self):
+        self.write(".auto-dev/evidence/mutation-cold-run.txt", "7\n")
+        r = self.mutants_cmd("run", "--files", "check.py")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("cold run: 7s, saved by an earlier pass", r.stdout)
+        self.assertEqual(self.evidence("mutation-cold-run.txt"), "7\n")
+        self.assertFalse((self.ad / "evidence" / "mutation-base.diff").exists())
+
+    def test_a_timeout_that_was_too_short_is_retimed_once(self):
+        slow = [{"id": "M3", "file": "src/calc.txt", "line": 3, "find": "fast",
+                 "replace": "SLEEP", "condition": "1"}]
+        self.mutants(slow)
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("re-timed once (1 of 1 applied mutants timed out): timeout now 6s",
+                      r.stdout)
+        self.assertEqual(self.evidence("mutation-cold-run.txt"), "2\n")
+        self.assertIn("survived: M3", r.stdout)
+
+    def test_tests_failing_unmutated_are_reported_not_timed(self):
+        self.write("src/calc.txt", "BROKEN\n")
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 5, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("FAILING: "), r.stdout)
+        self.assertFalse((self.ad / "evidence" / "mutation-cold-run.txt").exists())
+
+    def test_a_test_command_that_changes_the_tree_is_left_changes(self):
+        self.write(".gitignore", "")
+        (self.wt / "write-files").write_text("")
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("LEFT_CHANGES: "), r.stdout)
+        self.assertIn("out-", r.stdout)
+
+    def test_nothing_to_run_only_records(self):
+        # M1 is killed, so a re-check of the same code carries it forward.
+        self.mutants(MUT_RUN_SET[:1])
+        first = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.mutants(MUT_RUN_SET[:1], to_run=[])
+        r = self.mutants_cmd("run", "--files", "check.py")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("no mutant to run", r.stdout)
+        self.assertIn("1 carried forward", r.stdout)
+
+    def test_mutation_off_or_no_prep_does_not_run(self):
+        py = shlex.quote(sys.executable)
+        self.state(mutation_max=0, files=None, command=f"{py} check.py")
+        r = self.mutants_cmd("run")
+        self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("NOT_RUN: "), r.stdout)
+        (self.ad / "evidence" / "tree-start.txt").unlink()
+        self.assertEqual(self.mutants_cmd("run").returncode, 2)
 
 
 class CliTest(unittest.TestCase):
