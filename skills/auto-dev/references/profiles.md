@@ -200,9 +200,11 @@ Guidance to show (adapt the paths):
 >   path instead). With the Bash sandbox on, add that folder to `allowWrite`
 >   too.
 >
-> **Let this repo's own commands go without asking.** Add its setup and
-> quality-gate commands to the main checkout's `.claude/settings.local.json`
-> (not committed; it applies only to this repo):
+> **To run this repo's own commands yourself without prompts** (a run doesn't
+> need these: setup runs in `autodev.py init`, and workers run the gate
+> through `autodev.py run`), add its setup and quality-gate commands to the
+> main checkout's `.claude/settings.local.json` (not committed; it applies
+> only to this repo):
 >
 > ```json
 > {

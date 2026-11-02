@@ -7,7 +7,9 @@ request. It stops to ask you only at a few gates, chiefly before it opens the
 PR and before it merges ([*Human gates*](#human-gates--integrations)).
 
 Each job goes to a purpose-built **worker** (a subagent), and the workers hand
-structured artifacts to each other through a `.auto-dev/` scratch directory. It is **stack-agnostic**: it ships no stack profile. On the first run
+structured artifacts to each other through a `.auto-dev/` scratch directory.
+
+It is **stack-agnostic**: it ships no stack profile. On the first run
 in a repo it researches the setup and quality-gate commands, confirms them with
 you and can save them for later runs. Jira and CI are optional; each is
 detected automatically and skipped when absent.
@@ -97,7 +99,8 @@ shared memory. It doesn't choose the order of steps either: it runs
 `autodev.py next`, does the one action printed, and runs it again. It doesn't
 judge the build or write correction briefs; the workers that found a problem
 write those, and the orchestrator passes them on unedited. It never reads the
-code or the spec either: a `lookup` worker answers its questions in a line.
+code (a `lookup` worker answers its questions in a line), and it sees the spec
+only as the parts `pr-write.md` quotes for the PR description.
 The run's history lives in `.auto-dev/state.json`, which only `autodev.py`
 writes, and each judge is a fresh worker that sees only what its brief names.
 
@@ -154,15 +157,16 @@ weakening them. Verification is built around that:
 - **An independent verifier that runs things.** After cleanup, a fresh
   verifier **runs** the checks, without seeing the plan or the coder's report.
   Each condition gets a verdict and an evidence tier:
-  - **Strong:** the checks pass, cover the example and edge case, and their
-    run on the old code, saved before the build, showed what it should (a
-    check for new behavior failing for the right reason).
+  - **Strong:** the checks pass, cover the example and edge case at the level
+    the spec asks, and their run on the old code, saved before the build,
+    showed what it should (a check for new behavior failing for the right
+    reason).
   - **Adequate:** the checks pass, and for what they don't prove, the
     verifier ran something itself and saw what it predicted.
   - **Weak:** a code citation, which never counts as met.
 
-  A check repaired after the build can't be re-run on the old code, so its
-  condition is Adequate at most. A condition no agent can observe is handed
+  A repaired check can't be re-run on the old code, so its condition is
+  Adequate at most. A condition no agent can observe is handed
   to you at the PR gate as a manual check. The routine steps of each pass are
   one script call (`autodev.py verify prep`), so the verifier spends its turns
   on the judging (`agents/verifier.md`).
@@ -176,18 +180,22 @@ weakening them. Verification is built around that:
   file afterwards. A planted bug no test catches, on a line a condition
   depends on, is a test gap and goes back to the coder. The bugs are chosen
   once and kept for every pass: at most 20 in all, set by `mutation.max` in
-  `.auto-dev.yml` (`0` turns it off). A re-check runs again only the ones a
-  change since the last pass could affect, and `autodev.py mutants run` runs
-  them in the background, sized by a timed test run
+  `.auto-dev.yml` (`0` turns it off). A re-check runs again the mutants no
+  test caught, those in files changed since the last pass, and new ones; the
+  rest keep their result, unless an existing test was edited or deleted, a
+  skip or focus marker was added, or the runner config changed, which re-runs
+  them all. `autodev.py mutants run` runs them in the background, sized by a
+  timed test run
   (`skills/auto-dev/scripts/lib/cmd_mutants.py`, `lib/mutation_run.py`).
 - **Upstream mistakes go to their owner.** Later work may show that the spec,
   the plan or a held-out check is wrong. The worker that found it can only
-  file a proposal (`skills/auto-dev/templates/PROPOSAL.md`,
-  `CODER_PROPOSAL.md`), and only that artifact's owner may change it: the
+  propose a change (a proposal file, `skills/auto-dev/templates/PROPOSAL.md`
+  or `CODER_PROPOSAL.md`, or, for a check, a finding the tester rules on),
+  and only that artifact's owner may change it: the
   Define agent for `SPEC.md`, the planner for the plan's steps, the acceptance
   tester for a check. The owner applies it or rules that it stands, with a
-  reason, and `record` holds the artifact to that ruling. An applied change
-  is redone downstream before anything relies on it: the plan, only the
+  reason, and `record` holds the artifact to that ruling. An applied spec
+  change is redone downstream before anything relies on it: the plan, only the
   changed conditions' checks, the code, then cleanup and a full verifier
   pass, and in Phase 6 a re-review. The coder is told only `repaired` or
   `stands` for its own proposals, never an owner's reason. If a proposal
@@ -328,8 +336,8 @@ Planning and build run unattended. The pipeline pauses for approval:
   `gates.post_plan`).
 
 Four more pauses fire only when their situation arises: the **profile
-confirmation** (a repo with no saved profile and no `.auto-dev.yml` that
-declares one), the **Jira In Progress confirmation** (only with a ticket, once
+confirmation** (a repo with no valid saved profile and no `.auto-dev.yml`
+that declares one), the **Jira In Progress confirmation** (only with a ticket, once
 the size check says the task fits), the **deviation gate** (below), and the
 **worktree cleanup offer** (after the final report; never for a worktree you
 made).
@@ -489,7 +497,7 @@ works in a worktree next to your repo, so both need rules too. Add these to
   Bash sandbox on, also add that parent folder to `allowWrite`.
 
 `autodev.py init` runs the setup commands and `autodev.py run` the gate, so
-the `autodev.py` rule covers a run. To run the profile's commands yourself
+the `autodev.py` rule covers the profile's commands during a run. To run the profile's commands yourself
 without prompts, add them to the main checkout's `.claude/settings.local.json`
 (or to the worktree you made, when the run started in one), which applies to
 that repo only. Example in TypeScript:
@@ -628,7 +636,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `acceptance/` | Phase 3 (the tester; its repairs in Phases 4–6) | the sealed held-out checks (`files/<path>.sealed`, with `<path>.base`, the file a check adds to, and `<path>.installed`, that file as it was with the check whole), their `MANIFEST.md`, their runs on the old code (`base-run/`), `INSTALLED` once `next` puts the checks in, and `AMBIGUOUS.md`, a condition the tester found reads two ways |
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
 | `lint/` | Phase 5 | one report per quality-gate check |
-| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and what it ran: `verify prep`'s audit, change set, acceptance run and starting tree (`evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`) and one evidence file per condition (`evidence/C<n>.txt`); its required changes (`evidence/corrections.md`); and the mutation run's files, which `autodev.py mutants` writes and keeps across passes (`evidence/mutation-set.json`, `mutants.json`, `mutation-*`, `mutate.*`) |
+| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and what it ran: `verify prep`'s audit, change set, acceptance run and starting tree (`evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`) and one evidence file per condition (`evidence/C<n>.txt`); its required changes (`evidence/corrections.md`); the mutants it chose (`evidence/mutation-set.json`) and runs this pass (`mutants.json`); and the files `autodev.py mutants` writes and keeps across passes (`mutation-*`, `mutate.*`) |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports and their merged list (`review/pass-<n>/findings.md`), the re-votes (`VOTES-R<k>.md`), the judge's calls (`JUDGMENT.md`), the code review built from them (with the report as it stood before the pass, `CODE_REVIEW.before.md`), the security review, and the review's required changes for the coder (`review/pass-<n>/corrections.md`, `review/security-corrections.md`) |
 | `pr-body.md`, `pr-write.md`, `pr-output-comment.md` | Phase 6 | the generated PR description; the sections of it the orchestrator writes (the Summary, the Assumptions, a template section), with the text they draw on, which `pr publish` puts into the description; and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments, and the comments about a held-out check, for the tester (`human-<n>-checks.md`) |
@@ -647,8 +655,8 @@ Autonomous but bounded:
   that pays for that coder run, covering the owners' rulings and the coder's
   next run; a result that is also `BLOCKED` still costs one. When the budget
   runs out the run stops and names what is still open, except for review
-  findings before the PR opens: those go to the PR gate, which names each
-  one, and you decide. To go on after a stop, say how many more rounds you
+  findings before the commit: those go to the PR gate, which names each one,
+  and you decide. To go on after a budget stop, say how many more rounds you
   want (1 to 10): the run adds them and carries on from the step that
   stopped. It never adds rounds unasked.
 - **A later step can only propose a spec change.** Only the verifier, the
@@ -684,7 +692,7 @@ Autonomous but bounded:
   protection.
 
 Some stops last until you fix the cause and say `auto-dev continue`: a stop on
-a worker (it didn't return ok twice running, or never left a usable
+a worker (it stopped or failed twice running, or never left a usable
 result), a refused `pr publish`, and red CI the code can't fix. A push to the PR
 branch stops the run until you bring those commits into the worktree, where
 they are checked again. A stop on a result (a red gate, an impossible spec, a

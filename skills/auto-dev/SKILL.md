@@ -164,8 +164,9 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Your read-and-answer lookups | `auto-dev:lookup` | `sonnet` · medium |
 
 To change a worker's model, edit its `agents/<name>.md` frontmatter, this
-table and README.md's _Models and effort_ table together. The one per-run override is the code reviewers'
-effort, which the plan sets (the `EFFORT` line of rule 3).
+table and README.md's _Models and effort_ table together. The one per-run
+override is the code reviewers' effort, which the plan sets (the `EFFORT`
+line of rule 3).
 
 ## Reading discipline
 

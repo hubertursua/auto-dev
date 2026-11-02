@@ -65,7 +65,7 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 10 | the quality gate can't be made green | cleanup returns `RED` |
 | 11 | the mutation step may have left a planted change in the source | verifier returns `MUTATION_LEFT_CHANGES` |
 | 12 | the budget ran out (consumers 1–3; 4 and 5 after the commit). Lifted when the user adds rounds (`budget raise`, above) | `next`, per the table above |
-| 13 | a report is stale again right after its own re-run | `check-fresh`, inside `next` |
+| 13 | a report is stale again right after its own re-run (lifted by `auto-dev continue`) | `check-fresh`, inside `next` |
 | 14 | no code reviewer wrote a usable report, twice | `next` |
 | 15 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
 | 16 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), infrastructure (`INFRA`), a flaky test (`FLAKY`) or no clear cause (`UNKNOWN`). Reported before Jira moves to In Review. Lifted by `auto-dev continue` once the cause is fixed and CI re-run: CI is watched again | triager's CI mode |
@@ -170,6 +170,5 @@ instead of reading it. It answers only these kinds of question:
 It never judges whether anything is right. To ask one:
 
 1. `autodev.py brief lookup --set question='<the question>' --dir <artifact-dir>`
-   (no single quote inside the question: rephrase, or use ’)
 2. Spawn the agent it names with the prompt it prints.
 3. Nothing to record: the next `next` you run records it.
