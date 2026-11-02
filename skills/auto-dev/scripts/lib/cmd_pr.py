@@ -236,10 +236,12 @@ def generate(state, ad, sha):
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
     # What generate copies word for word outside a region, as it shows it: a
     # checkbox's title (SPEC.md's own words, kept outside so ticking it leaves
-    # the region whole) and each gate command. The lint skips each one.
+    # the region whole) and each gate command, as clean() left it in the text.
+    # The lint skips each one.
+    copied = {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} | \
+        {f"`{g['command']}`" for g in state["settings"].get("gate", [])}
     state["phase6"]["verbatim"] = sorted(
-        {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} |
-        {f"`{g['command']}`" for g in state["settings"].get("gate", [])})
+        {s for s in (clean(x, wt) for x in copied) if s.strip("*`") and s in text})
     # The headings pr-write.md is written with: splice takes no others.
     state["phase6"]["slots"] = [h for h, b in split_sections(text) if h and WRITE_RE.search(b)]
     path = ad / "pr-body.md"

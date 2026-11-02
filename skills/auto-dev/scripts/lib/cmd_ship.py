@@ -593,7 +593,7 @@ def lint_body(text, state, checklist=True):
                         f"commit {verified}")
     prose = unquoted(text, state.get("phase6", {}).get("quoted", []))
     for copied in state.get("phase6", {}).get("verbatim", []):
-        prose = prose.replace(copied, "")
+        prose = prose.replace(copied, " ")
     if ARTIFACTS in prose:
         problems.append("names a .auto-dev/ path, which nobody else can open")
     own = run_ids(state.get("artifact_dir"))

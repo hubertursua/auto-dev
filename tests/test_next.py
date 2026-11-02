@@ -1586,6 +1586,21 @@ class ShipTest(NextCase):
         self.assertIn("<!-- WRITE:", body.read_text())
         self.assertIn("quoted", self.state()["phase6"])
 
+    def test_a_body_written_before_titles_were_skipped_is_written_again(self):
+        # A run stopped on 4.21.0, whose description left a review's reason
+        # outside a quoted region, gets a fresh one on resume instead of the
+        # same refusal.
+        _sha, _url, _out, body = self.to_body()
+        state = self.state()
+        del state["phase6"]["verbatim"]
+        self.write_state(state)
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        self.resume()
+        self.assertIn(str(body), self.next(0)["ACTION"])
+        self.assertIn("<!-- WRITE:", body.read_text())
+        self.assertIn("verbatim", self.state()["phase6"])
+
     def merge_ready(self, first=()):
         sha, _ = self.open_pr(first=first)
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
