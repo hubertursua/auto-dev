@@ -161,5 +161,4 @@ It never judges whether anything is right. To ask one:
 
 1. `autodev.py brief lookup --set question="<the question>" --dir <artifact-dir>`
 2. Spawn the agent it names with the prompt it prints.
-3. Run `next` as usual: it records the lookup's result (a brief with no result
-   file is issued again).
+3. Nothing to record: the next `next` you run records it.

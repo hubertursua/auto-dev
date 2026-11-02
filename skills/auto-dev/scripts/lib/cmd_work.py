@@ -36,7 +36,8 @@ brief lookup --out <dir> --set worktree=<repo> --set question="<question>"
 
 record <worker> <n>
     `next` does this itself, before it decides, for every issued brief whose
-    result file exists; run it by hand only to see a result's verdict.
+    result file exists; run it by hand to record one result now and see its
+    verdict, as `next` would.
     Reads returns/<worker>-<n>.json and checks it: `status` is ok, blocked or
     failed; `next`, when given, is one the worker may return; with status ok,
     every key of the worker's `auto-dev-result` block is present. Then, for an

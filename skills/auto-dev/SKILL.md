@@ -99,7 +99,7 @@ Its exit code says what kind of step it is:
 
 | Exit | Meaning | Do |
 |---|---|---|
-| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned. A command in backticks: run it. Then the `AFTER` lines |
+| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned (not on the first agent's notification). A command in backticks: run it. Then the `AFTER` lines |
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed, and stop. Do nothing more |

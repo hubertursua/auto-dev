@@ -15,10 +15,14 @@ can resume on the new one. Newest first. The current version is in
   counts as before. A spawn action no longer prints `AFTER: autodev.py record
   …` lines: the orchestrator spawns, waits for every agent to return, and runs
   `next`. That saves one orchestrator turn per worker, a fifth of a run's turns.
-  A brief with no result file is still issued again as it is. `autodev.py
-  record` stays, for a lookup or by hand.
+  A brief with no result file is still issued again as it is, so a worker
+  that wrote none is no longer told so in its brief (`record` used to refuse
+  it as `MISSING`). `next --explain` records nothing: with a result waiting, it
+  says `next` would record it first. `autodev.py record` stays, to record one
+  result by hand.
 - **Resume:** a run in flight resumes. A session that already ran `record` for
-  a result is fine: `next` sees it recorded.
+  a result is fine: `next` sees it recorded. A result written before a session
+  was cut off is now recorded on resume rather than its worker spawned again.
 
 ## Upgrading from 4.14
 

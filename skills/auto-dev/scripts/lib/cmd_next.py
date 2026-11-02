@@ -110,7 +110,7 @@ stopped; resuming after a checkpoint lifts no stop, since nothing was fixed in
 between.
 
 A brief issued but not yet recorded is re-issued as the same spawn (after a
-cut-off session, say); one `record` refused is re-issued as a new brief that
+cut-off session, say); one `next` refused is re-issued as a new brief that
 carries the refused issues (as `brief --retry <n>` writes). Spawned three
 times with no usable result, it stops. A stop on a worker (blocked, failed
 twice, never returned) lasts until `resume`: after the user fixes the cause,
@@ -194,6 +194,7 @@ class Ctx:
         self.wt = self.state["worktree"]
         self.p6 = self.state.setdefault("phase6", {})
         self.dirty = False
+        self.recorded = False  # results `next` recorded this call, saved even on a stop
         self.readonly = bool(getattr(args, "explain", False))
         self.probing = False
         self.peeked = {}
@@ -259,8 +260,12 @@ class Ctx:
         self.dirty = True
 
     def save(self):
-        if self.dirty and not self.readonly:
+        if self.readonly:
+            return
+        if self.dirty:
             st.save(self.dir, self.state)
+        elif self.recorded:  # only results: each already counted its event
+            st.save(self.dir, self.state, count_event=False)
 
     def would(self, what, rule):
         """Under --explain, stop before a step that writes a file or git."""
@@ -408,13 +413,17 @@ def main(args):
         raise Fail(f"{exc} — a broken artifact: tell the user and stop (the worker "
                    "that wrote it may need re-running)", CANNOT_RUN, "ERROR") from None
     except AssertionError as exc:
+        c.dirty = False
+        c.save()  # keep the results recorded before the step
         raise Fail(f"next has no rule for this state ({exc}); report it as an "
                    "auto-dev bug", CANNOT_RUN, "ERROR") from None
     except Fail as exc:
         if exc.code == CANNOT_RUN:
             raise
-        # A step `next` could not take is a stop, never exit 1; nothing is saved,
-        # since the step did not happen.
+        # A step `next` could not take is a stop, never exit 1; nothing of the
+        # step is saved, since it did not happen, only the results recorded first.
+        c.dirty = False
+        c.save()
         return show(stop([f"`next` could not take its step ({exc.token}): {exc}",
                           ("Tell the user; it is a broken artifact or an auto-dev bug. "
                            f"State and artifacts: {c.ad}")],
@@ -462,6 +471,7 @@ def show(result, args):
 
 def decide(c):
     recorded = record_returns(c)
+    c.recorded, c.dirty = bool(recorded), False  # each record counted its own event
     result = decide_step(c)
     if recorded:
         result["RECORDED"] = recorded
@@ -473,22 +483,24 @@ def record_returns(c):
     as `autodev.py record` would: one it can't accept is refused and its issues
     saved for the retry `pending_briefs` writes. A brief with no result file is
     left to `pending_briefs`, which issues it again as it is. One line per job.
-    Under --explain the state is changed only in memory, never saved."""
+    Under --explain it records nothing (recording a tester's result writes
+    files): it says it would record them first, and stops there."""
     done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
     refused = c.state.get("refused", {})
+    jobs = [(b["worker"], b["n"]) for b in c.state.get("briefs", [])
+            if (b["worker"], b["n"]) not in done and not b.get("retried_as")
+            and cmd_work.job(b["worker"], b["n"]) not in refused
+            and (c.ad / "returns" / f"{b['worker']}-{b['n']}.json").exists()]
+    if jobs:
+        c.would("record " + ", ".join(f"{w}-{n}" for w, n in jobs) + " first",
+                "a worker's result file is written and not recorded yet")
     lines = []
-    for b in list(c.state.get("briefs", [])):
-        key = (b["worker"], b["n"])
-        if key in done or b.get("retried_as") or cmd_work.job(*key) in refused:
-            continue
-        if not (c.ad / "returns" / f"{b['worker']}-{b['n']}.json").exists():
-            continue
-        token, _, _, data = cmd_work.record_job(c.state, *key)
+    for worker, n in jobs:
+        token, _, _, data = cmd_work.record_job(c.state, worker, n)
         # Each is its own event, as a separate `record` save was: later records
         # and the brief written after them are stamped (seq) after it.
         c.state["events"] = c.state.get("events", 0) + 1
-        c.dirty = True
-        lines.append(f"{b['worker']}-{b['n']}: " + (
+        lines.append(f"{worker}-{n}: " + (
             f"refused ({token})" if token != "RECORDED" else
             f"{data.get('status')} {data.get('next', '')}".rstrip()))
     return lines
@@ -589,7 +601,7 @@ def pending_briefs(c):
         tries = b.get("emitted", 1) + 1
         if tries > MAX_EMITS:
             return stop([(f"{b['worker']} #{b['n']} was spawned {MAX_EMITS} times and "
-                         "never left a result that `record` accepts. Tell the user; its "
+                         "never left a result that `next` accepts. Tell the user; its "
                          f"brief is {c.ad}/briefs/{b['worker']}-{b['n']}.md. Once the "
                          "cause is fixed, `auto-dev continue` spawns it again.")],
                         "a worker failed to return three times")

@@ -380,12 +380,12 @@
       "session": "S1 (a result `record` refuses)",
       "setup": "Run eval 1's S1 until `next` prints the first auto-dev:define spawn, and stop the session there without spawning it (its brief issued, its result not recorded). Then, from the worktree, write .auto-dev/returns/define-1.json as {\"worker\": \"define\", \"status\": \"ok\", \"next\": \"FITS\"}, which leaves out keys Define must return (`high_risk`, `reading`), and run `autodev.py record define 1`: it exits 1 and prints MALFORMED with the missing keys. Start a fresh session.",
       "prompt": "auto-dev continue",
-      "expected_output": "`resume` prints RESUME in S1, Phase 2. The orchestrator does nothing about the refused result itself: it runs `next`, which briefs the job again as define #2, a new brief whose previous_issues says to start from what the refused return left and fix only the issues, then names the missing keys, and spawns auto-dev:define with it. The orchestrator never runs `autodev.py brief --retry`, never writes or edits a file under returns/ or briefs/ by hand, and spends no round. Define writes SPEC.md and a full result for #2, `record define 2` accepts it, and S1 runs on as usual to its handoff.",
+      "expected_output": "`resume` prints RESUME in S1, Phase 2. The orchestrator does nothing about the refused result itself: it runs `next`, which briefs the job again as define #2, a new brief whose previous_issues says to start from what the refused return left and fix only the issues, then names the missing keys, and spawns auto-dev:define with it. The orchestrator never runs `autodev.py brief --retry`, never writes or edits a file under returns/ or briefs/ by hand, and spends no round. Define writes SPEC.md and a full result for #2, the next `next` prints `RECORDED: define-2: ok FITS`, and S1 runs on as usual to its handoff.",
       "files": [],
       "expectations": [
         "The first worker spawned in the session is auto-dev:define with briefs/define-2.md, whose previous_issues starts by saying the refused return's files are still in place and to fix only the issues listed, then names `high_risk` and `reading`",
         "The orchestrator runs no `autodev.py brief define` (with or without --retry) and writes no file under .auto-dev/returns/ or .auto-dev/briefs/ by hand; returns/define-1.json is as the setup left it",
-        "`autodev.py record define 2` exits 0, and state.json's budget has no spend for the retry",
+        "The `next` after define #2 returns prints `RECORDED: define-2: ok FITS`, and state.json's budget has no spend for the retry",
         "S1 ends at the handoff with Phase 2 and Phase 3 done"
       ]
     },
@@ -492,12 +492,12 @@
       "session": "S2 (spec proposal: filed)",
       "setup": "Run eval 1 through S1. Before S2, edit .auto-dev/SPEC.md by hand so two of its conditions contradict each other on one input (one condition's Edge demands an outcome another condition's Example forbids), keeping every Example, Edge and Verify by line; leave IMPLEMENTATION.md and the sealed checks alone. Start a fresh session.",
       "prompt": "auto-dev continue",
-      "expected_output": "The verifier judges every condition against SPEC.md as written and, since SPEC.md itself is wrong, also writes proposals/verifier-<n>.md to templates/PROPOSAL.md: a Target naming one of the two conditions, a Why in its own words and that condition's whole new text. It does not edit SPEC.md and returns `proposals: 1`; `next` records it. The next `next` spawns auto-dev:define in revise mode, whose brief's `proposals` line names proposals/batch-1.md and whose output has a BUDGET line; no coder is spawned before Define's result is recorded.",
+      "expected_output": "The verifier judges every condition against SPEC.md as written and, since SPEC.md itself is wrong, also writes proposals/verifier-<n>.md to templates/PROPOSAL.md: a Target naming one of the two conditions, a Why in its own words and that condition's whole new text. It does not edit SPEC.md and returns `proposals: 1`; the next `next` records it and spawns auto-dev:define in revise mode, whose brief's `proposals` line names proposals/batch-1.md and whose output has a BUDGET line; no coder is spawned before Define's result is recorded.",
       "files": [],
       "expectations": [
         "The verifier writes proposals/verifier-<n>.md with `- Target:`, `- Why:` and `- New text:` for one of the two contradicting conditions, and returns `proposals: 1`",
         "SPEC.md is byte-identical before and after the verifier's spawn",
-        "`autodev.py record verifier <n>` prints RECORDED",
+        "the `next` after the verifier returns prints `RECORDED: verifier-<n>: ok \u2026`",
         "The next `next` spawns auto-dev:define with `mode: revise`, its brief's `proposals:` line names proposals/batch-1.md and its `rulings_file:` line proposals/batch-1-rulings.md, and that output has a BUDGET line",
         "No auto-dev:coder spawn appears between the verifier's result and Define's recorded result"
       ]

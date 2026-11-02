@@ -153,8 +153,7 @@ class NextCase(RunCase):
         path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps({"worker": worker, "status": status, "next": nxt,
                                     **data}))
-        r = self.autodev("record", worker, n, "--dir", self.dir)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # No `record` call: the next `next` records it, as in a run.
 
     def expect(self, worker, nxt=None, **data):
         """Run next, check it spawns `worker`, answer with `nxt` (if given)."""
@@ -491,16 +490,27 @@ class PlanTest(NextCase):
         self.assertEqual(self.spawned(out), [("define", 2)])
         self.assertIn("high_risk", (self.dir / "briefs" / "define-2.md").read_text())
 
-    def test_explain_records_only_in_memory(self):
+    def test_explain_says_it_would_record_and_records_nothing(self):
         self.expect("define")
         self.write_return("define", 1, {"next": "FITS", "high_risk": "yes",
                                         "reading": "none"})
+        before = (self.dir / "state.json").read_text()
         r = self.autodev("next", "--dir", self.dir, "--explain")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("RECORDED: define-1: ok FITS", r.stdout)
-        self.assertIn("define-reviewer", r.stdout)  # what it would do after recording
-        self.assertEqual(self.state().get("log", []), [])  # nothing saved
+        self.assertIn("next would record define-1 first", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
         self.assertEqual(self.next(0)["RECORDED"], ["define-1: ok FITS"])
+
+    def test_a_result_recorded_before_a_stop_counts_one_event(self):
+        self.expect("define")
+        (self.dir / "SPEC.md").write_text(
+            SPEC + "\n## Size check\nOVERSIZED: three deliverables.\n")
+        self.write_return("define", 1, {"next": "OVERSIZED", "high_risk": "yes",
+                                        "reading": "none"})
+        before = self.state()["events"]
+        out = self.next(4)  # the stop writes nothing of its own
+        self.assertEqual(out["RECORDED"], ["define-1: ok OVERSIZED"])
+        self.assertEqual(self.state()["events"], before + 1)  # as `record` alone was
 
     def test_explain_only_looks(self):
         for _ in range(4):
@@ -644,7 +654,8 @@ class BuildTest(NextCase):
     def test_phase_5_installs_the_checks_before_cleanup_and_verifies_once(self):
         self.plan_session()
         self.resume()
-        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
         out = self.autodev("next", "--explain", "--dir", self.dir)
         self.assertIn("install the sealed acceptance checks", out.stdout)
         installed = self.worktree / "src" / "due.acceptance.test.ts"
@@ -3344,6 +3355,20 @@ class QuoteTest(RunCase):
         self.dir = self.worktree / ".auto-dev"
         r = self.init()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        state = json.loads((self.dir / "state.json").read_text())
+        state["settings"]["checkpoint_events"] = 1  # so a printed command comes out
+        (self.dir / "state.json").write_text(json.dumps(state))
+        out = json.loads(self.autodev("next", "--dir", self.dir, "--json").stdout)
+        self.assertEqual(out["exit"], 6, out)
+        r = subprocess.run(out["AFTER"][0], shell=True, capture_output=True, text=True,
+                           env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)  # it ran
+        self.assertTrue((self.dir / "HANDOFF.md").is_file())
+        state = json.loads((self.dir / "state.json").read_text())
+        state["settings"]["checkpoint_events"] = 1000
+        (self.dir / "state.json").write_text(json.dumps(state))
+        r = self.autodev("resume", "--repo", self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(self.autodev("next", "--dir", self.dir, "--json").stdout)
         self.assertTrue(Path(out["BRIEF"][0]).is_file(), out)
         # `next` records the result under the path with a space.
@@ -6002,6 +6027,7 @@ class RulingLapseTest(NextCase):
         _, jobs = self.expect("planner")
         self.assertEqual(self.mode(*jobs[0]), "blocked")
         self.answer(*jobs[0], "PLAN_REVISED", entry_points_changed="no")
+        self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
         self.assertEqual(self.state()["log"][-1]["steps_changed"], ["3"])
         _, jobs = self.expect("coder")
         self.refiles_on_3(jobs[0])
@@ -6082,6 +6108,7 @@ class RulingLapseTest(NextCase):
         _, jobs = self.expect("acceptance-tester")
         self.assertIn("entry point", self.sets(*jobs[0])["scope"])
         self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
+        self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
         self.assertEqual(self.state()["log"][-1]["checks_changed"], ["4"])
         _, jobs = self.expect("coder")
         self.repair_on_4(self.built_to_verifier(jobs[0]))
@@ -6121,6 +6148,7 @@ class RulingLapseTest(NextCase):
         self.assertIn("fail the quality gate", self.sets(*jobs[0])["scope"])
         self.rewrite_check_4()
         self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
+        self.autodev("record", jobs[0][0], jobs[0][1], "--dir", self.dir)  # as `next` would
         self.assertEqual(self.state()["log"][-1]["checks_changed"], ["4"])
         _, jobs = self.expect("cleanup")
         self.lint()
