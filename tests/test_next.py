@@ -953,6 +953,57 @@ class ShipTest(NextCase):
         self.assertEqual(self.state()["phase6"]["pr"], 12)
         return sha, url
 
+    def published(self):
+        """The description `pr create` or `pr edit` was last given."""
+        log = [json.loads(ln) for ln in (self.tmp / "gh.log").read_text().splitlines()]
+        sent = [e["files"] for e in log if e["args"][:2] in (["pr", "create"],
+                                                              ["pr", "edit"])]
+        return "".join(sent[-1].values())
+
+    def test_the_orchestrator_writes_only_the_sections_in_pr_write_md(self):
+        sha, _, out, body = self.to_body()
+        slots = self.dir / "pr-write.md"
+        self.assertIn(str(slots), out["ACTION"])
+        generated = body.read_text()
+        text = slots.read_text()
+        sources, mine = text.split("\n## ", 1)
+        mine = "\n## " + mine
+        self.assertIn("## Summary\n<!-- WRITE:", mine)
+        self.assertIn("## Assumptions\n<!-- WRITE:", mine)
+        self.assertNotIn("## Acceptance conditions", mine)  # the script's own sections
+        self.assertLess(len(text), len(generated) // 2)
+        spec = (self.dir / "SPEC.md").read_text()
+        context = spec.split("## Context", 1)[1].split("\n## ", 1)[0].strip()
+        self.assertIn("### Source: SPEC.md Context\n" + context, sources)
+        self.assertIn("### Source: the task\n", sources)
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("pr-write.md still holds", r.stderr)
+        slots.write_text(sources + re.sub(r"<!-- WRITE: .*?-->",
+                                          "Todos can carry a due date.", mine))
+        self.after(out)
+        self.assertEqual(self.state()["phase6"]["pr"], 12)
+        self.assertEqual(body.read_text(), generated)  # spliced in memory only
+        sent = self.published()
+        self.assertIn("## Summary\nTodos can carry a due date.", sent)
+        self.assertIn(f"Checked at commit {sha}", sent)
+        self.assertNotIn("WRITE", sent)
+        self.assertNotIn("### Source:", sent)  # the sources stay out
+
+    def test_a_section_written_in_pr_body_md_stands(self):
+        _, _, out, body = self.to_body()
+        slots = self.dir / "pr-write.md"
+        body.write_text(body.read_text().replace(
+            "## Summary\n<!-- WRITE:", "## Summary\nBy hand.\n<!-- gone:", 1).replace(
+            "<!-- gone: what changed and why, 2–4 sentences, drawn from SPEC.md's "
+            "Context -->", "", 1))
+        slots.write_text(re.sub(r"<!-- WRITE: .*?-->", "From the slots.", slots.read_text()))
+        self.after(out)
+        sent = self.published()
+        self.assertIn("## Summary\nBy hand.", sent)
+        self.assertNotIn("## Summary\nFrom the slots.", sent)
+        self.assertIn("## Assumptions\nFrom the slots.", sent)
+
     def test_planted_bug_count_spans_carried_and_rerun_mutants(self):
         # A re-check's Mutation line counts the whole set once, run again or
         # carried forward; the carried count must not be added to the total.

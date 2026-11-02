@@ -3196,7 +3196,11 @@ def body_step(c, sha):
 
 
 def write_body(c, body, rule):
-    return action(f"fill in the PR body {body['path']}: "
+    slots = Path(body["path"]).parent / "pr-write.md"
+    target = (f"{slots}, the sections you write of the PR body {body['path']} "
+              "(don't read that file: pr publish puts them in)" if slots.exists() else
+              f"the PR body {body['path']}")
+    return action(f"fill in {target}: "
                   "replace every `<!-- WRITE: ... -->` line (references/S3-ship.md, "
                   "_The PR body_), in plain words for a "
                   "developer who has never heard of auto-dev; change nothing else. Then "

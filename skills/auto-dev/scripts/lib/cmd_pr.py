@@ -4,7 +4,10 @@ Usage:
     autodev.py pr publish [--dir <artifact-dir>] [--title TEXT] [--json]
 
 Publishes the PR description `next` generated (`<artifact-dir>/pr-body.md`,
-from templates/pr-body.md and the run's artifacts) for the verified commit:
+from templates/pr-body.md and the run's artifacts) for the verified commit,
+with each section of `<artifact-dir>/pr-write.md` (the sections that hold a
+WRITE line, which the orchestrator fills in there) put in place of the section
+of the same heading:
 
  - It refuses while the description still holds a `<!-- WRITE: ... -->` line
    (the Summary, the Assumptions, any section the repo's PR template adds and
@@ -58,6 +61,13 @@ from .proc import git, run
 BODY_LIMIT = 60000
 TAIL = 10
 WRITE_RE = re.compile(r"<!-- WRITE: .*?-->")
+WRITE_FILE = "pr-write.md"  # only the sections with a WRITE line, for the orchestrator
+WRITE_HEAD = ("<!-- The parts of the PR description you write. The sources first are "
+              "for you to draw on; they are not published. Then, under each `## ` "
+              "heading, replace each WRITE line as it asks, in plain words for a "
+              "developer who has never heard of auto-dev, and change nothing else. "
+              "Keep each `## ` heading as it is: `pr publish` puts each section back "
+              "into the description by its heading. -->")
 STRICT = ("Acceptance conditions", "Quality gate", "Review")
 COMMENT_HEAD = "Command output for commit"
 ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
@@ -218,6 +228,7 @@ def generate(state, ad, sha):
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
     path = ad / "pr-body.md"
     path.write_text(text, encoding="utf-8")
+    (ad / WRITE_FILE).write_text(write_slots(text, ad, state["task"]), encoding="utf-8")
     comment_path = ad / "pr-output-comment.md"
     if comment:
         comment_path.write_text(f"{COMMENT_HEAD} {sha[:12]}\n\n{comment.rstrip()}\n\n"
@@ -225,6 +236,50 @@ def generate(state, ad, sha):
     elif comment_path.exists():
         comment_path.unlink()
     return path
+
+
+def write_slots(text, ad, task):
+    """pr-write.md: the SPEC.md and task text the WRITE lines draw on, under
+    `### ` headings (before any `## ` one, so `pr publish` never takes them),
+    then each section of the description that holds a WRITE line, as it stands:
+    the orchestrator writes them without reading the whole description."""
+    out = [WRITE_HEAD, ""]
+    try:
+        spec = art.read(ad / "SPEC.md")
+    except art.ArtifactError:
+        spec = ""
+    for name in ("Context", "Assumptions"):
+        found = art.find_section(spec, name) if spec else None
+        out += [f"### Source: SPEC.md {name}", (found or "none").strip(), ""]
+    out += ["### Source: the task", (task.get("text") or "none").strip(), ""]
+    if (task.get("ask") or "").strip():
+        out += ["### Source: what the user asked for", task["ask"].strip(), ""]
+    for heading, body in split_sections(text):
+        if heading and WRITE_RE.search(body):
+            out += [heading, body.rstrip("\n"), ""]
+    return "\n".join(out).rstrip() + "\n"
+
+
+def splice_written(text, ad):
+    """The description with each section pr-write.md holds put in place of the
+    section of the same heading (in order, when a heading repeats) that still
+    holds a WRITE line; one already written in pr-body.md (by hand, or by a
+    session before 4.17) stands. With no pr-write.md, the text as it is."""
+    path = Path(ad) / WRITE_FILE
+    if not path.exists():
+        return text
+    queue = {}  # the sources sit before the first `## ` heading: never taken
+    for heading, body in split_sections(path.read_text(encoding="utf-8")):
+        if heading:
+            queue.setdefault(heading, []).append(body.rstrip("\n") + "\n")
+    out = []
+    for heading, body in split_sections(text):
+        if queue.get(heading):
+            mine = queue[heading].pop(0)
+            if WRITE_RE.search(body):
+                body = mine
+        out.append((heading, body))
+    return "\n".join((f"{h}\n" if h else "") + b for h, b in out)
 
 
 def ticket_link(task):
@@ -753,7 +808,7 @@ def publish_body(args, state):
         raise Fail("no description generated for the verified commit: run "
                    "`autodev.py next`", CANNOT_RUN, "ERROR")
     path = Path(body["path"])
-    text = path.read_text(encoding="utf-8")
+    text = splice_written(path.read_text(encoding="utf-8"), ad)
     pr = p6.get("pr") or existing_pr(wt, state["branch"])
     live = ""
     if pr:
@@ -763,7 +818,8 @@ def publish_body(args, state):
         live = json.loads(out).get("body", "")
         text = merge_live(live, text)
     if WRITE_RE.search(text):
-        raise Fail(f"{path} still holds a `<!-- WRITE: ... -->` line: replace each one "
+        where = ad / WRITE_FILE if (ad / WRITE_FILE).exists() else path
+        raise Fail(f"{where} still holds a `<!-- WRITE: ... -->` line: replace each one "
                    "(the Summary, the Assumptions, a section or checklist the repo's PR "
                    "template adds) first", FAILED, "UNWRITTEN")
     # Once the PR has a description, its checklist is the live one: edits stand.

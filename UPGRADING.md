@@ -4,6 +4,20 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.16
+
+- **The orchestrator writes the PR description's prose in a small file.**
+  Alongside `pr-body.md`, `next` now writes `pr-write.md`: `SPEC.md`'s Context
+  and Assumptions and the task, under `### Source:` headings, then only the
+  sections of the description that hold a `<!-- WRITE: ... -->` line (the
+  Summary, the Assumptions, a section or checklist the repo's PR template
+  adds). The orchestrator edits that file, never reading the 30–50k-character
+  `pr-body.md`, and `pr publish` puts each of its sections in place of the
+  section of the same heading that still holds a WRITE line, then lints the
+  result as before. A section already written in `pr-body.md` stands.
+- **Resume:** a run in flight resumes. A description generated before 4.17
+  has no `pr-write.md`, and `next` names `pr-body.md` as before.
+
 ## Upgrading from 4.15
 
 - **`next` records the workers' results itself.** Before it decides, `next`
