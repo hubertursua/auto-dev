@@ -1075,7 +1075,9 @@ def check_file(path):
                 "first line must be `# <CHECK> — pass` or `— fail`"]
             return problems + ([] if "Tree:" in text else ["no `Tree:` line"])
         if re.match(r"R\d\.md$", name):
-            return need_sections(text, ("Findings", "Security leads", "Pre-existing"))
+            from .judgment import parse_report
+            return need_sections(text, ("Findings", "Security leads", "Pre-existing")) + \
+                parse_report(text)["problems"]
         if re.match(r"VOTES-R\d\.md$", name):
             art.first_table(text, ("Finding", "Vote", "Reason"), str(path))
             return []

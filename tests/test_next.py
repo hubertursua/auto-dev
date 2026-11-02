@@ -67,7 +67,12 @@ SECURITY_MUST_FIX = SECURITY_REVIEW.replace(
 
 
 def r_report(findings):
-    """A code reviewer's report, with the sections its template requires."""
+    """A code reviewer's report, with the sections its template requires. A
+    finding given as a title alone is written in the template's shape."""
+    if findings != "none" and not findings.startswith("1. "):
+        findings = (f"1. **{findings.lstrip('- ')}** — `src/sort.ts:4` — correctness\n"
+                    "   Trigger path: sorting a todo with no due date\n"
+                    "   Why it is wrong: it throws")
     return (f"## Findings\n{findings}\n\n## Security leads\nnone\n\n"
             "## Pre-existing\nnone\n")
 
@@ -856,6 +861,10 @@ class ShipTest(NextCase):
         self.assertEqual([line.split(":")[0] for line in out["RECORDED"]],
                          [f"{w}-{n}" for w, n in jobs])
         self.assertEqual([w for w, _ in self.spawned(out)], ["review-judge"])
+        # The judge's brief comes with the panel's findings merged.
+        findings = (self.dir / "review" / "pass-1" / "findings.md").read_text()
+        self.assertIn("Reviewers finished: R1, R2, R3 (3/3)", findings)
+        self.assertIn("No findings.", findings)
         state = self.state()
         seqs = [e["seq"] for e in state["log"][-4:]]
         self.assertEqual(seqs, sorted(set(seqs)))  # each its own event

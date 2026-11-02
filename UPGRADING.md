@@ -4,6 +4,39 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.20
+
+- **The review judge makes the calls; a script writes the report.** When it
+  briefs the judge, `next` merges the reviewers' reports into
+  `review/pass-<n>/findings.md`. Each finding becomes `F<k>`, with who raised
+  it, its location, category, trigger path and reason, plus a `Near:` hint
+  for findings close together in one file. The security leads and spec
+  problems are gathered there too. The judge writes
+  `review/pass-<n>/JUDGMENT.md` (`templates/JUDGMENT.md`). Each block merges
+  F findings and says whether the path holds, gives the category and the
+  detail lines a must-fix finding needs, and covers the earlier must-fix
+  findings and each lead. It then runs `autodev.py review-build`, which:
+  - applies the rubric's vote table (3 votes must-fix High, 2 Medium, 1 a
+    re-vote; an advisory category advisory; a path that fails noise);
+  - carries the earlier passes' rows, details, leads and Passes rows
+    forward, and writes the Tree line, counts and overall confidence;
+  - writes `CODE_REVIEW.md` and the pass's `corrections.md`;
+  - prints the `next`, `must_fix_open` and `revote` values for the judge's
+    result.
+
+  The judge used to rewrite the whole `CODE_REVIEW.md` each pass (3–12k
+  characters) and work out the counts and tables by hand. `CODE_REVIEW.md`
+  keeps its format, so `votes`, the gates and the PR description read it as
+  before.
+- **A reviewer's report is checked against its template.** `check-artifact`
+  (and so `record`) now refuses an `R<k>.md` finding that isn't
+  `<n>. **<title>** — `path:line` — <category>` with a `Trigger path:`
+  line. The reviewer then fixes its report before the judge sees it.
+- **Resume:** a run in flight resumes. A judge briefed from now on writes
+  `JUDGMENT.md`. One already spawned on 4.20 writes `CODE_REVIEW.md` itself,
+  which `next` reads as before. A later pass of the same run builds on that
+  report.
+
 ## Upgrading from 4.19
 
 - **A script runs the verifier's mutation run.** The verifier still chooses

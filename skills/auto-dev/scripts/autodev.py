@@ -34,6 +34,7 @@ Subcommands:
     votes              plan the code-review re-votes, or apply them
     review-scope       snapshot the tree before a correction; list what it changed
     gate-summary       check a gate's preconditions; print its summary and question
+    review-build       build CODE_REVIEW.md from the review judge's JUDGMENT.md
     brief              write a worker's brief file and print the prompt to spawn it with
     record             check a worker's result against its artifacts; update state
     check-artifact     check an artifact against its template before returning it
@@ -100,6 +101,7 @@ COMMANDS = {
     "votes": (cmd_review, cmd_review.votes),
     "review-scope": (cmd_review, cmd_review.review_scope),
     "gate-summary": (cmd_review, cmd_review.gate_summary),
+    "review-build": (cmd_review, cmd_review.review_build),
     "brief": (cmd_work, cmd_work.brief),
     "record": (cmd_work, cmd_work.record),
     "check-artifact": (cmd_work, cmd_work.check_artifact),

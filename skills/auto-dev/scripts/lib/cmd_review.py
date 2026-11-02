@@ -1,4 +1,4 @@
-"""autodev.py votes / review-scope / gate-summary.
+"""autodev.py votes / review-scope / gate-summary / review-build.
 
 Each takes `--dir <artifact-dir>` (default `./.auto-dev`) and `--json`.
 
@@ -40,6 +40,27 @@ review-scope --snapshot | --files | --clear | --next-pass
     --clear     forgets the snapshot once a panel pass has reviewed it.
     --next-pass creates review/pass-<n>/ for the next pass and prints <n>.
     Exit: 0; 1 --files with no snapshot recorded.
+
+review-build
+    The review judge runs it once it has written review/pass-<n>/JUDGMENT.md
+    (templates/JUDGMENT.md) for the panel's pass <n>, from the merged
+    findings `next` wrote to review/pass-<n>/findings.md (lib/judgment.py).
+    It applies the rubric's fixed table: a judged finding that holds in a
+    must-fix category is must-fix (High with 3 votes, Medium with 2) or, with
+    one vote, pending a re-vote by the other reviewers who finished; one in an
+    advisory category is advisory; one that doesn't hold is noise; a
+    pre-existing one is counted only. It carries the earlier passes' rows,
+    detail blocks, security leads and Passes rows forward (from the report
+    as it stood before this pass, kept in review/pass-<n>/CODE_REVIEW.before.md),
+    marks each earlier must-fix finding fixed or open as JUDGMENT.md says,
+    writes the Tree line (the panel's tree when the code is unchanged, else
+    `changed during the run`), the counts and the overall confidence, then
+    CODE_REVIEW.md and review/pass-<n>/corrections.md (an entry per open
+    must-fix finding that is not acceptance-check).
+    Prints `BUILT` with `next:` (REVOTE, MUST_FIX or CLEAN), `must_fix_open:`
+    and `revote:`, the values for the judge's result.
+    Exit: 0 built; 1 JUDGMENT.md can't be used (`MALFORMED`, a `problem:`
+    line each; nothing is written); 2 no findings.md, judgment or judge brief.
 
 gate-summary <post-plan|pr|main> [--pr N]
     Checks the gate's preconditions, then prints the summary and the
@@ -96,6 +117,9 @@ TRIAGE = list(TRIAGE_VALUES)
 
 def add_arguments(parser, name):
     parser.add_argument("--dir", default=".auto-dev", help="the run's .auto-dev/")
+    if name == "review-build":
+        parser.add_argument("--pass", dest="pass_n", type=int,
+                            help="the pass (default: the run's current pass)")
     if name == "votes":
         mode = parser.add_mutually_exclusive_group(required=True)
         mode.add_argument("--plan", action="store_true")
@@ -680,3 +704,54 @@ def main_summary(state, ad, args):
              f"Head {head}: every result was checked on it; the merge is locked to it",
              *review_lines, *proposals.summary_lines(state)]
     return lines, []
+
+
+# ---------------------------------------------------------------- review-build
+
+@wrap
+def review_build(args):
+    from . import judgment
+    ad = Path(args.dir)
+    state = st.load(ad)
+    n = args.pass_n or (state.get("phase6") or {}).get("review_pass") or 1
+    folder = ad / "review" / f"pass-{n}"
+    brief = next((b for b in reversed(state.get("briefs") or [])
+                  if b.get("worker") == "review-judge" and b.get("mode") == "consolidate"),
+                 None)
+    if brief is None:
+        raise Fail("no review-judge consolidate brief in state.json", CANNOT_RUN, "ERROR")
+    sets = brief.get("sets") or {}
+    findings = art.read(folder / "findings.md")
+    judgment_md = art.read(folder / "JUDGMENT.md")
+    report = ad / "CODE_REVIEW.md"
+    before = folder / "CODE_REVIEW.before.md"
+    if not before.exists():
+        earlier = report.read_text(encoding="utf-8") if report.exists() else ""
+        stamp = PASS_RE.search(earlier)
+        if stamp and int(stamp.group(1)) >= n:
+            earlier = ""  # this pass's own, from a build before the snapshot existed
+        before.write_text(earlier, encoding="utf-8")
+    panel_tree = str(sets.get("tree") or "").strip()
+    tree = panel_tree if panel_tree and print_tree(state["worktree"]) == panel_tree \
+        else "changed during the run"
+    try:
+        text, result = judgment.build(
+            branch=state.get("branch", ""), pass_n=n, scope=sets.get("scope") or "",
+            tree=tree, findings_md=findings, judgment_md=judgment_md,
+            earlier_md=before.read_text(encoding="utf-8"))
+    except judgment.JudgmentError as exc:
+        emit(args.json, "MALFORMED", f"{folder / 'JUDGMENT.md'} can't be used; fix it and "
+             "run review-build again", problem=str(exc).splitlines())
+        return FAILED
+    coder = [i for i in result["open_ids"]
+             if result["categories"].get(i, "").strip("`").lower() != "acceptance-check"]
+    corrections = folder / "corrections.md"
+    corrections.write_text("# Required changes\n" + ("" if coder else "None.\n"),
+                           encoding="utf-8")
+    add_corrections(text, corrections, coder)
+    tmp = report.with_name(".CODE_REVIEW.md.build")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(report)
+    emit(args.json, "BUILT", f"{report} and {corrections}", next=result["next"],
+         must_fix_open=result["must_fix_open"], revote=result["revote"])
+    return 0
