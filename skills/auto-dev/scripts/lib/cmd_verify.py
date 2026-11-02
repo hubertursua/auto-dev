@@ -29,11 +29,12 @@ prep
        <cut>` is saved to evidence/changes.diff.
     5. The acceptance run: the profile's test command, scoped to the files that
        hold the checks when the test check has a `files` form (`autodev.py run
-       test`), saved to evidence/acceptance.txt with the command on its first
-       line.
+       test`), saved to evidence/acceptance.txt; it gets what is left of 570
+       seconds after the wait in 1, at least 60, and is stopped past that.
     6. For each SPEC.md condition with acceptance checks, evidence/C<n>.txt:
        Expected, Command and Result lines and the lines of the run's output
-       that name the condition's checks (its last 30 lines when none does).
+       that name the condition's checks (its last 30 lines when none does). A
+       line that names several checks goes to the longest name it holds.
        The verifier adds a group for each run of its own after it.
     Prints one token, then `key: value` lines:
       PREPARED: <what ran> — then `tree:`, `integrity:`, `changes:`,
@@ -68,7 +69,7 @@ import time
 from pathlib import Path
 
 from . import artifacts as art
-from . import cmd_checks, cmd_run, sealed
+from . import cmd_checks, cmd_run, cmd_work, sealed
 from . import state as st
 from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
@@ -76,19 +77,23 @@ STILL_RUNNING, LEFT_CHANGES = 3, 4
 SCRIPTS = Path(__file__).resolve().parent.parent
 WAIT = 270
 POLL = 5
+# The verifier runs prep in one Bash call of at most 600 s: the acceptance run
+# gets what the wait left of BUDGET, and never less than MIN_RUN.
+BUDGET, MIN_RUN = 570, 60
 TAIL = 30
 CONFLICT_ENTRY = ("`{path}`: a held-out acceptance check goes into this file and can't "
                   "be merged with the change to it; if the change deleted, moved or "
                   "recreated the file, put it back, and undo any rewrite of its "
                   "existing lines the task doesn't need")
 PREP_FILES = ("integrity.txt", "tree-start.txt", "changes.diff", "acceptance.txt")
-EXPECTED = "the tests written before the code, for this condition, pass"
+EXPECTED = "the tests written before the code to pass"
 
 
 def add_arguments(parser):
     parser.add_argument("action", choices=("prep", "tree"))
     parser.add_argument("--dir", required=True, help="the run's .auto-dev/")
     parser.add_argument("--pass", dest="pass_", default="first pass",
+                        choices=("first pass", "re-check"),
                         help="prep: the brief's mode (`first pass` or `re-check`)")
     parser.add_argument("--wait", type=int, default=WAIT,
                         help="prep: seconds to wait for a live mutation run")
@@ -180,9 +185,10 @@ def change_set(ad, wt, cut):
                                 "--exclude-standard").split(b"\0") if p]
     for i in range(0, len(untracked), 200):
         git(wt, "add", "-N", "--", *[os.fsdecode(p) for p in untracked[i:i + 200]])
-    diff = git(wt, "diff", cut)
+    diff = git(wt, "diff", "--no-color", "--no-ext-diff", cut)
     (ad / "evidence" / "changes.diff").write_bytes(diff)
-    names = [n for n in git(wt, "diff", "--name-only", "-z", cut).split(b"\0") if n]
+    names = [n for n in git(wt, "diff", "--no-ext-diff", "--name-only", "-z", cut)
+             .split(b"\0") if n]
     return diff.count(b"\n"), len(names)
 
 
@@ -196,29 +202,51 @@ def check_names(rows):
     return names
 
 
-def acceptance_run(ad, wt, state):
-    """Run the checks; (command, exit code, seconds, output lines)."""
+def line_owners(lines, names):
+    """{line index: {condition id}}: each output line goes to the condition(s)
+    whose check name it holds, the longest such name only, so `keeps the date`
+    never takes the line of `keeps the date when edited`."""
+    pairs = [(name, cid) for cid, ns in names.items() for name in ns if name]
+    owners = {}
+    for i, line in enumerate(lines):
+        found = [(name, cid) for name, cid in pairs if name in line]
+        if found:
+            longest = max(len(name) for name, _ in found)
+            owners[i] = {(name, cid) for name, cid in found if len(name) == longest}
+    return owners
+
+
+def acceptance_run(ad, wt, state, budget):
+    """Run the checks; (command, exit code or None on a timeout, seconds,
+    output lines, scoped)."""
     gate = state["settings"].get("gate", [])
     n, check = cmd_run.pick(gate, "test", None)
     files = sorted(sealed.sealed_files(ad))
     scoped = cmd_run.PLACEHOLDER in str(check.get("files") or "")
     command = cmd_run.command_for(n, check, wt, files if scoped and files else None)
     path = ad / "evidence" / "acceptance.txt"
-    code, seconds = cmd_run.execute(command, wt, path, None)
+    code, seconds = cmd_run.execute(command, wt, path, budget)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return command, code, seconds, lines, scoped
 
 
-def write_evidence(ad, conditions, names, command, code, lines):
+def ran(code, budget):
+    if code is None:
+        return f"ran past {budget:g}s and was stopped"
+    return "passed" if code == 0 else f"exited {code} (any failing check fails it)"
+
+
+def write_evidence(ad, conditions, names, command, code, lines, owners, budget):
     """evidence/C<n>.txt for each condition with acceptance checks; the ids."""
     written = []
     for cond in conditions:
         cid = cond["id"]
         if cid not in names:
             continue
-        hits = [ln for ln in lines if any(name and name in ln for name in names[cid])]
+        hits = [lines[i] for i, who in sorted(owners.items())
+                if any(c == cid for _, c in who)]
         output = hits[-TAIL:] if hits else lines[-TAIL:]
-        result = ("the run passed" if code == 0 else f"the run exited {code}") + (
+        result = f"the run {ran(code, budget)}" + (
             "; the lines naming this condition's checks are below" if hits else
             "; no line of its output names this condition's checks, so its last "
             "lines are below")
@@ -237,13 +265,15 @@ def prep(args):
     evidence.mkdir(parents=True, exist_ok=True)
     for name in PREP_FILES:  # an earlier pass's, never read as this one's
         (evidence / name).unlink(missing_ok=True)
+    started = time.monotonic()
     left = restore(ad, wt, args.wait)
     if left:
         token, code, message, lines = left
         emit(args.json, token, message, output=lines)
         return code
-    cut = git(wt, "merge-base", f"origin/{state['repo']['base']}", "HEAD").decode().strip()
-    recheck = not str(args.pass_ or "first").startswith("first")
+    cut = cmd_work.cut_commit(str(wt), state["repo"]["base"])
+    recheck = args.pass_ == "re-check"
+    installed = (ad / "acceptance" / "INSTALLED").exists()
     audit_code, conflicts = install(ad, wt, cut, recheck)
     if conflicts:
         write_conflicts(ad, conflicts)
@@ -251,35 +281,31 @@ def prep(args):
              f"{len(conflicts)} path(s) where a check can't go in; "
              "evidence/corrections.md names them", conflict=conflicts)
         return FAILED
-    tree_hash = print_tree(wt)
+    tree_hash = cmd_work.print_tree(str(wt))
     (evidence / "tree-start.txt").write_text(tree_hash + "\n", encoding="utf-8")
     diff_lines, diff_files = change_set(ad, wt, cut)
     rows, _na = art.manifest(ad / "acceptance" / "MANIFEST.md")
     names = check_names(rows)
-    command, code, seconds, lines, scoped = acceptance_run(ad, wt, state)
+    budget = max(BUDGET - (time.monotonic() - started), MIN_RUN)
+    command, code, seconds, lines, scoped = acceptance_run(ad, wt, state, budget)
     conditions = art.spec_conditions(ad / "SPEC.md")
-    written = write_evidence(ad, conditions, names, command, code, lines)
+    owners = line_owners(lines, names)
+    written = write_evidence(ad, conditions, names, command, code, lines, owners, budget)
+    named = {pair for who in owners.values() for pair in who}
     unnamed = [f"{cid}: {name}" for cid, ns in names.items() for name in ns
-               if name and not any(name in ln for ln in lines)]
-    ran = "exited 0" if code == 0 else f"exited {code}"
+               if name and (name, cid) not in named]
+    how = ran(code, budget)
     emit(args.json, "PREPARED",
-         f"checks installed, audit exit {audit_code}, acceptance run {ran}",
+         f"checks {'re-installed' if recheck or installed else 'installed'}, audit exit "
+         f"{audit_code}, acceptance run {how}",
          tree=tree_hash, cut=cut,
          integrity=f"{evidence / 'integrity.txt'} (check-tests.py exit {audit_code})",
          changes=f"{evidence / 'changes.diff'} ({diff_lines} lines, {diff_files} files)",
-         acceptance=(f"{evidence / 'acceptance.txt'} — `{command}` {ran} in {seconds:g}s"
+         acceptance=(f"{evidence / 'acceptance.txt'} — `{command}` {how} in {seconds:g}s"
                      + ("" if scoped else " (the whole suite: the test check has no "
                                           "scoped form)")),
          evidence=", ".join(written) or "none", unnamed=unnamed)
     return OK
-
-
-def print_tree(wt):
-    code, out, err = script("check-fresh.py", "--print-tree", wt)
-    if code != 0 or not out.strip():
-        raise Fail(f"check-fresh.py --print-tree exited {code}: {(err or out).strip()}",
-                   CANNOT_RUN, "ERROR")
-    return out.strip()
 
 
 def tree(args):
@@ -292,7 +318,7 @@ def tree(args):
     except OSError:
         raise Fail(f"{start} does not exist: run `verify prep` first", CANNOT_RUN,
                    "ERROR") from None
-    now = print_tree(wt)
+    now = cmd_work.print_tree(str(wt))
     if now == first:
         emit(args.json, "TREE", now)
         return OK

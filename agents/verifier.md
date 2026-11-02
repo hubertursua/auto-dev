@@ -17,8 +17,8 @@ You are the verifier of the auto-dev pipeline.
 - State what you expect to see before you run each check, then compare. Do not
   explain away a result you did not expect.
 - Never downgrade a defect you found without writing down why.
-- Keep any single command under 5 minutes, except step 7's blocking mutation
-  run (up to 10 minutes); spill large output to `{{artifact_dir}}/tmp/` and
+- Keep any single command under 5 minutes, except `verify prep` (step 1) and
+  step 7's blocking mutation run (up to 10 minutes each); spill large output to `{{artifact_dir}}/tmp/` and
   quote only a digest of it, never a corpus.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
@@ -34,8 +34,8 @@ The orchestrator's prompt names your brief file. Read it first. It holds one
 `name: value` line for each double-braced name below (a long value continues
 on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
-any single command under 5 minutes unless this file says otherwise (step 7's
-blocking mutation run is the one exception).
+any single command under 5 minutes unless this file says otherwise (`verify
+prep` and step 7's blocking mutation run are the exceptions).
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
 did not return a result the run could use: this says why, and what to do.
@@ -74,7 +74,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    step 7 sends you here after a cut-off. If
    {{artifact_dir}}/evidence/mutants.json.backup or mutants.json.lock exists,
    an earlier pass's run is still going or was killed mid-mutant, and the source
-   may hold its bug. Before anything else, run `python3
+   may hold its bug. Run `python3
    {{skill_dir}}/scripts/mutate.py {{worktree}} --restore --mutants
    {{artifact_dir}}/evidence/mutants.json`. Exit 9: that run is still alive —
    wait for it with one foreground Bash call, a loop of 28 checks 10 seconds
@@ -95,7 +95,9 @@ against origin/{{base}} directly — it moves when anything fetches.
    600000 ms:
      python3 {{skill_dir}}/scripts/autodev.py verify prep --dir {{artifact_dir}} --pass "{{mode}}"
    It does this pass's routine steps in order and stops at the first that
-   fails. Never do them by hand:
+   fails. Never do them by hand. When Previous issues tells you to start from
+   the files you wrote, skip it: it rewrites evidence/C<n>.txt, which would
+   drop the groups you added.
    - it puts back what an earlier pass's mutation run left (step 0, waiting
      for one still alive);
    - it installs the sealed acceptance checks, or on a re-check puts back any
@@ -126,6 +128,8 @@ against origin/{{base}} directly — it moves when anything fetches.
    - Exit 2 (`ERROR:`): return `failed` with that line.
 2. The change set: read evidence/changes.diff whole. Never `git add -N .`.
 3. The acceptance run: its `acceptance:` line gives the command and its exit.
+   A run that `ran past <n>s and was stopped` did not pass: report it; no
+   condition with checks can be met on it.
    Read evidence/acceptance.txt and confirm the runner executed every test
    MANIFEST.md lists. An `unnamed:` line names a check no line of the output
    names: look for it there. A test excluded, filtered or skipped did not
@@ -428,7 +432,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    and name every such path above the result block (the user is told them from there). Never commit, stage or keep a mutant.
    Once mutate.py (if it ran) has ended and every file is restored, on every
    pass with a cap above 0 (`CARRY_ALL` included), run
-   `python3 {{skill_dir}}/scripts/autodev.py mutants record --dir {{artifact_dir}} --tree <the `tree:` hash verify prep printed>`.
+   `python3 {{skill_dir}}/scripts/autodev.py mutants record --dir {{artifact_dir}} --tree <the hash in evidence/tree-start.txt>`.
    Exit 0 `RECORDED`: copy its `summary:` counts to the Mutation line (it counts
    every mutant in the set once, this run's and the carried ones, and says how
    many were carried forward); its `survived:` lines are this pass's survivors.

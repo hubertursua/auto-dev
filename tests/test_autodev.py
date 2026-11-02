@@ -2389,12 +2389,18 @@ VERIFY_MANIFEST = """\
 None.
 """
 
-# The "runner": prints each test name in the files it is given, from the lines
+# The "runner": prints each test name in the files (or folders) it is given, from the lines
 # that start with `test:`; exits 1 when a line says `FAIL`.
 RUNNER = """\
-import sys
+import os, sys
 bad = 0
-for path in sys.argv[1:]:
+paths = []
+for arg in sys.argv[1:]:
+    if os.path.isdir(arg):
+        paths += sorted(os.path.join(d, f) for d, _, fs in os.walk(arg) for f in fs)
+    else:
+        paths.append(arg)
+for path in paths:
     for line in open(path):
         if line.startswith("test:"):
             print("ok  " + line[5:].strip())
@@ -2508,6 +2514,52 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("STILL_RUNNING: "), r.stdout)
         self.assertFalse((self.ad / "evidence" / "tree-start.txt").exists())
+
+    def test_each_output_line_goes_to_the_longest_check_name_it_holds(self):
+        self.write(".auto-dev/acceptance/MANIFEST.md", VERIFY_MANIFEST.replace(
+            "flags an overdue todo", "keeps the due date when edited"))
+        self.write(".auto-dev/acceptance/files/tests/due.test.ts.sealed",
+                   "test: an old test\ntest: keeps the due date\n"
+                   "test: keeps the due date when edited\n")
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        c1, c2 = self.evidence("C1.txt"), self.evidence("C2.txt")
+        self.assertIn("ok  keeps the due date\n", c1)
+        self.assertNotIn("when edited", c1)
+        self.assertIn("ok  keeps the due date when edited", c2)
+        self.assertNotIn("unnamed:", r.stdout)
+
+    def test_a_first_pass_after_install_audits_before_it_reinstalls(self):
+        # `next` installed the checks before cleanup; cleanup then edited one.
+        self.assertEqual(self.verify("prep").returncode, 0)
+        (self.ad / "acceptance" / "INSTALLED").write_text("tests/due.test.ts\n")
+        self.write("tests/due.test.ts", "test: an old test\ntest: keeps the date\n")
+        r = self.verify("prep", "--pass", "first pass")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("checks re-installed", r.stdout)
+        self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit 3"))
+        self.assertIn("ACCEPTANCE_MODIFIED", self.evidence("integrity.txt"))
+        self.assertIn("keeps the due date", (self.wt / "tests/due.test.ts").read_text())
+
+    def test_a_recheck_conflict_is_an_install_conflict(self):
+        self.assertEqual(self.verify("prep").returncode, 0)
+        (self.wt / "tests" / "due.test.ts").unlink()
+        r = self.verify("prep", "--pass", "re-check")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("  conflict: tests/due.test.ts", r.stdout)
+        self.assertIn("`tests/due.test.ts`", self.evidence("corrections.md"))
+        self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit "))
+        self.assertFalse((self.ad / "evidence" / "acceptance.txt").exists())
+
+    def test_without_a_scoped_form_the_whole_test_check_runs(self):
+        state = json.loads((self.ad / "state.json").read_text())
+        del state["settings"]["gate"][0]["files"]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("the whole suite", r.stdout)
+        self.assertIn("ok  keeps the due date", self.evidence("acceptance.txt"))
+        self.assertIn("runner.py tests\n", self.evidence("C1.txt"))
 
     def test_tree_compares_with_the_tree_prep_noted(self):
         self.assertEqual(self.verify("tree").returncode, 2)  # no prep yet
