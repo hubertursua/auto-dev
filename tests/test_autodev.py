@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -2632,6 +2633,9 @@ MUT_RUN_SET = [
      "replace": "count - 1", "condition": "1"},
 ]
 
+MUT_SLOW = [{"id": "M3", "file": "src/calc.txt", "line": 3, "find": "fast",
+             "replace": "SLEEP", "condition": "1"}]
+
 
 class MutationRunTest(unittest.TestCase):
     """`autodev.py mutants run|wait`: the verifier's mutation run, scripted."""
@@ -2866,6 +2870,46 @@ class MutationRunTest(unittest.TestCase):
         self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
         self.assertIn("after this pass's re-time", r.stdout)
         self.assertNotIn("re-timed once", r.stdout)
+
+    def test_run_keeps_to_one_wait_budget(self):
+        # An earlier runner holds the lock for about 2 s of a 3 s budget; the
+        # new run then must not wait a further 3 s for its own result.
+        self.mutants(MUT_SLOW)
+        self.write(".auto-dev/evidence/mutation-cold-run.txt", "20\n")
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"])
+        threading.Thread(target=holder.wait, daemon=True).start()  # reaped as it ends
+        self.write(".auto-dev/evidence/mutation-run.lock", f"{holder.pid}\n")
+        started = time.monotonic()
+        r = self.mutants_cmd("run", "--files", "check.py", "--wait", "3")
+        took = time.monotonic() - started
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertLess(took, 5, took)
+        self.mutants_cmd("wait", "--wait", "60")
+
+    def test_a_runner_leaves_a_lock_it_no_longer_owns(self):
+        self.mutants(MUT_SLOW)
+        self.write(".auto-dev/evidence/mutation-cold-run.txt", "20\n")
+        r = self.mutants_cmd("run", "--files", "check.py", "--wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        lock = self.ad / "evidence" / "mutation-run.lock"
+        for _ in range(50):  # until the runner has written its own pid
+            if lock.read_text().strip().isdigit():
+                break
+            time.sleep(0.1)
+        lock.write_text(f"{os.getpid()}\n")  # taken over, say
+        r = self.mutants_cmd("wait", "--wait", "60")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(lock.read_text().strip(), str(os.getpid()))
+
+    def test_a_mode_change_during_the_run_is_left_changes(self):
+        self.mutants(MUT_RUN_SET[:1])
+        self.write("check.py", MUT_CHECK.replace(
+            "if \"SLEEP\"", "os.chmod(\"src/calc.txt\", 0o600 if os.stat(\"src/calc.txt\")"
+            ".st_mode & 0o044 else 0o644)\nif \"SLEEP\""))
+        self.note_tree()
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("src/calc.txt", r.stdout)
 
     def test_mutation_off_or_no_prep_does_not_run(self):
         py = shlex.quote(sys.executable)

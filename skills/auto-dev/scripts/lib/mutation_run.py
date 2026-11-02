@@ -152,14 +152,26 @@ def snapshot(wt, cut):
             status[os.fsdecode(entry[3:])] = entry[:2].decode("utf-8", "replace")
     names = {os.fsdecode(n) for n in git(wt, "diff", "--name-only", "--no-renames", "-z",
                                          cut).split(b"\0") if n}
-    out = {}
-    for name in sorted(names | set(status)):
-        try:
-            digest = hashlib.sha256((Path(wt) / name).read_bytes()).hexdigest()
-        except OSError:
-            digest = "missing"
-        out[name] = (status.get(name, ""), digest)
-    return out
+    return {name: (status.get(name, ""), path_state(Path(wt) / name))
+            for name in sorted(names | set(status))}
+
+
+def path_state(path):
+    """A path's mode and content (a symlink's target, as git sees it), hashed in
+    chunks so a big file is never read whole."""
+    try:
+        info = os.lstat(path)
+        if os.path.islink(path):
+            return f"link {os.readlink(path)}"
+        if not os.path.isfile(path):
+            return f"{info.st_mode:o}"
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+        return f"{info.st_mode:o} {digest.hexdigest()}"
+    except OSError:
+        return "missing"
 
 
 def touch_forward(path):
@@ -243,7 +255,8 @@ def restore_left(ad, wt, deadline=None):
         if time.monotonic() >= cap:
             return Outcome("LEFT_CHANGES", f"a mutate.py run has held {mutate_lock(ad)} "
                            f"for over {LIVE_CAP // 3600} hours: check that pid, then run "
-                           "`mutate.py --restore`", lines)
+                           f"`python3 {SCRIPTS / 'mutate.py'} {wt} --restore --mutants "
+                           f"{ev(ad, 'mutants')}`", lines)
         time.sleep(POLL)
     return None
 
