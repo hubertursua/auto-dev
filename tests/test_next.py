@@ -1051,8 +1051,16 @@ class ShipTest(NextCase):
         renamed = mine.replace("## Assumptions", "## assumptions")
         err = publish(sources + self.MARK + renamed)
         self.assertIn("`## Assumptions` is not written", err)
-        self.assertIn("`## assumptions` section(s) and the description 0", err)
+        self.assertIn("`## assumptions` section(s) where it was written with 0", err)
         self.assertIn("has lost its line", publish(sources + mine))
+        # A heading of the description that pr-write.md was not written with.
+        review = mine.replace("Todos can carry a due date.", "Line one.\n## Review\nlost", 1)
+        self.assertIn("`## Review` section(s) where it was written with 0",
+                      publish(sources + self.MARK + review))
+        self.assertIn("text between its line", publish(sources + self.MARK + "\nloose\n"
+                                                        + mine))
+        # The write step `next` goes back to says what was refused.
+        self.assertIn("refused the last one", self.next(0)["ACTION"])
         self.assertEqual(self.state()["phase6"]["publish_attempt"]["result"], "unwritten")
 
     def test_a_body_with_no_pr_write_md_is_named_as_before(self):

@@ -41,7 +41,9 @@ of the same heading:
 Exit codes:
     0  published; the PR number and URL are printed (and how the findings
        were posted, when inline comments are on)
-    1  refused: a WRITE line is left, the lint failed, or GitHub did not take it
+    1  refused: a WRITE line is left; pr-write.md lost its mark line, or a
+       heading in it is not one it was written with, or leaves a section
+       unwritten; the lint failed; or GitHub did not take it
     2  could not run (no state, no description generated yet, gh missing, signed
        out or offline, or the PR could not be read back)
 """
@@ -230,6 +232,8 @@ def generate(state, ad, sha):
     text, comment = clean(text, wt), clean(comment, wt)
     from .cmd_ship import quoted_digests
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
+    # The headings pr-write.md is written with: splice takes no others.
+    state["phase6"]["slots"] = [h for h, b in split_sections(text) if h and WRITE_RE.search(b)]
     path = ad / "pr-body.md"
     path.write_text(text, encoding="utf-8")
     (ad / WRITE_FILE).write_text(write_slots(text, ad, state["task"]), encoding="utf-8")
@@ -282,32 +286,39 @@ def write_slots(text, ad, task):
     return "\n".join(out).rstrip() + "\n"
 
 
-def splice_written(text, ad):
+def splice_written(text, ad, slots=None):
     """The description with each section pr-write.md holds below SLOTS_MARK put
     in place of the section of the same heading (in order, when a heading
     repeats) that still holds a WRITE line; one already written in pr-body.md
     (by hand, or by a session before 4.17) stands. Refused (UNWRITTEN, so the
-    orchestrator fixes pr-write.md) when the mark is gone, or a heading there
-    matches no section of the description or leaves one unwritten. With no
-    pr-write.md, the text as it is."""
+    orchestrator fixes pr-write.md) when the mark line is gone, text sits
+    between it and the first heading, a heading there is not one pr-write.md
+    was written with (`slots`, saved by generate; before 4.17, any of the
+    description's), or a section still holding a WRITE line has no section
+    there. With no pr-write.md, the text as it is."""
     path = Path(ad) / WRITE_FILE
     if not path.exists():
         return text
-    raw = path.read_text(encoding="utf-8")
-    if SLOTS_MARK not in raw:
+    parts = re.split(rf"^{re.escape(SLOTS_MARK)}[ \t]*$", path.read_text(encoding="utf-8"),
+                     maxsplit=1, flags=re.MULTILINE)
+    if len(parts) < 2:
         raise Fail(f"{path} has lost its line `{SLOTS_MARK}`: put it back, alone on its "
                    "line, above your sections", FAILED, "UNWRITTEN")
-    mine = [(h, b) for h, b in split_sections(raw.split(SLOTS_MARK, 1)[1]) if h]
+    split = split_sections(parts[1])
+    if split and not split[0][0] and split[0][1].strip():
+        raise Fail(f"{path} has text between its line `{SLOTS_MARK}` and its first "
+                   "`## ` heading: move it into a section", FAILED, "UNWRITTEN")
+    mine = [(h, b) for h, b in split if h]
     sections = split_sections(text)
     have = Counter(h for h, _ in mine)
-    there = Counter(h for h, _ in sections if h)
+    allowed = Counter(slots) if slots is not None else Counter(h for h, _ in sections if h)
     need = Counter(h for h, b in sections if h and WRITE_RE.search(b))
     problems = []
     for heading in have:
-        if have[heading] > there[heading]:
-            problems.append(f"{path} has {have[heading]} `{heading}` section(s) and the "
-                            f"description {there[heading]}: keep each heading as it is, "
-                            "and start no line of an answer with `## `")
+        if have[heading] > allowed[heading]:
+            problems.append(f"{path} has {have[heading]} `{heading}` section(s) where it "
+                            f"was written with {allowed[heading]}: keep each heading as it "
+                            "is, and start no line of an answer with `## `")
     for heading in need:
         if have[heading] < need[heading]:
             problems.append(f"the description's `{heading}` is not written: {path} has "
@@ -857,7 +868,7 @@ def publish_body(args, state):
         raise Fail("no description generated for the verified commit: run "
                    "`autodev.py next`", CANNOT_RUN, "ERROR")
     path = Path(body["path"])
-    text = splice_written(path.read_text(encoding="utf-8"), ad)
+    text = splice_written(path.read_text(encoding="utf-8"), ad, p6.get("slots"))
     pr = p6.get("pr") or existing_pr(wt, state["branch"])
     live = ""
     if pr:
@@ -867,7 +878,10 @@ def publish_body(args, state):
         live = json.loads(out).get("body", "")
         text = merge_live(live, text)
     if WRITE_RE.search(text):
-        where = ad / WRITE_FILE if (ad / WRITE_FILE).exists() else path
+        slots = ad / WRITE_FILE
+        mine = slots.read_text(encoding="utf-8").split(SLOTS_MARK, 1)[-1] \
+            if slots.exists() else ""
+        where = slots if WRITE_RE.search(mine) else path
         raise Fail(f"{where} still holds a `<!-- WRITE: ... -->` line: replace each one "
                    "(the Summary, the Assumptions, a section or checklist the repo's PR "
                    "template adds) first", FAILED, "UNWRITTEN")
