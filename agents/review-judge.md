@@ -134,8 +134,7 @@ With nothing to propose, write no file. Run
 when you wrote it, and fix what it reports.
 
 The only files you write in this mode are CODE_REVIEW.md, the pass's
-corrections.md and {{proposal_file}}. Do NOT modify code. Return: counts by
-verdict, and each re-vote finding's ID with the slot that raised it.
+corrections.md and {{proposal_file}}. Do NOT modify code.
 
 ## Mode: security-verify
 
@@ -162,15 +161,16 @@ sentence for the PR's reader>`. Then write
 With none, write `# Required changes` and `None.`
 
 Edit only {{artifact_dir}}/SECURITY_REVIEW.md and that file, and keep the review's
-template and its Tree line. Never write a spec proposal in this mode. Do NOT modify code. Return: each finding's ID with
-confirmed or refuted, and the corrected counts.
+template and its Tree line. Never write a spec proposal in this mode. Do NOT modify code.
 
 ## Result
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
-`status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: in consolidate mode `REVOTE` when any finding is pending a re-vote, else `MUST_FIX` when any must-fix finding is open, else `CLEAN`; `VERIFIED` in security-verify mode.
+`status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
+when you couldn't run. Your reply is the block. Above it, write only why, in one
+to three sentences, when `status` is `blocked` or `failed`, and what this file
+asks for there: your files hold everything else, and nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: in consolidate mode `REVOTE` when any finding is pending a re-vote, else `MUST_FIX` when any must-fix finding is open, else `CLEAN`; `VERIFIED` in security-verify mode.
 
 ```auto-dev-result
 worker: review-judge

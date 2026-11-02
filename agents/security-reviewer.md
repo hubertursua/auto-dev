@@ -101,15 +101,16 @@ criteria changed while you ran. With nothing to propose, write no file. Run
 `python3 {{skill_dir}}/scripts/autodev.py check-artifact` on {{proposal_file}}
 when you wrote it, and fix what it reports.
 
-Do NOT modify code. Return: counts by origin and confidence, and anything you
-could not cover.
+Do NOT modify code.
 
 ## Result
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
-`status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `MUST_FIX` when any introduced finding is must-fix, else `CLEAN`.
+`status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
+when you couldn't run. Your reply is the block. Above it, write only why, in one
+to three sentences, when `status` is `blocked` or `failed`, and what this file
+asks for there: your files hold everything else, and nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `MUST_FIX` when any introduced finding is must-fix, else `CLEAN`.
 
 ```auto-dev-result
 worker: security-reviewer

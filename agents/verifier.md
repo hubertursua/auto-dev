@@ -515,18 +515,14 @@ if you wrote it, and fix anything they report.
 Spill long output to {{artifact_dir}}/tmp/; keep each command under 5 minutes,
 except step 7's blocking mutation run.
 
-Return: the Tree line you wrote; one line per condition (number, verdict, tier);
-the unjustified integrity findings; the mutation summary and each Test gap (mutant, line, condition, and the
-behavior no test pins down); any defective acceptance check; the number of required changes in
-evidence/corrections.md; INSTALL CONFLICT (with its entries in
-evidence/corrections.md) or MUTATION LEFT CHANGES if either happened.
-
 ## Result
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
-`status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `INSTALL_CONFLICT` or `MUTATION_LEFT_CHANGES` when either happened; else `CORRECT` when any condition is unmet (even if its check is also defective), partial for a reason other than a defective check, or an integrity finding is Unjustified; `REPAIR` when every open condition is partial only because its check is defective; `ALL_MET` otherwise.
+`status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
+when you couldn't run. Your reply is the block. Above it, write only why, in one
+to three sentences, when `status` is `blocked` or `failed`, and what this file
+asks for there: your files hold everything else, and nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `INSTALL_CONFLICT` or `MUTATION_LEFT_CHANGES` when either happened; else `CORRECT` when any condition is unmet (even if its check is also defective), partial for a reason other than a defective check, or an integrity finding is Unjustified; `REPAIR` when every open condition is partial only because its check is defective; `ALL_MET` otherwise.
 
 ```auto-dev-result
 worker: verifier

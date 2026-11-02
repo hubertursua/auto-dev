@@ -98,7 +98,7 @@ are for. Two exits stop the re-runs early:
   fails after the third, stop, leave its report at fail with the reason, and return.
 - If a failure cannot be fixed in this phase (it traces to a design problem in the
   plan, not to code quality), stop re-running, leave its report at fail, and say
-  why in your return.
+  why there.
 If a warning must be suppressed, suppress it as narrowly as possible and explain why
 in the report.
 
@@ -107,12 +107,10 @@ Heads-up on tests (from profile.md test_notes): {{test_notes}}. Ensure prerequis
 Run the quality gate IN FULL — do not scope or sample it; it is the Definition of Done.
 Where a command is slow, run it in the background rather than blocking on it, and
 redirect its output to a file under {{artifact_dir}}/tmp/, reading back only its tail.
-Never paste a full suite or type-checker log into your return.
+Never paste a full suite or type-checker log into a report.
 
-Return: what you simplified, **any simplification you reverted and which check
-forced it**, the files Step 1 touched, and the final status of each `gate` command.
-Your result's `next` is `GREEN` (every check passes), `RED` (one can't be made
-green; say why), or `ACCEPTANCE_CHECK_FAILS_GATE` (a check fails only because
+Each check's final status is in its report. Your result's `next` is `GREEN` (every check passes), `RED` (one can't be made
+green; its report says why), or `ACCEPTANCE_CHECK_FAILS_GATE` (a check fails only because
 of an acceptance check's lines; name the file and the error).
 
 ## Scopes
@@ -144,8 +142,10 @@ for `outside`; a return that says it was skipped on any other scope is a bug.
 
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
-`status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `GREEN`, `RED` or `ACCEPTANCE_CHECK_FAILS_GATE`.
+`status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
+when you couldn't run. Your reply is the block. Above it, write only why, in one
+to three sentences, when `status` is `blocked` or `failed`, and what this file
+asks for there: your files hold everything else, and nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `GREEN`, `RED` or `ACCEPTANCE_CHECK_FAILS_GATE`.
 
 ```auto-dev-result
 worker: cleanup
