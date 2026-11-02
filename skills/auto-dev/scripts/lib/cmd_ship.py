@@ -79,9 +79,10 @@ pr-body --check <file>
     used as one, no absolute worktree or home path and nothing that looks like
     a secret, and each checklist of the repo's PR template is there with its
     items unchanged (ticked or not). The ID, term and tier checks skip what the
-    description quotes word for word (test names, commands and their output,
-    between `<!-- auto-dev:quoted -->` markers) as generate wrote it; a quoted
-    region edited since is checked like the rest.
+    description quotes word for word between `<!-- auto-dev:quoted -->`
+    markers (test names, commands and their output, and what the workers
+    wrote) as generate wrote it, and the condition titles and gate commands it
+    copies; a quoted region edited since is checked like the rest.
     Exit: 0 clean; 1 problems (each printed).
 
 cleanup-worktree
@@ -127,11 +128,12 @@ ID_DEF_RE = re.compile(rf"^\s*\|\s*({ID_FORM})\s*\||^#+\s*({ID_FORM})\b|"
 ID_SOURCES = ("SPEC.md", "acceptance/MANIFEST.md", "SPEC_EVAL.md", "CODE_REVIEW.md",
               "SECURITY_REVIEW.md")
 ID_USE_RE = re.compile(rf"(?<![\w/.-])({ID_FORM})(?![\w-])")
-# A region the PR description quotes word for word (cmd_pr.QUOTED). Its test
-# names, commands and output may carry an ID or a .auto-dev/ path the lint would
-# refuse, and nobody may edit them, so the ID, .auto-dev/ path, term and tier
-# checks skip a region generate() recorded (phase6.quoted holds each one's
-# digest). The other checks still run.
+# A region the PR description quotes word for word (cmd_pr.QUOTE_OPEN). Its
+# test names, commands and output, and the workers' words, may carry an ID or a
+# .auto-dev/ path the lint would refuse, and nobody may edit them, so the ID,
+# .auto-dev/ path, term and tier checks skip a region generate() recorded
+# (phase6.quoted holds each one's digest), and each title or command it copied
+# outside one (phase6.verbatim). The other checks still run.
 QUOTED_RE = re.compile(r"<!-- auto-dev:quoted -->\n.*?^ *<!-- /auto-dev:quoted -->$",
                        re.MULTILINE | re.DOTALL)
 # Terms only the pipeline uses; words like "verifier" are ordinary English.
@@ -590,6 +592,8 @@ def lint_body(text, state, checklist=True):
         problems.append(f"`Checked at commit {checked.group(1)}` is not the verified "
                         f"commit {verified}")
     prose = unquoted(text, state.get("phase6", {}).get("quoted", []))
+    for copied in state.get("phase6", {}).get("verbatim", []):
+        prose = prose.replace(copied, " ")
     if ARTIFACTS in prose:
         problems.append("names a .auto-dev/ path, which nobody else can open")
     own = run_ids(state.get("artifact_dir"))

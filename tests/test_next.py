@@ -1586,6 +1586,21 @@ class ShipTest(NextCase):
         self.assertIn("<!-- WRITE:", body.read_text())
         self.assertIn("quoted", self.state()["phase6"])
 
+    def test_a_body_written_before_titles_were_skipped_is_written_again(self):
+        # A run stopped on 4.21.0, whose description left a review's reason
+        # outside a quoted region, gets a fresh one on resume instead of the
+        # same refusal.
+        _sha, _url, _out, body = self.to_body()
+        state = self.state()
+        del state["phase6"]["verbatim"]
+        self.write_state(state)
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        self.resume()
+        self.assertIn(str(body), self.next(0)["ACTION"])
+        self.assertIn("<!-- WRITE:", body.read_text())
+        self.assertIn("verbatim", self.state()["phase6"])
+
     def merge_ready(self, first=()):
         sha, _ = self.open_pr(first=first)
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
@@ -1807,6 +1822,72 @@ class PublishTest(NextCase):
         r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("names a .auto-dev/ path", r.stdout)
+
+    def test_what_workers_wrote_is_quoted_so_the_body_passes_its_own_lint(self):
+        # A proxy cell naming .auto-dev/, a review's confidence reason and an
+        # open finding naming an ID, the verifier's plain words and a person's
+        # check naming one, a condition's own title naming one and a gate
+        # command naming .auto-dev/: generate copies each word for word, so
+        # the lint skips each, and pr publish no longer refuses the text
+        # generate wrote itself.
+        sha = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        state = self.state()
+        state["phase6"]["verified_sha"] = sha
+        state["settings"]["gate"][0]["command"] = "true --ignore .auto-dev/"
+        self.write_state(state)
+        spec = self.dir / "SPEC.md"
+        spec.write_text(spec.read_text().replace("with the earliest first",
+                                                 "with the earliest first, as in S1"))
+        manifest = self.dir / "acceptance" / "MANIFEST.md"
+        manifest.write_text(manifest.read_text().replace(
+            "## Not automatable\nNone.",
+            "## Not automatable\n"
+            "| # | Condition | Why no check can drive it | Proxy a verifier can run |\n"
+            "|---|-----------|---------------------------|--------------------------|\n"
+            "| 1 (Edge) | an invalid date is rejected | the formatter, not a test, judges it "
+            "| `npm run format:check` must exit 0 and list no file outside `.auto-dev/` |\n"))
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()).replace(
+            "must-fix decided 2–1: none", "must-fix decided 2–1: C1").replace(
+            "null due date crashes sort |", "null due date crashes sort, as S1 did |"))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
+            tree=self.tree()).replace("High/Medium verified: 1/1",
+                                      "High/Medium verified: 1/1 (S2 confirmed)"))
+        self.spec_eval(v1="partial")
+        eval_md = self.dir / "SPEC_EVAL.md"
+        eval_md.write_text(eval_md.read_text().replace(
+            "| Evidence |\n|---|-----------|---------|------|----------|",
+            "| Evidence | In plain words |\n"
+            "|---|-----------|---------|------|----------|----------------|").replace(
+            "(`evidence/C1.txt`) |",
+            "(`evidence/C1.txt`) | the date shows; S1 still holds |").replace(
+            "| 2 | sorted | met | Adequate | ran the sort |",
+            "| 2 | sorted | manual | Weak | a human must check: see S1 in `.auto-dev/x` | "
+            "none |"))
+        self.lint()
+        r = self.autodev("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        body = self.dir / "pr-body.md"
+        text = body.read_text()
+        self.assertIn("Already checked automatically: `npm run format:check` must exit 0 "
+                      "and list no file outside `.auto-dev/`", text)  # no doubled marks
+        self.assertIn("- [ ] **an invalid date is rejected → 400** <!-- auto-dev:quoted -->",
+                      text)
+        self.assertIn("must-fix decided 2–1: C1", text)
+        self.assertIn("(S2 confirmed)", text)
+        self.assertIn("the date shows; S1 still holds", text)
+        self.assertIn("1. see S1 in `.auto-dev/x`", text)
+        self.assertIn("crashes sort, as S1 did", text)
+        self.assertIn("1 problem that had to be fixed", text)
+        self.assertIn("- `true --ignore .auto-dev/`: passed", text)
+        written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
+        body.write_text(written)
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # A person ticking the box on GitHub leaves the quoted region as it was.
+        body.write_text(written.replace("- [ ] **an invalid date is rejected",
+                                        "- [x] **an invalid date is rejected"))
+        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_a_finding_s_plain_words_stay_in_its_own_block(self):
         review = OPEN_REVIEW.replace("## Pending re-vote", (

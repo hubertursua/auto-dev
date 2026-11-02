@@ -3153,9 +3153,11 @@ def commit_step(c):
 def body_step(c, sha):
     from . import cmd_pr  # imported here: cmd_pr imports this module's helpers
     body = c.p6.get("body") or {}
-    # A description written before 4.0.2 has no quoted regions, so the lint
-    # refuses an ID it quotes: write it again, unless a PR already carries it.
-    if body.get("sha") != sha or ("quoted" not in c.p6 and not c.p6.get("pr")):
+    # A description written before 4.21.1 left some of what it copies outside
+    # a quoted region (before 4.0.2, it had none), so the lint refuses an ID
+    # it copied: write it again, unless a PR already carries it.
+    old = "quoted" not in c.p6 or "verbatim" not in c.p6
+    if body.get("sha") != sha or (old and not c.p6.get("pr")):
         c.would("generate the PR description for the verified commit",
                 "the commit is pushed: the PR opens next")
         path = cmd_pr.generate(c.state, c.ad, sha)

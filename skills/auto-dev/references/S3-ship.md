@@ -118,8 +118,11 @@ auto-dev, and keep every `## ` heading as it is:
 
 No condition IDs (`C1`), no finding IDs, no `.auto-dev/` paths, no words like
 "verifier" or "pipeline". What the description quotes word for word (test
-names, commands and their output, the verifier's reasons under Changes to
-tests and Test strength, between the `<!-- auto-dev:quoted -->` markers) is exempt from the ID, `.auto-dev/` path, term and tier checks; it is not in
+names, commands and their output, and what the workers wrote: the verifier's
+plain words and reasons, each check for a person, and the reviews' reasons and
+open findings, between the `<!-- auto-dev:quoted -->` markers), and each
+condition title and gate command it copies, is exempt from the ID,
+`.auto-dev/` path, term and tier checks; it is not in
 `pr-write.md`, and not yours to edit. Change nothing else in `pr-write.md`:
 the follow-ups the user sent to a separate PR at the PR gate are already listed
 in the description.
