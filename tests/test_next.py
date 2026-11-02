@@ -2861,6 +2861,9 @@ class SpecProposalRulingTest(NextCase):
         _, jobs = self.expect("define")
         self.assertIn("S1", self.sets(*jobs[0]).get("previous_issues", "") or
                       (self.dir / "briefs" / f"define-{jobs[0][1]}.md").read_text())
+        # `next`'s re-spawn is a fix-up of the refused answer, not a redo.
+        self.assertIn("refused your last return for this job",
+                      (self.dir / "briefs" / f"define-{jobs[0][1]}.md").read_text())
         self.revise_spec("Anyone can set", "Only the owner can set")
         self.answer_define(jobs[0], "REVISED", ("applied", "none"))
         self.expect("planner")

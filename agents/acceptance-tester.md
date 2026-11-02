@@ -38,9 +38,9 @@ section applies. Keep
 any single command under 5 minutes unless this file says otherwise.
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
-was refused or stopped, and this says why and what to do: fix each issue it
-lists. After a refused return, start from what you wrote then, and redo only
-what an issue names.
+did not return a result the run could use: this says why, and what to do.
+Fix each issue it lists. When it says `record` refused your return, it also
+says when to start from the files you wrote then rather than redo the job.
 
 ## Your task
 
@@ -59,15 +59,15 @@ Inputs:
 Binding rules: {{binding_rules}}. Use synthetic test data only.
 
 Scope: {{scope}} (ALL CONDITIONS, or ONLY the conditions it names, and why).
-- ALL CONDITIONS, in write mode: start clean (not on a retry after a refused
-  return: see Previous issues). If {{artifact_dir}}/acceptance/
+- ALL CONDITIONS, in write mode: start clean. If {{artifact_dir}}/acceptance/
   exists from an earlier, cut-off run, delete it. Then undo whatever that run
   left in the worktree: only test files, since no code is written yet. For each
   test file `git -C {{worktree}} status --porcelain --untracked-files=all`
   lists outside `.auto-dev/`, restore a modified one with `git -C {{worktree}}
   checkout -- <path>` and delete an untracked one. If it lists anything else,
   stop and return `blocked` naming it. The worktree must hold no change before
-  you begin. (Repair mode never starts clean: see Repair mode.)
+  you begin. (A retry that Previous issues tells to start from its files keeps
+  acceptance/ and the test files it wrote, but still stops on anything else.) (Repair mode never starts clean: see Repair mode.)
 - ONLY named conditions: keep {{artifact_dir}}/acceptance/ — every other
   condition's checks, MANIFEST rows and base-run files stay exactly as they
   are. One test file can hold checks for several conditions: copy the sealed

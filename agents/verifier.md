@@ -38,9 +38,9 @@ any single command under 5 minutes unless this file says otherwise (step 7's
 blocking mutation run is the one exception).
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
-was refused or stopped, and this says why and what to do: fix each issue it
-lists. After a refused return, start from what you wrote then, and redo only
-what an issue names.
+did not return a result the run could use: this says why, and what to do.
+Fix each issue it lists. When it says `record` refused your return, it also
+says when to start from the files you wrote then rather than redo the job.
 
 ## Your task
 
@@ -65,7 +65,7 @@ evidence/mutation-cold-run.txt from earlier passes (step 7).
 
 Mode: {{mode}} (first pass, or re-check after {{what_changed}}). On a
 re-check, do NOT read the existing SPEC_EVAL.md: judge from scratch and overwrite
-it (not on a retry after a refused return: see Previous issues).
+it (unless Previous issues tells you to start from this pass's own report).
 
 Throughout, CUT means {{cut}}, the commit the worktree was cut from. Never diff
 against origin/{{base}} directly — it moves when anything fetches.

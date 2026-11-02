@@ -13,7 +13,8 @@ brief lookup --out <dir> --set worktree=<repo> --set question="<question>"
     the caller passes it (`--set tree=<hash noted before the panel>`). `--retry N` marks the brief
     as a re-spawn of job <worker>-N, which `record` refused: its
     `previous_issues` slot carries the issues saved for that job, after a line
-    telling the worker to fix up its refused return rather than redo the job (--set
+    telling the worker to fix up its refused return rather than redo the job
+    (none when it wrote no result file) (--set
     overrides), and job N is marked replaced, so `next` never re-spawns it
     too. Without --retry it is `none`. It refuses when a slot the worker needs has no value.
     A brief for a spec-proposal filer (the verifier, the review judge, the
@@ -361,10 +362,15 @@ def blocked_last(state, worker, mode=None):
         log[-1].get("status") == "blocked"
 
 
-REFUSED_RETRY = ("Your last return for this job was refused, and whatever you wrote for "
-                 "it is still in place. Start from it: fix each issue below and return "
-                 "again. Redo no work an issue doesn't name, even where your instructions "
-                 "say to start clean or judge from scratch.")
+REFUSED_RETRY = ("`record` refused your last return for this job, and the files you wrote "
+                 "for it are still in place. If they are complete, and any Tree line in "
+                 "them is the tree now, start from them: fix each issue below, redo what "
+                 "your fix makes stale (re-run, re-save, re-seal, re-judge and re-stamp "
+                 "the Tree line of whatever depends on what you change, as your "
+                 "instructions say), and redo nothing else, even where your instructions "
+                 "say to start clean or from scratch. If they are missing, partial or "
+                 "from an earlier pass, do the job as your instructions say.")
+NO_RESULT = "you wrote no result file at"  # MISSING: nothing returned to fix up
 
 
 def saved_issues(state, worker, retry):
@@ -376,6 +382,8 @@ def saved_issues(state, worker, retry):
     if not issues:
         raise Fail(f"--retry {retry}: record refused no return for {job(worker, retry)}",
                    FAILED, "REFUSED")
+    if issues[0].startswith(NO_RESULT):
+        return issues_text(issues)
     return REFUSED_RETRY + "\n" + issues_text(issues)
 
 
@@ -581,7 +589,7 @@ def load_return(ad, worker, n):
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise Refused("MISSING", f"no {path}: the worker wrote no result file",
-                      [f"you wrote no result file at {path}"]) from None
+                      [f"{NO_RESULT} {path}"]) from None
     except ValueError as exc:
         raise Refused("MALFORMED", f"{path} is not JSON",
                       [f"{path} is not JSON: {exc}"]) from None
