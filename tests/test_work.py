@@ -1656,6 +1656,47 @@ class UpstreamProposalRecordTest(WorkCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.state()["briefs"][-1]["sealed"], name)
 
+    def test_an_entry_point_repair_takes_a_fresh_copy_after_an_ok_one(self):
+        scope = {"scope": "ONLY conditions 2: x", "report": "y"}
+        t = self.brief("acceptance-tester", as_mode="repair", **scope)
+        name = self.entry("acceptance-tester", t)["sealed"]
+        self.returned("acceptance-tester", t, status="failed", next="none")
+        self.ok(self.cmd("record", "acceptance-tester", t))
+        # A re-spawn after the failed answer is held to the first copy.
+        self.assertEqual(self.entry("acceptance-tester", self.brief(
+            "acceptance-tester", as_mode="repair", **scope))["sealed"], name)
+        t = self.brief("acceptance-tester", as_mode="repair", **scope)
+        self.returned("acceptance-tester", t, next="STANDS", checks="1", ambiguous="none")
+        self.ok(self.cmd("record", "acceptance-tester", t))
+        # The second repair, after an ok one, starts from MANIFEST.md as it is now.
+        repaired = MANIFEST.replace("failed: unsorted", "not re-run (repair)")
+        self.write("acceptance/MANIFEST.md", repaired)
+        fresh = self.entry("acceptance-tester", self.brief(
+            "acceptance-tester", as_mode="repair", **scope))["sealed"]
+        self.assertNotEqual(fresh, name)
+        self.assertEqual((self.dir / "proposals" / "snapshots" / fresh / "MANIFEST.md")
+                         .read_text(), repaired)
+
+    def test_a_spec_change_planner_takes_a_fresh_copy_after_an_ok_one(self):
+        change = {"spec_change": "condition 1 reads differently"}
+        p = self.brief("planner", as_mode="revise", **change)
+        sha = self.entry("planner", p)["plan"]
+        self.returned("planner", p, status="failed", next="none")
+        self.ok(self.cmd("record", "planner", p))
+        self.assertEqual(self.entry("planner", self.brief(
+            "planner", as_mode="revise", **change))["plan"], sha)
+        p = self.brief("planner", as_mode="revise", **change)
+        revised = PLAN.replace("Log each", "Record each")
+        self.assertNotEqual(revised, PLAN)
+        self.write("IMPLEMENTATION.md", revised)
+        self.returned("planner", p, next="REVISED", entry_points_changed="no")
+        self.ok(self.cmd("record", "planner", p))
+        # The second spec change starts from the plan as the first one left it.
+        fresh = self.entry("planner", self.brief("planner", as_mode="revise", **change))["plan"]
+        self.assertNotEqual(fresh, sha)
+        self.assertEqual((self.dir / "proposals" / "snapshots" / f"plan-{fresh}.md")
+                         .read_text(), revised)
+
     def blocked_coder(self, line):
         """A building coder that stopped step 3, filed P1 on it and wrote `line`
         as its blocked file. Returns record's result."""
@@ -1703,6 +1744,23 @@ class UpstreamProposalRecordTest(WorkCase):
         self.returned("coder", n, next="BLOCKED", blocked="1", test_changes="none",
                       proposals="0")
         self.refused(self.cmd("record", "coder", n), "does not exist")
+
+    def test_a_blocked_file_with_one_good_and_one_bold_step_line_is_refused(self):
+        r = self.blocked_coder("- step 3: the store has no lookup\n"
+                               "- **Step 4:** it reads the lookup")
+        self.refused(r, "'- **Step 4:** it reads the lookup'",
+                     "can't be read as a stopped step")
+        self.assertNotIn("step 3: the store", r.stdout + r.stderr)
+
+    def test_a_blocked_file_in_bold_with_only_a_check_proposal_is_recorded(self):
+        # The planner reads the stopped steps only with a plan proposal.
+        n = self.brief("coder", as_mode="correction", corrections_file=str(
+            self.write("evidence/corrections.md", CORRECTION)))
+        self.write(f"proposals/coder-{n}.md", coder_file(check_block(1, SORT_CHECK)))
+        self.write(f"blocked/coder-{n}.md", "- **Step 3:** the store has no lookup\n")
+        self.returned("coder", n, next="BLOCKED", blocked="1", test_changes="none",
+                      proposals="1")
+        self.ok(self.cmd("record", "coder", n))
 
     # ------------------------------------------------------------ the planner
 
@@ -2084,6 +2142,89 @@ class UpstreamProposalRecordTest(WorkCase):
         self.assertNotEqual(rows, MANIFEST)
         self.ok(self.checks_answer([None], rulings_text(("repaired", "none")), "REPAIRED",
                                    [self.DUE], rows=rows))
+
+    # Each of outside_rows' clauses on its own, on SHARED_MANIFEST: conditions
+    # 3 and 5 share check X (`due` :: "shows the due date").
+    ROW_3 = ('| 3 | due date shown | `src/due.acceptance.test.ts` :: "shows the due date" | '
+             "Example | integration | fail-to-pass | failed: no field |\n")
+    ROW_5 = ('| 5 | due label | `src/due.acceptance.test.ts` :: "shows the due date" | Edge | '
+             "integration | fail-to-pass | failed: no field |\n")
+
+    def shared_rows(self, row_3=None, row_5=None):
+        """SHARED_MANIFEST with condition 3's and 5's rows replaced."""
+        rows = self.SHARED_MANIFEST
+        self.assertIn(self.ROW_3, rows)
+        self.assertIn(self.ROW_5, rows)
+        rows = rows.replace(self.ROW_3, self.ROW_3 if row_3 is None else row_3)
+        return rows.replace(self.ROW_5, self.ROW_5 if row_5 is None else row_5)
+
+    def test_a_named_batch_may_not_delete_a_row_it_shares_with_a_condition_outside_it(self):
+        self.refused(self.repair_on_3(self.shared_rows(row_5="")),
+                     "MANIFEST.md's rows for condition 5 changed")
+
+    def test_a_named_batch_may_not_renumber_a_row_it_shares(self):
+        self.refused(self.repair_on_3(self.shared_rows(
+            row_5=self.ROW_5.replace("| 5 |", "| 7 |"))),
+            "MANIFEST.md's rows for condition 5 changed")
+
+    def test_a_named_batch_may_not_add_a_row_on_a_shared_check_for_another_condition(self):
+        self.refused(self.repair_on_3(self.shared_rows(
+            row_5=self.ROW_5 + self.ROW_5.replace("| 5 | due label |", "| 7 | overdue |"))),
+            "MANIFEST.md's rows for condition 7 changed")
+
+    def test_a_named_batch_may_not_rename_a_shared_check_to_one_no_repaired_row_names(self):
+        self.refused(self.repair_on_3(self.shared_rows(
+            row_3=self.ROW_3.replace('"shows the due date"', '"shows it beside the title"'),
+            row_5=self.ROW_5.replace('"shows the due date"', '"shows it in its own column"'))),
+            "MANIFEST.md's rows for condition 5 changed")
+
+    def test_a_named_batch_may_not_point_another_conditions_own_row_at_a_shared_check(self):
+        rows = self.LABEL_MANIFEST.replace('"shows the due label"', '"shows the due date"')
+        self.refused(self.repair_on_3(rows, base=self.LABEL_MANIFEST),
+                     "MANIFEST.md's rows for condition 5 changed")
+
+    def test_a_named_batch_may_not_move_an_outside_row_onto_a_check_it_added(self):
+        # Condition 3 keeps its row on X and adds one on a new check Z; moving
+        # condition 5's row from X to Z is no rename, though the counts agree.
+        new = '"shows the due date beside the title"'
+        self.refused(self.repair_on_3(self.shared_rows(
+            row_3=self.ROW_3 + self.ROW_3.replace('"shows the due date"', new),
+            row_5=self.ROW_5.replace('"shows the due date"', new))),
+            "MANIFEST.md's rows for condition 5 changed")
+
+    def test_a_named_batch_may_change_another_cell_of_a_row_it_shares(self):
+        def rerun(row):
+            return row.replace("failed: no field", "not re-run (repair)")
+        self.ok(self.repair_on_3(self.shared_rows(row_3=rerun(self.ROW_3),
+                                                  row_5=rerun(self.ROW_5))))
+
+    # A stands reason written into MANIFEST.md: the coder's brief quotes its
+    # test names (acceptance_paths).
+    LEAK_REASON = "the owner rule must stay strict for every caller of the route"
+
+    def test_a_manifest_row_renamed_to_a_stands_reason_is_refused(self):
+        rulings = rulings_text(("repaired", "none"), ("stands", self.LEAK_REASON))
+        rows = MANIFEST.replace('"rejects an invalid date"', f'"{self.LEAK_REASON}"')
+        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", rows=rows),
+                     "acceptance/MANIFEST.md repeats P2's stands reason")
+        # Renamed to other words, it records.
+        rows = MANIFEST.replace('"rejects an invalid date"', '"rejects a date it cannot read"')
+        self.ok(self.checks_answer(["1", "S1"], rulings, "REPAIRED", rows=rows))
+
+    def test_a_manifest_row_added_with_a_stands_reason_is_refused(self):
+        rulings = rulings_text(("repaired", "none"), ("stands", self.LEAK_REASON))
+        rows = MANIFEST.replace("\n| 2 |", (
+            f'\n| 1 | due date shown | `src/due.acceptance.test.ts` :: "{self.LEAK_REASON}" | '
+            "Edge | integration | fail-to-pass | failed: 200 |\n| 2 |"))
+        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", rows=rows),
+                     "acceptance/MANIFEST.md repeats P2's stands reason")
+
+    def test_a_manifest_row_with_a_stands_reason_is_refused_with_an_unnamed_item(self):
+        rulings = rulings_text(("repaired", "none"), ("stands", self.LEAK_REASON))
+        rows = MANIFEST.replace('"rejects an invalid date"', f'"{self.LEAK_REASON}"')
+        self.refused(self.checks_answer([None, "2"], rulings, "REPAIRED", [self.DUE],
+                                        rows=rows),
+                     "acceptance/MANIFEST.md repeats P2's stands reason")
 
     # ------------------------------------------------------------ the log
 

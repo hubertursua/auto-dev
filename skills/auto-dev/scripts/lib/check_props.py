@@ -297,8 +297,9 @@ def render_batch(items, rows_):
 
 def answer_issues(ad, sets, issued, nxt):
     """The tester's answer to a batch of check proposals: a ruling for each
-    item, `next` that agrees with them, and the sealed copies and MANIFEST.md
-    changed only as the rulings allow."""
+    item, `next` that agrees with them, the sealed copies and MANIFEST.md
+    changed only as the rulings allow, and no stands reason written into
+    either."""
     batch = Path(proposals._batch_path(sets))
     rulings_path = Path(str(sets.get("rulings_file") or ""))
     text = _read(batch)
@@ -375,6 +376,14 @@ def answer_issues(ad, sets, issued, nxt):
             issues.append(f"acceptance/files/{rel}.sealed repeats {pid}'s stands reason "
                           f"(\"{phrase}\"): a coder's correction brief names this file, so "
                           "keep the reason out of it")
+    # The coder's and cleanup's briefs quote MANIFEST.md's test names
+    # (acceptance_paths), so a renamed or added row may not carry the reason.
+    for pid, phrase in proposals.repeats(
+            _read(snapshot_dir(ad, name) / "MANIFEST.md") or "",
+            _read(Path(ad) / "acceptance" / "MANIFEST.md") or "", reasons):
+        issues.append(f"acceptance/MANIFEST.md repeats {pid}'s stands reason (\"{phrase}\"): "
+                      "the coder's and cleanup's briefs quote its test names, so keep the "
+                      "reason out of it")
     return issues
 
 
@@ -385,11 +394,15 @@ def _row_key(r):
 def outside_rows(ad, name, repaired, stood):
     """A named batch changes MANIFEST.md's rows only for a condition it ruled
     repaired: each condition outside the batch whose rows changed is refused,
-    unless the change is the rename of a check it shares with a repaired
-    condition. Each row it lost must name a check (path and test name) a
-    repaired condition's row named in the snapshot, each row it gained one a
-    repaired condition's row names now, and the two pair one to one, so a
-    deleted row, a row moved to another condition and a new row are refused."""
+    unless each row it lost pairs with its own row it gained, and each pair
+    is either the same check (path and test name), which a repaired
+    condition's row names both in the snapshot and now, with only another
+    cell changed, or the rename of a check it shared with a repaired
+    condition: that condition's rows lost check X and gained check Z, and no
+    repaired condition's row names X now or named Z in the snapshot. So a
+    deleted row, a row moved to another condition, a new row, and a row moved
+    onto a check a repaired condition added beside the one it kept are
+    refused."""
     rows_before = rows_of(snapshot_dir(ad, name) / "MANIFEST.md")
     rows_after = rows(ad)
     keys_before = {_row_key(r) for r in rows_before}
@@ -405,15 +418,35 @@ def outside_rows(ad, name, repaired, stood):
                      if r["#"].strip() in repaired} - {None}
     shared_after = {ref(r[CHECK_COLUMN]) for r in rows_after
                     if r["#"].strip() in repaired} - {None}
+    renames = {(x, z) for cid in repaired for x in gone.get(cid, []) for z in added.get(cid, [])
+               if x in shared_before - shared_after and z in shared_after - shared_before}
+    kept = shared_before & shared_after
+
+    def pairs(x, z):
+        return (x == z and x in kept) or (x, z) in renames
     issues = []
     for cid in _sort((set(gone) | set(added)) - set(repaired) - set(stood)):
         lost, gained = gone.get(cid, []), added.get(cid, [])
-        renamed = (len(lost) == len(gained)
-                   and all(check in shared_before for check in lost)
-                   and all(check in shared_after for check in gained))
-        if not renamed:
+        if len(lost) != len(gained) or not _match(lost, gained, pairs):
             issues.append(f"MANIFEST.md's rows for condition {cid} changed, but no ruling in "
                           "this batch repaired it: change rows only for a condition you "
                           "ruled repaired, and another condition's row only to rename a "
                           "check the two share; restore them")
     return issues
+
+
+def _match(lost, gained, pairs):
+    """Whether each check in `lost` pairs with its own one in `gained`, by
+    `pairs(lost_check, gained_check)` (a perfect matching, found by
+    augmenting paths)."""
+    owner = [None] * len(gained)
+
+    def place(i, seen):
+        for j, check in enumerate(gained):
+            if j not in seen and pairs(lost[i], check):
+                seen.add(j)
+                if owner[j] is None or place(owner[j], seen):
+                    owner[j] = i
+                    return True
+        return False
+    return all(place(i, set()) for i in range(len(lost)))

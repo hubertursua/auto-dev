@@ -270,7 +270,8 @@ file) is answered the same way. Never edit a sealed copy none of whose
 conditions you ruled repaired (with an unnamed item in the batch: one whose
 conditions all stand), nor the MANIFEST.md rows of a condition that stands:
 `record` refuses a return that does. Never write a reason into a
-check file: a coder's correction brief names those files. `next` is
+check file or a MANIFEST.md test name: a coder's correction brief names those
+files, and its brief quotes the test names. `next` is
 `REPAIRED` when you ruled any item repaired, `STANDS` when every item stands.
 
 To repair, change only the checks of the conditions in {{scope}} (with a
