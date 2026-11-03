@@ -915,11 +915,28 @@ def result_issues(worker, data, ad, state, n):
         issues += derive_judge(data, ad, state)
     elif worker == "triager":
         issues += derive_triager(data, ad, n)
-    elif worker == "lookup" and nxt == "ANSWERED":
-        answer = ad / "lookups" / f"{n}.md"
-        if not answer.is_file() or not answer.read_text(encoding="utf-8").strip():
-            issues.append(f"next is ANSWERED but {answer} holds no answer")
+    elif worker == "lookup":
+        issues += lookup_issues(nxt, ad / "lookups" / f"{n}.md")
     return issues
+
+
+def lookup_issues(nxt, answer):
+    """A lookup's `next` must agree with its answer file: an answer for
+    ANSWERED, and for OUT_OF_SCOPE only the one `OUT_OF_SCOPE:` line, since the
+    orchestrator acts on what a lookup says without checking it."""
+    text = answer.read_text(encoding="utf-8").strip() if answer.is_file() else ""
+    declined = text.lstrip("*`# ").startswith("OUT_OF_SCOPE")
+    if nxt == "ANSWERED" and not text:
+        return [f"next is ANSWERED but {answer} holds no answer"]
+    if nxt == "ANSWERED" and declined:
+        return [(f"next is ANSWERED but {answer} starts with OUT_OF_SCOPE: return "
+                 "`next: OUT_OF_SCOPE`, or answer the question")]
+    if nxt == "OUT_OF_SCOPE" and not declined:
+        return [f"next is OUT_OF_SCOPE but {answer} holds no `OUT_OF_SCOPE: <why>` line"]
+    if nxt == "OUT_OF_SCOPE" and len(text.splitlines()) > 1:
+        return [(f"next is OUT_OF_SCOPE but {answer} holds more than the `OUT_OF_SCOPE:` "
+                 "line: decline a verdict question in one line, with no part of an answer")]
+    return []
 
 
 def coder_bound(path, ad, what):

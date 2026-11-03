@@ -165,9 +165,15 @@ instead of reading it. It answers only these kinds of question:
 - where a symbol is defined or used;
 - whether a file or diff contains something;
 - what a section of a long artifact says;
-- which files a change touches, and what each change does.
+- which files a change touches, and what each change does;
+- what a piece of code does in a case you name.
 
-It never judges whether anything is right. To ask one:
+Ask for a fact, never a verdict. Whether code is correct, safe or done, or
+what should change, comes from the verifier and the reviewers, who check it
+against evidence; a lookup returns `OUT_OF_SCOPE` for such a question. Ask
+what the code does instead ("what does `<function>` return when the list is
+empty?"). When a lookup returns `OUT_OF_SCOPE`, ask the question of fact it
+suggests after `ask instead:`, or go on without the answer. To ask one:
 
 1. `autodev.py brief lookup --set question='<the question>' --dir <artifact-dir>`
 2. Spawn the agent it names with the prompt it prints.
