@@ -361,6 +361,21 @@ class PlanTest(NextCase):
         self.after(out)
         self.expect("define-reviewer")
 
+    def test_a_ticket_already_in_progress_is_not_moved_or_asked_about(self):
+        state = self.state()
+        state["task"]["ticket"] = "TODO-7"
+        self.write_state(state)
+        self.expect("define", "FITS", high_risk="yes", reading="none")
+        out = self.next(5)
+        # Read the status first: a ticket in progress already is not asked about.
+        self.assertIn("first read TODO-7's status", out["ACTION"])
+        self.assertIn('run the "Already In Progress" AFTER line', out["ACTION"])
+        self.assertIn("Already In Progress", out["QUESTION"])
+        self.after(out, "Already In Progress")
+        self.assertEqual(self.state()["gates"][-1]["choice"], "already")
+        self.expect("define-reviewer")  # no move now
+        self.assertNotIn("jira-in-progress", self.state().get("marks", {}))
+
     def test_fix_blocks_are_applied_and_the_re_review_spends_a_round(self):
         self.expect("define", "FITS", high_risk="yes", reading="none")
         out, jobs = self.expect("define-reviewer")
@@ -1215,6 +1230,19 @@ class ShipTest(NextCase):
         out = self.next(5)  # the pass after Open PR, before the commit: the gate again
         self.assertIn("pr gate", out["QUESTION"])
         self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
+
+    def test_a_ticket_already_in_progress_still_moves_to_in_review(self):
+        self.open_pr()
+        state = self.state()
+        state["task"]["ticket"] = "TODO-7"
+        state["gates"].append({"gate": "jira", "choice": "already", "reason": None,
+                               "at": "2026-01-01T00:00:00Z", "seq": 1})
+        self.write_state(state)
+        out = self.next(0)
+        self.assertIn("move Jira ticket TODO-7 to `In Review`", out["ACTION"])
+        state["gates"][-1]["choice"] = "leave"
+        self.write_state(state)
+        self.assertNotIn("move Jira ticket", self.next(0)["ACTION"])
 
     def test_ship_session_runs_to_the_merge(self):
         sha, _ = self.open_pr()

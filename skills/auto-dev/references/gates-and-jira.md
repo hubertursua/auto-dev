@@ -19,6 +19,15 @@ user named the server (`mcp__atlassian__getJiraIssue`,
 No match means Jira is unavailable: tell the user, and run the step's `AFTER`
 line with `--value skipped`.
 
+## Asking first
+
+Before it asks whether to move the ticket to In Progress, read the ticket's
+status: steps 1 and 2 below. IF it is already at In Progress or past it (In
+Review or Done), don't ask: tell the user, and run the `Already In Progress`
+`AFTER` line (the label names `jira.states`' In Progress name when one is
+set). IF Jira can't be read, ask as usual. A user who answers `Already In
+Progress` gets the same: no move now, and the later milestones move the ticket.
+
 ## Moving a ticket
 
 `next` names the ticket and the target state (from `jira.states` in

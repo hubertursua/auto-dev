@@ -4,6 +4,19 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.23
+
+- **The Jira In Progress question has an `Already In Progress` answer.**
+  Before asking, the orchestrator reads the ticket's status. When the ticket
+  is already In Progress or past it, it doesn't ask: it records `gate jira
+  already`, makes no move then, and still moves the ticket to In Review and
+  Done at the later milestones. You can give the same answer yourself, for
+  example when Jira can't be read. Before, the only answers were `Move it`,
+  `Leave Jira alone` (no moves for the whole run) and `Stop`.
+- **Resume:** a run in flight resumes. A run waiting at the Jira question is
+  asked the new question when it resumes; a run past it keeps the answer it
+  gave.
+
 ## Upgrading from 4.22
 
 Several workers change model or effort. The first three changes below were
