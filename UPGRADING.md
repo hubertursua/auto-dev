@@ -4,6 +4,20 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.24
+
+- **`record` holds the workers that never change the repo to that.** The
+  planner, Define, the Define and plan reviewers, the review judge and the
+  triager each get a snapshot of the worktree with their brief. When one of
+  them changed a file outside `.auto-dev/`, `record` refuses its result,
+  names the files, keeps the worker's versions in `.auto-dev/tree/<worker>-<n>/`
+  and puts the files back. Before, only their instructions kept them out of the
+  code. A change someone else could have made is left alone: a file written
+  after the worker returned, a commit, or anything while a worker that writes
+  code was out.
+- **Resume:** a run in flight resumes. A brief written before the upgrade holds
+  no snapshot, so its result is recorded as before.
+
 ## Upgrading from 4.23
 
 - **The Jira In Progress question has an `Already In Progress` answer.**

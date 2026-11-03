@@ -5,7 +5,8 @@ for every path `git status` lists outside the artifact dir, its content (a
 blob written to the repo's object store, so it can be put back) or that it
 is gone. `record` takes another and compares them. A path that differs is
 backed up to <artifact dir>/tree/<worker>-<n>/ and put back as it was at
-the brief, and the return is refused naming it.
+the brief, and the return is refused naming it. Files git ignores are not
+compared.
 
 Only a change the worker could have made counts: `record` skips the check
 when anything else may have written to the tree in the meantime (see
@@ -23,8 +24,10 @@ from .output import CANNOT_RUN, Fail
 # Workers that run alone and never change a repo file. The code reviewers and
 # the security reviewers run side by side, so a change could not be pinned on
 # one; the verifier and cleanup run the repo's tests and tools.
-GUARDED = ("define", "define-reviewer", "planner", "plan-reviewer", "lookup",
-           "review-judge", "triager")
+# Lookups are left out: the orchestrator sends one to answer the user at a gate,
+# while the user may be editing the code.
+GUARDED = ("define", "define-reviewer", "planner", "plan-reviewer", "review-judge",
+           "triager")
 CLEAN = "clean"  # the path matches HEAD: `git status` doesn't list it
 SUBMODULE = "dir"
 
@@ -131,6 +134,14 @@ def remove(full):
         full.unlink()
 
 
+def clear_up(full, top):
+    """Remove the folders between `full` and `top` (included) left empty."""
+    folder = full.parent
+    while folder != top.parent and folder.is_dir() and not any(folder.iterdir()):
+        folder.rmdir()
+        folder = folder.parent
+
+
 def restore(worktree, path, was):
     full = worktree / path
     if was == CLEAN:  # tracked at HEAD (the caller checked)
@@ -170,10 +181,13 @@ def put_back(worktree, before, paths, backup):
             new.append(path)
         else:
             rest.append(path)
-    for path in new:  # only a file standing where a folder must come back
-        if any(other.startswith(path + "/") for other in rest):
+    for path in new:  # first, only what stands in the way of a path coming back
+        under = next((other for other in rest if path.startswith(other + "/")), None)
+        if any(other.startswith(path + "/") for other in rest) or under:
             try:
                 remove(worktree / path)
+                if under:  # a file turned into a folder: empty it back out
+                    clear_up(worktree / path, worktree / under)
             except OSError:
                 left.append(path)
     for path in rest:
@@ -203,10 +217,7 @@ def issues(worker, n, before, worktree, ad, returned_at):
     worktree = Path(worktree)
     after = snapshot(worktree, ad)
     if after["head"] != before["head"]:
-        return [(f"{worker}-{n} moved HEAD from {before['head'][:12]} to "
-                f"{after['head'][:12]} (a commit, checkout or reset); a {worker} never "
-                "changes the repo. `record` leaves HEAD where it is: the run can't go "
-                "on until HEAD is back where it was")]
+        return []  # a commit since the brief: an outside commit, which Phase 6 checks
     paths = [p for p in changed(before, after)
              if not written_after(worktree / p, returned_at)]
     if not paths:

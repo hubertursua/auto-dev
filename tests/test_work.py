@@ -1082,14 +1082,23 @@ NEW_CRITERION = """
 
 class TreeGuardTest(WorkCase):
     """A worker that never changes the repo (planner, define, the spec and plan
-    reviewers, lookup, the review judge, the triager) is held to the tree it
-    was briefed on: `record` refuses a change outside .auto-dev/ and puts it
-    back."""
+    reviewers, the review judge, the triager) is held to the tree it was
+    briefed on: `record` refuses a change outside .auto-dev/ and puts it back,
+    but only a change the worker could have made."""
 
     def git(self, *args):
         return self.sh("git", "-C", str(self.worktree), *args)
 
-    def test_record_refuses_a_lookup_that_changed_files_and_puts_them_back(self):
+    def reviewer(self):
+        return self.job("plan-reviewer")
+
+    def answered(self, n):
+        self.returned("plan-reviewer", n, status="blocked")
+
+    def record(self, n):
+        return self.cmd("record", "plan-reviewer", str(n))
+
+    def test_record_refuses_a_change_and_puts_the_files_back(self):
         wt = self.worktree
         (wt / "app.ts").write_text("export const one = 2;\n")  # dirty before the brief
         (wt / "notes.txt").write_text("the user's\n")           # untracked before it
@@ -1099,131 +1108,40 @@ class TreeGuardTest(WorkCase):
         self.git("commit", "-q", "-m", "tool")
         os.chmod(wt / "tool.sh", 0o755)
         env = (wt / ".env").read_text()
-        n = self.job("lookup", question="Where is `one` defined?")
+        n = self.reviewer()
         # The worker edits a dirty file, deletes an untracked one, changes a
         # clean one's mode and text, adds a file, un-ignores .env, and writes
-        # its answer where it should.
+        # its own file where it should.
         (wt / "app.ts").write_text("export const one = 3;\n")
         (wt / "notes.txt").unlink()
         (wt / "tool.sh").write_text("#!/bin/sh\necho hi\n")
         os.chmod(wt / "tool.sh", 0o644)
         (wt / "new.ts").write_text("export {};\n")
         (wt / ".gitignore").write_text("setup-ran.txt\n")
-        self.write(f"lookups/{n}.md", "`one` is defined at app.ts:1\n")
-        self.returned("lookup", n, next="ANSWERED", answer_file="")
-        r = self.cmd("record", "lookup", str(n))
+        self.write("fixes/plan-1.md", "none\n")
+        self.answered(n)
+        r = self.record(n)
         self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(f"plan-reviewer-{n} changed 6 repo file(s)", r.stdout)  # with .env
         for path in (".gitignore", "app.ts", "new.ts", "notes.txt", "tool.sh"):
             self.assertIn(path, r.stdout)
-        self.assertNotIn("lookups/", r.stdout.split("issue")[1])
         self.assertEqual((wt / "app.ts").read_text(), "export const one = 2;\n")
         self.assertEqual((wt / "notes.txt").read_text(), "the user's\n")
         self.assertEqual((wt / "tool.sh").read_text(), "#!/bin/sh\n")
         self.assertTrue(os.access(wt / "tool.sh", os.X_OK))
         self.assertFalse((wt / "new.ts").exists())
         self.assertEqual((wt / ".env").read_text(), env)  # ignored again, so kept
-        backup = self.dir / "tree" / f"lookup-{n}"
+        backup = self.dir / "tree" / f"plan-reviewer-{n}"
         self.assertEqual((backup / "app.ts").read_text(), "export const one = 3;\n")
         self.assertEqual((backup / "new.ts").read_text(), "export {};\n")
         self.assertEqual(self.git("status", "--porcelain", "--", "app.ts", "tool.sh"),
                          " M app.ts\n")
-        # Put back, the same return records, and so does its retry.
-        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 0)
-
-    def test_a_retry_is_held_to_the_first_briefs_tree(self):
-        n = self.job("lookup", question="Where is `one` defined?")
-        self.git("commit", "-q", "--allow-empty", "-m", "the worker committed")
-        self.returned("lookup", n, next="ANSWERED", answer_file="")
-        self.write(f"lookups/{n}.md", "`one` is defined at app.ts:1\n")
-        r = self.cmd("record", "lookup", str(n))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("moved HEAD", r.stdout)
-        r = self.cmd("brief", "lookup", "--set", "question=Where is `one` defined?",
-                     "--retry", str(n))
-        self.assertEqual(r.returncode, 0, r.stdout)
-        retry = n + 1
-        self.returned("lookup", retry, next="ANSWERED", answer_file="")
-        self.write(f"lookups/{retry}.md", "`one` is defined at app.ts:1\n")
-        r = self.cmd("record", "lookup", str(retry))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("moved HEAD", r.stdout)
-        self.git("reset", "-q", "--hard", "HEAD~1")
-        self.assertEqual(self.cmd("record", "lookup", str(retry)).returncode, 0)
-
-    def answered(self, n):
-        self.write(f"lookups/{n}.md", "`one` is defined at app.ts:1\n")
-        self.returned("lookup", n, next="ANSWERED", answer_file="")
-
-    def test_only_a_change_the_worker_could_have_made_is_refused(self):
-        wt = self.worktree
-        # Recorded, then the coder works: recording the lookup again undoes nothing.
-        n = self.job("lookup", question="Where is `one` defined?")
-        self.answered(n)
-        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 0)
-        (wt / "app.ts").write_text("// the coder's\n")
-        (wt / "feature.ts").write_text("// the coder's\n")
-        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 0)
-        self.assertEqual((wt / "feature.ts").read_text(), "// the coder's\n")
-        # A coder briefed while a lookup is out: the lookup is not blamed.
-        n = self.job("lookup", question="Where is `one` defined?")
-        self.job("coder", "build")
-        (wt / "feature.ts").write_text("// the coder's, later\n")
-        self.answered(n)
-        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 0)
-        self.assertEqual((wt / "feature.ts").read_text(), "// the coder's, later\n")
-
-    def test_a_file_written_after_the_result_is_not_the_workers(self):
-        wt = self.worktree
-        n = self.job("lookup", question="Where is `one` defined?")
-        (wt / "mine.ts").write_text("// the lookup's\n")
-        self.answered(n)
-        result = self.dir / "returns" / f"lookup-{n}.json"
-        os.utime(wt / "mine.ts", (result.stat().st_mtime - 5,) * 2)
-        (wt / "app.ts").write_text("// the user's, after the lookup returned\n")
-        os.utime(wt / "app.ts", (result.stat().st_mtime + 5,) * 2)
-        r = self.cmd("record", "lookup", str(n))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("changed 1 repo file(s)", r.stdout)
-        self.assertIn("mine.ts", r.stdout)
-        self.assertFalse((wt / "mine.ts").exists())
-        self.assertEqual((wt / "app.ts").read_text(),
-                         "// the user's, after the lookup returned\n")
-
-    def test_put_back_keeps_a_files_mode_and_a_folder_turned_into_a_file(self):
-        wt = self.worktree
-        (wt / "secret.txt").write_text("key\n")
-        os.chmod(wt / "secret.txt", 0o600)
-        (wt / "d").mkdir()
-        (wt / "d" / "x.txt").write_text("the user's\n")
-        n = self.job("lookup", question="Where is `one` defined?")
-        (wt / "secret.txt").write_text("changed\n")
-        os.chmod(wt / "secret.txt", 0o644)
-        (wt / "d" / "x.txt").unlink()
-        (wt / "d").rmdir()
-        (wt / "d").write_text("a file now\n")
-        self.answered(n)
-        r = self.cmd("record", "lookup", str(n))
-        self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertNotIn("could not put back", r.stdout)
-        self.assertEqual((wt / "secret.txt").read_text(), "key\n")
-        self.assertEqual((wt / "secret.txt").stat().st_mode & 0o777, 0o600)
-        self.assertEqual((wt / "d" / "x.txt").read_text(), "the user's\n")
-
-    def test_a_retry_takes_a_fresh_snapshot_once_the_change_is_put_back(self):
-        n = self.job("lookup", question="Where is `one` defined?")
-        (self.worktree / "app.ts").write_text("// the lookup's\n")
-        self.answered(n)
-        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 1)
-        r = self.cmd("brief", "lookup", "--set", "question=Where is `one` defined?",
-                     "--retry", str(n))
-        self.assertEqual(r.returncode, 0, r.stdout)
-        # Put back, so the retry's snapshot is the clean tree, not the first one's.
-        self.assertEqual(self.state()["briefs"][-1]["tree"]["files"], {})
+        # Put back, the same return records when recorded again.
+        self.assertEqual(self.record(n).returncode, 0)
 
     def test_each_worker_that_never_changes_the_repo_is_checked(self):
         guarded = [("define", "write", {}), ("define-reviewer", None, {}),
                    ("planner", "write", {}), ("plan-reviewer", None, {}),
-                   ("lookup", None, {"question": "Where is `one` defined?"}),
                    ("review-judge", "security-verify", {}),
                    ("triager", "ci", {"failing": "test"})]
         for worker, as_mode, sets in guarded:
@@ -1235,11 +1153,112 @@ class TreeGuardTest(WorkCase):
             self.assertIn(f"{worker}-{n} changed 1 repo file(s)", r.stdout)
             self.assertEqual((self.worktree / "app.ts").read_text(),
                              "export const one = 1;\n", worker)
-        # A worker whose job is to change the code is not.
-        n = self.job("coder", "build")
-        (self.worktree / "app.ts").write_text("// coder\n")
-        self.returned("coder", n, status="blocked")
-        self.assertNotIn("repo file(s)", self.cmd("record", "coder", str(n)).stdout)
+        # A worker that writes code, and a lookup (sent while the user may be
+        # editing), are not.
+        for worker, as_mode, sets in [("coder", "build", {}),
+                                      ("lookup", None, {"question": "Where is `one`?"})]:
+            n = self.job(worker, as_mode, **sets)
+            (self.worktree / "app.ts").write_text(f"// {worker}\n")
+            self.returned(worker, n, status="blocked")
+            self.assertNotIn("repo file(s)", self.cmd("record", worker, str(n)).stdout)
+
+    def test_only_a_change_the_worker_could_have_made_is_refused(self):
+        wt = self.worktree
+        # Recorded, then the coder works: recording it again undoes nothing.
+        n = self.reviewer()
+        self.answered(n)
+        self.assertEqual(self.record(n).returncode, 0)
+        (wt / "app.ts").write_text("// the coder's\n")
+        (wt / "feature.ts").write_text("// the coder's\n")
+        self.assertEqual(self.record(n).returncode, 0)
+        self.assertEqual((wt / "feature.ts").read_text(), "// the coder's\n")
+        # A coder briefed while the reviewer is out: the reviewer is not blamed.
+        n = self.reviewer()
+        self.job("coder", "build")
+        (wt / "feature.ts").write_text("// the coder's, later\n")
+        self.answered(n)
+        self.assertEqual(self.record(n).returncode, 0)
+        self.assertEqual((wt / "feature.ts").read_text(), "// the coder's, later\n")
+        # No result file yet: it may still be running, so nothing is put back.
+        n = self.reviewer()
+        (wt / "feature.ts").write_text("// mid-run\n")
+        self.assertNotIn("repo file(s)", self.record(n).stdout)
+        self.assertEqual((wt / "feature.ts").read_text(), "// mid-run\n")
+
+    def test_a_commit_since_the_brief_is_left_to_phase_6(self):
+        n = self.reviewer()
+        (self.worktree / "app.ts").write_text("// committed\n")
+        self.git("commit", "-q", "-am", "an outside commit")
+        self.answered(n)
+        self.assertEqual(self.record(n).returncode, 0)
+        self.assertEqual((self.worktree / "app.ts").read_text(), "// committed\n")
+
+    def test_a_file_written_after_the_result_is_not_the_workers(self):
+        wt = self.worktree
+        n = self.reviewer()
+        (wt / "mine.ts").write_text("// the reviewer's\n")
+        self.answered(n)
+        result = self.dir / "returns" / f"plan-reviewer-{n}.json"
+        os.utime(wt / "mine.ts", (result.stat().st_mtime - 5,) * 2)
+        (wt / "app.ts").write_text("// the user's, after the reviewer returned\n")
+        os.utime(wt / "app.ts", (result.stat().st_mtime + 5,) * 2)
+        r = self.record(n)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("changed 1 repo file(s)", r.stdout)
+        self.assertIn("mine.ts", r.stdout)
+        self.assertFalse((wt / "mine.ts").exists())
+        self.assertEqual((wt / "app.ts").read_text(),
+                         "// the user's, after the reviewer returned\n")
+
+    def test_put_back_keeps_a_files_mode_and_undoes_a_folder_or_file_swap(self):
+        wt = self.worktree
+        (wt / "secret.txt").write_text("key\n")
+        os.chmod(wt / "secret.txt", 0o600)
+        (wt / "d").mkdir()
+        (wt / "d" / "x.txt").write_text("the user's\n")
+        n = self.reviewer()
+        (wt / "secret.txt").write_text("changed\n")
+        os.chmod(wt / "secret.txt", 0o644)
+        (wt / "d" / "x.txt").unlink()
+        (wt / "d").rmdir()
+        (wt / "d").write_text("a file now\n")  # a folder turned into a file
+        (wt / "app.ts").unlink()
+        (wt / "app.ts").mkdir()
+        (wt / "app.ts" / "y.ts").write_text("// a file turned into a folder\n")
+        self.answered(n)
+        r = self.record(n)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertNotIn("could not put back", r.stdout)
+        self.assertEqual((wt / "secret.txt").read_text(), "key\n")
+        self.assertEqual((wt / "secret.txt").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((wt / "d" / "x.txt").read_text(), "the user's\n")
+        self.assertEqual((wt / "app.ts").read_text(), "export const one = 1;\n")
+
+    def test_a_retry_or_a_re_sent_brief_takes_a_fresh_snapshot(self):
+        n = self.reviewer()
+        (self.worktree / "app.ts").write_text("// the reviewer's\n")
+        self.answered(n)
+        self.assertEqual(self.record(n).returncode, 1)
+        r = self.cmd("brief", "plan-reviewer", "--retry", str(n))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(self.state()["briefs"][-1]["tree"]["files"], {})
+        # The user edits while no worker is out; `next` sends the brief again.
+        (self.worktree / "app.ts").write_text("// the user's\n")
+        state = self.state()
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_work
+        cmd_work.fresh_tree(state, state["briefs"][-1])
+        self.assertIn("app.ts", state["briefs"][-1]["tree"]["files"])
+
+    def test_no_check_while_setup_still_runs(self):
+        state = self.state()
+        state["init"]["setup_pid"] = 4242
+        self.write_state(state)
+        (self.dir / "setup.json").unlink(missing_ok=True)
+        n = self.reviewer()
+        (self.worktree / "app.ts").write_text("// written by setup\n")
+        self.answered(n)
+        self.assertEqual(self.record(n).returncode, 0)
 
 
 class SpecProposalRecordTest(WorkCase):

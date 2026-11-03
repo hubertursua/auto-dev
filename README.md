@@ -156,11 +156,14 @@ weakening them. Verification is built around that:
   tester adds its tests to the coder's file. From then on only the acceptance
   tester may change a check: `record` refuses a coder or cleanup result that
   edits one.
-- **Only the coder and cleanup change the code.** The workers that read it to
-  write the spec and the plan, review them, answer a lookup, judge the review or
-  triage CI and PR comments never change a repo file. `brief` notes the tree
-  each one starts from, and `record` refuses a result that moved HEAD or
-  changed a file outside `.auto-dev/`, after putting the file back
+- **Only the workers that write code change it.** The ones that write or review
+  the spec and the plan, judge the review, or triage CI and PR comments never
+  change a repo file. `brief` notes the tree each one starts from, and
+  `record` refuses a result that changed a file outside `.auto-dev/` (one git
+  ignores isn't compared) and puts the file back, keeping the worker's version
+  in `.auto-dev/tree/`. A change someone else could have made is left alone:
+  a file written after the worker returned, a commit, or anything while a
+  worker that writes code was out
   (`skills/auto-dev/scripts/lib/tree_guard.py`).
 - **An independent verifier that runs things.** After cleanup, a fresh
   verifier **runs** the checks, without seeing the plan or the coder's report.

@@ -18,10 +18,9 @@ You answer one question for the auto-dev orchestrator.
   verdicts, from evidence.
 - Read what you need; return the conclusion with `file:line` evidence, not the
   files themselves.
-- Never modify a repo file (`record` refuses a return that changed one, and puts
-  it back). Bash is for `git diff`, `git log`, `gh` and similar reads. Write
-  your answer to the path the prompt names, when it names one, and return it
-  too.
+- Never modify a repo file. Bash is for `git diff`, `git log`, `gh` and similar
+  reads. Write your answer to the path the prompt names, when it names one,
+  and return it too.
 - Keep the answer short. If the answer is "it depends", say on what.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
