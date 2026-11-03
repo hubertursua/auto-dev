@@ -120,7 +120,7 @@ record <worker> <n>
     re-spawned after a not-ok answer keeps the copy of the brief it replaces,
     so the steps or conditions its log entry notes count from before the
     first attempt. Neither may write a stands reason into
-    the plan or a sealed copy. The log entry notes the steps or conditions
+    the plan, a sealed copy or MANIFEST.md's test names. The log entry notes the steps or conditions
     such an answer changed.
     On a match it updates state.json (for an ok return of the Define agent, the
     size check; after Define or its reviewer, a Security/Compliance criterion in
@@ -263,20 +263,14 @@ SUPPORT_SHOWN = 12  # lines the checks add besides their tests, per file
 def acceptance_paths(ad):
     """Each file that holds acceptance checks, with the checks' test names: a
     file can hold the coder's own tests too. Then the lines the checks add
-    besides them (an import, a shared setup), which are sealed as well."""
+    besides them (an import, a shared setup), which are sealed as well. A
+    stands reason is kept out of the names as joined here
+    (check_props.names_text renders them the same way)."""
     try:
         rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
     except art.ArtifactError:
         return "none"
-    names = {}
-    for r in rows:
-        cell = r["Check (path :: test name)"]
-        path = art.check_path(cell)
-        if path:
-            name = cell.split("::", 1)[-1].strip().strip('"') if "::" in cell else ""
-            names.setdefault(path, [])
-            if name and name not in names[path]:
-                names[path].append(name)
+    names = check_props.test_names(rows)
     files = sealed.sealed_files(ad)
 
     def support(path):
