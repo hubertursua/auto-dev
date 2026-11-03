@@ -26,6 +26,11 @@ brief lookup --out <dir> --set worktree=<repo> --set question='<question>'
     proposals/snapshots/plan-<sha>.md), and an acceptance tester's repair brief
     (MANIFEST.md and the sealed copies to
     proposals/snapshots/acceptance-tester-<n>/).
+    A brief for a worker that never changes the repo (define, the define and
+    plan reviewers, the planner, a lookup, the review judge, the triager)
+    keeps the worktree's HEAD and the content of every file `git status` lists
+    outside the artifact dir on its state entry (a --retry keeps the first
+    brief's), for `record`.
     Prints the agent type to spawn and the one-line prompt to give it.
     With --out (the profiler always; a lookup before the run exists), the
     brief goes to <dir> with no state.json: a lookup's answer goes to
@@ -38,6 +43,12 @@ record <worker> <n>
     `next` does this itself, before it decides, for every issued brief whose
     result file exists; run it by hand to record one result now and see its
     verdict, as `next` would.
+    For a worker whose brief kept the tree (see brief), it first compares the
+    worktree with it, whatever the worker returned: HEAD moved, or a file
+    outside the artifact dir that changed, is refused. It backs each changed
+    file up to tree/<worker>-<n>/ and puts it back as it was at the brief (a
+    file git ignored again once .gitignore is back stays); it never moves
+    HEAD.
     Reads returns/<worker>-<n>.json and checks it: `status` is ok, blocked or
     failed; `next`, when given, is one the worker may return; with status ok,
     every key of the worker's `auto-dev-result` block is present. Then, for an
@@ -147,7 +158,7 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import briefs, check_props, cmd_checks, plan_props, proposals, sealed
+from . import briefs, check_props, cmd_checks, plan_props, proposals, sealed, tree_guard
 from . import state as st
 from .cmd_checks import FIX_RE, overlaps, rederive_risk
 from .cmd_review import pending_rows
@@ -530,6 +541,9 @@ def write_brief(state, where, worker, mode, given, retry=None):
             entry["whole"] = whole_checks(state, ad)
         if retry is None:
             watch_owner(state, ad, worker, mode, given, entry, n)
+        if worker in tree_guard.GUARDED:
+            entry["tree"] = kept_tree(state, worker, retry) or tree_guard.snapshot(
+                auto["worktree"], ad)
         state.setdefault("briefs", []).append(entry)
         for old in state["briefs"]:
             if retry is not None and old["worker"] == worker and old["n"] == retry:
@@ -555,6 +569,15 @@ def watch_spec(state, ad, worker, given, retry, entry):
         sha = proposals.snapshot(ad)
         if sha:
             entry["spec"] = sha
+
+
+def kept_tree(state, worker, retry):
+    """A retry is held to the tree the job it re-spawns was briefed on, so a
+    change `record` could not put back is never taken for the base."""
+    if retry is None:
+        return None
+    return next((b.get("tree") for b in state.get("briefs", [])
+                 if b["worker"] == worker and b["n"] == retry), None)
 
 
 def is_set(value):
@@ -1095,11 +1118,17 @@ def record_job(state, worker, n):
     ad = Path(state["artifact_dir"])
     data = None
     try:
-        data = load_return(ad, worker, n)
+        moved = tree_issues(state, ad, worker, n)
         try:
-            issues = derive(worker, data, ad, state, n)
+            data = load_return(ad, worker, n)
+        except Refused as exc:
+            if moved:
+                raise Refused(exc.args[0], exc.args[1], moved + exc.args[2]) from None
+            raise
+        try:
+            issues = moved + derive(worker, data, ad, state, n)
         except art.ArtifactError as exc:
-            issues = [str(exc)]
+            issues = moved + [str(exc)]
         if issues:
             raise Refused("MISMATCH", "the return and the artifacts disagree", issues)
     except Refused as exc:
@@ -1109,6 +1138,16 @@ def record_job(state, worker, n):
         return token, message, issues, data
     record_ok(state, ad, worker, n, data)
     return "RECORDED", f"{worker}-{n}", [], data
+
+
+def tree_issues(state, ad, worker, n):
+    """Whether job <worker>-<n>, which never changes the repo, changed it
+    (tree_guard); a brief from before the check holds no snapshot."""
+    issued = next((b for b in state.get("briefs", [])
+                   if b["worker"] == worker and b["n"] == n), {})
+    if not issued.get("tree"):
+        return []
+    return tree_guard.issues(worker, n, issued["tree"], state["worktree"], ad)
 
 
 def record_ok(state, ad, worker, n, data):

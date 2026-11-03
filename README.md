@@ -156,6 +156,12 @@ weakening them. Verification is built around that:
   tester adds its tests to the coder's file. From then on only the acceptance
   tester may change a check: `record` refuses a coder or cleanup result that
   edits one.
+- **Only the coder and cleanup change the code.** The workers that read it to
+  write the spec and the plan, review them, answer a lookup, judge the review or
+  triage CI and PR comments never change a repo file. `brief` notes the tree
+  each one starts from, and `record` refuses a result that moved HEAD or
+  changed a file outside `.auto-dev/`, after putting the file back
+  (`skills/auto-dev/scripts/lib/tree_guard.py`).
 - **An independent verifier that runs things.** After cleanup, a fresh
   verifier **runs** the checks, without seeing the plan or the coder's report.
   Each condition gets a verdict and an evidence tier:
@@ -667,6 +673,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `proposals/` | Phases 4–6 | the filers' spec proposals (`<worker>-<n>.md`) and the coder's plan and check proposals (`coder-<n>.md`); each batch sent to the Define agent (`batch-<k>.md`), the planner (`plan-<k>.md`) or the acceptance tester (`checks-<k>.md`), and its rulings (`…-<k>-rulings.md`); copies of `SPEC.md` taken when a filer or the Define agent was briefed (`spec-<sha>.md`), and of the plan and the sealed checks taken when the planner or the tester was briefed to change them (`snapshots/`) |
 | `redo/` | Phases 5–6 | the plan as it was before a spec redo revised it, and the plan's change for the coder |
 | `lookups/` | any phase | lookup answers |
+| `tree/` | `autodev.py record` | a repo file a worker that never changes the repo changed anyway, as the worker left it, before `record` put it back (`tree/<worker>-<n>/<path>`) |
 
 ## Safety
 

@@ -1080,6 +1080,98 @@ NEW_CRITERION = """
 """
 
 
+class TreeGuardTest(WorkCase):
+    """A worker that never changes the repo (planner, define, the spec and plan
+    reviewers, lookup, the review judge, the triager) is held to the tree it
+    was briefed on: `record` refuses a change outside .auto-dev/ and puts it
+    back."""
+
+    def git(self, *args):
+        return self.sh("git", "-C", str(self.worktree), *args)
+
+    def test_record_refuses_a_lookup_that_changed_files_and_puts_them_back(self):
+        wt = self.worktree
+        (wt / "app.ts").write_text("export const one = 2;\n")  # dirty before the brief
+        (wt / "notes.txt").write_text("the user's\n")           # untracked before it
+        (wt / "tool.sh").write_text("#!/bin/sh\n")
+        self.git("add", "tool.sh")
+        self.git("update-index", "--chmod=+x", "tool.sh")
+        self.git("commit", "-q", "-m", "tool")
+        os.chmod(wt / "tool.sh", 0o755)
+        env = (wt / ".env").read_text()
+        n = self.job("lookup", question="Where is `one` defined?")
+        # The worker edits a dirty file, deletes an untracked one, changes a
+        # clean one's mode and text, adds a file, un-ignores .env, and writes
+        # its answer where it should.
+        (wt / "app.ts").write_text("export const one = 3;\n")
+        (wt / "notes.txt").unlink()
+        (wt / "tool.sh").write_text("#!/bin/sh\necho hi\n")
+        os.chmod(wt / "tool.sh", 0o644)
+        (wt / "new.ts").write_text("export {};\n")
+        (wt / ".gitignore").write_text("setup-ran.txt\n")
+        self.write(f"lookups/{n}.md", "`one` is defined at app.ts:1\n")
+        self.returned("lookup", n, next="ANSWERED", answer_file="")
+        r = self.cmd("record", "lookup", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        for path in (".gitignore", "app.ts", "new.ts", "notes.txt", "tool.sh"):
+            self.assertIn(path, r.stdout)
+        self.assertNotIn("lookups/", r.stdout.split("issue")[1])
+        self.assertEqual((wt / "app.ts").read_text(), "export const one = 2;\n")
+        self.assertEqual((wt / "notes.txt").read_text(), "the user's\n")
+        self.assertEqual((wt / "tool.sh").read_text(), "#!/bin/sh\n")
+        self.assertTrue(os.access(wt / "tool.sh", os.X_OK))
+        self.assertFalse((wt / "new.ts").exists())
+        self.assertEqual((wt / ".env").read_text(), env)  # ignored again, so kept
+        backup = self.dir / "tree" / f"lookup-{n}"
+        self.assertEqual((backup / "app.ts").read_text(), "export const one = 3;\n")
+        self.assertEqual((backup / "new.ts").read_text(), "export {};\n")
+        self.assertEqual(self.git("status", "--porcelain", "--", "app.ts", "tool.sh"),
+                         " M app.ts\n")
+        # Put back, the same return records, and so does its retry.
+        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 0)
+
+    def test_a_retry_is_held_to_the_first_briefs_tree(self):
+        n = self.job("lookup", question="Where is `one` defined?")
+        self.git("commit", "-q", "--allow-empty", "-m", "the worker committed")
+        self.returned("lookup", n, next="ANSWERED", answer_file="")
+        self.write(f"lookups/{n}.md", "`one` is defined at app.ts:1\n")
+        r = self.cmd("record", "lookup", str(n))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("moved HEAD", r.stdout)
+        r = self.cmd("brief", "lookup", "--set", "question=Where is `one` defined?",
+                     "--retry", str(n))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        retry = n + 1
+        self.returned("lookup", retry, next="ANSWERED", answer_file="")
+        self.write(f"lookups/{retry}.md", "`one` is defined at app.ts:1\n")
+        r = self.cmd("record", "lookup", str(retry))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("moved HEAD", r.stdout)
+        self.git("reset", "-q", "--hard", "HEAD~1")
+        self.assertEqual(self.cmd("record", "lookup", str(retry)).returncode, 0)
+
+    def test_each_worker_that_never_changes_the_repo_is_checked(self):
+        guarded = [("define", "write", {}), ("define-reviewer", None, {}),
+                   ("planner", "write", {}), ("plan-reviewer", None, {}),
+                   ("lookup", None, {"question": "Where is `one` defined?"}),
+                   ("review-judge", "security-verify", {}),
+                   ("triager", "ci", {"failing": "test"})]
+        for worker, as_mode, sets in guarded:
+            n = self.job(worker, as_mode, **sets)
+            (self.worktree / "app.ts").write_text(f"// {worker}\n")
+            self.returned(worker, n, status="blocked")
+            r = self.cmd("record", worker, str(n))
+            self.assertEqual(r.returncode, 1, (worker, r.stdout))
+            self.assertIn(f"{worker}-{n} changed 1 repo file(s)", r.stdout)
+            self.assertEqual((self.worktree / "app.ts").read_text(),
+                             "export const one = 1;\n", worker)
+        # A worker whose job is to change the code is not.
+        n = self.job("coder", "build")
+        (self.worktree / "app.ts").write_text("// coder\n")
+        self.returned("coder", n, status="blocked")
+        self.assertNotIn("repo file(s)", self.cmd("record", "coder", str(n)).stdout)
+
+
 class SpecProposalRecordTest(WorkCase):
     """`record` on a filer's spec proposals and on Define's rulings."""
 

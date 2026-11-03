@@ -61,7 +61,8 @@
         "Every question the orchestrator gives auto-dev:lookup asks for a fact (where a symbol is defined or used, whether a file or diff contains something, what an artifact says, what a change or a piece of code does), never a verdict (whether code is correct, safe or done, or what should change); a lookup that is asked for a verdict returns `next: OUT_OF_SCOPE` with only its `OUT_OF_SCOPE:` line in its answer file",
         "When the fixture repo has a PR template, the PR body carries each of its sections: a testing section pointing at the checks, its checklist with the template's items unchanged and a box ticked only where SPEC.md, HANDOFF.md or the description's own sections show it is true (a box only a person can confirm stays unticked), and any other section answered in plain words or N/A",
         "IMPLEMENTATION.md (with any plan-reviewer FIX blocks applied) and every evidence/corrections.md copy no run of six words from a SPEC.md condition (`autodev.py spec-overlap <file>` exits 0 on each)",
-        "When the fixture repo's .auto-dev.yml sets `pr_review.inline_comments: true`, the review findings left open or advisory are posted on the PR once, after it opens: inline at their line when it is in the diff, the rest in one general comment"
+        "When the fixture repo's .auto-dev.yml sets `pr_review.inline_comments: true`, the review findings left open or advisory are posted on the PR once, after it opens: inline at their line when it is in the diff, the rest in one general comment",
+        "No `record` in the run refuses a return for moving HEAD or changing a repo file outside .auto-dev/ (the planner, Define, the Define and plan reviewers, lookups, the review judge and the triager change none), and .auto-dev/tree/ is never created"
       ]
     },
     {
