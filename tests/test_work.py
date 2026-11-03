@@ -1017,6 +1017,8 @@ class RecordTest(WorkCase):
              "holds no `OUT_OF_SCOPE: <why>` line"),
             ("OUT_OF_SCOPE", "OUT_OF_SCOPE: a verdict\nBut it is wrong at src/refunds.ts:14\n",
              "holds more than the `OUT_OF_SCOPE:` line"),
+            ("OUT_OF_SCOPE", ("OUT_OF_SCOPE: a verdict, but `refund()` misses it at "
+                             "src/refunds.ts:14\n"), "cites a `file:line`"),
         ]
         for n, (token, answer, issue) in enumerate(cases, start=1):
             self.returned("lookup", n, next=token, answer_file="")
@@ -1025,11 +1027,21 @@ class RecordTest(WorkCase):
             r = self.cmd("record", "lookup", str(n))
             self.assertEqual(r.returncode, 1, (token, answer, r.stdout))
             self.assertIn(issue, r.stdout, (token, answer))
-        self.returned("lookup", 5, next="OUT_OF_SCOPE", answer_file="")
-        self.write("lookups/5.md", "OUT_OF_SCOPE: asks for a verdict; ask instead: "
-                                   "what does `refundedSoFar` return?\n")
-        r = self.cmd("record", "lookup", "5")
-        self.assertEqual(r.returncode, 0, r.stdout)
+        # A decline as models write it, and a real answer naming an
+        # OUT_OF_SCOPE_… symbol, both record.
+        recorded = [
+            ("OUT_OF_SCOPE", ("OUT_OF_SCOPE: asks for a verdict; ask instead: "
+                             "what does `refundedSoFar` return?\n")),
+            ("OUT_OF_SCOPE", ("```\n**OUT_OF_SCOPE**: asks for a verdict\n\n"
+                             "Ask instead: what does `refundedSoFar` return?\n```\n")),
+            ("OUT_OF_SCOPE", "> OUT_OF_SCOPE: asks whether `src/refunds.ts` is safe\n"),
+            ("ANSWERED", "`OUT_OF_SCOPE_ERROR` is defined at src/errors.ts:3\n"),
+        ]
+        for n, (token, answer) in enumerate(recorded, start=len(cases) + 1):
+            self.returned("lookup", n, next=token, answer_file="")
+            self.write(f"lookups/{n}.md", answer)
+            r = self.cmd("record", "lookup", str(n))
+            self.assertEqual(r.returncode, 0, (answer, r.stdout))
 
 
 PROPOSAL_ON_1 = """# Spec proposals

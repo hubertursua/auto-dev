@@ -100,8 +100,9 @@ shared memory. It doesn't choose the order of steps either: it runs
 judge the build or write correction briefs; the workers that found a problem
 write those, and the orchestrator passes them on unedited. It never reads the
 code (a `lookup` worker answers its questions of fact in a line, and declines
-to say whether code is right, since nobody would check that verdict), and it sees the spec
-only as the parts `pr-write.md` quotes for the PR description.
+to say whether code is right, since the orchestrator would act on that verdict
+unchecked), and it sees the spec only as the parts `pr-write.md` quotes for the
+PR description.
 The run's history lives in `.auto-dev/state.json`, which only `autodev.py`
 writes, and each judge is a fresh worker that sees only what its brief names.
 

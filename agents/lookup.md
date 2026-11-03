@@ -63,8 +63,8 @@ it is worded. Neutral placeholders stand for real names:
 For a verdict question, don't read the code. Write one line to
 {{answer_file}}, `OUT_OF_SCOPE: <why>`, ending with `; ask instead: <a
 question of fact>` when one would get the orchestrator what it needs. Return
-the same line, with `next: OUT_OF_SCOPE`. Give no part of an answer, even when
-you can see it.
+the same line, with `status: ok` and `next: OUT_OF_SCOPE` (a decline is not
+`blocked`). Give no part of an answer, even when you can see it.
 
 For a question of fact, use {{symbol_lookup}}. Return the answer in at most 15
 lines with `file:line` evidence, and write the same to {{answer_file}}. Say

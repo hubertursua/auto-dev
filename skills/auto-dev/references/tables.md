@@ -168,12 +168,12 @@ instead of reading it. It answers only these kinds of question:
 - which files a change touches, and what each change does;
 - what a piece of code does in a case you name.
 
-Ask for a fact, never a verdict. Whether code is correct, safe or done, or
-what should change, comes from the verifier and the reviewers, who check it
-against evidence; a lookup returns `OUT_OF_SCOPE` for such a question. Ask
-what the code does instead ("what does `<function>` return when the list is
-empty?"). When a lookup returns `OUT_OF_SCOPE`, ask the question of fact it
-suggests after `ask instead:`, or go on without the answer. To ask one:
+Ask for a fact, never a verdict, and only to route the run or to answer
+the user. Whether code is correct, safe or done, or what should change, is not
+yours to settle (hard rule 2): run `next`, and the verifier and the reviewers
+give that verdict from evidence. A lookup returns `OUT_OF_SCOPE` for a verdict
+question. If you still need a fact, ask the question it suggests after `ask
+instead:`, and pass the answer on as a fact, never as a ruling. To ask one:
 
 1. `autodev.py brief lookup --set question='<the question>' --dir <artifact-dir>`
 2. Spawn the agent it names with the prompt it prints.
