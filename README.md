@@ -582,7 +582,7 @@ so a new release is picked up without editing the plugin.
 
 | Worker                                   | Agent type                       | Model · effort    |
 | ---------------------------------------- | -------------------------------- | ----------------- |
-| Profiler (first run on a repo)           | `auto-dev:profiler`              | `sonnet` · medium |
+| Profiler (first run on a repo)           | `auto-dev:profiler`              | `sonnet` · high   |
 | Define agent                             | `auto-dev:define`                | `opus` · high     |
 | Define reviewer                          | `auto-dev:define-reviewer`       | `opus` · high     |
 | Planner                                  | `auto-dev:planner`               | `opus` · xhigh    |
@@ -590,16 +590,29 @@ so a new release is picked up without editing the plugin.
 | Acceptance tester                        | `auto-dev:acceptance-tester`     | `opus` · high     |
 | Coder (the build, all corrections)       | `auto-dev:coder`                 | `opus` · high     |
 | Verifier                                 | `auto-dev:verifier`              | `opus` · high     |
-| Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · medium |
+| Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · high   |
 | Code reviewer (×3 panel, and re-votes)   | `auto-dev:code-reviewer`         | `opus` · xhigh    |
 | Review judge                             | `auto-dev:review-judge`          | `opus` · xhigh    |
 | Security reviewer                        | `auto-dev:security-reviewer`     | `opus` · xhigh    |
 | Security reviewer (`SPEC.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `fable` · high |
 | Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
-| Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · medium |
+| Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · high   |
 
 `next` names each type as `auto-dev:<worker>`; a plugin install lists them as
 `auto-dev:auto-dev-<worker>`, and the orchestrator maps one to the other.
+
+The levels follow Anthropic's guidance for the Claude 5.5 models
+([choosing a model](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model)):
+
+- **`sonnet` workers run at `high`, Sonnet's default.** At `medium`, Sonnet 5.5
+  scores 7 to 15 points lower on Anthropic's coding benchmarks, and these
+  workers are a small share of a run's cost.
+- **`opus` workers run above Opus's default (`medium`).** A worker's miss
+  costs a correction round, which is far more than the extra effort.
+- **`xhigh` is for the plan and the review**, which the rest of the run builds
+  on or ships.
+- **`fable` runs only the sensitive-path security review.** It is the most
+  capable and costliest model, but on coding it does no better than `opus`.
 
 The orchestrator runs on the session's model; `sonnet` at medium effort is
 enough, since `next` makes the decisions and the workers do the judging. To

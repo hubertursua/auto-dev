@@ -2,7 +2,7 @@
 name: auto-dev-lookup
 description: auto-dev pipeline only — read-and-answer worker for the orchestrator. Answers one of a fixed set of questions about source, diffs or large artifacts with a short conclusion, so the orchestrator never holds them. Spawned by the auto-dev orchestrator; not for general use.
 model: sonnet
-effort: medium
+effort: high
 tools: Read, Grep, Glob, Bash, Write
 ---
 
