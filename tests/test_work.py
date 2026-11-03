@@ -2198,6 +2198,45 @@ class UpstreamProposalRecordTest(WorkCase):
         self.ok(self.repair_on_3(self.shared_rows(row_3=rerun(self.ROW_3),
                                                   row_5=rerun(self.ROW_5))))
 
+    def test_an_outside_row_follows_a_rename_only_to_the_check_it_was_renamed_to(self):
+        # Condition 3 renames X to Z and adds a new check W beside it.
+        z, w = '"shows the due date beside the title"', '"shows the due date in red"'
+        row_3 = self.ROW_3.replace('"shows the due date"', z) + self.ROW_3.replace(
+            '"shows the due date"', w).replace("| Example |", "| Edge |")
+        self.refused(self.repair_on_3(self.shared_rows(
+            row_3=row_3, row_5=self.ROW_5.replace('"shows the due date"', w))),
+            "MANIFEST.md's rows for condition 5 changed")
+        self.ok(self.repair_on_3(self.shared_rows(
+            row_3=row_3, row_5=self.ROW_5.replace('"shows the due date"', z))))
+
+    def test_an_ambiguous_rename_is_no_rename(self):
+        # Condition 3's row on X gives way to two new rows alike in every other
+        # cell: which one X became can't be told, so condition 5 may follow neither.
+        z, w = '"shows the due date beside the title"', '"shows the due date in red"'
+        row_3 = (self.ROW_3.replace('"shows the due date"', z)
+                 + self.ROW_3.replace('"shows the due date"', w))
+        self.refused(self.repair_on_3(self.shared_rows(
+            row_3=row_3, row_5=self.ROW_5.replace('"shows the due date"', z))),
+            "MANIFEST.md's rows for condition 5 changed")
+
+    def test_a_named_batch_may_not_change_the_fixed_cells_of_a_row_it_shares(self):
+        for name, row_5 in (
+                ("Condition", self.ROW_5.replace("| due label |", "| due date label |")),
+                ("Covers", self.ROW_5.replace("| Edge |", "| Example |")),
+                ("Kind", self.ROW_5.replace("| fail-to-pass |", "| pass-to-pass |"))):
+            with self.subTest(name):
+                self.refused(self.repair_on_3(self.shared_rows(row_5=row_5)),
+                             "MANIFEST.md's rows for condition 5 changed")
+        # Nor along with a rename.
+        z = '"shows the due date beside the title"'
+        self.refused(self.repair_on_3(self.shared_rows(
+            row_3=self.ROW_3.replace('"shows the due date"', z),
+            row_5=self.ROW_5.replace('"shows the due date"', z).replace("| Edge |",
+                                                                        "| Example |"))),
+            "MANIFEST.md's rows for condition 5 changed")
+        self.ok(self.repair_on_3(self.shared_rows(
+            row_5=self.ROW_5.replace("| integration |", "| unit |"))))
+
     # A stands reason written into MANIFEST.md: the coder's brief quotes its
     # test names (acceptance_paths).
     LEAK_REASON = "the owner rule must stay strict for every caller of the route"
@@ -2225,6 +2264,22 @@ class UpstreamProposalRecordTest(WorkCase):
         self.refused(self.checks_answer([None, "2"], rulings, "REPAIRED", [self.DUE],
                                         rows=rows),
                      "acceptance/MANIFEST.md repeats P2's stands reason")
+
+    def test_a_stands_reason_split_across_two_test_names_is_refused(self):
+        # The brief joins a file's names ("a", "b"), so the halves read as one.
+        reason = "the owner rule holds for every caller here"
+        rulings = rulings_text(("repaired", "none"), ("stands", reason))
+        rows = MANIFEST.replace('"shows the due date"', '"the owner rule holds"').replace(
+            '"rejects an invalid date"', '"for every caller here"')
+        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", rows=rows),
+                     "acceptance/MANIFEST.md repeats P2's stands reason")
+
+    def test_a_stands_reason_in_a_manifest_section_no_brief_quotes_is_recorded(self):
+        rulings = rulings_text(("repaired", "none"), ("stands", self.LEAK_REASON))
+        rows = MANIFEST.replace("## Assumptions\n- none",
+                                f"## Assumptions\n- {self.LEAK_REASON}")
+        self.assertNotEqual(rows, MANIFEST)
+        self.ok(self.checks_answer(["1", "S1"], rulings, "REPAIRED", [self.DUE], rows=rows))
 
     # ------------------------------------------------------------ the log
 
