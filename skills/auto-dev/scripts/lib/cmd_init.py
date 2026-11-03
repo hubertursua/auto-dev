@@ -521,8 +521,8 @@ def security_line(docs, missing_docs, config, args):
 
 def render_profile(state, config, args, seeded, missing, missing_docs=()):
     s, repo = state["settings"], state["repo"]
-    mutation = f"{s['mutation_max']} mutants per verifier pass" if s["mutation_max"] \
-        else "off (`mutation.max: 0`)"
+    mutation = (f"{s['mutation_max']} mutants in all, kept across the verifier's passes"
+                if s["mutation_max"] else "off (`mutation.max: 0`)")
     states = s["jira_states"]
     jira_map = " · ".join(f"{k} `{states.get(k, d)}`" for k, d in (
         ("in_progress", "In Progress"), ("in_review", "In Review"), ("done", "Done")))

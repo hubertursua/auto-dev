@@ -113,7 +113,12 @@ class InitTest(RunCase):
         self.assertNotIn("staging", state["repo"])
         self.assertEqual((self.worktree / ".env").read_text(), "SECRET=1\n")
         self.assertTrue((self.worktree / "setup-ran.txt").exists())
-        self.assertIn("**Base:** main", (self.dir / "profile.md").read_text())
+        profile = (self.dir / "profile.md").read_text()
+        self.assertIn("**Base:** main", profile)
+        # The cap covers every pass together, not each pass.
+        self.assertIn("**Mutation cap:** 20 mutants in all, kept across the verifier's "
+                      "passes", profile)
+        self.assertNotIn("per verifier pass", profile)
         # Nothing init wrote is visible to git.
         self.assertEqual(self.sh("git", "status", "--porcelain", cwd=self.worktree), "")
 
