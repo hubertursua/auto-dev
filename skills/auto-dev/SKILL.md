@@ -102,7 +102,7 @@ Its exit code says what kind of step it is:
 | 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned (not on the first agent's notification). A command in backticks: run it. Then the `AFTER` lines |
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
-| 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed, and stop. Do nothing more (one exception: more rounds after a budget stop, below) |
+| 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed. With a `QUESTION`, the user decides how to go on (_A stop_, below); without one, stop. Do nothing more (one exception: more rounds after a budget stop, below) |
 | 5 | ask the user | Show the `SUMMARY` lines, then call AskUserQuestion with the `QUESTION` JSON as given, unless `ACTION` says to read the ticket first: then follow it, and ask only when it says to. Run the `AFTER` line whose label matches the answer, filling in any `<…>` with what the user said |
 | 6 | end of session, or a checkpoint | Run the `AFTER` command, give the user the message it prints, and stop. Do not start the next phase |
 
@@ -123,16 +123,23 @@ and the same `next` briefs that job again with the issues in its
 `previous_issues` slot. Never write the retry brief yourself (`brief --retry`)
 and never fix the worker's file yourself.
 
-**A stop on a worker** (it didn't return ok twice running, or never left a
-result `next` accepts) and a stop at `pr publish` last until the user fixes
-the cause and says `auto-dev continue`: the new session spawns that worker, or
-publishes, again. A stop on a result (a red quality gate, an impossible spec, a
-mutation that may have left changes, the budget used up) stays: a resumed run
-stops at the same place (`references/tables.md`, _Hold and Stop_). The one way
-past the budget stop: when the user asks for more rounds and says how many
-(right after the stop, or as `auto-dev continue with <n> more rounds`), run
-the `budget raise` command its `REPORT` names with their number, then `next`.
-Never add rounds they didn't ask for.
+**A stop** is not final. When it prints a `QUESTION`, show the `SUMMARY`
+lines and ask it with AskUserQuestion. A typed answer (Other) is the user's
+instruction for the fixer: run the `"<a typed answer>"` `AFTER` line with
+their words, then `next`, which spawns the fixer to do exactly that. For a
+pick, run its `AFTER` line, then `next`: _I fixed it myself_ runs the step
+that stopped again; _Sign off and go on_ (offered only where it is safe)
+accepts the result; _Approve the fixer's proposal_ lets the fixer do what it
+proposed. _Let's talk it through_: discuss the stop with the user (a `lookup`
+for any fact about the code, never the code itself), then run `next`, which
+asks again; when they give an instruction or a pick in the talk, run its
+`AFTER` line. After _Leave it stopped_, stop. Never edit `.auto-dev/` files or
+fix the cause yourself to get past a stop: the override is the way past it
+(`references/tables.md`, _Overriding a stop_). The budget stop has no
+question; when the user asks for more rounds and says how many (right after
+the stop, or as `auto-dev continue with <n> more rounds`), run the `budget
+raise` command its `REPORT` names with their number, then `next`. Never add
+rounds they didn't ask for.
 
 **Never skip a step or run one `next` didn't print**, except the ones in your
 session's runbook.
@@ -162,6 +169,7 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Security reviewer, sensitive paths (Phase 6) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
 | Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high |
 | Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium |
+| Fixer: the user's instruction at a stop | `auto-dev:fixer` | `opus` · high |
 
 To change a worker's model, edit its `agents/<name>.md` frontmatter, this
 table and README.md's _Models and effort_ table together. The one per-run
@@ -185,6 +193,6 @@ for the rest of the session.
 | `references/S1-plan.md` | a fresh run, or a resumed run in S1 |
 | `references/S2-build.md` | a run resumed in S2 |
 | `references/S3-ship.md` | a run resumed in S3 |
-| `references/tables.md` | to explain a stop, a gate option, the budget or a stale report; to ask a lookup |
+| `references/tables.md` | to explain a stop or how to override one, a gate option, the budget or a stale report; to ask a lookup |
 | `references/gates-and-jira.md` | when `next` says to move a Jira ticket |
 | `references/profiles.md` | Phase 1, when resolving the profile |

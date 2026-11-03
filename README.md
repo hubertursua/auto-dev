@@ -91,6 +91,12 @@ or the acceptance tester) may make it, and whatever it changes is redone
 before anything relies on it (see
 [*How the build is verified*](#how-the-build-is-verified)).
 
+When the run stops (a red quality gate, an impossible spec, a worker that
+failed twice), it asks you how to go on instead of ending: tell it how to fix
+the cause and a **fixer** does exactly that, or say you fixed it yourself, sign
+the result off, talk it through, or leave it. Only the step that stopped runs
+again (see [*Human gates & integrations*](#human-gates--integrations)).
+
 ## Agent hierarchy
 
 The main agent is the orchestrator and never writes code. It spawns a fresh
@@ -121,6 +127,7 @@ Orchestrator (main agent) ── runs the `next` loop and the human gates; never
             Planner ......... rules on the coder's plan proposals (Phases 4–6)
             Acceptance tester  rules per condition on every questioned check (Phases 4–6)
             Lookup .......... reads code, diffs or long files and answers the orchestrator in a line
+            Fixer ........... at a stop, does what you said to fix it, and nothing more (any phase)
 ```
 
 Two documents describe the work. `SPEC.md` answers *did we build the right
@@ -261,15 +268,18 @@ The Define agent says whether the task fits one PR:
 
 - **FITS** — the pipeline runs every step, the same way for every task: **11
   worker roles** (roles, not spawns). The profiler runs only when the repo has
-  no saved profile, the triager only when CI fails or a person comments, and
-  `lookup` when the orchestrator needs a fact from the code. When `SPEC.md`
+  no saved profile, the triager only when CI fails or a person comments,
+  `lookup` when the orchestrator needs a fact from the code, and the fixer
+  only when you tell a stopped run how to fix it. When `SPEC.md`
   has security criteria, the security reviewer for sensitive paths takes the
   regular one's place.
 - **OVERSIZED** — several independent deliverables or subsystems, or a large
   file count. auto-dev builds nothing and hands the task back with its reasons
   and suggested lines to split along. Jira is left alone, and the worktree and
   branch stay, with the commands to remove them. Split the task and run
-  auto-dev on each part.
+  auto-dev on each part, or answer the stop: sign it off to build it as one
+  PR anyway, or tell the fixer how to narrow `SPEC.md` (a new session can
+  answer too).
 
 Define also flags a task as **high-risk** (security criteria, auth, payments,
 access control or a data migration), which turns on the post-plan gate.
@@ -392,6 +402,26 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   acceptance check may fail the quality gate, and a Security/Compliance
   criterion is never deviated from. Accepted deviations are listed in the PR
   and main gate summaries and the final report.
+- **A stop asks how to go on.** When the run stops on a result or a worker,
+  you answer (any reply other than a pick is an instruction):
+  - **Your instruction:** the fixer agent does what you said, and nothing
+    more. Your words are its consent: it may change the code, or the run's
+    `SPEC.md`, plan or held-out checks when you name them. If the fix needs
+    more than you said, it changes nothing and asks you to approve its
+    proposal. `record` refuses its report if it leaves out a file it changed.
+  - **I fixed it myself:** only the step that stopped runs again.
+  - **Sign off and go on:** the result is accepted as if it passed, and the
+    sign-off is named in the PR gate summary and the PR body. Never on red CI,
+    a confirmed security finding, a possibly planted bug, stale results or
+    commits the pipeline didn't check.
+  - **Let's talk it through**, or **leave it stopped** (a new session asks
+    again).
+
+  Re-running the stopped step costs no round. Whatever a fix changed is
+  checked again before the run goes on: the quality gate and the verifier on
+  changed code, the verifier's first pass on a changed spec or plan, and in
+  Phase 6 a review of the changed files
+  (`skills/auto-dev/references/tables.md`, _Overriding a stop_).
 
 ## Stack profiles
 
@@ -609,6 +639,7 @@ so a new release is picked up without editing the plugin.
 | Security reviewer (`SPEC.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
 | Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
 | Orchestrator lookups                     | `auto-dev:lookup`                | `haiku` · medium  |
+| Fixer (your instruction at a stop)       | `auto-dev:fixer`                 | `opus` · high     |
 
 `next` names each type as `auto-dev:<worker>`; a plugin install lists them as
 `auto-dev:auto-dev-<worker>`, and the orchestrator maps one to the other.
@@ -678,6 +709,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `redo/` | Phases 5–6 | the plan as it was before a spec redo revised it, and the plan's change for the coder |
 | `lookups/` | any phase | lookup answers |
 | `tree/` | `autodev.py record` | a repo file a worker that never changes the repo changed anyway, as the worker left it, before `record` put it back (`tree/<worker>-<n>/<path>`) |
+| `override/` | at a stop, the fixer and `autodev.py next` | the fixer's report (`fixer-<n>.md`); the run's `SPEC.md`, plan and checks as they were before it ran (`fixer-<n>.before/`), and, when it ended without fixing, the repo files it changed, as it left them, before they were put back (`fixer-<n>.after/`) |
 
 ## Safety
 
@@ -726,12 +758,12 @@ Autonomous but bounded:
   `gh pr merge` is refused it tells you why instead of working around branch
   protection.
 
-Some stops last until you fix the cause and say `auto-dev continue`: a stop on
-a worker (it stopped or failed twice running, or never left a usable
-result), a refused `pr publish`, and red CI the code can't fix. A push to the PR
-branch stops the run until you bring those commits into the worktree, where
-they are checked again. A stop on a result (a red gate, an impossible spec, a
-possibly planted bug) stays. The budget used up stays too, until you add rounds.
+No stop is a dead end. Each one asks how to go on, in the session that hit it
+or a new one: your instruction to the fixer, a retry once you fixed the cause
+yourself, or, where it is safe, a sign-off (above). Only the step that stopped
+runs again, not the run. A push to the PR branch stops the run until you bring
+those commits into the worktree, where they are checked again. The budget used
+up stays until you add rounds.
 
 ## Repository layout
 

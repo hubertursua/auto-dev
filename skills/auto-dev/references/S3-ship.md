@@ -52,7 +52,7 @@ see in S3, in order:
    correction, a review and a new commit. Any other class (`INFRA`, `FLAKY`,
    `UNKNOWN`, `SECRET`) is not the code's to fix: `next` stops and reports it
    (exit 4) before Jira moves to In Review. Once the cause is fixed and CI
-   re-run, `auto-dev continue` watches it again.
+   re-run, _I fixed it myself_ (or `auto-dev continue`) watches it again.
 5. Jira In Review, the `triager` on human PR comments, `gh pr ready`, CI watched once more (some workflows skip drafts, so green from the
    draft's checks doesn't count), the main gate, `merge-pr`. A human blocker
    goes to the coder; a comment saying a held-out check is wrong goes to the
@@ -183,6 +183,8 @@ printed. Then run its `AFTER` line.
 
 **Accepted deviations:** <each condition the user let the code deviate from at the deviation gate, and what the code does instead (the `Deviations from the spec the user accepted` line of the gate summaries) — or "none">
 
+**Overrides at a stop:** <each sign-off, fix and retry the user chose when the run stopped, as the PR gate summary's `Signed off by the user` / `Fixed at the user's instruction` / `Run again after the user fixed the cause` lines name them — or "none">
+
 **Unresolved / skipped:** <unmet conditions, open findings, skipped steps — or "none">
 
 **Follow-ups:** <findings the user sent to a separate PR — or "none">
@@ -202,7 +204,8 @@ it.
 ## Stops in S3
 
 Every stop is exit 4 with its reason in `REPORT`
-(`references/tables.md`, _Stop conditions_). The ones that need care:
+(`references/tables.md`, _Stop conditions_), and most ask how to go on
+(`SKILL.md`, _A stop_). The ones that need care:
 
 - **CI red at the main gate (#18):** never merge over it; name each red check.
 - **The budget ran out after the commit (#12):** tell the user each open

@@ -159,7 +159,9 @@ see in S1, in order:
 1. `define` writes `SPEC.md` and the size check, from the ticket text `init`
    stored (else your `--ask`). `OVERSIZED` → exit 4: tell
    the user Define's reasons, the subsystems it found and its suggested split
-   lines, all in the `REPORT` (copied from SPEC.md's Size check). Nothing else.
+   lines, all in the `REPORT` (copied from SPEC.md's Size check), then ask its
+   `QUESTION` (`SKILL.md`, _A stop_): the user may sign it off, or tell the
+   fixer how to narrow it. Nothing else.
 2. With a ticket: the Jira question (exit 5). Read the ticket's status first
    (`references/gates-and-jira.md`, _Asking first_): if it is in progress
    already, don't ask, and run the `Already …` line. On `Move it`, a later exit 0
@@ -180,7 +182,8 @@ see in S1, in order:
 
 ### Stops in S1
 
-Every stop is exit 4 with its reason in `REPORT`. The full list is
+Every stop is exit 4 with its reason in `REPORT`, and most ask how to go on
+(`SKILL.md`, _A stop_). The full list is
 `references/tables.md`, _Stop conditions_. The usual ones here: OVERSIZED,
 budget used up on a review (the user can add rounds: `SKILL.md`, _The loop_),
 a worker that didn't return ok twice.

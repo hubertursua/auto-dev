@@ -164,7 +164,16 @@ from datetime import datetime
 from pathlib import Path
 
 from . import artifacts as art
-from . import briefs, check_props, cmd_checks, plan_props, proposals, sealed, tree_guard
+from . import (
+    briefs,
+    check_props,
+    cmd_checks,
+    overrides,
+    plan_props,
+    proposals,
+    sealed,
+    tree_guard,
+)
 from . import state as st
 from .cmd_checks import FIX_RE, overlaps, rederive_risk
 from .cmd_review import pending_rows
@@ -375,6 +384,7 @@ def auto_values(worker, n, state, ad, mode):
         "blocked_file": str(ad / "blocked" / f"coder-{n}.md"),
         "fix_file": str(ad / "fixes" / f"{FIX_PREFIX.get(worker, 'plan')}-{n}.md"),
         "proposal_file": str(ad / "proposals" / f"{worker}-{n}.md"),
+        "fix_report": str(ad / overrides.FIX_DIR / f"fixer-{n}.md"),
     }
     return values
 
@@ -400,8 +410,9 @@ def blocked_last(state, worker, mode=None):
     in parallel)."""
     if worker == "code-reviewer":
         return False
+    lifted = max(state.get("resumed_seq", 0), state.get("lifted_seq", 0))
     log = [e for e in state.get("log") or []
-           if e.get("seq", 0) > state.get("resumed_seq", 0)
+           if e.get("seq", 0) > lifted
            and e.get("worker") != "code-reviewer"
            and not (e.get("worker") == worker and e.get("mode") != mode)]
     return bool(log) and log[-1].get("worker") == worker and \
@@ -529,7 +540,8 @@ def write_brief(state, where, worker, mode, given, retry=None):
                    f"{', '.join(unknown)}", FAILED, "REFUSED")
     directory.mkdir(parents=True, exist_ok=True)
     if ad is not None:
-        for sub in ("returns", "fixes", "triage", "lookups", "blocked", "proposals"):
+        for sub in ("returns", "fixes", "triage", "lookups", "blocked", "proposals",
+                    overrides.FIX_DIR):
             (ad / sub).mkdir(exist_ok=True)
     path = directory / f"{worker}-{n}.md"
     path.write_text(briefs.render(worker, n, mode, values), encoding="utf-8")
@@ -543,6 +555,11 @@ def write_brief(state, where, worker, mode, given, retry=None):
             watch_owner(state, ad, worker, mode, given, entry, n)
         if worker in tree_guard.GUARDED:
             entry["tree"] = tree_guard.snapshot(auto["worktree"], ad)
+        if worker == "fixer" and retry is None:
+            # What it changes is listed, and put back if it ends without fixing.
+            entry["fix_tree"] = tree_guard.snapshot(auto["worktree"], ad)
+            entry["artifacts"] = overrides.save_artifacts(ad, n)
+            entry["artifacts_n"] = n
         state.setdefault("briefs", []).append(entry)
         for old in state["briefs"]:
             if retry is not None and old["worker"] == worker and old["n"] == retry:
@@ -558,7 +575,8 @@ def watch_spec(state, ad, worker, given, retry, entry):
     if retry is not None:
         old = next((b for b in state.get("briefs", [])
                     if b["worker"] == worker and b["n"] == retry), {})
-        for key in ("spec", "held", "plan", "sealed", "whole"):
+        for key in ("spec", "held", "plan", "sealed", "whole", "fix_tree", "artifacts",
+                    "artifacts_n"):
             if key in old:
                 entry[key] = old[key]
         return
@@ -928,7 +946,9 @@ def result_issues(worker, data, ad, state, n):
     elif worker == "cleanup":
         failing = [c.get("report", "") for c in state["settings"].get("gate", [])
                    if not lint_passes(ad / "lint" / c.get("report", ""))]
-        if (nxt == "GREEN") != (not failing):
+        if failing and set(failing) <= overrides.signed_reports(state):
+            pass  # only checks the user signed off fail: any verdict reads as green
+        elif (nxt == "GREEN") != (not failing):
             issues.append(f"next is {nxt} but these lint reports don't pass: "
                           f"{', '.join(failing) or 'none'}")
     elif worker == "review-judge":
@@ -937,6 +957,67 @@ def result_issues(worker, data, ad, state, n):
         issues += derive_triager(data, ad, n)
     elif worker == "lookup":
         issues += lookup_issues(nxt, ad / "lookups" / f"{n}.md")
+    elif worker == "fixer":
+        issues += fixer_issues(nxt, ad, state, n)
+    return issues
+
+
+FIX_SECTIONS = {"FIXED": "Changed", "NEEDS_CONSENT": "Proposal", "CANNOT_FIX": "Why not"}
+
+
+def fixer_issues(nxt, ad, state, n):
+    """A fixer's report must say what it did: for FIXED, name every path it
+    changed (repo files, and the run's SPEC.md, plan or checks as
+    `.auto-dev/<path>`), and leave each held-out check file it edited whole
+    and copied over its sealed copy; for NEEDS_CONSENT its proposal, for
+    CANNOT_FIX why. Whatever a fixer changed without fixing is put back by
+    `next`, so only FIXED is held to its list."""
+    report = ad / overrides.FIX_DIR / f"fixer-{n}.md"
+    if not report.is_file():
+        return [f"{report} does not exist: write your report there"]
+    text = report.read_text(encoding="utf-8")
+    section = FIX_SECTIONS.get(nxt)
+    body = (art.find_section(text, section) or "").strip() if section else ""
+    issued = next((b for b in state.get("briefs", [])
+                   if b["worker"] == "fixer" and b["n"] == n), {})
+    wt = state["worktree"]
+    if issued.get("fix_tree"):
+        head = tree_guard.git(wt, "rev-parse", "HEAD").decode().strip()
+        if head != issued["fix_tree"]["head"]:
+            return [(f"HEAD moved from {issued['fix_tree']['head'][:12]} to {head[:12]}: "
+                     "you never commit, reset or check out. Put HEAD back with "
+                     f"`git -C {wt} reset --soft {issued['fix_tree']['head']}`, keeping "
+                     "your changes in the working tree")]
+    if section and nxt != "FIXED" and body.lower() in ("", "none"):
+        return [f"{report.name} has no `## {section}` section saying "
+                + ("what else the fix needs" if nxt == "NEEDS_CONSENT" else "why not")]
+    if nxt != "FIXED":
+        return []
+    if art.find_section(text, "Changed") is None:
+        return [(f"{report.name} has no `## Changed` section (write `none` in it when you "
+                 "changed no file)")]
+    scratch = tree_guard.scratch(wt, ad) or ".auto-dev"
+    changed = []
+    if issued.get("fix_tree"):
+        changed += tree_guard.changed(issued["fix_tree"], tree_guard.snapshot(wt, ad))
+    if issued.get("artifacts") is not None:
+        changed += [f"{scratch}/{p}"
+                    for p in overrides.changed_artifacts(ad, issued["artifacts"])]
+    listed = set(re.findall(r"`([^`]+)`", body))
+    issues = [f"you changed {p} but your report's Changed section does not name it "
+              f"(as `{p}`): name every path you changed, with what and why"
+              for p in changed if p not in listed]
+    if cmd_checks.installed(ad):
+        for rel in sealed.sealed_files(ad):
+            try:
+                whole = sealed.intact(ad, rel, sealed.read(Path(wt) / rel))
+            except sealed.SealError as exc:
+                raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
+            if not whole:
+                issues.append(f"the held-out checks in {rel} no longer match their sealed "
+                              f"copy: after editing a check, copy the whole file over "
+                              f"{scratch}/acceptance/files/{rel}.sealed")
+    issues += seal_bases(state, ad)
     return issues
 
 

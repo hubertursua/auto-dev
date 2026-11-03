@@ -4,6 +4,38 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.25
+
+- **A stop asks how to go on.** Every stop on a result (a red quality gate,
+  an impossible spec, a check the tester and the verifier disagree on, a
+  correction that changed nothing, a failed commit or merge, an `OVERSIZED`
+  task, …) and on a worker that failed twice now prints a question with its
+  report. Type how to fix it and the new **fixer** worker (`auto-dev:fixer`,
+  `opus` · high) does exactly that, and nothing more: in the code, or in the
+  run's `SPEC.md`, plan or held-out checks when you name them. Or answer _I
+  fixed it myself_ (only the step that stopped runs again), _Sign off and go
+  on_ (accept the result; not on red CI, a confirmed security finding, a
+  possibly planted bug, stale results or unchecked commits), _Let's talk it
+  through_, or _Leave it stopped_. `autodev.py override` records the answer.
+  Running the stopped step again spends no round; a correction its new result
+  calls for is paid as usual. Before, such a stop came back in every session and the
+  run had to start over.
+- **What a fix changed is checked again.** The quality gate and the verifier
+  run on changed code, the verifier's first pass on a changed spec or plan,
+  and in Phase 6 a review of the changed files. `record` refuses a fixer's
+  report that leaves out a path it changed, or a fixer that committed; a fixer
+  that needs more than your words allow changes nothing and asks you to
+  approve its proposal.
+- **A signed-off red check stays signed off.** While only the quality-gate
+  checks you signed off fail, the gate counts as green for the rest of the
+  run; a check that starts failing later stops the run again.
+- **Sign-offs and fixes are named** in `WORK_LOG.md`, the PR gate's summary,
+  a new _Overrides by the user_ section of the PR body and the final report.
+- **An `OVERSIZED` run resumes.** `resume` reports it as `RESUME`, not
+  `FINISHED`, so a new session can still answer its question.
+- **Resume:** a run in flight resumes. A run stopped on a result before the
+  upgrade asks the new question the next time `next` reaches that stop.
+
 ## Upgrading from 4.24
 
 - **`record` holds the workers that never change the repo to that.** The

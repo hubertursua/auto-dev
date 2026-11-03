@@ -94,7 +94,10 @@ Exit codes:
     2  could not run (no state.json, an artifact unreadable, a check that could
        not run) — never a pass
     3  the run is complete
-    4  stop and report: tell the user the REPORT lines; do nothing more
+    4  stop and report: tell the user the REPORT lines; with a QUESTION, ask
+       how to go on and run the AFTER line for the answer (an `override`
+       command; a typed answer is the fixer's instruction), then `next`;
+       otherwise do nothing more
     5  ask the user: show SUMMARY, ask QUESTION, run the AFTER line for the answer
     6  session boundary, or a checkpoint: run the AFTER command, give the user its
        message, stop
@@ -115,10 +118,15 @@ A brief issued but not yet recorded is re-issued as the same spawn (after a
 cut-off session, say); one `next` refused is re-issued as a new brief that
 carries the refused issues (as `brief --retry <n>` writes). Spawned three
 times with no usable result, it stops. A stop on a worker (blocked, failed
-twice, never returned) lasts until `resume`: after the user fixes the cause,
-the next session spawns that worker again. A stop on a result (a red quality
-gate, an impossible spec) stays. The budget used up stays too, until the user
-adds rounds with `autodev.py budget raise --by <n>`: the next `next` takes the
+twice, never returned) is lifted by `resume`: the next session spawns that
+worker again. A stop on a result (a red quality gate, an impossible spec)
+comes back until the user overrides it. Every stop but the budget's, a gate's
+Stop, a failed setup and a merge of unknown outcome prints a QUESTION and is
+saved as state["stop"]: `autodev.py override` records the answer (the fixer
+with the user's instruction, a retry, a sign-off where the stop allows one,
+talk, leave), and the next `next` acts on it, running only the step that
+stopped again, at no round. The budget used up stays until the user adds
+rounds with `autodev.py budget raise --by <n>`: the next `next` takes the
 step that stopped, spending one of them.
 """
 
@@ -131,7 +139,18 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import check_props, cmd_checks, cmd_review, cmd_work, judgment, plan_props, proposals, sealed
+from . import (
+    check_props,
+    cmd_checks,
+    cmd_review,
+    cmd_work,
+    judgment,
+    overrides,
+    plan_props,
+    proposals,
+    sealed,
+    tree_guard,
+)
 from . import state as st
 from .cmd_ship import changed_paths
 from .cmd_state import ON_EXHAUSTED, spend_round
@@ -198,6 +217,7 @@ class Ctx:
         self.wt = self.state["worktree"]
         self.p6 = self.state.setdefault("phase6", {})
         self.dirty = False
+        self.quiet = False  # state["stop"] changed: saved, but not an event of its own
         self.recorded = []  # the RECORDED lines of the results this call recorded
         self.readonly = bool(getattr(args, "explain", False))
         self.probing = False
@@ -208,7 +228,10 @@ class Ctx:
 
     @property
     def log(self):
-        return sorted(self.state.get("log", []), key=lambda e: e.get("seq", 0))
+        # A result the user set aside at a stop (`override retry`, or a fix)
+        # is not read: its step runs again.
+        return sorted((e for e in self.state.get("log", []) if not e.get("aside")),
+                      key=lambda e: e.get("seq", 0))
 
     def recs(self, workers=None, after=0, mode=None, ok=True, before=None):
         if isinstance(workers, str):
@@ -236,7 +259,8 @@ class Ctx:
         return " ".join(q(w) for w in ("python3", AUTODEV, *args, "--dir", self.ad))
 
     def resumed(self):
-        return self.state.get("resumed_seq", 0)
+        # A retry at a stop lifts what a new session lifts (overrides.lift).
+        return max(self.state.get("resumed_seq", 0), self.state.get("lifted_seq", 0))
 
     def probe(self):
         """A read-only copy, to see what `next` would do without doing it."""
@@ -265,8 +289,8 @@ class Ctx:
         self.dirty = True
 
     def save(self):
-        if self.dirty and not self.readonly:
-            st.save(self.dir, self.state)
+        if (self.dirty or self.quiet) and not self.readonly:
+            st.save(self.dir, self.state, count_event=self.dirty)
 
     def would(self, what, rule):
         """Under --explain, stop before a step that writes a file or git."""
@@ -297,9 +321,25 @@ def action(text, rule, **lines):
     return {"code": NEXT_ACTION, "ACTION": text, "RULE": rule, **lines}
 
 
-def stop(report, rule):
-    return {"code": NEXT_STOP, "ACTION": "stop and report to the user; do nothing more",
-            "REPORT": report, "RULE": rule}
+def stop(report, rule, retry=None, signoff=None, no_signoff=None, kind=None,
+         after_fix=None):
+    """A stop. With `retry` (what `override retry` does: results to set aside,
+    phase6 keys to clear, a stop to lift, a correction to reopen), the user can
+    override it: `next` asks how (stop_point). `signoff` is what a sign-off
+    does (a result to rewrite as passed, results to set aside, a correction id
+    to drop); with none, `no_signoff` says why it isn't offered."""
+    result = {"code": NEXT_STOP, "ACTION": "stop and report to the user; do nothing more",
+              "REPORT": report, "RULE": rule}
+    if retry is not None:
+        result["OVERRIDE"] = {"retry": retry, "signoff": signoff, "kind": kind,
+                              "no_signoff": None if signoff else (
+                                  no_signoff or "there is no result to accept"),
+                              "after_fix": after_fix}
+    return result
+
+
+def job_of(rec):
+    return [rec["worker"], rec["n"]]
 
 
 def spawn(c, worker, mode=None, sets=None, rule="", budget=None, agent=None):
@@ -411,6 +451,229 @@ def exhausted(c, consumer, rule, extra=""):
                  f"State and artifacts: {c.ad}"], rule)
 
 
+# ---------------------------------------------------------------- overriding a stop
+#
+# A stop on a result (a red quality gate, an impossible spec, a disputed check,
+# a commit that failed, …) or on a worker that failed twice is not final: the
+# user says how to go on. `next` saves the stop as state["stop"] and asks: a
+# typed answer is an instruction for the fixer, the one worker that acts only
+# on the user's words; or the user fixed it themselves (retry), signs it off
+# where the stop allows, talks it through, or leaves it. `autodev.py override`
+# records the answer (overrides.py); the fixer's result is settled here.
+
+STOP_OPTIONS = {
+    "approve": ("Approve the fixer's proposal",
+                "The fixer runs again and does what it proposed, nothing more."),
+    "retry": ("I fixed it myself",
+              "Only the step that stopped runs again, at no round."),
+    "signoff": ("Sign off and go on",
+                ("Accept the result as it is: the run goes on as if the step passed. "
+                 "Named in the PR body.")),
+    "talk": ("Let's talk it through",
+             "Discuss the stop first; nothing is recorded, and the question comes back."),
+    "leave": ("Leave it stopped",
+              "The run stays here and the worktree is kept; a new session asks again."),
+}
+TYPED = "<a typed answer>"
+
+
+def stop_point(c, result):
+    """Save a stop the user can override as state["stop"] and ask how to go
+    on; any other step clears the saved stop."""
+    spec = result.pop("OVERRIDE", None)
+    if spec is None:
+        if not c.readonly and c.state.pop("stop", None) is not None:
+            c.quiet = True
+        return result
+    report, rule = list(result.get("REPORT") or []), result.get("RULE", "")
+    prev = c.state.get("stop") or {}
+    entry = {"rule": rule, "report": report, **spec,
+             "phase": (st.first_open_phase(c.state) or (6, None))[0],
+             "seq": prev["seq"] if prev.get("rule") == rule else c.seq()}
+    if not c.readonly and prev != entry:
+        c.state["stop"] = entry
+        c.quiet = True
+    last = overrides.latest(c.state)
+    if last and last["choice"] == "leave" and last["seq"] > c.resumed() and \
+            last["stop"].get("rule") == rule:
+        result["REPORT"] = report + [
+            ("The user chose to leave the run stopped here; the worktree stays. A new "
+             "session (`auto-dev continue`) asks again how to go on.")]
+        return result
+    return ask_at_stop(c, result, entry, last)
+
+
+def ask_at_stop(c, result, entry, last):
+    fix = last if last and last["choice"] == "fix" and \
+        last["stop"].get("rule") == entry["rule"] else None
+    summary = []
+    status = (fix or {}).get("status")
+    if status == "proposed":
+        summary.append("The fixer needs more than the instruction allows, so it changed "
+                       f"nothing. Its proposal is in {fix['report']} (section Proposal): "
+                       "read it to the user before asking.")
+    elif status == "cannot":
+        summary.append("The fixer could not carry out the instruction and changed "
+                       f"nothing; why is in {fix['report']} (section Why not).")
+    elif status == "failed":
+        summary.append("The fixer did not finish" + (
+            f"; what it changed was put back ({', '.join(fix['undone'])})"
+            if fix.get("undone") else "") + ". What it said is in its reply.")
+    keys = ["approve" if status == "proposed" else "retry"]
+    if entry.get("signoff"):
+        keys.append("signoff")
+    keys += ["talk", "leave"]
+    commands = {
+        "approve": c.cmd("override", "approve"),
+        "retry": c.cmd("override", "retry", "--text", "<what the user changed>"),
+        "signoff": c.cmd("override", "signoff", "--text", "<why the user accepts it>"),
+        "talk": c.cmd("override", "talk"),
+        "leave": c.cmd("override", "leave"),
+    }
+    question = {"question": ("The run stopped: " + entry["rule"] + ". Type how to fix it "
+                             "(a fixer agent does exactly that, and nothing more), or pick "
+                             "one:"),
+                "header": "Stopped", "multiSelect": False,
+                "options": [{"label": STOP_OPTIONS[k][0], "description": STOP_OPTIONS[k][1]}
+                            for k in keys]}
+    if not entry.get("signoff"):
+        summary.append(f"It can't be signed off: {entry['no_signoff']}.")
+    result.update({
+        "ACTION": ("tell the user the REPORT lines (and SUMMARY), then ask QUESTION with "
+                   "AskUserQuestion. A typed answer (Other) is the user's instruction for "
+                   f'the fixer: run the "{TYPED}" AFTER line with their words. Otherwise run '
+                   "the AFTER line for their pick. Then run `next`, except after \"Leave it "
+                   f'stopped": stop there ({FILL})'),
+        "SUMMARY": summary, "QUESTION": json.dumps({"questions": [question]}),
+        "AFTER": [f'"{TYPED}" → ' + c.cmd("override", "fix", "--text",
+                                            "<what the user said>")]
+                 + [f'"{STOP_OPTIONS[k][0]}" → {commands[k]}' for k in keys]})
+    return result
+
+
+def open_fix(c):
+    found = [o for o in overrides.fixes(c.state) if o.get("status") == "open"]
+    return found[-1] if found else None
+
+
+def fix_step(c):
+    """The fixer the user asked for at a stop: spawn it, then settle its result.
+    None once no fix is open."""
+    fix = open_fix(c)
+    if fix is None:
+        return None
+    job = fix.get("job")
+    if job is None:
+        return fixer_spawn(c, fix)
+    rec = next((e for e in c.state.get("log", [])
+                if e["worker"] == "fixer" and in_jobs(c, [job], "fixer", e["n"])), None)
+    if rec is None:
+        return pending_briefs(c) or fixer_spawn(c, fix)
+    c.would("settle the fixer's result", "the fixer returned")
+    brief = brief_entry(c, "fixer", rec["n"]) or {}
+    fix["report"] = str(c.ad / overrides.FIX_DIR / f"fixer-{rec['n']}.md")
+    fix["done_seq"] = c.seq()
+    c.dirty = True
+    if rec.get("status") != "ok" or rec.get("next") != "FIXED":
+        fix["status"] = {"NEEDS_CONSENT": "proposed", "CANNOT_FIX": "cannot"}.get(
+            rec.get("next") if rec.get("status") == "ok" else None, "failed")
+        fix["undone"] = undo_fix(c, brief, rec["n"])
+        st.add_note(c.state, f"fixer #{rec['n']} returned {rec.get('status')} "
+                    f"{rec.get('next') or ''}: nothing it changed stays; the stop asks again")
+        return None
+    changed = fix_changes(c, brief)
+    fix.update({"status": "fixed", "changed": changed,
+                "spec_changed": any(p.endswith("/SPEC.md") or p.endswith("/IMPLEMENTATION.md")
+                                    for p in changed),
+                "code_changed": any(not p.startswith(scratch(c) + "/") or
+                                    p.startswith(scratch(c) + "/acceptance/")
+                                    for p in changed)})
+    stop_ = fix["stop"]
+    if stop_.get("after_fix") == "fits":
+        overrides.apply_signoff(c.state, {"rewrite": (stop_.get("signoff") or {}).get(
+            "rewrite"), "fits": True}, c.seq())
+    else:
+        overrides.apply_retry(c.state, stop_.get("retry") or {}, c.seq())
+    st.add_note(c.state, f"fixer #{rec['n']} fixed it at the user's instruction: "
+                + (", ".join(changed) if changed else "no file changed")
+                + "; the step that stopped runs again")
+    corrs, passes = c.p6.get("corrections") or [], c.p6.get("passes") or []
+    open_corr = corrs and not corrs[-1].get("closed") and not (
+        passes and passes[-1]["seq"] > corrs[-1]["seq"])
+    if open_corr:
+        # The open correction's loop runs the gate and the verifier again, and
+        # its review pass covers the fixer's files with its own.
+        return None
+    if changed and st.phase(c.state, 6)["status"] == "in-progress" and passes:
+        c.p6.setdefault("corrections", [])
+        return start_correction(c, "fix", review_round(c, "fix")[0], None, None,
+                                "the fixer changed the code or its contract at a stop: "
+                                "the quality gate, the verifier and a review of what it "
+                                "changed run again (no round)",
+                                snapshot=fix.get("tree_before"))
+    return None
+
+
+def scratch(c):
+    return tree_guard.scratch(c.wt, c.ad) or ".auto-dev"
+
+
+def fixer_spawn(c, fix):
+    """Brief the fixer with the user's words. The tree and the watched artifacts
+    are saved first (cmd_work.write_brief), so what it changed can be listed,
+    and put back if it ends without fixing."""
+    stop_ = fix["stop"]
+    c.would("spawn the fixer with the user's instruction",
+            "the user said how to fix the stop")
+    rebase_installed(c)  # a check file it edits is copied whole over its sealed copy
+    if st.phase(c.state, 6)["status"] == "in-progress" and \
+            not c.state.get("phase6", {}).get("verified_sha"):
+        cmd_checks.git_add_intent(c.wt)
+        fix["tree_before"] = cmd_review.print_tree(c.wt)
+    result = spawn(c, "fixer", sets={
+        "instruction": fix["text"],
+        "stopped": "\n".join([f"Why the run stopped: {stop_.get('rule')}"]
+                             + list(stop_.get("report") or []))},
+        rule="the user said how to fix the stop: the fixer does that, and nothing more "
+             "(no round)")
+    fix["job"] = ["fixer", c.state["briefs"][-1]["n"]]
+    c.dirty = True
+    return result
+
+
+def fix_changes(c, brief):
+    """The paths fixer job `brief` changed: repo files, and the watched artifacts
+    as paths under the worktree."""
+    paths = []
+    if brief.get("fix_tree"):
+        now = tree_guard.snapshot(c.wt, c.ad)
+        paths += tree_guard.changed(brief["fix_tree"], now)
+    if brief.get("artifacts") is not None:
+        paths += [f"{scratch(c)}/{p}"
+                  for p in overrides.changed_artifacts(c.ad, brief["artifacts"])]
+    return paths
+
+
+def undo_fix(c, brief, n):
+    """Put back what a fixer that did not fix changed; the paths put back."""
+    undone = []
+    if brief.get("fix_tree"):
+        now = tree_guard.snapshot(c.wt, c.ad)
+        paths = tree_guard.changed(brief["fix_tree"], now)
+        if paths:
+            left = tree_guard.put_back(c.wt, brief["fix_tree"], paths,
+                                       c.ad / overrides.FIX_DIR / f"fixer-{n}.after")
+            undone += [p for p in paths if p not in left]
+            if left:
+                st.add_note(c.state, f"fixer #{n}: could not put back {', '.join(left)}; "
+                            "restore them by hand")
+    if brief.get("artifacts") is not None:
+        paths = overrides.changed_artifacts(c.ad, brief["artifacts"])
+        overrides.put_back_artifacts(c.ad, brief.get("artifacts_n", n), paths)
+        undone += [f"{scratch(c)}/{p}" for p in paths]
+    return undone
+
+
 # ---------------------------------------------------------------- entry point
 
 def main(args):
@@ -443,6 +706,7 @@ def main(args):
         report += [line for line in proposals.upstream_unsent_lines(c.state)
                    if line not in report]
         result["REPORT"] = report
+    result = stop_point(c, result)
     c.save()
     return show(result, args)
 
@@ -526,6 +790,9 @@ def record_returns(c):
 
 
 def decide_step(c):
+    fix = fix_step(c)  # first: a fix can reopen a stopped (OVERSIZED) run
+    if fix is not None:
+        return fix
     run_state = st.run_state(c.state)
     if run_state == "finished":
         return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
@@ -587,6 +854,14 @@ def ended(c, how):
                     f"not moved. {kept}")
         rows += size_check(c)
     rows.append(f"State and artifacts: {c.ad}")
+    define = c.last("define", mode="write")
+    if how == "stopped" and c.state.get("size") == "OVERSIZED" and define and \
+            define["next"] == "OVERSIZED":
+        return stop(rows, "Define found the task too big for one PR (OVERSIZED)",
+                    retry={"aside": [job_of(define)], "oversized": True},
+                    signoff={"rewrite": [define["worker"], define["n"], "FITS"],
+                             "fits": True},
+                    kind="oversized", after_fix="fits")
     return stop(rows, f"the run is {how}")
 
 
@@ -623,7 +898,7 @@ def pending_briefs(c):
                          "never left a result that `next` accepts. Tell the user; its "
                          f"brief is {c.ad}/briefs/{b['worker']}-{b['n']}.md. Once the "
                          "cause is fixed, `auto-dev continue` spawns it again.")],
-                        "a worker failed to return three times")
+                        "a worker failed to return three times", retry={"lift": True})
         if c.readonly:  # --explain counts nothing and writes no retry brief
             if cmd_work.job(b["worker"], b["n"]) in refused:
                 open_[i] = {"worker": b["worker"], "n": c.peek(b["worker"])}
@@ -658,7 +933,7 @@ def not_ok(c):
     # reviewer: review_step re-spawns a failed slot, and their results would hide
     # the security reviewer's.
     log = [e for e in c.log if e.get("seq", 0) > c.resumed()
-           and e["worker"] != "code-reviewer"]
+           and e["worker"] not in ("code-reviewer", "fixer")]
     if not log:
         return None
     latest = log[-1]
@@ -677,7 +952,7 @@ def not_ok(c):
                      "said above its result block, and that the run is paused here: "
                      "once the cause is fixed, `auto-dev continue` spawns it again."),
                      f"State and artifacts: {c.ad}"],
-                    f"a worker returned status {latest['status']}")
+                    f"a worker returned status {latest['status']}", retry={"lift": True})
     return None  # failed or blocked once: the step re-spawns it
 
 
@@ -793,7 +1068,11 @@ def review_loop(c, reviewer, author, target, consumer, after):
     if fix in NONE:
         return stop([(f"{reviewer} #{review['n']} found {review['data'].get('blockers')} "
                      "blocker(s) but wrote no FIX block. Tell the user; the review is "
-                     f"in its reply and {c.ad}.")], "blockers with nothing to apply")
+                     f"in its reply and {c.ad}.")], "blockers with nothing to apply",
+                    retry={"aside": [job_of(review)]},
+                    signoff={"rewrite": [review["worker"], review["n"], "CLEAN",
+                                         {"blockers": "0", "fix_file": "none"}]},
+                    kind="review-no-fix")
     if apply_once(c, target, fix) == "applied":
         return None if clean else re_review(c, reviewer, consumer, spend_id, fix)
     return spawn(c, author, "revise", {"fix_file": fix},
@@ -953,7 +1232,8 @@ def gate_question(c, gate, answers, rule):
         if gate == "pr" and exc.token == "STALE":
             return stale_again(c, str(exc))
         return stop([f"The {gate} gate's checks failed, so it can't be asked: {exc}"],
-                    f"a {gate} gate precondition failed")
+                    f"a {gate} gate precondition failed", retry={},
+                    no_signoff="the gate's checks protect what ships")
     questions = [cmd_review.question("Gate", f"{gate} gate: how do you want to proceed?",
                                      cmd_review.GATE_OPTIONS[gate])] + extra
     pairs = [(label, answers[label]) for label in cmd_review.GATE_OPTIONS[gate]]
@@ -1026,7 +1306,12 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
                              "acceptance tester ruled the check right as written, so "
                              "neither can fix it. Tell the user both sides: the cleanup "
                              f"agent's reports in {c.ad}/lint/ and the tester's reply.")],
-                            "the tester ruled a check that fails the quality gate stands")
+                            "the tester ruled a check that fails the quality gate stands",
+                            retry={"aside": [job_of(latest), job_of(trigger)]},
+                            signoff={"aside": [job_of(latest)],
+                                     "rewrite": [trigger["worker"], trigger["n"], "GREEN"],
+                                     "reports": failing_reports(c)},
+                            kind="red-gate")
             return cleanup_spawn(c, scope, files, "the repaired check passes the gate now? "
                                  "Run the cleanup agent again (no round)")
         if trigger and trigger["worker"] == "verifier" and trigger["next"] in (
@@ -1045,6 +1330,8 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
                                  "cleanup agent runs the quality gate on it (no round)")
         return recheck(c, start, "an acceptance-check repair")
     if worker == "cleanup":
+        if nxt != "GREEN" and gate_signed(c):
+            nxt = "GREEN"  # only checks the user signed off still fail
         if nxt == "GREEN":
             if scope == "phase5" and not c.recs("verifier", after=start):
                 return verifier_first(c, "the quality gate is green: the verifier's first "
@@ -1054,7 +1341,10 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
         if nxt == "RED":
             return stop([("The quality gate can't be made green; never ship a red build. "
                          f"Tell the user which checks fail: {c.ad}/lint/.")],
-                        "the cleanup agent returned RED")
+                        "the cleanup agent returned RED",
+                        retry={"aside": [job_of(latest)]},
+                        signoff={"rewrite": [worker, n, "GREEN"],
+                                 "reports": failing_reports(c)}, kind="red-gate")
         budget = c.spend(consumer, f"cleanup-{n}", "acceptance-check repair")
         if budget is None:
             return exhausted(c, consumer, "no round left for an acceptance-check repair")
@@ -1072,7 +1362,9 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
                      "verifier named; build nothing more on it.")]
                     + ([unsent + " (the run stops before the Define agent is asked)"]
                        if unsent else []),
-                    "the verifier returned MUTATION_LEFT_CHANGES")
+                    "the verifier returned MUTATION_LEFT_CHANGES",
+                    retry={"aside": [job_of(latest)]},
+                    no_signoff="the tree may hold a planted change; check it, then retry")
     if nxt == "ALL_MET":
         coder = c.last("coder", after=start)
         changed = coder
@@ -1083,8 +1375,11 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
             if repaired and repaired["next"] != "STANDS" and (
                     not changed or repaired["seq"] > changed["seq"]):
                 changed = repaired
-        cleaned = c.recs("cleanup", after=changed["seq"] if changed else start)
-        if (cleaned and cleaned[-1]["next"] == "GREEN") or (coder is None and scope != "phase5"):
+        fixed = last_fix(c, after=max(start, changed["seq"] if changed else 0))
+        cleaned = c.recs("cleanup", after=(fixed["done_seq"] if fixed else
+                                           changed["seq"] if changed else start))
+        if (cleaned and (cleaned[-1]["next"] == "GREEN" or gate_signed(c))) or (
+                coder is None and fixed is None and scope != "phase5"):
             return DONE_MARK
         return cleanup_spawn(c, scope, files, "every condition is met: the cleanup agent "
                              "simplifies and runs the quality gate (no round)")
@@ -1107,7 +1402,10 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
                          "they stand as written. Tell the user both sides: "
                          f"{c.ad}/SPEC_EVAL.md (Defective acceptance checks) and the "
                          "tester's reply. No round is spent on it.")],
-                        "the verifier and the acceptance tester disagree about a check")
+                        "the verifier and the acceptance tester disagree about a check",
+                        retry={"aside": [job_of(latest)]},
+                        signoff={"rewrite": [latest["worker"], latest["n"], "ALL_MET"]},
+                        kind="disputed-check")
         fields["repair"] = ", ".join(x for x in repair if x not in again)
     budget = c.spend(consumer, verifier_spend_id(c, n), "correction after verification")
     ids = [x.strip() for x in fields.get("repair", "").split(",") if x.strip()]
@@ -1124,6 +1422,26 @@ def loop_step(c, start, consumer, scope, first, files=None, after_change="a corr
                            "(the same round)", budget)
     return coder_correction(c, f"{c.ad}/evidence/corrections.md", budget,
                             f"the verifier found open items (consumer {consumer})")
+
+
+def failing_reports(c):
+    """The quality-gate reports that fail now."""
+    return [g.get("report", "") for g in c.state["settings"].get("gate", [])
+            if not cmd_work.lint_passes(c.ad / "lint" / g.get("report", ""))]
+
+
+def gate_signed(c):
+    """Whether the gate fails only on checks the user signed off."""
+    failing = failing_reports(c)
+    return bool(failing) and set(failing) <= overrides.signed_reports(c.state)
+
+
+def last_fix(c, after):
+    """The last fix at a stop, after seq `after`, that changed the code or a
+    check: the quality gate runs on it before the loop ends."""
+    found = [f for f in overrides.fixes(c.state) if f.get("status") == "fixed"
+             and f.get("code_changed") and f.get("done_seq", 0) > after]
+    return found[-1] if found else None
 
 
 def exhausted_loop(c, consumer, fields):
@@ -1181,7 +1499,9 @@ def blocked_step(c, coder, consumer):
     if planner["next"] == "SPEC_IMPOSSIBLE":
         return stop([("The planner judged the spec impossible to meet as written. Tell "
                      f"the user its reasons (its reply, and {c.ad}/IMPLEMENTATION.md).")],
-                    "the planner returned SPEC_IMPOSSIBLE")
+                    "the planner returned SPEC_IMPOSSIBLE",
+                    retry={"aside": [job_of(planner)]},
+                    no_signoff="the plan has no way to meet the spec; say how to change it")
     budget = c.spend(consumer, f"planner-{planner['n']}", "blocked step re-dispatched")
     if budget is None:
         return exhausted(c, consumer, "no round left to re-dispatch a blocked step")
@@ -1444,10 +1764,13 @@ def redo_step(c, b, scope, files):
 
 
 def redo_stop(c, b, why):
+    writes = redo_recs(c, b, "acceptance-tester", mode="write")
     return stop([(f"The spec redo after batch {b['k']} can't settle the rewritten "
                   f"acceptance checks: {why}. Tell the user; the redo spends no round, "
                   f"so it stops rather than loop. State and artifacts: {c.ad}")],
-                "a spec redo's checks did not settle (stop #21)")
+                "a spec redo's checks did not settle (stop #21)",
+                retry={"aside": [job_of(writes[-1])] if writes else []},
+                no_signoff="the rewritten checks would not hold the changed spec")
 
 
 def only_ids(scope):
@@ -1592,7 +1915,8 @@ def hand_off(c, b, scope, files):
         if problems:
             return stop([f"The plan's change for the coder ({path}) can't go to it: "
                          + "; ".join(problems), f"State and artifacts: {c.ad}"],
-                        "the plan change copies SPEC.md")
+                        "the plan change copies SPEC.md", retry={},
+                        no_signoff="the coder must never see the spec's wording")
         coder_files.append(str(path))
     coder_files += (b.get("carry") or {}).get("files") or []
     file = " and ".join(coder_files) or None
@@ -1756,8 +2080,15 @@ def deviation_gate(c, latest, cid, verdict, why):
 
 
 def redo_first_due(c, start):
-    """Whether a spec redo handed off in this loop and no verifier ran since:
-    the next verifier pass is a first pass, since the contract changed."""
+    """Whether a spec redo handed off in this loop, or a fix at a stop changed
+    SPEC.md or the plan, and no verifier ran since: the next verifier pass is a
+    first pass, since the contract changed."""
+    for fix in overrides.fixes(c.state):
+        done = fix.get("done_seq")
+        if fix.get("spec_changed") and done is not None and done >= start and \
+                not any(e["worker"] == "verifier" and e.get("seq", 0) >= done
+                        for e in c.state.get("briefs", [])):
+            return True
     for b in batches(c):
         handed = b.get("handed_seq")
         if b["status"] == "handed" and handed is not None and handed >= start and \
@@ -1996,12 +2327,13 @@ def stood_files(c, cids):
     return ", ".join(found) or "the tester's reply"
 
 
-def settled_stop(c, who, ids, where):
+def settled_stop(c, who, ids, where, key=None):
     return stop([(f"{who} still finds the checks of condition(s) {', '.join(ids)} wrong "
                   "after the acceptance tester ruled they stand as written. Tell the user "
                   f"both sides: {where} and the tester's rulings ({stood_files(c, ids)}). "
                   "No round is spent on it.")],
-                "a settled check was questioned again with nothing else open (stop #22)")
+                "a settled check was questioned again with nothing else open (stop #22)",
+                retry={}, signoff={"drop": key} if key else None, kind="settled-check")
 
 
 def check_item(items, cid, src):
@@ -2331,7 +2663,10 @@ def coder_step(c, start, consumer):
         if planner["next"] == "SPEC_IMPOSSIBLE":
             return stop([("The planner judged the spec impossible to meet as written. Tell "
                          f"the user its reasons (its reply, and {c.ad}/IMPLEMENTATION.md).")],
-                        "the planner returned SPEC_IMPOSSIBLE")
+                        "the planner returned SPEC_IMPOSSIBLE",
+                        retry={"aside": [job_of(planner)]},
+                        no_signoff="the plan has no way to meet the spec; say how to "
+                                   "change it")
         if plan_b:
             batch_rulings(c, plan_b, planner)
     if planner and str(planner["data"].get("entry_points_changed", "")).strip().lower() \
@@ -2515,7 +2850,9 @@ def phase5(c):
     if stale:
         return stop([("A Phase 5 report is stale right after its own re-run: something "
                      "rewrites the code on every run. Tell the user the files below."),
-                     stale], "check-fresh --phase 5 found a stale report")
+                     stale], "check-fresh --phase 5 found a stale report",
+                    retry={"aside": [job_of(r) for r in c.recs("cleanup", after=start)[-1:]]},
+                    no_signoff="a stale report says nothing about the code that ships")
     c.finish(5)
     return None
 
@@ -2589,11 +2926,12 @@ def open_correction(c):
     if corr["entry"] == "outside":
         return start_pass(c, "first", None, "the outside changes are re-checked: the "
                           "panel reviews the whole change")
-    if corr.get("spec_batch") and not corr["after_commit"] and \
-            not snapshot_files(c, corr):
-        corr["unchanged"] = True  # a spec redo that touched no file: no pass
-        st.add_note(c.state, f"the spec redo of batch {corr['spec_batch']} changed no "
-                    "file: no review pass")
+    if (corr.get("spec_batch") or corr["entry"] == "fix") and not corr["after_commit"] \
+            and not snapshot_files(c, corr):
+        corr["unchanged"] = True  # a spec redo or fix that touched no file: no pass
+        st.add_note(c.state, (f"the spec redo of batch {corr['spec_batch']}"
+                              if corr.get("spec_batch") else "the fix at a stop")
+                    + " changed no repo file: no review pass")
         return None
     if corr["after_commit"]:
         if unchanged(c):  # nothing to review or commit: the verified commit stands
@@ -2621,19 +2959,21 @@ def first_of(c, corr):
                                rule + " (one ruling per condition)", corr.get("budget"))
         return spawn(c, "acceptance-tester", "repair", dict(checks), rule=rule,
                      budget=corr.get("budget"))  # a correction started before 4.12
-    if not corr.get("file"):  # a spec redo with nothing for the coder
+    if not corr.get("file"):  # a spec redo, or a fix, with nothing for the coder
         after = corr["after_commit"]
         return cleanup_spawn(c, "after-commit" if after else "review-fix",
                              None if after else snapshot_files(c, corr),
-                             "the spec redo changed the code's contract: the cleanup "
-                             "agent runs the quality gate (no round)")
+                             ("the fixer changed the code at a stop" if corr["entry"] == "fix"
+                              else "the spec redo changed the code's contract")
+                             + ": the cleanup agent runs the quality gate (no round)")
     return coder_correction(c, corr["file"], corr.get("budget"), corr["rule"])
 
 
 def closed_correction(c, spend_id):
     """The closed correction paid for as `spend_id`, or None."""
     return next((k for k in c.p6.get("corrections", [])
-                 if k.get("spend_id") == spend_id and k.get("closed")), None)
+                 if k.get("spend_id") == spend_id and k.get("closed")
+                 and not k.get("aside")), None)
 
 
 def unchanged(c):
@@ -2792,7 +3132,7 @@ def review_step(c, p):
         if any(r["status"] == "ok" for r in mine):
             if "## Findings" in _read(c.ad / "review" / f"pass-{p['n']}" / f"{slot}.md"):
                 usable.append(slot)
-        elif len(mine) == 1:
+        elif len(mine) <= 1:  # none: a retry at a stop set the slot's results aside
             respawn.append(slot)
     jobs = [("code-reviewer", "review", reviewer_sets(c, p, slot)) for slot in respawn]
     secs = c.recs(SECURITY, after=p["seq"], ok=False)
@@ -2816,7 +3156,9 @@ def review_step(c, p):
     if judge is None:
         if not usable:
             return stop([("No code reviewer wrote a usable report, twice. Tell the user; "
-                         f"see {c.ad}/review/pass-{p['n']}/.")], "the panel produced nothing")
+                         f"see {c.ad}/review/pass-{p['n']}/.")], "the panel produced nothing",
+                        retry={"aside": [job_of(r) for r in reviews]},
+                        no_signoff="no review was written to accept")
         if not c.readonly:  # the panel's findings, merged for the judge
             judgment.write_findings(c.ad, p["n"], usable)
         jobs = [("review-judge", "consolidate", {
@@ -2892,7 +3234,11 @@ def review_correction(c, p, rows, sec):
     files, why = carry["files"], []
     spec = carry["checks"]
     if spec is None and not files:  # only checks the tester ruled right, again
-        return settled_stop(c, "The code review", carry["stood"], f"{c.ad}/CODE_REVIEW.md")
+        key = f"settled-pass-{p['n']}"
+        if overrides.signed_off(c.state, key):
+            return None  # the user sided with the tester: the PR gate is next
+        return settled_stop(c, "The code review", carry["stood"], f"{c.ad}/CODE_REVIEW.md",
+                            key)
     if spec:
         spec = {"scope": spec["scope"], "report": spec["report"], "items": spec["items"]}
     if rows:
@@ -2901,7 +3247,7 @@ def review_correction(c, p, rows, sec):
         why.append("the security review found a confirmed must-fix finding")
     tag = f"pass-{p['n']}" if rows else f"security-{sec['n']}"
     return must_fix(c, " and ".join(files) or f"{c.ad}/CODE_REVIEW.md", tag,
-                    " and ".join(why), checks=spec, coder=bool(files))
+                    " and ".join(why), checks=spec, coder=bool(files), security=bool(sec))
 
 
 def panel_leads(c):
@@ -2991,7 +3337,8 @@ def revotes(c, p, judge):
                      f"{'; '.join(gave_up)}. The lone findings stay pending in "
                      f"{c.ad}/CODE_REVIEW.md. Tell the user; once the cause is fixed, "
                      "`auto-dev continue` spawns those re-voters again.")],
-                    "a re-voter gave no usable vote twice")
+                    "a re-voter gave no usable vote twice", retry={"lift": True},
+                    no_signoff="a lone finding's vote is still open")
     if pending:  # with no plan (under two usable reports) each stays advisory
         c.would("apply the re-votes to CODE_REVIEW.md", "every re-voter has voted")
         cmd_review.apply_vote_files(c.ad / "CODE_REVIEW.md", text, pass_dir, pending,
@@ -3019,13 +3366,20 @@ def confirmed_security(c):
                and r.get("Verified", "").strip().lower() != "refuted")
 
 
-def must_fix(c, file, tag, rule, checks=None, coder=True):
+def must_fix(c, file, tag, rule, checks=None, coder=True, security=False):
     consumer, spend_id = review_round(c, tag)
+    if overrides.signed_off(c.state, spend_id):
+        return None  # the user signed the open findings off: the gate names them
     if closed_correction(c, spend_id):
-        # It ran and changed nothing (a change starts a new pass): never again.
+        # It ran and changed nothing (a change starts a new pass): never again,
+        # unless the user retries it.
         return stop([(f"The correction for {tag}'s open finding(s) changed nothing, so "
                      f"they are still open ({file}). Tell the user; the verified commit "
-                     "is unchanged.")], "a correction changed nothing")
+                     "is unchanged.")], "a correction changed nothing",
+                    retry={"reopen": spend_id},
+                    signoff=None if security else {"drop": spend_id},
+                    no_signoff="a confirmed security finding is open" if security else None,
+                    kind="open-findings")
     return start_correction(c, "review", consumer, file if coder else None, spend_id,
                             rule, checks=checks)
 
@@ -3148,7 +3502,8 @@ def stale_twice(c, detail, since=None):
         return None
     return stop([("A report is stale again right after its own re-run: something "
                  "rewrites the code on every run. Tell the user:"), detail],
-                "stale twice running")
+                "stale twice running", retry={"lift": True},
+                no_signoff="a stale report says nothing about the code that ships")
 
 
 def stale_again(c, detail, since=None):
@@ -3172,7 +3527,8 @@ def commit_step(c):
             return stale_again(c, "commit found stale results")
         return stop([(f"The commit step failed ({attempt['result']}). Tell the user what "
                      "`autodev.py commit` printed; nothing was pushed.")],
-                    "the commit failed")
+                    "the commit failed", retry={"clear": ["commit_attempt"]},
+                    no_signoff="nothing was committed to go on with")
     # A commit made but not yet checked (`unverified_commit`) leaves a clean tree:
     # `commit` checks it without committing again, so it is offered as usual.
     if not c.p6.get("verified_sha") and not c.p6.get("unverified_commit"):
@@ -3180,7 +3536,8 @@ def commit_step(c):
         if not add and not remove:
             return stop([("There is nothing to commit: the working tree holds no change "
                          "outside .auto-dev/. Tell the user; nothing was pushed.")],
-                        "an empty change")
+                        "an empty change", retry={},
+                        no_signoff="there is no change to ship")
     return action(f"commit: run `{c.cmd('commit', '--message', '<type>(<scope>): <summary>')}`"
                   f", with a Conventional Commits subject you write for the change ({FILL})",
                   "the PR gate said proceed (or a correction is verified and reviewed)",
@@ -3217,7 +3574,8 @@ def body_step(c, sha):
                           + ". Once the cause is fixed (the description edited, or "
                           "GitHub working again), `auto-dev continue` publishes it "
                           "again.")],
-                        "pr publish was refused")
+                        "pr publish was refused", retry={"lift": True},
+                        no_signoff="the PR description must pass its checks")
         if "rewrite" not in body:
             body["rewrite"] = attempt["seq"]
             c.dirty = True
@@ -3271,7 +3629,9 @@ def ci_step(c, sha):
             return stop([("CI is red because of the code, and the correction changed "
                          f"nothing. Tell the user the red checks ({red}) and what the "
                          f"triager found ({triage_file(c, triage)}); never merge over it.")],
-                        "a CI correction changed nothing")
+                        "a CI correction changed nothing",
+                        retry={"reopen": f"ci-{triage['n']}"},
+                        no_signoff="never merge over red CI")
         return start_correction(c, "ci", 5, triage_file(c, triage), f"ci-{triage['n']}",
                                 "CI is red because of the code (consumer 5)",
                                 why=f"Red checks: {red}.")
@@ -3280,14 +3640,16 @@ def ci_step(c, sha):
                      f"red checks ({red}) and what the triager said "
                      f"({triage_file(c, triage)}). Once the secret is fixed and CI re-run, "
                      "`auto-dev continue` watches it again.")],
-                    "the triager returned SECRET")
+                    "the triager returned SECRET", retry={"lift": True},
+                    no_signoff="never merge over red CI")
     # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Stop here, before Jira
     # moves on a red build; a resume watches CI again.
     return stop([(f"CI is red, and the triager classed it {kind}: not something the code "
                  f"can fix. Tell the user the red checks ({red}) and what the triager "
                  f"found ({triage_file(c, triage)}). The run stops here; once CI is fixed "
                  "or re-run, `auto-dev continue` watches it again.")],
-                f"the triager returned {kind}")
+                f"the triager returned {kind}", retry={"lift": True},
+                no_signoff="never merge over red CI")
 
 
 def triage_file(c, triage, key="triage_file"):
@@ -3321,7 +3683,11 @@ def human_step(c):
     if checks:
         checks = {k: checks[k] for k in ("scope", "report", "items")}
     elif stood and not blockers:  # only checks the tester ruled right, again
-        return settled_stop(c, "A PR comment", stood, triage_file(c, triage, "checks_file"))
+        key = f"settled-{spend_id}"
+        if overrides.signed_off(c.state, key):
+            return None  # the user sided with the tester
+        return settled_stop(c, "A PR comment", stood, triage_file(c, triage, "checks_file"),
+                            key)
     if blockers or checks:
         return start_correction(c, "human", 4, triage_file(c, triage) if blockers else None,
                                 spend_id, "people's comments on the PR need a correction "
@@ -3397,12 +3763,14 @@ def main_step(c, sha):
         if attempt and attempt["seq"] > gate["seq"]:
             return stop([(f"GitHub did not merge the PR ({attempt['result']}). Tell the "
                          "user what `merge-pr` printed; Jira stays as it is.")],
-                        "merge-pr did not merge")
+                        "merge-pr did not merge", retry={"clear": ["merge_attempt"]},
+                        no_signoff="the PR is not merged")
         ci = p6.get("ci") or {}
         if ci.get("status") == "red":
             return stop(["CI is red on the PR; never merge over it. Tell the user each "
                          "red check: " + "; ".join(ci.get("failing", []))],
-                        "red CI at the main gate")
+                        "red CI at the main gate", retry={"lift": True},
+                        no_signoff="never merge over red CI")
         return action(f"merge: run `{c.cmd('merge-pr', '--pr', p6.get('pr'), '--sha', sha)}`",
                       "the main gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("main-ci"):
@@ -3472,7 +3840,8 @@ def outside_push(c, sha, stale):
                   f"worktree with `git -C {q(c.wt)} merge --ff-only "
                   f"{q('origin/' + branch)}` and say `auto-dev continue`; the pipeline "
                   "then re-checks them (quality gate, verifier, review) and asks the "
-                  "main gate again:"), stale], "the PR head moved")
+                  "main gate again:"), stale], "the PR head moved", retry={},
+                no_signoff="the pipeline never ships commits it did not check")
 
 
 def fetch_and_check(c):

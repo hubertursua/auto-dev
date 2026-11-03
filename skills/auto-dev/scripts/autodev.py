@@ -43,6 +43,7 @@ Subcommands:
     run       run one of the profile's gate or test commands in the worktree
     verify    the verifier's routine steps: prep a pass, then compare the tree
     next      print the pipeline's one next action (the orchestrator's loop)
+    override  answer a stop: fix it as the user says, retry, sign off, talk, leave
 
 Every subcommand takes --json. Exit codes, the same for all:
     0  success
@@ -72,6 +73,7 @@ from lib import (
     cmd_state,
     cmd_verify,
     cmd_work,
+    overrides,
 )
 from lib.output import CANNOT_RUN, Fail, report_failure
 from lib.proc import CommandError
@@ -111,6 +113,7 @@ COMMANDS = {
     "verify": (cmd_verify, cmd_verify.main),
     "next": (cmd_next, cmd_next.main),
     "pr": (cmd_pr, cmd_pr.main),
+    "override": (overrides, overrides.main),
 }
 # Modules whose add_arguments() also takes the subcommand's name.
 NAMED = (cmd_state, cmd_ship, cmd_checks, cmd_review, cmd_work, cmd_pr)
