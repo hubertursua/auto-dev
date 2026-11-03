@@ -4,6 +4,16 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.22
+
+- **The `sonnet` workers run at `high` effort.** The profiler, the cleanup
+  agent and the orchestrator's lookups ran at `medium`. On the Claude 5.5
+  models, `high` is Sonnet's default, and at `medium` Sonnet 5.5 scores 7 to
+  15 points lower on Anthropic's coding benchmarks. The other workers keep
+  their model and effort; README *Models and effort* says why.
+- **Resume:** a run in flight resumes. Workers spawned after the upgrade run
+  at the new effort.
+
 ## Upgrading from 4.21
 
 - **You can add rounds after the budget runs out.** The stop for a used-up
