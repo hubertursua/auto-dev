@@ -2865,20 +2865,20 @@ class ReVoteTest(NextCase):
 
 class ReviewEffortTest(NextCase):
     plan_text = IMPLEMENTATION.replace(
-        "# Plan\n", "# Plan\n\nReview effort: high — one local function, no shared state\n", 1)
+        "# Plan\n", "# Plan\n\nReview effort: xhigh — a state machine across three modules\n", 1)
 
     def to_panel(self):
         self.plan_session()
         self.build_session()
         self.resume()
 
-    def test_the_plan_s_high_effort_reaches_every_code_reviewer_spawn(self):
+    def test_the_plan_s_xhigh_effort_reaches_every_code_reviewer_spawn(self):
         self.to_panel()
         out, jobs = self.reviewers()  # the security reviewer spawns at its own effort
-        self.assertEqual(out["EFFORT"], ["high"] * 3 + [""])
+        self.assertEqual(out["EFFORT"], ["xhigh"] * 3 + [""])
         self.assertIn("passing its EFFORT as the Agent tool's `effort`", out["ACTION"])
-        self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "high")
-        self.assertIn("code-review pass 1: the reviewers run at effort high",
+        self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "xhigh")
+        self.assertIn("code-review pass 1: the reviewers run at effort xhigh",
                       (self.dir / "WORK_LOG.md").read_text())
         # Re-issued (not recorded yet), in text: each PROMPT is followed by its EFFORT.
         r = self.autodev("next", "--dir", self.dir)
@@ -2886,8 +2886,8 @@ class ReviewEffortTest(NextCase):
         prompts = [i for i, ln in enumerate(lines) if ln.startswith("PROMPT: ")]
         self.assertEqual(len(prompts), 3, r.stdout)
         for i in prompts:
-            self.assertEqual(lines[i + 1], "EFFORT: high", r.stdout)
-        # The plan changing mid-pass does not change the pass's effort.
+            self.assertEqual(lines[i + 1], "EFFORT: xhigh", r.stdout)
+        # The plan changing mid-pass (no line now means high) does not change the pass's effort.
         (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
         for w, n in jobs:
             slot = self.sets(w, n)["reviewer"]
@@ -2897,26 +2897,26 @@ class ReviewEffortTest(NextCase):
             (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
             self.answer(w, n, "REVIEWED", findings="1", leads="0")
         out, jobs = self.expect("code-reviewer")  # the failed one's one re-spawn
-        self.assertEqual(out["EFFORT"], ["high"])
+        self.assertEqual(out["EFFORT"], ["xhigh"])
         (self.dir / "review" / "pass-1" / "R3.md").write_text(r_report("x"))
         self.answer(*jobs[0], "REVIEWED", findings="1", leads="0")
         (self.dir / "CODE_REVIEW.md").write_text(CODE_REVIEW.format(tree=self.tree()))
         out, _ = self.expect("review-judge", "REVOTE", must_fix_open="1", revote="2")
         self.assertNotIn("EFFORT", out)  # only code reviewers get one
         out, _ = self.expect("code-reviewer")  # the re-votes
-        self.assertEqual(out["EFFORT"], ["high"] * 3)
+        self.assertEqual(out["EFFORT"], ["xhigh"] * 3)
 
     def test_the_nested_code_review_gets_the_pass_s_effort_and_the_changed_files(self):
         self.to_panel()
         _, jobs = self.reviewers()
         for w, n in jobs:
             sets = self.sets(w, n)
-            self.assertEqual(sets["review_effort"], "high")
+            self.assertEqual(sets["review_effort"], "xhigh")
             files = sets["files"].split(", ")
             self.assertIn("due.ts", files)  # the coder's change, uncommitted
             self.assertFalse([f for f in files if f.startswith(".auto-dev/")], files)
             brief = (self.dir / "briefs" / f"{w}-{n}.md").read_text()
-            self.assertIn("review_effort: high", brief)
+            self.assertIn("review_effort: xhigh", brief)
         # A failed reviewer's re-spawn gets the same effort and files.
         for w, n in jobs:
             slot = self.sets(w, n)["reviewer"]
@@ -2945,13 +2945,13 @@ class ReviewEffortTest(NextCase):
         _, again = self.expect("code-reviewer")
         self.assertIn("due.ts", self.sets(*again[0])["files"].split(", "))
 
-    def test_a_plan_without_a_review_effort_runs_the_reviewers_at_xhigh(self):
+    def test_a_plan_without_a_review_effort_runs_the_reviewers_at_high(self):
         self.plan_text = IMPLEMENTATION
         self.to_panel()
         out, jobs = self.reviewers()
-        self.assertEqual(out["EFFORT"], ["xhigh"] * 3 + [""])
-        self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "xhigh")
-        self.assertEqual({self.sets(*j)["review_effort"] for j in jobs}, {"xhigh"})
+        self.assertEqual(out["EFFORT"], ["high"] * 3 + [""])
+        self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "high")
+        self.assertEqual({self.sets(*j)["review_effort"] for j in jobs}, {"high"})
 
     def test_a_pass_started_before_4_3_reads_the_plan(self):
         self.to_panel()
@@ -2959,7 +2959,7 @@ class ReviewEffortTest(NextCase):
         state = json.loads((self.dir / "state.json").read_text())
         del state["phase6"]["passes"][0]["effort"]  # as an older `next` saved it
         (self.dir / "state.json").write_text(json.dumps(state))
-        self.assertEqual(self.next(0)["EFFORT"], ["high"] * 3)
+        self.assertEqual(self.next(0)["EFFORT"], ["xhigh"] * 3)  # the plan, not the default
 
 
 PROPOSAL_ON_1 = """# Spec proposals

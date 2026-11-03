@@ -147,7 +147,7 @@ plugin. Each worker's model and tools are fixed by its agent file:
 
 | Worker | Agent type | Model · effort |
 | ------ | ---------- | -------------- |
-| Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · medium |
+| Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high |
 | Define agent (Phase 2; rules on spec proposals in Phases 5–6) | `auto-dev:define` | `opus` · high |
 | Define reviewer (Phase 2) | `auto-dev:define-reviewer` | `opus` · high |
 | Planner (Phase 3; rules on the coder's plan proposals in Phases 4–6) | `auto-dev:planner` | `opus` · xhigh |
@@ -155,13 +155,13 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Acceptance tester (Phase 3; rules on check proposals in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
 | Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
 | Verifier (Phase 5, re-spawned on every change) | `auto-dev:verifier` | `opus` · high |
-| Cleanup agent (Phase 5, re-spawned on fixes) | `auto-dev:cleanup` | `sonnet` · medium |
-| Code reviewer, ×3 panel + re-votes (Phase 6) | `auto-dev:code-reviewer` | `opus` · xhigh |
+| Cleanup agent (Phase 5, re-spawned on fixes) | `auto-dev:cleanup` | `sonnet` · high |
+| Code reviewer, ×3 panel + re-votes (Phase 6) | `auto-dev:code-reviewer` | `opus` · high |
 | Review judge (Phase 6) | `auto-dev:review-judge` | `opus` · xhigh |
 | Security reviewer (Phase 6) | `auto-dev:security-reviewer` | `opus` · xhigh |
-| Security reviewer, sensitive paths (Phase 6) | `auto-dev:security-reviewer-sensitive` | `fable` · high |
+| Security reviewer, sensitive paths (Phase 6) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
 | Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high |
-| Your read-and-answer lookups | `auto-dev:lookup` | `sonnet` · medium |
+| Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium |
 
 To change a worker's model, edit its `agents/<name>.md` frontmatter, this
 table and README.md's _Models and effort_ table together. The one per-run

@@ -51,13 +51,13 @@ refuses a plan that does.
 
 Set the plan's `Review effort:` line to the effort the three Phase 6 code
 reviewers should run at, with a one-line reason:
-- `xhigh` when the change has logic that is easy to get subtly wrong: state
-  transitions, concurrency, money or data integrity, parsing, error handling
-  that spans modules, or many files.
-- `high` for a small, local, straightforward change.
+- `high`, the default, for most changes, including tricky logic kept within
+  a few files.
+- `xhigh` for a large change: many files, or logic that spans several modules
+  (a state machine, concurrency or error handling across modules).
 The code reviewers don't review security (the security reviewer does), so
 Security/Compliance criteria alone don't call for `xhigh`. When unsure, write
-`xhigh`. In revise or blocked mode, change the line only if
+`high`. In revise or blocked mode, change the line only if
 your revision changes that judgment.
 
 The headings are in `{{skill_dir}}/templates/IMPLEMENTATION.md` (headings strict).

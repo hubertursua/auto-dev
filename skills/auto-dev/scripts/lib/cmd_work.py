@@ -1149,7 +1149,7 @@ def check_file(path):
             want = list(IMPLEMENTATION_HEADINGS)
             problems = [] if [h for h in heads if h in want] == want else [
                 f"headings must be, in order: {', '.join(want)} (found: {', '.join(heads)})"]
-            effort = art.review_effort(text)  # no line (a plan before 4.3): xhigh
+            effort = art.review_effort(text)  # no line (a plan before 4.3): high
             if effort is not None and effort not in art.REVIEW_EFFORTS:
                 problems.append(f"`Review effort:` must be {' or '.join(art.REVIEW_EFFORTS)}"
                                 f" (found: {effort or 'nothing'})")

@@ -4,6 +4,29 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.22
+
+Several workers change model or effort. The first three changes below were
+checked in small scenarios with planted bugs, where each new setting found as
+much as the one it replaces:
+
+- **The code reviewers run at `high`, not `xhigh`.** The planner now writes
+  `Review effort: high` by default, and `xhigh` only for a large change (many
+  files, or logic across several modules). A plan with no `Review effort:`
+  line also means `high` now.
+- **The sensitive-path security reviewer runs on `opus` · `xhigh`, not
+  `fable` · `high`.** It keeps its own instructions, which weight the
+  sensitive paths hardest.
+- **Lookups run on `haiku` · `medium`, not `sonnet` · `medium`.**
+- **The profiler and the cleanup agent run at `high`, not `medium`.** On the
+  Claude 5.5 models, `high` is Sonnet's default, and at `medium` Sonnet 5.5
+  scores 7 to 15 points lower on Anthropic's published coding benchmarks.
+- **Resume:** a run in flight resumes. Workers spawned after the upgrade use
+  the new settings, except that the code reviewers follow the plan's
+  `Review effort:` line, so a plan written before the upgrade (often
+  `xhigh`) keeps its effort for the rest of the run. A review pass that has
+  started keeps the effort it started at.
+
 ## Upgrading from 4.21
 
 - **You can add rounds after the budget runs out.** The stop for a used-up

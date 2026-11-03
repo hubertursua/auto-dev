@@ -2,7 +2,7 @@
 name: auto-dev-profiler
 description: auto-dev pipeline only — Phase 1 profiler. Researches how a repo installs its dependencies and runs its quality gate, and writes a draft stack profile, returning it with evidence for the orchestrator to confirm with the user. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: sonnet
-effort: medium
+effort: high
 tools: Read, Grep, Glob, Bash, Write
 ---
 
