@@ -601,18 +601,23 @@ so a new release is picked up without editing the plugin.
 `next` names each type as `auto-dev:<worker>`; a plugin install lists them as
 `auto-dev:auto-dev-<worker>`, and the orchestrator maps one to the other.
 
-The levels follow Anthropic's guidance for the Claude 5.5 models
-([choosing a model](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model)):
+The levels are set from Anthropic's guidance and benchmarks for the Claude
+5.5 models
+([choosing a model](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model)),
+which say to start at each model's default and tune from your own evals.
+Only the first point below is that default; the others are judgment calls that
+no eval has measured yet:
 
 - **`sonnet` workers run at `high`, Sonnet's default.** At `medium`, Sonnet 5.5
-  scores 7 to 15 points lower on Anthropic's coding benchmarks, and these
-  workers are a small share of a run's cost.
-- **`opus` workers run above Opus's default (`medium`).** A worker's miss
-  costs a correction round, which is far more than the extra effort.
+  scores 7 to 15 points lower on Anthropic's coding benchmarks.
+- **`opus` workers run above Opus's default (`medium`).** `high` costs about
+  1.4 to 1.6 times as much for about 2 points more; a worker's miss costs a
+  correction round, which is likely more.
 - **`xhigh` is for the plan and the review**, which the rest of the run builds
   on or ships.
-- **`fable` runs only the sensitive-path security review.** It is the most
-  capable and costliest model, but on coding it does no better than `opus`.
+- **`fable` runs only the sensitive-path security review.** On coding it does
+  no better than `opus`, at several times the cost, but it is the most capable
+  model, and this is where a missed finding costs the most.
 
 The orchestrator runs on the session's model; `sonnet` at medium effort is
 enough, since `next` makes the decisions and the workers do the judging. To

@@ -218,7 +218,7 @@ class CheckRepoTest(unittest.TestCase):
         upgrading = (root / "UPGRADING.md").read_text(encoding="utf-8")
         first = re.search(r"^## (.*)$", upgrading, re.MULTILINE)
         self.assertEqual(first.group(1).strip(), "Upgrading from 4.22")
-        section = re.search(r"^## Upgrading from 4\.21\b.*?(?=^## |\Z)", upgrading,
+        section = re.search(r"^## Upgrading from 4\.22\b.*?(?=^## |\Z)", upgrading,
                             re.MULTILINE | re.DOTALL)
         self.assertRegex(section.group(0), r"(?i)resum")
 
