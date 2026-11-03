@@ -636,6 +636,7 @@ def pending_briefs(c):
             open_[i] = new
         else:
             b["emitted"] = tries
+            cmd_work.fresh_tree(c.state, b)  # what changed since is not this spawn's
         c.dirty = True
     agents = [f"auto-dev:{b['worker']}" for b in open_]
     paths = [c.ad / "briefs" / f"{b['worker']}-{b['n']}.md" for b in open_]

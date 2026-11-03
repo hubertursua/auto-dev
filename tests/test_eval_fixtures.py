@@ -74,6 +74,9 @@ def placeholders(state, worktree, main):
                 clock(value)
 
     clock(state)
+    for brief in state.get("briefs", []):
+        if "tree" in brief:  # read only when its own job is recorded, all done in S1
+            brief["tree"]["head"] = "<head-at-brief>"
     state["init"]["setup_pid"] = SETUP_PID
     state["repo"]["name"] = "<repo-name>"
     settings = state["settings"]

@@ -26,6 +26,11 @@ brief lookup --out <dir> --set worktree=<repo> --set question='<question>'
     proposals/snapshots/plan-<sha>.md), and an acceptance tester's repair brief
     (MANIFEST.md and the sealed copies to
     proposals/snapshots/acceptance-tester-<n>/).
+    A brief for a worker that never changes the repo (define, the define and
+    plan reviewers, the planner, the review judge, the triager)
+    keeps the worktree's HEAD and the content of every file `git status` lists
+    outside the artifact dir on its state entry, for `record`. A retry takes
+    its own, and so does a brief `next` sends out again.
     Prints the agent type to spawn and the one-line prompt to give it.
     With --out (the profiler always; a lookup before the run exists), the
     brief goes to <dir> with no state.json: a lookup's answer goes to
@@ -38,6 +43,17 @@ record <worker> <n>
     `next` does this itself, before it decides, for every issued brief whose
     result file exists; run it by hand to record one result now and see its
     verdict, as `next` would.
+    For a worker whose brief kept the tree (see brief), it first compares the
+    worktree with it, whatever the worker returned: a file `git status` lists
+    outside the artifact dir that changed is refused. It backs each changed
+    file up to tree/<worker>-<n>/ and puts it back as it was at the brief (a
+    file git ignored again once .gitignore is back stays). Only a change the
+    worker could have made counts: a file last written after its result file
+    is left alone, and the check is skipped when HEAD moved (an outside
+    commit, which Phase 6 handles), for a job already recorded or replaced or
+    with no result file yet, when a worker that does change the repo was
+    briefed while it was out, or when init's setup commands were still
+    running at its brief.
     Reads returns/<worker>-<n>.json and checks it: `status` is ok, blocked or
     failed; `next`, when given, is one the worker may return; with status ok,
     every key of the worker's `auto-dev-result` block is present. Then, for an
@@ -144,10 +160,11 @@ import re
 import shlex
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import artifacts as art
-from . import briefs, check_props, cmd_checks, plan_props, proposals, sealed
+from . import briefs, check_props, cmd_checks, plan_props, proposals, sealed, tree_guard
 from . import state as st
 from .cmd_checks import FIX_RE, overlaps, rederive_risk
 from .cmd_review import pending_rows
@@ -524,6 +541,8 @@ def write_brief(state, where, worker, mode, given, retry=None):
             entry["whole"] = whole_checks(state, ad)
         if retry is None:
             watch_owner(state, ad, worker, mode, given, entry, n)
+        if worker in tree_guard.GUARDED:
+            entry["tree"] = tree_guard.snapshot(auto["worktree"], ad)
         state.setdefault("briefs", []).append(entry)
         for old in state["briefs"]:
             if retry is not None and old["worker"] == worker and old["n"] == retry:
@@ -549,6 +568,13 @@ def watch_spec(state, ad, worker, given, retry, entry):
         sha = proposals.snapshot(ad)
         if sha:
             entry["spec"] = sha
+
+
+def fresh_tree(state, issued):
+    """A brief `next` sends out again (no result came back) is held to the tree
+    as it is now: what changed while no worker was out is not this spawn's."""
+    if issued.get("tree"):
+        issued["tree"] = tree_guard.snapshot(state["worktree"], state["artifact_dir"])
 
 
 def is_set(value):
@@ -1089,11 +1115,17 @@ def record_job(state, worker, n):
     ad = Path(state["artifact_dir"])
     data = None
     try:
-        data = load_return(ad, worker, n)
+        moved = tree_issues(state, ad, worker, n)
         try:
-            issues = derive(worker, data, ad, state, n)
+            data = load_return(ad, worker, n)
+        except Refused as exc:
+            if moved:
+                raise Refused(exc.args[0], exc.args[1], moved + exc.args[2]) from None
+            raise
+        try:
+            issues = moved + derive(worker, data, ad, state, n)
         except art.ArtifactError as exc:
-            issues = [str(exc)]
+            issues = moved + [str(exc)]
         if issues:
             raise Refused("MISMATCH", "the return and the artifacts disagree", issues)
     except Refused as exc:
@@ -1103,6 +1135,66 @@ def record_job(state, worker, n):
         return token, message, issues, data
     record_ok(state, ad, worker, n, data)
     return "RECORDED", f"{worker}-{n}", [], data
+
+
+def tree_issues(state, ad, worker, n):
+    """Whether job <worker>-<n>, which never changes the repo, changed it
+    (tree_guard). Skipped when the change could be someone else's: the job was
+    already recorded or replaced, left no result file yet, a worker that does
+    change the repo was out while it ran, or the setup commands had not
+    finished when it was briefed. A brief from before the check holds no
+    snapshot."""
+    issued = next((b for b in state.get("briefs", [])
+                   if b["worker"] == worker and b["n"] == n), {})
+    if not issued.get("tree") or issued.get("retried_as") is not None:
+        return []
+    if any(e["worker"] == worker and e["n"] == n for e in state.get("log") or []):
+        return []
+    if writer_out(state, issued) or setup_running(state, ad, issued):
+        return []
+    result = ad / "returns" / f"{worker}-{n}.json"
+    if not result.is_file():
+        return []  # it may still be running; `record` refuses it as MISSING
+    return tree_guard.issues(worker, n, issued["tree"], state["worktree"], ad,
+                             result.stat().st_mtime)
+
+
+def writer_out(state, issued):
+    """Whether a brief for a worker outside tree_guard.GUARDED was out at any
+    time between `issued` and now: briefed since, or briefed before and not
+    yet recorded or replaced when `issued` was."""
+    seq = issued.get("seq", 0)
+    briefs_ = state.get("briefs", [])
+    by_job = {(b["worker"], b["n"]): b for b in briefs_}
+    logged = {(e["worker"], e["n"]): e.get("seq", 0) for e in state.get("log") or []}
+    for b in briefs_:
+        if b["worker"] in tree_guard.GUARDED:
+            continue
+        if b.get("seq", 0) > seq:
+            return True
+        done = logged.get((b["worker"], b["n"]))
+        if done is not None and done < seq:
+            continue
+        again = by_job.get((b["worker"], b.get("retried_as")))
+        if again is not None and again.get("seq", 0) < seq:
+            continue
+        return True
+    return False
+
+
+def setup_running(state, ad, issued):
+    """Whether init's setup commands were still running when `issued` was
+    briefed: they write setup.json when they end."""
+    if not (state.get("init") or {}).get("setup_pid"):
+        return False
+    done = ad / "setup.json"
+    if not done.is_file():
+        return True
+    try:
+        briefed = datetime.fromisoformat(issued["at"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return True
+    return done.stat().st_mtime > briefed
 
 
 def record_ok(state, ad, worker, n, data):
