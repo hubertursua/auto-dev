@@ -2,7 +2,7 @@
 
 brief <worker> [--mode M] [--set name=value ...] [--retry N] [--dir <artifact-dir>]
 brief profiler --out <dir> --set repo=<path> --set base=<branch> --set draft_path=<path>
-brief lookup --out <dir> --set worktree=<repo> --set question="<question>"
+brief lookup --out <dir> --set worktree=<repo> --set question='<question>'
     Writes briefs/<worker>-<n>.md: one `name: value` line for every slot the
     worker's agent file (agents/<worker>.md) uses in that mode. It fills what it
     can from state.json and the artifacts (paths, base, the task (the ticket's

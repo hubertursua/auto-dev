@@ -123,7 +123,7 @@ and the same `next` briefs that job again with the issues in its
 `previous_issues` slot. Never write the retry brief yourself (`brief --retry`)
 and never fix the worker's file yourself.
 
-**A stop on a worker** (it stopped on purpose twice, failed twice, or never left a
+**A stop on a worker** (it didn't return ok twice running, or never left a
 result `next` accepts) and a stop at `pr publish` last until the user fixes
 the cause and says `auto-dev continue`: the new session spawns that worker, or
 publishes, again. A stop on a result (a red quality gate, an impossible spec, a
@@ -163,9 +163,10 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high |
 | Your read-and-answer lookups | `auto-dev:lookup` | `sonnet` · medium |
 
-To change a worker's model, edit its `agents/<name>.md` frontmatter and this
-table together. The one per-run override is the code reviewers'
-effort, which the plan sets (the `EFFORT` line of rule 3).
+To change a worker's model, edit its `agents/<name>.md` frontmatter, this
+table and README.md's _Models and effort_ table together. The one per-run
+override is the code reviewers' effort, which the plan sets (the `EFFORT`
+line of rule 3).
 
 ## Reading discipline
 

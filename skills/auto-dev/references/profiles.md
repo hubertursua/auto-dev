@@ -174,8 +174,7 @@ Guidance to show (adapt the paths):
 >       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/autodev.py *)",
 >       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/profile-path.py *)",
 >       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/validate-config.py *)",
->       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-fresh.py *)",
->       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-tests.py *)"
+>       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-fresh.py *)"
 >     ]
 >   }
 > }
@@ -185,8 +184,9 @@ Guidance to show (adapt the paths):
 >   run this profile's gate and test commands in the worktree. It runs only
 >   the commands in the profile you confirmed, never one a worker writes.
 > - One rule per script, so any can be left out. The `autodev.py` rule also
->   covers mutation testing: `autodev.py mutants run` runs `mutate.py`, which
->   edits the run's worktree to plant bugs and restores every file.
+>   covers the test-integrity audit and mutation testing: `autodev.py verify
+>   prep` runs `check-tests.py`, and `autodev.py mutants run` runs `mutate.py`,
+>   which edits the run's worktree to plant bugs and restores every file.
 >   `mutation.max: 0` turns mutation off.
 > - The `*` for the version survives upgrades but also matches `..` and spaces.
 >   Pin the version for a strict rule, and redo it after an upgrade. Never
@@ -200,9 +200,11 @@ Guidance to show (adapt the paths):
 >   path instead). With the Bash sandbox on, add that folder to `allowWrite`
 >   too.
 >
-> **Let this repo's own commands go without asking.** Add its setup and
-> quality-gate commands to the main checkout's `.claude/settings.local.json`
-> (not committed; it applies only to this repo):
+> **To run this repo's own commands yourself without prompts** (a run doesn't
+> need these: setup runs in `autodev.py init`, and workers run the gate
+> through `autodev.py run`), add its setup and quality-gate commands to the
+> main checkout's `.claude/settings.local.json` (not committed; it applies
+> only to this repo):
 >
 > ```json
 > {

@@ -58,14 +58,14 @@ user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
 | 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing; in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `init` exit 1 |
 | 4 | the run was started on auto-dev 3.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | Define returns `OVERSIZED` |
-| 6 | a worker stopped on purpose twice running, or failed twice running (lifted by `auto-dev continue`) | `next` records a second `blocked` or a second `failed` |
+| 6 | a worker did not return ok twice running: it stopped on purpose, failed, or one of each (lifted by `auto-dev continue`) | `next` records a second result that is not ok |
 | 7 | a worker was spawned three times and never left a result `next` accepts (lifted by `auto-dev continue`) | `next` |
 | 8 | a reviewer found blockers but wrote no FIX block | `next` |
 | 9 | the planner judged the spec impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
 | 10 | the quality gate can't be made green | cleanup returns `RED` |
 | 11 | the mutation step may have left a planted change in the source | verifier returns `MUTATION_LEFT_CHANGES` |
 | 12 | the budget ran out (consumers 1–3; 4 and 5 after the commit). Lifted when the user adds rounds (`budget raise`, above) | `next`, per the table above |
-| 13 | a report is stale again right after its own re-run | `check-fresh`, inside `next` |
+| 13 | a report is stale again right after its own re-run (lifted by `auto-dev continue`) | `check-fresh`, inside `next` |
 | 14 | no code reviewer wrote a usable report, twice | `next` |
 | 15 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
 | 16 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), infrastructure (`INFRA`), a flaky test (`FLAKY`) or no clear cause (`UNKNOWN`). Reported before Jira moves to In Review. Lifted by `auto-dev continue` once the cause is fixed and CI re-run: CI is watched again | triager's CI mode |
@@ -127,7 +127,8 @@ what they said, then run `next`.
 | Worktree (after the final report) | Remove it / Keep it | `gate cleanup proceed` / `keep` | the worktree (and `.auto-dev/`) is removed or kept |
 
 The PR gate may add a question per pre-existing security finding (the two most
-severe on their own, the rest grouped as `Others`): `Separate PR (note it as a
+severe on their own, the rest grouped as `Others`, once there are more than
+three; three or fewer get a question each): `Separate PR (note it as a
 follow-up)` · `Ignore it`. This PR never fixes a pre-existing finding. Each
 answer's `AFTER` line is `autodev.py mark triage-<ID> --value separate|ignore`:
 run the one for each answer the user gave. A `separate` finding is listed in
@@ -168,6 +169,6 @@ instead of reading it. It answers only these kinds of question:
 
 It never judges whether anything is right. To ask one:
 
-1. `autodev.py brief lookup --set question="<the question>" --dir <artifact-dir>`
+1. `autodev.py brief lookup --set question='<the question>' --dir <artifact-dir>`
 2. Spawn the agent it names with the prompt it prints.
 3. Nothing to record: the next `next` you run records it.

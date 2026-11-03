@@ -63,6 +63,7 @@ that a script can check, add it there.
   `tests/test_next.py` (`next`, `pr publish`), `tests/test_parsers.py` (the
   artifact parsers), `tests/test_check_repo.py` (`tools/check-repo.py`),
   `tests/test_check_identity.py` (`tools/check-identity.py`),
+  `tests/test_check_pr.py` (`tools/check-pr.py`),
   `tests/test_run_tests.py` (`tools/run-tests.py`),
   `tests/test_eval_run.py` (`tools/eval-run.py`) or
   `tests/test_eval_fixtures.py` (the eval fixtures;
@@ -172,7 +173,7 @@ wrong about something? If yes, fix the README.
 
 ## Keep these in sync too
 
-- **Models.** The worker table in `SKILL.md` (_Tool permissions & models_), the
+- **Models.** The worker table in `SKILL.md` (_Spawning a worker_), the
   table in `README.md` (_Models and effort_), and each `agents/<name>.md`
   frontmatter must agree.
 - **Version.** Bump `.claude-plugin/plugin.json` as _Branches, commits and
