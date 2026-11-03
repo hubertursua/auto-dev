@@ -37,8 +37,9 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     CI provider `none` skips the watch.
     Exit: 0 green, or skipped (CI: none); 1 red: the failing checks are printed
     with their links; 3 pending (PENDING: `next` watches again) or timed out
-    (TIMEOUT: CI still running at the profile's CI timeout); 4 the watcher is unavailable
-    (no checks after the grace period, or a provider gh cannot see). Whatever
+    (TIMEOUT: CI still running at the profile's CI timeout); 4 the watcher is
+    unavailable (no checks after the grace period, or a provider gh cannot
+    see). Whatever
     it exits, run `next`: it asks for `ci-watch` again only while CI is
     PENDING, and after TIMEOUT or UNAVAILABLE the main gate shows CI as not
     monitored. Never assume green.
