@@ -282,7 +282,7 @@ pr_review:
 gates:
   post_plan: true             # force the Phase 3 post-plan gate on for this repo
 mutation:
-  max: 20                     # mutants per Phase 5 verifier pass (0 = off; at most 50)
+  max: 20                     # mutants kept across the verifier's passes (0 = off; at most 50)
 jira:
   states:                     # map pipeline milestones to this board's state names
     in_progress: "In Progress"
