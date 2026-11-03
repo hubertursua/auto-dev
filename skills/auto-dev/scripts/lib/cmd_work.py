@@ -915,11 +915,45 @@ def result_issues(worker, data, ad, state, n):
         issues += derive_judge(data, ad, state)
     elif worker == "triager":
         issues += derive_triager(data, ad, n)
-    elif worker == "lookup" and nxt == "ANSWERED":
-        answer = ad / "lookups" / f"{n}.md"
-        if not answer.is_file() or not answer.read_text(encoding="utf-8").strip():
-            issues.append(f"next is ANSWERED but {answer} holds no answer")
+    elif worker == "lookup":
+        issues += lookup_issues(nxt, ad / "lookups" / f"{n}.md")
     return issues
+
+
+# A decline's line, under any markdown a model wraps it in: `OUT_OF_SCOPE:`,
+# `**OUT_OF_SCOPE**:`, `> OUT_OF_SCOPE:`. The colon keeps a symbol such as
+# OUT_OF_SCOPE_ERROR in a real answer from reading as a decline.
+DECLINE_RE = re.compile(r"[*_`#>\s]*OUT_OF_SCOPE[*_`]*\s*:")
+ASK_INSTEAD_RE = re.compile(r"[*_`#>\-\s]*ask instead\b", re.IGNORECASE)
+FILE_LINE_RE = re.compile(r"\S\.\w+:\d")
+
+
+def lookup_issues(nxt, answer):
+    """A lookup's `next` must agree with its answer file: an answer for
+    ANSWERED, and for OUT_OF_SCOPE only the `OUT_OF_SCOPE:` line (and an
+    `ask instead:` line), since the orchestrator acts on what a lookup says
+    without checking it. Blank lines and code fences don't count."""
+    text = answer.read_text(encoding="utf-8").strip() if answer.is_file() else ""
+    lines = [line for line in text.splitlines()
+             if line.strip() and not line.strip().startswith("```")]
+    declined = bool(lines) and DECLINE_RE.match(lines[0]) is not None
+    if nxt == "ANSWERED" and not text:
+        return [f"next is ANSWERED but {answer} holds no answer"]
+    if nxt == "ANSWERED" and declined:
+        return [(f"next is ANSWERED but {answer} starts with OUT_OF_SCOPE: return "
+                 "`next: OUT_OF_SCOPE`, or answer the question")]
+    if nxt != "OUT_OF_SCOPE":
+        return []
+    if not declined:
+        return [f"next is OUT_OF_SCOPE but {answer} holds no `OUT_OF_SCOPE: <why>` line"]
+    rest = [line for line in lines[1:] if not ASK_INSTEAD_RE.match(line)]
+    if rest:
+        return [(f"next is OUT_OF_SCOPE but {answer} holds more than the `OUT_OF_SCOPE:` "
+                 "line: decline a verdict question in one line, with no part of an answer")]
+    if FILE_LINE_RE.search(lines[0]):
+        return [(f"next is OUT_OF_SCOPE but {answer}'s decline cites a `file:line`: decline "
+                 "a verdict question without reading the code, and give no part of an answer")]
+    return []
 
 
 def coder_bound(path, ad, what):

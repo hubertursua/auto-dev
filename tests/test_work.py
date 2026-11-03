@@ -1006,6 +1006,43 @@ class RecordTest(WorkCase):
         self.write("lookups/1.md", "`dueDate` is set in src/todo.ts:12\n")
         self.assertEqual(self.cmd("record", "lookup", "1").returncode, 0)
 
+    def test_a_lookup_that_declines_writes_only_the_out_of_scope_line(self):
+        # The orchestrator acts on a lookup's answer unchecked, so a verdict
+        # must not slip through under either token.
+        cases = [
+            ("ANSWERED", "OUT_OF_SCOPE: asks whether the code is correct\n",
+             "starts with OUT_OF_SCOPE"),
+            ("OUT_OF_SCOPE", None, "holds no `OUT_OF_SCOPE: <why>` line"),
+            ("OUT_OF_SCOPE", "No: `refund()` misses a refund at src/refunds.ts:14\n",
+             "holds no `OUT_OF_SCOPE: <why>` line"),
+            ("OUT_OF_SCOPE", "OUT_OF_SCOPE: a verdict\nBut it is wrong at src/refunds.ts:14\n",
+             "holds more than the `OUT_OF_SCOPE:` line"),
+            ("OUT_OF_SCOPE", ("OUT_OF_SCOPE: a verdict, but `refund()` misses it at "
+                             "src/refunds.ts:14\n"), "cites a `file:line`"),
+        ]
+        for n, (token, answer, issue) in enumerate(cases, start=1):
+            self.returned("lookup", n, next=token, answer_file="")
+            if answer is not None:
+                self.write(f"lookups/{n}.md", answer)
+            r = self.cmd("record", "lookup", str(n))
+            self.assertEqual(r.returncode, 1, (token, answer, r.stdout))
+            self.assertIn(issue, r.stdout, (token, answer))
+        # A decline as models write it, and a real answer naming an
+        # OUT_OF_SCOPE_… symbol, both record.
+        recorded = [
+            ("OUT_OF_SCOPE", ("OUT_OF_SCOPE: asks for a verdict; ask instead: "
+                             "what does `refundedSoFar` return?\n")),
+            ("OUT_OF_SCOPE", ("```\n**OUT_OF_SCOPE**: asks for a verdict\n\n"
+                             "Ask instead: what does `refundedSoFar` return?\n```\n")),
+            ("OUT_OF_SCOPE", "> OUT_OF_SCOPE: asks whether `src/refunds.ts` is safe\n"),
+            ("ANSWERED", "`OUT_OF_SCOPE_ERROR` is defined at src/errors.ts:3\n"),
+        ]
+        for n, (token, answer) in enumerate(recorded, start=len(cases) + 1):
+            self.returned("lookup", n, next=token, answer_file="")
+            self.write(f"lookups/{n}.md", answer)
+            r = self.cmd("record", "lookup", str(n))
+            self.assertEqual(r.returncode, 0, (answer, r.stdout))
+
 
 PROPOSAL_ON_1 = """# Spec proposals
 
