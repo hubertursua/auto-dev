@@ -2449,6 +2449,24 @@ class CiTest(NextCase):
         self.assertEqual(self.sets(*self.security_job)["focus"],
                          "the uncommitted correction (the working tree against HEAD)")
 
+    def test_a_pending_watch_goes_back_through_next(self):
+        state = self.state()
+        state["settings"]["ci"] = "github"
+        self.write_state(state)
+        pending = [{"name": "test", "state": "PENDING", "bucket": "pending", "link": ""}]
+        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(pending)}])
+        out = self.next(0)
+        self.assertIn("ci-watch", out["ACTION"])
+        self.assertIn("then run AFTER whatever it exits", out["ACTION"])
+        self.assertNotIn("run it again", out["ACTION"])
+        self.assertEqual(len(out["AFTER"]), 1)
+        self.assertIn(" next", out["AFTER"][0])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("run `next`, which watches again", r.stdout)
+        self.assertNotIn("run ci-watch again", r.stdout)
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+
     def test_red_ci_with_no_round_left_stops_and_names_the_check(self):
         state = self.state()
         state["settings"]["ci"] = "github"

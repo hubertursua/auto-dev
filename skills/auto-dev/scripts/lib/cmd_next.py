@@ -3233,8 +3233,9 @@ def write_body(c, body, rule, refused=None):
 
 
 def ci_watch(c, rule):
-    return action(f"watch CI: run `{c.cmd('ci-watch')}` (it waits up to 9 minutes; "
-                  "run it again while it says PENDING)", rule, AFTER=[c.cmd("next")])
+    return action(f"watch CI: run `{c.cmd('ci-watch')}` (it waits up to 9 minutes), "
+                  "then run AFTER whatever it exits: `next` asks for another watch "
+                  "while CI is still pending", rule, AFTER=[c.cmd("next")])
 
 
 def ci_step(c, sha):

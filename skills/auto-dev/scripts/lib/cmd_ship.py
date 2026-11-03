@@ -24,7 +24,7 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
 ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     Polls the PR's checks with `gh pr checks` (GitHub Actions, and CircleCI or
     other CI that reports to GitHub). Gives up after --max-wait (default 540,
-    under the Bash tool's limit) and says to call again; the overall bound is
+    under the Bash tool's limit) and reports PENDING; the overall bound is
     the profile's CI timeout, counted from the first watch of this commit (a
     watch after a final result — green, red, timeout, unavailable — starts the
     clock again). Checks count only once the PR's head on GitHub is the local
@@ -36,9 +36,10 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     register, and until then the draft's old checks still read green.
     CI provider `none` skips the watch.
     Exit: 0 green, or skipped (CI: none); 1 red: the failing checks are printed
-    with their links; 3 pending (PENDING: call again) or timed out (TIMEOUT:
-    CI still running at the profile's CI timeout); 4 the watcher is unavailable
-    (no checks after the grace period, or a provider gh cannot see). Whatever
+    with their links; 3 pending (PENDING: `next` watches again) or timed out
+    (TIMEOUT: CI still running at the profile's CI timeout); 4 the watcher is
+    unavailable (no checks after the grace period, or a provider gh cannot
+    see). Whatever
     it exits, run `next`: it asks for `ci-watch` again only while CI is
     PENDING, and after TIMEOUT or UNAVAILABLE the main gate shows CI as not
     monitored. Never assume green.
@@ -389,7 +390,7 @@ def ci_watch(args):
              f"{timeout // 60} min: run `next`; the main gate shows CI as not monitored "
              "— never assume green", pending=failing, detail=detail)
         return EXIT_PENDING
-    emit(args.json, "PENDING", "CI still running: run ci-watch again", pending=failing,
+    emit(args.json, "PENDING", "CI still running: run `next`, which watches again", pending=failing,
          detail=detail)
     return EXIT_PENDING
 
