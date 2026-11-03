@@ -341,7 +341,7 @@ Four more pauses fire only when their situation arises: the **profile
 confirmation** (a repo with no valid saved profile and no `.auto-dev.yml`
 that declares one), the **Jira In Progress confirmation** (only with a ticket, once
 the size check says the task fits, and skipped when the ticket is already in
-progress), the **deviation gate** (below), and the
+progress; you can also answer that it is), the **deviation gate** (below), and the
 **worktree cleanup offer** (after the final report; never for a worktree you
 made).
 

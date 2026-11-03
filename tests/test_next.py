@@ -371,10 +371,31 @@ class PlanTest(NextCase):
         self.assertIn("first read TODO-7's status", out["ACTION"])
         self.assertIn('run the "Already In Progress" AFTER line', out["ACTION"])
         self.assertIn("Already In Progress", out["QUESTION"])
-        self.after(out, "Already In Progress")
+        line = [ln.split(" → ", 1)[1] for ln in out["AFTER"]
+                if ln.startswith('"Already In Progress"')]
+        self.assertEqual(len(line), 1, out["AFTER"])
+        r = subprocess.run(line[0], shell=True, capture_output=True, text=True,
+                           env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("jira: already", r.stdout)
+        self.assertIn("start work without moving Jira now; later milestones move it",
+                      r.stdout)
         self.assertEqual(self.state()["gates"][-1]["choice"], "already")
         self.expect("define-reviewer")  # no move now
         self.assertNotIn("jira-in-progress", self.state().get("marks", {}))
+
+    def test_the_already_answer_names_the_board_s_in_progress_state(self):
+        state = self.state()
+        state["task"]["ticket"] = "TODO-7"
+        state["settings"]["jira_states"] = {"in_progress": "Doing"}
+        self.write_state(state)
+        self.expect("define", "FITS", high_risk="yes", reading="none")
+        out = self.next(5)
+        self.assertIn("Already Doing", out["QUESTION"])
+        self.assertNotIn("Already In Progress", out["QUESTION"])
+        self.assertIn('run the "Already Doing" AFTER line', out["ACTION"])
+        self.assertIn("already `Doing` or past it", out["ACTION"])
+        self.assertTrue(any(ln.startswith('"Already Doing" → ') for ln in out["AFTER"]))
 
     def test_fix_blocks_are_applied_and_the_re_review_spends_a_round(self):
         self.expect("define", "FITS", high_risk="yes", reading="none")
@@ -1243,6 +1264,28 @@ class ShipTest(NextCase):
         state["gates"][-1]["choice"] = "leave"
         self.write_state(state)
         self.assertNotIn("move Jira ticket", self.next(0)["ACTION"])
+
+    def test_a_ticket_already_in_progress_still_moves_to_done_after_the_merge(self):
+        sha, _ = self.open_pr()
+        state = self.state()
+        state["task"]["ticket"] = "TODO-7"
+        state["gates"].append({"gate": "jira", "choice": "already", "reason": None,
+                               "at": "2026-01-01T00:00:00Z", "seq": 1})
+        self.write_state(state)
+        out = self.next(0)
+        self.assertIn("move Jira ticket TODO-7 to `In Review`", out["ACTION"])
+        self.after(out)
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none")
+        self.after(self.next(0))  # gh pr ready
+        self.after(self.next(5), "Merge PR to main")
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        out = self.next(0)
+        self.assertIn("move Jira ticket TODO-7 to `Done`", out["ACTION"])
+        self.assertIn("mark jira-done", out["AFTER"][0])
 
     def test_ship_session_runs_to_the_merge(self):
         sha, _ = self.open_pr()
