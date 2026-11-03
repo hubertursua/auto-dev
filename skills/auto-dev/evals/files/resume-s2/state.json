@@ -9,6 +9,10 @@
       "retry": null,
       "seq": 4,
       "sets": {},
+      "tree": {
+        "files": {},
+        "head": "<head-at-brief>"
+      },
       "worker": "define"
     },
     {
@@ -18,6 +22,10 @@
       "retry": null,
       "seq": 6,
       "sets": {},
+      "tree": {
+        "files": {},
+        "head": "<head-at-brief>"
+      },
       "worker": "define-reviewer"
     },
     {
@@ -27,6 +35,10 @@
       "retry": null,
       "seq": 8,
       "sets": {},
+      "tree": {
+        "files": {},
+        "head": "<head-at-brief>"
+      },
       "worker": "planner"
     },
     {
@@ -36,6 +48,10 @@
       "retry": null,
       "seq": 10,
       "sets": {},
+      "tree": {
+        "files": {},
+        "head": "<head-at-brief>"
+      },
       "worker": "plan-reviewer"
     },
     {

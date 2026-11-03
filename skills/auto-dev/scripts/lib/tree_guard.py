@@ -6,6 +6,11 @@ blob written to the repo's object store, so it can be put back) or that it
 is gone. `record` takes another and compares them. A path that differs is
 backed up to <artifact dir>/tree/<worker>-<n>/ and put back as it was at
 the brief, and the return is refused naming it.
+
+Only a change the worker could have made counts: `record` skips the check
+when anything else may have written to the tree in the meantime (see
+cmd_work.tree_issues), and leaves alone a file last written after the
+worker's result file.
 """
 
 import os
@@ -54,30 +59,40 @@ def listed(worktree, ad):
     return sorted(paths)
 
 
-def mode_of(full):
-    return "100755" if os.access(full, os.X_OK) else "100644"
-
-
-def blob(worktree, path):
-    """The path's bytes as written, with no clean filter, stored in the object store."""
-    return git(worktree, "hash-object", "-w", "--no-filters", "--", path).decode().strip()
+def blobs(worktree, paths):
+    """Each path's bytes as written, with no clean filter, stored in the object
+    store: one git call for all of them (a path holding a newline goes alone)."""
+    plain = [p for p in paths if "\n" not in p]
+    ids = []
+    if plain:
+        data = "".join(p + "\n" for p in plain).encode("utf-8", "surrogateescape")
+        ids = git(worktree, "hash-object", "-w", "--no-filters", "--stdin-paths",
+                  data=data).decode().split()
+    found = dict(zip(plain, ids))
+    for path in paths:
+        if path not in found:
+            found[path] = git(worktree, "hash-object", "-w", "--no-filters", "--",
+                              path).decode().strip()
+    return found
 
 
 def snapshot(worktree, ad):
     """HEAD and, for each path `git status` lists, how it is now."""
     worktree = Path(worktree)
     head = git(worktree, "rev-parse", "HEAD").decode().strip()
-    files = {}
+    files, regular = {}, []
     for path in listed(worktree, ad):
         full = worktree / path
         if full.is_symlink():
             files[path] = "link " + os.readlink(full)
         elif full.is_file():
-            files[path] = f"{blob(worktree, path)} {mode_of(full)}"
+            regular.append(path)
         elif full.exists():
             files[path] = SUBMODULE
         else:
             files[path] = None  # deleted
+    for path, sha in blobs(worktree, regular).items():
+        files[path] = f"{sha} {(worktree / path).stat().st_mode & 0o777:o}"
     return {"head": head, "files": files}
 
 
@@ -86,6 +101,17 @@ def changed(before, after):
     paths = set(before["files"]) | set(after["files"])
     return sorted(p for p in paths
                   if before["files"].get(p, CLEAN) != after["files"].get(p, CLEAN))
+
+
+def written_after(full, when):
+    """Whether the file at `full` was last written after `when` (a timestamp);
+    a path with nothing there now can't say, so it counts as the worker's.
+    Where file times are coarse, a worker's own last edit shares its result
+    file's time, so it still counts."""
+    try:
+        return when is not None and full.lstat().st_mtime > when
+    except OSError:
+        return False
 
 
 def at_head(worktree, path):
@@ -105,11 +131,31 @@ def remove(full):
         full.unlink()
 
 
+def restore(worktree, path, was):
+    full = worktree / path
+    if was == CLEAN:  # tracked at HEAD (the caller checked)
+        remove(full)
+        git(worktree, "checkout", "HEAD", "--", path)
+    elif was is None:
+        remove(full)
+    elif was.startswith("link "):
+        remove(full)
+        full.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(was[len("link "):], full)
+    else:
+        sha, mode = was.split(" ")
+        remove(full)
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_bytes(git(worktree, "cat-file", "blob", sha))
+        full.chmod(int(mode, 8))
+
+
 def put_back(worktree, before, paths, backup):
     """Copy each path as it is now into `backup`, then restore it as `before`
-    has it. Paths that were clean and are new now go last, once the files
-    that might have ignored them (a .gitignore) are back: one git ignores
-    again was there before, so it stays."""
+    has it. Returns the paths it could not put back. A new file goes last,
+    once the rest (a .gitignore) is back: one git ignores then was there
+    before, so it stays. Only a new file standing where a folder must come
+    back goes first."""
     worktree = Path(worktree)
     for path in paths:
         full = worktree / path
@@ -117,50 +163,56 @@ def put_back(worktree, before, paths, backup):
             copy = backup / path
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(full, copy, follow_symlinks=False)
-    new = []
+    left, new, rest = [], [], []
     for path in paths:
+        was = before["files"].get(path, CLEAN)
+        if was == CLEAN and not at_head(worktree, path):
+            new.append(path)
+        else:
+            rest.append(path)
+    for path in new:  # only a file standing where a folder must come back
+        if any(other.startswith(path + "/") for other in rest):
+            try:
+                remove(worktree / path)
+            except OSError:
+                left.append(path)
+    for path in rest:
         full = worktree / path
         was = before["files"].get(path, CLEAN)
         if was == SUBMODULE or (full.is_dir() and not full.is_symlink()):
-            continue  # left for the user: the issue names it
-        if was == CLEAN:
-            if at_head(worktree, path):
-                remove(full)
-                git(worktree, "checkout", "HEAD", "--", path)
-            else:
-                new.append(path)
-        elif was is None:
-            remove(full)
-        elif was.startswith("link "):
-            remove(full)
-            full.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(was[len("link "):], full)
-        else:
-            sha, mode = was.split(" ")
-            remove(full)
-            full.parent.mkdir(parents=True, exist_ok=True)
-            full.write_bytes(git(worktree, "cat-file", "blob", sha))
-            full.chmod(0o755 if mode == "100755" else 0o644)
+            left.append(path)
+            continue
+        try:
+            restore(worktree, path, was)
+        except (OSError, Fail):
+            left.append(path)
     for path in new:
-        if not ignored(worktree, path):
-            remove(worktree / path)
+        full = worktree / path
+        if full.exists() and not ignored(worktree, path):
+            try:
+                remove(full)
+            except OSError:
+                left.append(path)
+    return sorted(set(left))
 
 
-def issues(worker, n, before, worktree, ad):
+def issues(worker, n, before, worktree, ad, returned_at):
     """Why job <worker>-<n> changed the repo, after putting the change back,
-    or [] when the tree is as the brief found it."""
+    or [] when the tree is as the brief found it. A file last written after
+    `returned_at` (the result file's time) was not the worker's."""
+    worktree = Path(worktree)
     after = snapshot(worktree, ad)
     if after["head"] != before["head"]:
         return [(f"{worker}-{n} moved HEAD from {before['head'][:12]} to "
                 f"{after['head'][:12]} (a commit, checkout or reset); a {worker} never "
                 "changes the repo. `record` leaves HEAD where it is: the run can't go "
                 "on until HEAD is back where it was")]
-    paths = changed(before, after)
+    paths = [p for p in changed(before, after)
+             if not written_after(worktree / p, returned_at)]
     if not paths:
         return []
     backup = Path(ad) / "tree" / f"{worker}-{n}"
-    put_back(worktree, before, paths, backup)
-    left = changed(before, snapshot(worktree, ad))
+    left = put_back(worktree, before, paths, backup)
     found = (f"{worker}-{n} changed {len(paths)} repo file(s) outside "
              f"{scratch(worktree, ad) or 'the artifact dir'}/: {', '.join(paths)}. A "
              f"{worker} never changes a repo file; write only the files your brief names. "

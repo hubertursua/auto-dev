@@ -29,8 +29,8 @@ brief lookup --out <dir> --set worktree=<repo> --set question='<question>'
     A brief for a worker that never changes the repo (define, the define and
     plan reviewers, the planner, a lookup, the review judge, the triager)
     keeps the worktree's HEAD and the content of every file `git status` lists
-    outside the artifact dir on its state entry (a --retry keeps the first
-    brief's), for `record`.
+    outside the artifact dir on its state entry, for `record` (a --retry keeps
+    the first brief's only when `record` could not undo that job's change).
     Prints the agent type to spawn and the one-line prompt to give it.
     With --out (the profiler always; a lookup before the run exists), the
     brief goes to <dir> with no state.json: a lookup's answer goes to
@@ -48,7 +48,11 @@ record <worker> <n>
     outside the artifact dir that changed, is refused. It backs each changed
     file up to tree/<worker>-<n>/ and puts it back as it was at the brief (a
     file git ignored again once .gitignore is back stays); it never moves
-    HEAD.
+    HEAD. Only a change the worker could have made counts: a file last
+    written after its result file is left alone, and the check is skipped for
+    a job already recorded or replaced, when a worker that does change the
+    repo was briefed while it was out, or when init's setup commands were
+    still running at its brief.
     Reads returns/<worker>-<n>.json and checks it: `status` is ok, blocked or
     failed; `next`, when given, is one the worker may return; with status ok,
     every key of the worker's `auto-dev-result` block is present. Then, for an
@@ -155,6 +159,7 @@ import re
 import shlex
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import artifacts as art
@@ -572,9 +577,14 @@ def watch_spec(state, ad, worker, given, retry, entry):
 
 
 def kept_tree(state, worker, retry):
-    """A retry is held to the tree the job it re-spawns was briefed on, so a
-    change `record` could not put back is never taken for the base."""
+    """A retry is held to the tree the job it re-spawns was briefed on when
+    `record` could not undo that job's change (HEAD moved, or a file it could
+    not put back), so the change is never taken for the base. Otherwise it
+    takes a fresh snapshot: what the user did since is theirs."""
     if retry is None:
+        return None
+    issues = state.get("refused", {}).get(job(worker, retry)) or []
+    if not any("moved HEAD" in i or "could not put back" in i for i in issues):
         return None
     return next((b.get("tree") for b in state.get("briefs", [])
                  if b["worker"] == worker and b["n"] == retry), None)
@@ -1142,12 +1152,59 @@ def record_job(state, worker, n):
 
 def tree_issues(state, ad, worker, n):
     """Whether job <worker>-<n>, which never changes the repo, changed it
-    (tree_guard); a brief from before the check holds no snapshot."""
+    (tree_guard). Skipped when the change could be someone else's: the job was
+    already recorded or replaced, a worker that does change the repo was out
+    while it ran, or the setup commands had not finished when it was briefed.
+    A brief from before the check holds no snapshot."""
     issued = next((b for b in state.get("briefs", [])
                    if b["worker"] == worker and b["n"] == n), {})
-    if not issued.get("tree"):
+    if not issued.get("tree") or issued.get("retried_as") is not None:
         return []
-    return tree_guard.issues(worker, n, issued["tree"], state["worktree"], ad)
+    if any(e["worker"] == worker and e["n"] == n for e in state.get("log") or []):
+        return []
+    if writer_out(state, issued) or setup_running(state, ad, issued):
+        return []
+    result = ad / "returns" / f"{worker}-{n}.json"
+    returned_at = result.stat().st_mtime if result.is_file() else None
+    return tree_guard.issues(worker, n, issued["tree"], state["worktree"], ad, returned_at)
+
+
+def writer_out(state, issued):
+    """Whether a brief for a worker outside tree_guard.GUARDED was out at any
+    time between `issued` and now: briefed since, or briefed before and not
+    yet recorded or replaced when `issued` was."""
+    seq = issued.get("seq", 0)
+    briefs_ = state.get("briefs", [])
+    by_job = {(b["worker"], b["n"]): b for b in briefs_}
+    logged = {(e["worker"], e["n"]): e.get("seq", 0) for e in state.get("log") or []}
+    for b in briefs_:
+        if b["worker"] in tree_guard.GUARDED:
+            continue
+        if b.get("seq", 0) > seq:
+            return True
+        done = logged.get((b["worker"], b["n"]))
+        if done is not None and done < seq:
+            continue
+        again = by_job.get((b["worker"], b.get("retried_as")))
+        if again is not None and again.get("seq", 0) < seq:
+            continue
+        return True
+    return False
+
+
+def setup_running(state, ad, issued):
+    """Whether init's setup commands were still running when `issued` was
+    briefed: they write setup.json when they end."""
+    if not (state.get("init") or {}).get("setup_pid"):
+        return False
+    done = ad / "setup.json"
+    if not done.is_file():
+        return True
+    try:
+        briefed = datetime.fromisoformat(issued["at"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return True
+    return done.stat().st_mtime > briefed
 
 
 def record_ok(state, ad, worker, n, data):

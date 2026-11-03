@@ -1150,6 +1150,76 @@ class TreeGuardTest(WorkCase):
         self.git("reset", "-q", "--hard", "HEAD~1")
         self.assertEqual(self.cmd("record", "lookup", str(retry)).returncode, 0)
 
+    def answered(self, n):
+        self.write(f"lookups/{n}.md", "`one` is defined at app.ts:1\n")
+        self.returned("lookup", n, next="ANSWERED", answer_file="")
+
+    def test_only_a_change_the_worker_could_have_made_is_refused(self):
+        wt = self.worktree
+        # Recorded, then the coder works: recording the lookup again undoes nothing.
+        n = self.job("lookup", question="Where is `one` defined?")
+        self.answered(n)
+        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 0)
+        (wt / "app.ts").write_text("// the coder's\n")
+        (wt / "feature.ts").write_text("// the coder's\n")
+        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 0)
+        self.assertEqual((wt / "feature.ts").read_text(), "// the coder's\n")
+        # A coder briefed while a lookup is out: the lookup is not blamed.
+        n = self.job("lookup", question="Where is `one` defined?")
+        self.job("coder", "build")
+        (wt / "feature.ts").write_text("// the coder's, later\n")
+        self.answered(n)
+        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 0)
+        self.assertEqual((wt / "feature.ts").read_text(), "// the coder's, later\n")
+
+    def test_a_file_written_after_the_result_is_not_the_workers(self):
+        wt = self.worktree
+        n = self.job("lookup", question="Where is `one` defined?")
+        (wt / "mine.ts").write_text("// the lookup's\n")
+        self.answered(n)
+        result = self.dir / "returns" / f"lookup-{n}.json"
+        os.utime(wt / "mine.ts", (result.stat().st_mtime - 5,) * 2)
+        (wt / "app.ts").write_text("// the user's, after the lookup returned\n")
+        os.utime(wt / "app.ts", (result.stat().st_mtime + 5,) * 2)
+        r = self.cmd("record", "lookup", str(n))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("changed 1 repo file(s)", r.stdout)
+        self.assertIn("mine.ts", r.stdout)
+        self.assertFalse((wt / "mine.ts").exists())
+        self.assertEqual((wt / "app.ts").read_text(),
+                         "// the user's, after the lookup returned\n")
+
+    def test_put_back_keeps_a_files_mode_and_a_folder_turned_into_a_file(self):
+        wt = self.worktree
+        (wt / "secret.txt").write_text("key\n")
+        os.chmod(wt / "secret.txt", 0o600)
+        (wt / "d").mkdir()
+        (wt / "d" / "x.txt").write_text("the user's\n")
+        n = self.job("lookup", question="Where is `one` defined?")
+        (wt / "secret.txt").write_text("changed\n")
+        os.chmod(wt / "secret.txt", 0o644)
+        (wt / "d" / "x.txt").unlink()
+        (wt / "d").rmdir()
+        (wt / "d").write_text("a file now\n")
+        self.answered(n)
+        r = self.cmd("record", "lookup", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertNotIn("could not put back", r.stdout)
+        self.assertEqual((wt / "secret.txt").read_text(), "key\n")
+        self.assertEqual((wt / "secret.txt").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((wt / "d" / "x.txt").read_text(), "the user's\n")
+
+    def test_a_retry_takes_a_fresh_snapshot_once_the_change_is_put_back(self):
+        n = self.job("lookup", question="Where is `one` defined?")
+        (self.worktree / "app.ts").write_text("// the lookup's\n")
+        self.answered(n)
+        self.assertEqual(self.cmd("record", "lookup", str(n)).returncode, 1)
+        r = self.cmd("brief", "lookup", "--set", "question=Where is `one` defined?",
+                     "--retry", str(n))
+        self.assertEqual(r.returncode, 0, r.stdout)
+        # Put back, so the retry's snapshot is the clean tree, not the first one's.
+        self.assertEqual(self.state()["briefs"][-1]["tree"]["files"], {})
+
     def test_each_worker_that_never_changes_the_repo_is_checked(self):
         guarded = [("define", "write", {}), ("define-reviewer", None, {}),
                    ("planner", "write", {}), ("plan-reviewer", None, {}),
