@@ -110,6 +110,7 @@ what they said, then run `next`.
 | Gate (when) | Option | Records | Then |
 |---|---|---|---|
 | Jira (Phase 2, with a ticket, once the size check says FITS) | Move it | `gate jira proceed` | you move the ticket; Jira moves at each later milestone too |
+| | Already In Progress (also run without asking when the ticket's status shows it) | `gate jira already` | no move now; Jira moves at each later milestone |
 | | Leave Jira alone | `gate jira leave` | no Jira move for the rest of the run |
 | | Stop | `gate jira stop` | the run stops |
 | Post-plan (Phase 3; on when `HIGH_RISK` or `gates.post_plan: true` in `.auto-dev.yml`) | Approve & build | `gate post-plan proceed` | Phase 3 ends; the session hands off |

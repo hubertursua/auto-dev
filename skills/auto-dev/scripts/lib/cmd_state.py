@@ -42,7 +42,9 @@ grouped rest: --value separate or ignore; it is also noted in WORK_LOG.md).
 
 `gate` records a gate decision. Gates: post-plan, pr, main, profile, jira,
 cleanup, deviation. Choices: proceed, hold, stop, revise (post-plan only), leave
-(jira only: start work but leave Jira alone), keep (cleanup only: keep the
+(jira only: start work but leave Jira alone), already (jira only: the ticket
+is in progress already, so start work without moving it now; later milestones
+move it as after proceed), keep (cleanup only: keep the
 worktree; deviation: keep the spec and correct the code), accept (deviation
 only: accept the code's deviation from the condition). `deviation` takes
 `--condition <n>`, the condition it answers for; a security criterion (`S<n>`)
@@ -75,7 +77,7 @@ GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "pr": {"proceed", "hold", "stop"},
                 "main": {"proceed", "hold", "stop"},
                 "profile": {"proceed", "stop"},
-                "jira": {"proceed", "leave", "stop"},
+                "jira": {"proceed", "already", "leave", "stop"},
                 "cleanup": {"proceed", "keep"},
                 "deviation": {"accept", "keep", "stop"}}
 CONDITION_RE = re.compile(r"S?\d+")
@@ -314,6 +316,8 @@ def gate(args):
                  "then ask this gate again (no round is spent)")
     elif choice == "leave":
         after = "start work without moving Jira"
+    elif choice == "already":
+        after = "start work without moving Jira now; later milestones move it"
     elif args.gate == "deviation":
         st.add_note(state, f"deviation gate, condition {entry['condition']}: " + (
             "the user accepted the code's deviation" if choice == "accept" else
