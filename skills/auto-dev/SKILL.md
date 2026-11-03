@@ -103,7 +103,7 @@ Its exit code says what kind of step it is:
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed, and stop. Do nothing more (one exception: more rounds after a budget stop, below) |
-| 5 | ask the user | Show the `SUMMARY` lines, then call AskUserQuestion with the `QUESTION` JSON as given. Run the `AFTER` line whose label matches the answer, filling in any `<…>` with what the user said |
+| 5 | ask the user | Show the `SUMMARY` lines, then call AskUserQuestion with the `QUESTION` JSON as given, unless `ACTION` says to read the ticket first: then follow it, and ask only when it says to. Run the `AFTER` line whose label matches the answer, filling in any `<…>` with what the user said |
 | 6 | end of session, or a checkpoint | Run the `AFTER` command, give the user the message it prints, and stop. Do not start the next phase |
 
 `next` never exits 1: a step it can't take is a stop (4) that says why.

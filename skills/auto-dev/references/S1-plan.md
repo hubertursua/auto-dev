@@ -160,7 +160,9 @@ see in S1, in order:
    stored (else your `--ask`). `OVERSIZED` → exit 4: tell
    the user Define's reasons, the subsystems it found and its suggested split
    lines, all in the `REPORT` (copied from SPEC.md's Size check). Nothing else.
-2. With a ticket: the Jira question (exit 5). On `Move it`, a later exit 0
+2. With a ticket: the Jira question (exit 5). Read the ticket's status first
+   (`references/gates-and-jira.md`, _Asking first_): if it is in progress
+   already, don't ask, and run the `Already …` line. On `Move it`, a later exit 0
    says to move the ticket: do it as `references/gates-and-jira.md`,
    _Moving a ticket_ says, then run its `AFTER` line.
 3. `define-reviewer`, maybe several rounds. A FIX block that doesn't apply

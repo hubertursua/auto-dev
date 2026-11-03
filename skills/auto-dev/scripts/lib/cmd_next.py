@@ -741,19 +741,29 @@ def jira_step(c, key, step):
     if not ticket or ticket == "none":
         return None
     choice = c.gate("jira")
-    if choice is None:
-        name = c.state["settings"].get("jira_states", {}).get(key, JIRA_DEFAULTS[key])
-        return ask(c, "Jira", [(f"Define confirmed the task fits one PR. Move {ticket} to "
-                               f"`{name}` now?")],
-                   [cmd_review.question("Jira", f"Move {ticket} to {name}?",
-                                        ["Move it", "Leave Jira alone", "Stop"])],
-                   [("Move it", c.cmd("gate", "jira", "proceed")),
-                    ("Leave Jira alone", c.cmd("gate", "jira", "leave")),
-                    ("Stop", c.cmd("gate", "jira", "stop"))],
-                   "a ticket exists and the size check says FITS")
-    if choice["choice"] != "proceed" or c.mark(step):
-        return None
     name = c.state["settings"].get("jira_states", {}).get(key, JIRA_DEFAULTS[key])
+    if choice is None:
+        already = f"Already {name}"
+        out = ask(c, "Jira", [(f"Define confirmed the task fits one PR. Move {ticket} to "
+                               f"`{name}` now?")],
+                  [cmd_review.question("Jira", f"Move {ticket} to {name}?",
+                                       ["Move it", already, "Leave Jira alone", "Stop"])],
+                  [("Move it", c.cmd("gate", "jira", "proceed")),
+                   (already, c.cmd("gate", "jira", "already")),
+                   ("Leave Jira alone", c.cmd("gate", "jira", "leave")),
+                   ("Stop", c.cmd("gate", "jira", "stop"))],
+                  "a ticket exists and the size check says FITS")
+        # Read the status first, so a ticket that is there already isn't asked about.
+        out["ACTION"] = (f"first read {ticket}'s status (references/gates-and-jira.md, "
+                         f"_Asking first_); if it is already `{name}` or past it, don't ask: "
+                         f'tell the user and run the "{already}" AFTER line. Otherwise, '
+                         + out["ACTION"])
+        return out
+    # `already`: the ticket was in progress when asked; later milestones move it.
+    moves = choice["choice"] == "proceed" or (choice["choice"] == "already"
+                                              and key != "in_progress")
+    if not moves or c.mark(step):
+        return None
     return action(f"move Jira ticket {ticket} to `{name}` with the Atlassian MCP tools "
                   "(references/gates-and-jira.md, _Moving a ticket_); never edit the ticket. If it "
                   "can't be moved, tell the user and run "
