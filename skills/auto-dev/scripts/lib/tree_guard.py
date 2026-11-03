@@ -64,8 +64,11 @@ def listed(worktree, ad):
 
 def blobs(worktree, paths):
     """Each path's bytes as written, with no clean filter, stored in the object
-    store: one git call for all of them (a path holding a newline goes alone)."""
-    plain = [p for p in paths if "\n" not in p]
+    store: one git call for all of them. A path --stdin-paths would misread
+    (a newline in it, a leading quote it unquotes, a trailing CR it drops)
+    goes alone."""
+    plain = [p for p in paths
+             if "\n" not in p and not p.startswith('"') and not p.endswith("\r")]
     ids = []
     if plain:
         data = "".join(p + "\n" for p in plain).encode("utf-8", "surrogateescape")

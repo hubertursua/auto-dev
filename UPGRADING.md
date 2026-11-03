@@ -13,8 +13,8 @@ can resume on the new one. Newest first. The current version is in
   names the files, keeps the worker's versions in `.auto-dev/tree/<worker>-<n>/`
   and puts the files back. Before, only their instructions kept them out of the
   code. A change someone else could have made is left alone: a file written
-  after the worker returned, a commit, or anything while a worker that writes
-  code was out.
+  after the worker returned, a commit, anything while another worker was out, or
+  while setup ran.
 - **Resume:** a run in flight resumes. A brief written before the upgrade holds
   no snapshot, so its result is recorded as before.
 

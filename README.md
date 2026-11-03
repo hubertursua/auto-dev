@@ -162,8 +162,8 @@ weakening them. Verification is built around that:
   `record` refuses a result that changed a file outside `.auto-dev/` (one git
   ignores isn't compared) and puts the file back, keeping the worker's version
   in `.auto-dev/tree/`. A change someone else could have made is left alone:
-  a file written after the worker returned, a commit, or anything while a
-  worker that writes code was out
+  a file written after the worker returned, a commit, anything while another
+  worker was out, or while setup ran
   (`skills/auto-dev/scripts/lib/tree_guard.py`).
 - **An independent verifier that runs things.** After cleanup, a fresh
   verifier **runs** the checks, without seeing the plan or the coder's report.

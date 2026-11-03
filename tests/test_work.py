@@ -1102,6 +1102,7 @@ class TreeGuardTest(WorkCase):
         wt = self.worktree
         (wt / "app.ts").write_text("export const one = 2;\n")  # dirty before the brief
         (wt / "notes.txt").write_text("the user's\n")           # untracked before it
+        (wt / '"quoted').write_text("a name git would unquote\n")
         (wt / "tool.sh").write_text("#!/bin/sh\n")
         self.git("add", "tool.sh")
         self.git("update-index", "--chmod=+x", "tool.sh")

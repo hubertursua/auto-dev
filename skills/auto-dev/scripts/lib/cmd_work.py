@@ -27,7 +27,7 @@ brief lookup --out <dir> --set worktree=<repo> --set question='<question>'
     (MANIFEST.md and the sealed copies to
     proposals/snapshots/acceptance-tester-<n>/).
     A brief for a worker that never changes the repo (define, the define and
-    plan reviewers, the planner, a lookup, the review judge, the triager)
+    plan reviewers, the planner, the review judge, the triager)
     keeps the worktree's HEAD and the content of every file `git status` lists
     outside the artifact dir on its state entry, for `record`. A retry takes
     its own, and so does a brief `next` sends out again.
