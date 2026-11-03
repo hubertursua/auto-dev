@@ -604,19 +604,21 @@ so a new release is picked up without editing the plugin.
 The levels start from Anthropic's guidance for the Claude 5.5 models
 ([choosing a model](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model)),
 which says to start at each model's default and tune from your own evals.
-Three were then checked against small scenarios with planted bugs, where each
-setting below found as much as the stronger one it replaced:
+The last three below were then checked against small scenarios with planted
+bugs, where each found as much as the stronger setting it replaced:
 
 - **`sonnet` workers run at `high`, Sonnet's default.** At `medium`, Sonnet 5.5
-  scores 7 to 15 points lower on Anthropic's coding benchmarks.
+  scores 7 to 15 points lower on Anthropic's coding benchmarks
+  ([optimizing for cost and intelligence](https://platform.claude.com/docs/en/about-claude/models/optimizing-for-cost-and-intelligence)).
 - **`opus` workers run above Opus's default (`medium`).** A worker's miss
   costs a correction round. `xhigh` is kept for the plan, the judge and the
   security reviews, which the rest of the run builds on or ships.
 - **The code reviewers run at `high`.** In the scenarios, `high` found every
-  planted bug that `xhigh` did, in a little over half the time; the plan still asks
-  for `xhigh` on a large change.
+  planted bug that `xhigh` did, in a little over half the time; the plan
+  still asks for `xhigh` on a large change.
 - **The sensitive-path security review runs on `opus` · `xhigh`, not `fable`.**
-  Both found every planted hole, and `fable` costs about 2.5 times as much.
+  Both found every planted hole, and `fable` costs about 2.5 times as much per
+  token.
 - **Lookups run on `haiku`.** Haiku answered as accurately as Sonnet, for a
   fraction of the cost.
 

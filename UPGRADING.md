@@ -6,8 +6,9 @@ can resume on the new one. Newest first. The current version is in
 
 ## Upgrading from 4.22
 
-Several workers change model or effort. In small scenarios with planted bugs,
-each new setting found as much as the one it replaces:
+Several workers change model or effort. The first three changes below were
+checked in small scenarios with planted bugs, where each new setting found as
+much as the one it replaces:
 
 - **The code reviewers run at `high`, not `xhigh`.** The planner now writes
   `Review effort: high` by default, and `xhigh` only for a large change (many
@@ -19,10 +20,12 @@ each new setting found as much as the one it replaces:
 - **Lookups run on `haiku` · `medium`, not `sonnet` · `medium`.**
 - **The profiler and the cleanup agent run at `high`, not `medium`.** On the
   Claude 5.5 models, `high` is Sonnet's default, and at `medium` Sonnet 5.5
-  scores 7 to 15 points lower on Anthropic's coding benchmarks.
+  scores 7 to 15 points lower on Anthropic's published coding benchmarks.
 - **Resume:** a run in flight resumes. Workers spawned after the upgrade use
-  the new settings. A review pass that has started keeps the effort it
-  started at.
+  the new settings, except that the code reviewers follow the plan's
+  `Review effort:` line, so a plan written before the upgrade (often
+  `xhigh`) keeps its effort for the rest of the run. A review pass that has
+  started keeps the effort it started at.
 
 ## Upgrading from 4.21
 
