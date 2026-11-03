@@ -56,6 +56,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import artifacts as art
+from . import overrides
 from . import state as st
 from .cmd_ship import ARTIFACTS, SECRET_RE, gh_cannot_run  # shared with the ship steps
 from .output import CANNOT_RUN, FAILED, Fail, emit
@@ -222,6 +223,13 @@ def generate(state, ad, sha):
     for line in review_lines(ad, state):
         body.text(line)
     body.text("")
+    overridden = overrides.summary_lines(state)
+    if overridden:
+        body.text("## Overrides by the user")
+        body.text("The run stopped at these steps, and the user chose how it went on:")
+        for line in overridden:
+            body.text(f"- {line}")
+        body.text("")
     for line in template_sections(find_template(wt)):
         body.text(line)
     body.text("## Assumptions")

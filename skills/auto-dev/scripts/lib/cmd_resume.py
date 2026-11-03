@@ -17,7 +17,9 @@ decision on the first line:
                      nothing: nothing was stopped
     ASK              ask the user: several runs fit, a run only nearly matches
                      the task (NEAR-MISS), or no task was given and no run is open
-    FINISHED <tree>  the run the task names already finished or was stopped
+    FINISHED <tree>  the run the task names already finished or was stopped (a
+                     run stopped on a step the user can still override, an
+                     OVERSIZED task, is RESUMEd instead: `next` asks how to go on)
     OLD-VERSION <tree>  the run was started on auto-dev 3.x, which 4.x does not
                      resume: finish it on 3.9, or remove its worktree and start
                      again
@@ -115,6 +117,9 @@ def describe(tree, state):
             "phase": f"{number} — {st.PHASE_NAMES[number]}", "status": status,
             "task": state["task"].get("text", ""),
             "budget": f"{state['budget']['remaining']} of {state['budget']['total']}"}
+    if info["run"] == "stopped" and st.resumable(state):
+        info["action"] = ("the run stopped on a step the user can override: run `next`, "
+                          "which asks how to go on")
     if number == 1 and state["init"].get("setup") != "done":
         info["setup"] = state["init"].get("setup", "pending")
         info["action"] = f"run `autodev.py init --continue {tree}`"
@@ -163,8 +168,7 @@ def main(args):
         if mine[0][0] == "broken":
             unreadable(mine)
         return decide_one(mine[0], args)
-    open_runs = [i for i in found if i[0] == "v4"
-                 and st.run_state(i[3]) in ("open", "held")]
+    open_runs = [i for i in found if i[0] == "v4" and st.resumable(i[3])]
     if len(open_runs) == 1:
         return decide_one(open_runs[0], args)
     if len(open_runs) > 1:
@@ -188,7 +192,7 @@ def decide_one(item, args):
                     "remove its worktree and start again on 4.x")
         return 0
     info = describe(tree, state)
-    if info["run"] in ("finished", "stopped"):
+    if info["run"] in ("finished", "stopped") and not st.resumable(state):
         emit(args.json, "FINISHED", tree, run=info["run"],
              task=state["task"].get("text", ""))
         return 0

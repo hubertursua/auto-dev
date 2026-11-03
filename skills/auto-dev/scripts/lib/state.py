@@ -157,6 +157,14 @@ def run_state(state):
     return "open"
 
 
+def resumable(state):
+    """Whether a new session can pick the run up: it is open or held, or it
+    stopped on a step the user can still override (state["stop"], saved by
+    `next`: an OVERSIZED task)."""
+    run = run_state(state)
+    return run in ("open", "held") or (run == "stopped" and bool(state.get("stop")))
+
+
 def add_note(state, text):
     state["notes"].append({"text": text, "at": now()})
 

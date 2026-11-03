@@ -2769,7 +2769,9 @@ class HumanAndMainGateTest(NextCase):
         report = " ".join(out["REPORT"])
         self.assertIn("someone pushed", report)
         self.assertIn("app.ts", report)
-        self.assertNotIn("QUESTION", out)  # the main gate is not asked
+        # The main gate is not asked: only how to go on from the stop.
+        self.assertNotIn("main gate", out.get("QUESTION", ""))
+        self.assertNotIn("Sign off", out.get("QUESTION", ""))
         self.assertNotIn("merge-pr", json.dumps(out))
         self.assertIn(f"merge --ff-only origin/{branch}", report)
         return old, url, branch
@@ -6896,3 +6898,325 @@ class UnsentCheckProposalTest(NextCase):
         report = " ".join(self.next(4)["REPORT"])
         self.assertIn("budget is used up", report)
         self.assertIn(f"{self.UNSENT} (a PR comment)", report)
+
+
+class OverrideCase(NextCase):
+    """A stop the user can override: `next` asks how to go on, and
+    `autodev.py override` records the answer (fix, approve, retry, signoff,
+    talk, leave)."""
+
+    def answer_stop(self, out, label, text="the user's words"):
+        """Run the AFTER line for `label`, its placeholder filled with `text`."""
+        line = next(ln.split(" → ", 1)[1] for ln in out["AFTER"]
+                    if ln.startswith(f'"{label}"'))
+        line = re.sub(r"'<[^']*>'", "'" + text.replace("'", "’") + "'", line)
+        return subprocess.run(line, shell=True, capture_output=True, text=True,
+                              env=self.env, cwd=self.tmp, check=False)
+
+    def overrides(self):
+        sys.path.insert(0, str(SCRIPTS))
+        return import_module("lib.overrides")
+
+    def labels(self, out):
+        return [o["label"] for o in json.loads(out["QUESTION"])["questions"][0]["options"]]
+
+    def red_gate(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.expect("cleanup")
+        self.lint("fail")
+        self.answer(*jobs[0], "RED")
+        out = self.next(4)
+        self.assertIn("The quality gate can't be made green", " ".join(out["REPORT"]))
+        return out, jobs[0]
+
+    def fix(self, out, instruction="make the date sort stable"):
+        r = self.answer_stop(out, "<a typed answer>", instruction)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("fixer")
+        self.assertEqual(self.sets(*jobs[0])["instruction"], instruction)
+        return jobs[0]
+
+    def report(self, n, changed="none", proposal="none", why="none"):
+        path = self.dir / "override" / f"fixer-{n}.md"
+        path.write_text(f"# Fix report\n\n## Instruction\nx\n\n## Changed\n{changed}\n\n"
+                        f"## Proposal\n{proposal}\n\n## Why not\n{why}\n")
+        return path
+
+
+
+class OverrideTest(OverrideCase):
+    def test_a_red_gate_asks_how_to_go_on(self):
+        out, _ = self.red_gate()
+        self.assertEqual(self.labels(out), ["I fixed it myself", "Sign off and go on",
+                                            "Let's talk it through", "Leave it stopped"])
+        self.assertTrue(any(ln.startswith('"<a typed answer>" → ') and "override fix" in ln
+                            for ln in out["AFTER"]), out["AFTER"])
+        self.assertEqual(self.state()["stop"]["rule"], "the cleanup agent returned RED")
+
+    def test_override_is_refused_when_the_run_did_not_stop(self):
+        self.plan_session()
+        r = self.autodev("override", "retry", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("did not just stop", r.stdout + r.stderr)
+
+    def test_a_fix_with_no_instruction_is_refused(self):
+        self.red_gate()
+        r = self.autodev("override", "fix", "--text", " ", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("needs --text", r.stdout + r.stderr)
+        self.assertIn("stop", self.state())  # nothing recorded
+
+    def test_retry_runs_only_the_step_that_stopped_again(self):
+        out, job = self.red_gate()
+        r = self.answer_stop(out, "I fixed it myself", "I fixed the lint config")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("stop", self.state())
+        _, jobs = self.expect("cleanup")
+        self.assertNotEqual(jobs[0], job)
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        self.expect("verifier")
+        self.assertEqual(self.state()["budget"]["remaining"], 4)  # no round spent
+
+    def test_a_typed_instruction_spawns_the_fixer_and_the_gate_runs_again(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        brief = (self.dir / "briefs" / f"fixer-{n}.md").read_text()
+        self.assertIn("the cleanup agent returned RED", brief)
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "sorted.ts").write_text("export const stable = true;\n")
+        self.report(n, changed="- `src/sorted.ts` — the stable sort the user asked for")
+        self.answer("fixer", n, "FIXED", fix_report=str(self.dir / "override" /
+                                                        f"fixer-{n}.md"), changed="1")
+        _, jobs = self.expect("cleanup")  # the stopped step, again
+        fix = self.state()["overrides"][-1]
+        self.assertEqual((fix["status"], fix["changed"]), ("fixed", ["src/sorted.ts"]))
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        self.next(6)
+        self.assertIn("make the date sort stable", "\n".join(
+            self.overrides().summary_lines(self.state())))
+
+    def test_a_fixer_report_that_leaves_a_change_out_is_refused(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "sorted.ts").write_text("x\n")
+        (self.worktree / "src" / "other.ts").write_text("y\n")
+        self.report(n, changed="- `src/sorted.ts` — the sort")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        out = self.next(0, refused_ok=True)
+        self.assertIn(f"fixer-{n}: refused (MISMATCH)", out["RECORDED"])
+        issues = self.state()["refused"][f"fixer-{n}"]
+        self.assertTrue(any("src/other.ts" in i for i in issues), issues)
+
+    def test_a_proposal_changes_nothing_and_can_be_approved(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "half.ts").write_text("half done\n")
+        spec = (self.dir / "SPEC.md").read_text()
+        (self.dir / "SPEC.md").write_text(spec + "\nan edit\n")
+        self.report(n, proposal="Also change the sort comparator in src/sort.ts.")
+        self.answer("fixer", n, "NEEDS_CONSENT", fix_report="x", changed="0")
+        out = self.next(4)
+        self.assertFalse((self.worktree / "src" / "half.ts").exists())  # put back
+        self.assertEqual((self.dir / "SPEC.md").read_text(), spec)
+        self.assertEqual(self.labels(out)[0], "Approve the fixer's proposal")
+        self.assertIn("proposal", " ".join(out["SUMMARY"]))
+        r = self.answer_stop(out, "Approve the fixer's proposal")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("fixer")
+        self.assertIn("approved the proposal", self.sets(*jobs[0])["instruction"])
+
+    def test_a_red_gate_signed_off_goes_on_to_the_verifier(self):
+        out, job = self.red_gate()
+        r = self.answer_stop(out, "Sign off and go on", "the lint rule is wrong here")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.expect("verifier")
+        rec = next(e for e in self.state()["log"] if [e["worker"], e["n"]] == list(job))
+        self.assertEqual((rec["next"], rec["signed_off"]["from"]), ("GREEN", "RED"))
+        lines = self.overrides().summary_lines(self.state())
+        self.assertIn("Signed off by the user", lines[0])
+
+    def test_a_signed_off_check_stays_signed_off_but_a_new_failure_stops(self):
+        out, _ = self.red_gate()
+        self.answer_stop(out, "Sign off and go on", "the lint rule is wrong here")
+        _, jobs = self.expect("verifier")
+        self.spec_eval(v1="unmet")
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "corrections.md").write_text(
+            "# Required changes\n1. Show the due date next to the title in src/list.ts\n")
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.expect("cleanup")
+        self.lint("fail")  # the same check, still failing: signed off
+        self.answer(*jobs[0], "RED")
+        self.expect("verifier")
+        state = self.state()  # a second gate check, failing: not signed off
+        state["settings"]["gate"].append({"command": "false", "kind": "lint",
+                                          "report": "LINT.md"})
+        self.write_state(state)
+        (self.dir / "lint" / "LINT.md").write_text("# LINT — fail\n")
+        self.assertFalse(self.overrides().signed_reports(state) >= {"LINT.md"})
+
+    def test_a_mutation_that_may_have_left_changes_cannot_be_signed_off(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.first_pass()
+        self.answer(*jobs[0], "MUTATION_LEFT_CHANGES", tree="x", corrections="0")
+        out = self.next(4)
+        self.assertNotIn("Sign off and go on", self.labels(out))
+        self.assertIn("planted change", " ".join(out["SUMMARY"]))
+        r = self.autodev("override", "signoff", "--text", "fine", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("can't be signed off", r.stdout + r.stderr)
+
+    def test_talk_records_nothing_and_leave_holds_until_a_new_session(self):
+        out, _ = self.red_gate()
+        r = self.answer_stop(out, "Let's talk it through")
+        self.assertIn("TALK", r.stdout)
+        self.assertIn("QUESTION", self.next(4))
+        out = self.next(4)
+        r = self.answer_stop(out, "Leave it stopped")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        self.assertNotIn("QUESTION", out)
+        self.assertIn("leave the run stopped", " ".join(out["REPORT"]))
+        self.resume()
+        self.assertIn("QUESTION", self.next(4))
+
+    def test_a_worker_that_failed_twice_is_retried_in_the_same_session(self):
+        self.plan_session()
+        self.resume()
+        for _ in range(2):
+            _, jobs = self.expect("coder")
+            self.answer(*jobs[0], None, status="failed")
+        out = self.next(4)
+        self.assertIn("failed twice running", " ".join(out["REPORT"]))
+        self.assertNotIn("Sign off and go on", self.labels(out))
+        r = self.answer_stop(out, "I fixed it myself", "installed the missing tool")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.expect("coder")
+
+    def test_an_oversized_task_can_be_signed_off_and_a_new_session_resumes_it(self):
+        _, jobs = self.expect("define")
+        (self.dir / "SPEC.md").write_text(
+            SPEC + "\n## Size check\nOVERSIZED: three deliverables.\n")
+        self.answer(*jobs[0], "OVERSIZED", high_risk="yes", reading="none")
+        out = self.next(4)
+        self.assertIn("Sign off and go on", self.labels(out))
+        r = self.answer_stop(out, "Leave it stopped")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.resume()  # RESUME, not FINISHED: the stop can still be overridden
+        out = self.next(4)
+        r = self.answer_stop(out, "Sign off and go on", "one PR is fine for this team")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["size"], "FITS")
+        self.expect("define-reviewer")
+
+
+class OverrideShipTest(OverrideCase):
+    """Overrides in Phase 6: a correction that changed nothing."""
+
+    ship_ready = ShipTest.ship_ready
+
+    def unchanged_correction(self):
+        """Pass 1's must-fix C1, and a correction that changes nothing."""
+        self.ship_ready()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
+            "missing due date\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        r = self.autodev("record", *map(str, jobs[0]), "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # The correction closed with no change, so no new pass started (as after
+        # the commit, where an unchanged correction keeps the verified commit).
+        state = self.state()
+        state["phase6"]["corrections"][-1]["closed"] = True
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("changed nothing", " ".join(out["REPORT"]))
+        return out
+
+    def test_retry_reopens_a_correction_that_changed_nothing_at_no_round(self):
+        out = self.unchanged_correction()
+        left = self.state()["budget"]["remaining"]
+        r = self.answer_stop(out, "I fixed it myself", "clarified the finding")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out, _ = self.expect("coder")
+        self.assertIn("already spent", out["BUDGET"])
+        self.assertEqual(self.state()["budget"]["remaining"], left)
+
+    def test_signing_off_open_findings_goes_to_the_pr_gate(self):
+        out = self.unchanged_correction()
+        self.assertIn("Sign off and go on", self.labels(out))
+        r = self.answer_stop(out, "Sign off and go on", "C1 can't happen in production")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(5)
+        summary = " ".join(out["SUMMARY"])
+        self.assertIn("Signed off by the user", summary)
+        self.assertIn("C1 can’t happen in production", summary)
+        sys.path.insert(0, str(SCRIPTS))
+        head = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        body = import_module("lib.cmd_pr").generate(self.state(), self.dir, head)
+        text = body.read_text()
+        self.assertIn("## Overrides by the user", text)
+        self.assertIn("C1 can’t happen in production", text.split("## Overrides")[1])
+
+    def test_a_fix_in_phase_6_is_gated_verified_and_reviewed(self):
+        out = self.unchanged_correction()
+        n = self.fix(out, "guard the sort against a missing due date")[1]
+        (self.worktree / "sort.ts").write_text("export const sort = 2;\n")
+        self.report(n, changed="- `sort.ts` — the guard the user asked for")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        out, jobs = self.expect("cleanup", "GREEN")
+        self.assertEqual(self.sets(*jobs[0]), {"scope": "review-fix", "files": "sort.ts"})
+        self.assertEqual(self.state()["phase6"]["corrections"][-1]["entry"], "fix")
+        self.expect("verifier", "ALL_MET", tree="x", corrections="0")
+        out, jobs = self.reviewers()
+        self.assertEqual(self.sets(*jobs[0])["files"], "sort.ts")
+
+    def test_a_fix_inside_an_open_correction_is_reviewed_with_it(self):
+        self.ship_ready()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder")
+        (self.worktree / "coder.ts").write_text("export const c = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.expect("cleanup")
+        self.lint("fail")
+        self.answer(*jobs[0], "RED")
+        n = self.fix(self.next(4), "relax the line length for coder.ts")[1]
+        (self.worktree / "fixer.ts").write_text("export const f = 1;\n")
+        self.report(n, changed="- `fixer.ts` — what the user asked")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        _, jobs = self.expect("cleanup")
+        self.assertEqual(self.sets(*jobs[0])["files"], "coder.ts, fixer.ts")
+        self.assertEqual([k["entry"] for k in self.state()["phase6"]["corrections"]],
+                         ["review"])  # no second correction beside the open one
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        self.expect("verifier", "ALL_MET", tree="x", corrections="0")
+        _, jobs = self.reviewers()
+        self.assertEqual(self.sets(*jobs[0])["files"], "coder.ts, fixer.ts")

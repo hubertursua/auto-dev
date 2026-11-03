@@ -33,9 +33,10 @@ AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "tick
         "binding_rules", "test_command", "test_notes", "mutation_cap",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
         "symbol_lookup", "pass", "tree", "cut", "run", "pr", "triage_file", "checks_file",
-        "answer_file", "blocked_file", "proposal_file"}
+        "answer_file", "blocked_file", "proposal_file", "fix_report"}
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
-          "report", "blocked", "failing", "question", "corrections_file", "leads"}
+          "report", "blocked", "failing", "question", "corrections_file", "leads",
+          "instruction", "stopped"}
 OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
             "previous_issues", "earlier", "focus", "proposals", "rulings_file",
             "spec_change", "rulings", "deviations", "answers", "plan_change",
@@ -64,6 +65,7 @@ RESULTS = {
     "security-reviewer-sensitive": {"CLEAN", "MUST_FIX"},
     "triager": {"CODE", "INFRA", "FLAKY", "SECRET", "UNKNOWN", "TRIAGED"},
     "lookup": {"ANSWERED", "OUT_OF_SCOPE"},
+    "fixer": {"FIXED", "NEEDS_CONSENT", "CANNOT_FIX"},
 }
 STATUSES = {"ok", "blocked", "failed"}
 # Result keys a return may leave out: `proposals` (the proposals a filer wrote)

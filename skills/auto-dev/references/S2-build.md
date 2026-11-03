@@ -91,7 +91,8 @@ again by that `next`, with the refused issues. You pass every file on as `next` 
 ## Stops in S2
 
 Every stop is exit 4 with its reason in `REPORT`
-(`references/tables.md`, _Stop conditions_). The usual ones here:
+(`references/tables.md`, _Stop conditions_), and most ask how to go on
+(`SKILL.md`, _A stop_). The usual ones here:
 
 - the budget ran out with conditions still unmet (#12): tell the user each one
   the `REPORT` names, and that they can go on with more rounds if they say how

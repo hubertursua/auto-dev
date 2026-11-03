@@ -9,6 +9,7 @@ the user, and for the few steps `next` hands to you.
 - [The iteration budget](#the-iteration-budget)
 - [Stop conditions](#stop-conditions)
 - [Hold and Stop](#hold-and-stop)
+- [Overriding a stop](#overriding-a-stop)
 - [What each gate option does](#what-each-gate-option-does)
 - [Freshness: when a report no longer matches the code](#freshness-when-a-report-no-longer-matches-the-code)
 - [Lookups](#lookups)
@@ -49,7 +50,9 @@ are a new correction, paid as usual.
 ## Stop conditions
 
 Each one ends with `next` exiting 4 (or the command named exiting 1). Tell the
-user the `REPORT` lines and do nothing more. The worktree and `.auto-dev/` stay.
+user the `REPORT` lines. The worktree and `.auto-dev/` stay. Every stop `next`
+reports, except #12, #20 and a merge whose outcome is unknown, comes with a
+`QUESTION`: the user can override it (_Overriding a stop_, below).
 
 | # | Condition | Detected by |
 |---|---|---|
@@ -84,7 +87,9 @@ They are different states.
   `auto-dev continue` asks **that gate** again, starting with its checks, since
   the code may have changed meanwhile.
 - **Stop** ends the run. The phase is `stopped`. Nothing resumes it: `resume`
-  reports it as `FINISHED`. This is a gate's `Stop` answer.
+  reports it as `FINISHED`. This is a gate's `Stop` answer. (An `OVERSIZED`
+  task (#5) marks Phase 2 stopped too, but `resume` picks it up, since the user
+  can still override it.)
 
 Every other stop (exit 4) leaves the phase open, and `next` decides again in
 the next session:
@@ -95,11 +100,31 @@ the next session:
   CI watched again. A session that ended at a checkpoint (`handoff
   --checkpoint`) lifts nothing: it ended at a clean point, with no stop to
   lift, so a worker that failed once before it and once after still stops.
-- A stop on a **result** stays: a red quality gate (#10), an impossible spec
-  (#9), a mutation that may have left changes (#11), the budget used up (#12).
-  A resumed run stops at the same place. The budget stop is lifted only when
-  the user adds rounds: `budget raise`, then `next` takes the step that
-  stopped.
+- A stop on a **result** (a red quality gate #10, an impossible spec #9, a
+  mutation that may have left changes #11, …) comes back in a resumed run,
+  since the result is still there. The user overrides it, in the same session
+  or a new one (below). The budget stop (#12) is lifted only when the user
+  adds rounds: `budget raise`, then `next` takes the step that stopped.
+
+## Overriding a stop
+
+`next` saves the stop it reports in `state.json` and asks the user how to go
+on. Each answer's `AFTER` line runs `autodev.py override`, which records it,
+then `next` acts on it. Running the stopped step again spends no round; a
+correction its new result calls for is paid as usual.
+
+| Answer | Records | Then |
+|---|---|---|
+| a typed instruction | `override fix --text "<the user's words>"` | the **fixer** is spawned with the words, its consent. It does what they say and nothing more: in the code, the tests, or the run's SPEC.md, plan or acceptance checks when they name them. `FIXED`: the step that stopped runs again, and so does what depends on what changed (the quality gate and the verifier on changed code; the verifier's first pass on a changed SPEC.md or plan; in Phase 6, a review of the changed files). `record` refuses a report that leaves out a path the fixer changed. `NEEDS_CONSENT` (the fix needs more than the words allow) or `CANNOT_FIX`: whatever it changed is put back, and the question comes again, with its proposal or its reason |
+| Approve the fixer's proposal | `override approve` | the fixer runs again, told to do what it proposed |
+| I fixed it myself | `override retry` | the result that stopped is set aside and its step runs again; a worker that failed twice, a refused `pr publish` or red CI (#6, #7, #13, #16, #18) get what `auto-dev continue` gives them |
+| Sign off and go on | `override signoff --text "<why>"` | the result is accepted as if it had passed: a red gate as green (for the rest of the run, while only the checks signed off fail), a disputed check as standing, a review with blockers and no FIX as clean, open findings as known (the PR gate names them), an `OVERSIZED` task as fitting. Named in `WORK_LOG.md`, the PR gate's summary and the PR body. Never offered on red CI, a confirmed security finding, a mutation that may have left changes, a stale report, an impossible spec or commits the pipeline didn't check |
+| Let's talk it through | `override talk` (records nothing) | talk it over with the user, sending a `lookup` for any fact about the code; then `next` asks again |
+| Leave it stopped | `override leave` | the stop is reported without the question for the rest of the session; `auto-dev continue` asks again |
+
+`override` is refused (exit 1) when `next` did not just stop on a step that
+can be overridden, for a sign-off the stop doesn't offer, and for a fix with no
+instruction.
 
 ## What each gate option does
 

@@ -95,7 +95,7 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import proposals
+from . import overrides, proposals
 from . import state as st
 from .cmd_checks import git_add_intent
 from .cmd_ship import check_fresh
@@ -629,7 +629,7 @@ def pr_summary(state, ad, args):
         first = report.read_text(encoding="utf-8").splitlines()[0] if report.exists() else ""
         if not first.rstrip().endswith("pass"):
             missing.append(check.get("report", ""))
-    if missing:
+    if missing and not set(missing) <= overrides.signed_reports(state):
         raise Fail(f"quality gate not green ({', '.join(missing)} missing or failing): "
                    "that is Phase 5's stop-and-report, not this gate", FAILED,
                    "PRECONDITION")
@@ -647,8 +647,10 @@ def pr_summary(state, ad, args):
              f"Files changed: {len(files)}" + (f" ({', '.join(files[:8])}"
                                                f"{', …' if len(files) > 8 else ''})"
                                                if files else ""),
-             "Quality gate: " + ", ".join(f"{c.get('report', '')} pass"
-                                          for c in state["settings"].get("gate", []))]
+             "Quality gate: " + ", ".join(
+                 f"{c.get('report', '')} " + ("failing, signed off by the user"
+                                              if c.get("report", "") in missing else "pass")
+                 for c in state["settings"].get("gate", []))]
     lines += acceptance_block(ad)
     review_lines, questions = review_block(ad)
     lines += review_lines
@@ -656,6 +658,7 @@ def pr_summary(state, ad, args):
         lines.append("Budget exhausted: no round is left for a fix; an open must-fix "
                      "finding ships listed in the PR body")
     lines += proposals.summary_lines(state)
+    lines += overrides.summary_lines(state)
     return lines, questions
 
 
@@ -704,7 +707,8 @@ def main_summary(state, ad, args):
               f"{comments} human review(s)/comment(s): triage them before asking"),
              f"Mergeable: {info.get('mergeable')} / {info.get('mergeStateStatus')}",
              f"Head {head}: every result was checked on it; the merge is locked to it",
-             *review_lines, *proposals.summary_lines(state)]
+             *review_lines, *proposals.summary_lines(state),
+             *overrides.summary_lines(state)]
     return lines, []
 
 
