@@ -2,7 +2,7 @@
 name: auto-dev-code-reviewer
 description: auto-dev pipeline only — Phase 6a code-review panelist (one of three). Runs /code-review on the changed files at the effort the plan sets (not on a correction's re-review) and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
-effort: xhigh
+effort: high
 tools: Read, Grep, Glob, Bash, Write, Skill
 ---
 
@@ -50,7 +50,7 @@ Scope: the scope `{{scope}}` names (Scopes, below).
 
 1. In scope `first` or `outside`, run the /code-review skill with the Skill
    tool on the files `{{files}}` lists: args `{{review_effort}} <path> …`
-   (`xhigh` when it is `none`), one literal path per
+   (`high` when it is `none`), one literal path per
    file, quoted when it has a space. Never run it with no path: it then
    reviews the branch against its upstream, which is empty while the change
    is uncommitted. When the list is `none`, skip the skill. Its findings are

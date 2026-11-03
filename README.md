@@ -281,7 +281,7 @@ twice, at the same time, and you have seen the results:
 2. **Security review.** A security reviewer runs `/security-review` over the
    whole change, and the judge double-checks every High or Medium finding.
    When `SPEC.md` has security criteria (a change on a sensitive path), a
-   reviewer on the most capable model does it.
+   reviewer that weights those paths hardest does it.
 
 One correction fixes every must-fix finding from both, for one round of the
 iteration budget. With no round left before the commit, the run goes on to
@@ -577,7 +577,7 @@ library, except where they read YAML:
 ## Models and effort
 
 Each worker is its own agent type in `agents/`, which fixes its tools, model and
-effort. The types name model families (`opus`, `sonnet`, `fable`), not versions,
+effort. The types name model families (`opus`, `sonnet`, `haiku`), not versions,
 so a new release is picked up without editing the plugin.
 
 | Worker                                   | Agent type                       | Model · effort    |
@@ -591,33 +591,34 @@ so a new release is picked up without editing the plugin.
 | Coder (the build, all corrections)       | `auto-dev:coder`                 | `opus` · high     |
 | Verifier                                 | `auto-dev:verifier`              | `opus` · high     |
 | Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · high   |
-| Code reviewer (×3 panel, and re-votes)   | `auto-dev:code-reviewer`         | `opus` · xhigh    |
+| Code reviewer (×3 panel, and re-votes)   | `auto-dev:code-reviewer`         | `opus` · high     |
 | Review judge                             | `auto-dev:review-judge`          | `opus` · xhigh    |
 | Security reviewer                        | `auto-dev:security-reviewer`     | `opus` · xhigh    |
-| Security reviewer (`SPEC.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `fable` · high |
+| Security reviewer (`SPEC.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
 | Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
-| Orchestrator lookups                     | `auto-dev:lookup`                | `sonnet` · high   |
+| Orchestrator lookups                     | `auto-dev:lookup`                | `haiku` · medium  |
 
 `next` names each type as `auto-dev:<worker>`; a plugin install lists them as
 `auto-dev:auto-dev-<worker>`, and the orchestrator maps one to the other.
 
-The levels are set from Anthropic's guidance and benchmarks for the Claude
-5.5 models
+The levels start from Anthropic's guidance for the Claude 5.5 models
 ([choosing a model](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model)),
-which say to start at each model's default and tune from your own evals.
-Only the first point below is that default; the others are judgment calls that
-no eval has measured yet:
+which says to start at each model's default and tune from your own evals.
+Three were then checked against small scenarios with planted bugs, where each
+setting below found as much as the stronger one it replaced:
 
 - **`sonnet` workers run at `high`, Sonnet's default.** At `medium`, Sonnet 5.5
   scores 7 to 15 points lower on Anthropic's coding benchmarks.
-- **`opus` workers run above Opus's default (`medium`).** `high` costs about
-  1.4 to 1.6 times as much for about 2 points more; a worker's miss costs a
-  correction round, which is likely more.
-- **`xhigh` is for the plan and the review**, which the rest of the run builds
-  on or ships.
-- **`fable` runs only the sensitive-path security review.** On coding it does
-  no better than `opus`, at several times the cost, but it is the most capable
-  model, and this is where a missed finding costs the most.
+- **`opus` workers run above Opus's default (`medium`).** A worker's miss
+  costs a correction round. `xhigh` is kept for the plan, the judge and the
+  security reviews, which the rest of the run builds on or ships.
+- **The code reviewers run at `high`.** In the scenarios, `high` found every
+  planted bug that `xhigh` did, in a little over half the time; the plan still asks
+  for `xhigh` on a large change.
+- **The sensitive-path security review runs on `opus` · `xhigh`, not `fable`.**
+  Both found every planted hole, and `fable` costs about 2.5 times as much.
+- **Lookups run on `haiku`.** Haiku answered as accurately as Sonnet, for a
+  fraction of the cost.
 
 The orchestrator runs on the session's model; `sonnet` at medium effort is
 enough, since `next` makes the decisions and the workers do the judging. To
@@ -625,9 +626,10 @@ retune a worker, edit the `model:` / `effort:` frontmatter in `agents/<name>.md`
 and the tables in `SKILL.md` and this README.
 
 The code reviewers' effort is set per run. The planner writes a
-`Review effort:` line in `IMPLEMENTATION.md`: `high` for a small, local,
-straightforward change, otherwise `xhigh`. The orchestrator passes it to each
-code reviewer, overriding the agent file's `xhigh`. On a first review, each
+`Review effort:` line in `IMPLEMENTATION.md`: `high` by default, `xhigh` for
+a large change (many files, or logic across several modules). The
+orchestrator passes it to each code reviewer, overriding the agent file's
+`high`. On a first review, each
 reviewer runs its nested `/code-review` at that effort too; a correction's
 re-review skips it.
 

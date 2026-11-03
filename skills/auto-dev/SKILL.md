@@ -156,12 +156,12 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
 | Verifier (Phase 5, re-spawned on every change) | `auto-dev:verifier` | `opus` · high |
 | Cleanup agent (Phase 5, re-spawned on fixes) | `auto-dev:cleanup` | `sonnet` · high |
-| Code reviewer, ×3 panel + re-votes (Phase 6) | `auto-dev:code-reviewer` | `opus` · xhigh |
+| Code reviewer, ×3 panel + re-votes (Phase 6) | `auto-dev:code-reviewer` | `opus` · high |
 | Review judge (Phase 6) | `auto-dev:review-judge` | `opus` · xhigh |
 | Security reviewer (Phase 6) | `auto-dev:security-reviewer` | `opus` · xhigh |
-| Security reviewer, sensitive paths (Phase 6) | `auto-dev:security-reviewer-sensitive` | `fable` · high |
+| Security reviewer, sensitive paths (Phase 6) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
 | Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high |
-| Your read-and-answer lookups | `auto-dev:lookup` | `sonnet` · high |
+| Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium |
 
 To change a worker's model, edit its `agents/<name>.md` frontmatter, this
 table and README.md's _Models and effort_ table together. The one per-run

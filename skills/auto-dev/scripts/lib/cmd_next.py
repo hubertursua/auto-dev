@@ -63,7 +63,7 @@ Output lines (only the ones that apply):
     EFFORT:   for a code reviewer only, after its PROMPT: the Agent tool's
               `effort` parameter to spawn it with, `high` or `xhigh`: the
               effort its review pass started at, which is the plan's
-              `Review effort:` line (xhigh when the plan has none). In --json,
+              `Review effort:` line (high when the plan has none). In --json,
               EFFORT is a list parallel to AGENT, "" for an agent with none,
               and left out when no agent has one
     BUDGET:   the round this action spent, and what is left
@@ -365,7 +365,7 @@ def spawn_lines(agents, briefs_, prompts, rule, budget=None, efforts=None):
 
 
 def plan_effort(c):
-    """The code reviewers' effort the plan recommends; xhigh when it names none
+    """The code reviewers' effort the plan recommends; high when it names none
     (a plan written before 4.3) or names something else."""
     try:
         value = art.review_effort(art.read(c.ad / "IMPLEMENTATION.md"))

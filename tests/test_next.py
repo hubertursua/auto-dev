@@ -2945,13 +2945,13 @@ class ReviewEffortTest(NextCase):
         _, again = self.expect("code-reviewer")
         self.assertIn("due.ts", self.sets(*again[0])["files"].split(", "))
 
-    def test_a_plan_without_a_review_effort_runs_the_reviewers_at_xhigh(self):
+    def test_a_plan_without_a_review_effort_runs_the_reviewers_at_high(self):
         self.plan_text = IMPLEMENTATION
         self.to_panel()
         out, jobs = self.reviewers()
-        self.assertEqual(out["EFFORT"], ["xhigh"] * 3 + [""])
-        self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "xhigh")
-        self.assertEqual({self.sets(*j)["review_effort"] for j in jobs}, {"xhigh"})
+        self.assertEqual(out["EFFORT"], ["high"] * 3 + [""])
+        self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "high")
+        self.assertEqual({self.sets(*j)["review_effort"] for j in jobs}, {"high"})
 
     def test_a_pass_started_before_4_3_reads_the_plan(self):
         self.to_panel()
