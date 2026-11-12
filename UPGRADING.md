@@ -20,6 +20,12 @@ can resume on the new one. Newest first. The current version is in
 - A fixer's `record` now goes by `acceptance/INSTALLED` for whether the checks
   are in the worktree, so a stop while installing hit a conflict no longer
   reads the sealed copies as broken.
+- 4.27.1: `record` refuses a fixer result with `next: FIXED` and a status
+  other than `ok` (before, `next` read it as failed and put the fix back). A
+  fixer's change to the run's settings in `state.json` (a gate check's command,
+  say) is now one of its changes: its report must name it for `FIXED`, and it is
+  put back with the rest when the fix doesn't stick. Before, it stayed even
+  after the fix was put back.
 - A run in flight resumes on 4.27.
 
 ## Upgrading from 4.25

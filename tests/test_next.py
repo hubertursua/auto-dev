@@ -7015,6 +7015,87 @@ class OverrideTest(OverrideCase):
         issues = self.state()["refused"][f"fixer-{n}"]
         self.assertTrue(any("src/other.ts" in i for i in issues), issues)
 
+    def test_a_blocked_fixer_that_says_fixed_is_refused(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "sorted.ts").write_text("x\n")
+        self.report(n, changed="- `src/sorted.ts` — the sort")
+        self.answer("fixer", n, "FIXED", status="blocked", fix_report="x", changed="1")
+        out = self.next(0, refused_ok=True)
+        self.assertIn(f"fixer-{n}: refused (MISMATCH)", out["RECORDED"])
+        issues = self.state()["refused"][f"fixer-{n}"]
+        self.assertTrue(any("status is blocked but next is FIXED" in i for i in issues),
+                        issues)
+        self.assertEqual(self.state()["overrides"][-1]["status"], "open")
+
+    def test_a_blocked_fixer_with_no_next_is_put_back(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "half.ts").write_text("half done\n")
+        self.answer("fixer", n, "none", status="blocked")
+        self.next(4)
+        self.assertFalse((self.worktree / "src" / "half.ts").exists())
+        self.assertEqual(self.state()["overrides"][-1]["status"], "failed")
+
+    def change_settings(self):
+        """Edit the run's settings in state.json, as a fixer might; the old ones."""
+        state = self.state()
+        before = json.loads(json.dumps(state["settings"]))
+        gate = state["settings"]["gate"][0]
+        gate["command"] = "env X=1 " + gate["command"]
+        (self.dir / "state.json").write_text(json.dumps(state, indent=2))
+        return before, gate["command"]
+
+    def test_a_fixer_settings_change_must_be_named_and_is_kept(self):
+        out, _ = self.red_gate()
+        n = self.fix(out, "wrap the gate command in env X=1")[1]
+        before, command = self.change_settings()
+        report = str(self.report(n, changed="none"))
+        self.answer("fixer", n, "FIXED", fix_report=report, changed="0")
+        out = self.next(0, refused_ok=True)
+        self.assertIn(f"fixer-{n}: refused (MISMATCH)", out["RECORDED"])
+        issues = self.state()["refused"][f"fixer-{n}"]
+        self.assertTrue(any("`.auto-dev/state.json`" in i for i in issues), issues)
+        _, jobs = self.expect("fixer")  # the retry, held to the first brief's copy
+        m = jobs[0][1]
+        entry = next(b for b in self.state()["briefs"]
+                     if b["worker"] == "fixer" and b["n"] == m)
+        self.assertEqual(entry["settings"], before)
+        report = str(self.report(m, changed="- `.auto-dev/state.json` — the gate command"))
+        self.answer("fixer", m, "FIXED", fix_report=report, changed="1")
+        self.expect("cleanup")
+        state = self.state()
+        self.assertEqual(state["settings"]["gate"][0]["command"], command)
+        fix = state["overrides"][-1]
+        self.assertEqual((fix["status"], fix["changed"]), ("fixed", [".auto-dev/state.json"]))
+        self.assertTrue(fix["code_changed"])  # the new gate command runs
+
+    def test_a_fixer_settings_change_is_put_back_when_it_does_not_fix(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        before, _ = self.change_settings()
+        self.report(n, proposal="Also wrap the gate command.")
+        self.answer("fixer", n, "NEEDS_CONSENT", fix_report="x", changed="0")
+        self.next(4)
+        state = self.state()
+        self.assertEqual(state["settings"], before)
+        self.assertIn(".auto-dev/state.json", state["overrides"][-1]["undone"])
+
+    def test_settings_changed_after_the_fix_is_dropped_are_not_the_fixer_s(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        state = self.state()  # a later answer at a stop replaced the fix
+        state["overrides"][-1]["status"] = "dropped"
+        (self.dir / "state.json").write_text(json.dumps(state, indent=2))
+        _, command = self.change_settings()  # not the fixer's change
+        self.report(n, changed="none")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="0")
+        out = self.next(4)  # no fix open: back at the stop
+        self.assertEqual(out["RECORDED"], [f"fixer-{n}: ok FIXED"])
+        self.assertEqual(self.state()["settings"]["gate"][0]["command"], command)
+
     def test_a_proposal_changes_nothing_and_can_be_approved(self):
         out, _ = self.red_gate()
         n = self.fix(out)[1]

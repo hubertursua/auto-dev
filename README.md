@@ -408,7 +408,9 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
     more. Your words are its consent: it may change the code, or the run's
     `SPEC.md`, plan or held-out checks when you name them. If the fix needs
     more than you said, it changes nothing and asks you to approve its
-    proposal. `record` refuses its report if it leaves out a file it changed.
+    proposal. `record` refuses its report if it leaves out a file it changed,
+    the run's settings in `state.json` included; when its result is anything
+    but `FIXED`, all of it is put back, settings too.
     It changes a held-out check through the pipeline, never by hand: it edits
     an installed check in the worktree and `record` seals it again, and
     `autodev.py amend-checks` drops, adds or renames a check's `MANIFEST.md` rows, seals a new check file, or reseals one before the install.

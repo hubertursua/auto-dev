@@ -585,8 +585,10 @@ def fix_step(c):
     fix.update({"status": "fixed", "changed": changed,
                 "spec_changed": any(p.endswith("/SPEC.md") or p.endswith("/IMPLEMENTATION.md")
                                     for p in changed),
+                # A gate check's command in the settings counts: the gate runs again.
                 "code_changed": any(not p.startswith(scratch(c) + "/") or
-                                    p.startswith(scratch(c) + "/acceptance/")
+                                    p.startswith(scratch(c) + "/acceptance/") or
+                                    p == scratch(c) + "/state.json"
                                     for p in changed)})
     stop_ = fix["stop"]
     if stop_.get("after_fix") == "fits":
@@ -651,6 +653,8 @@ def fix_changes(c, brief):
     if brief.get("artifacts") is not None:
         paths += [f"{scratch(c)}/{p}"
                   for p in overrides.changed_artifacts(c.ad, brief["artifacts"])]
+    if brief.get("settings") is not None and c.state.get("settings") != brief["settings"]:
+        paths.append(f"{scratch(c)}/state.json")  # the run's settings
     return paths
 
 
@@ -676,6 +680,9 @@ def undo_fix(c, brief, n):
             if p.startswith("acceptance/files/") and p.endswith(".sealed") and \
                     sealed.base_of(c.ad, rel) is not None:
                 sealed.snapshot(c.ad, rel, sealed.read(c.ad / p))
+    if brief.get("settings") is not None and c.state.get("settings") != brief["settings"]:
+        c.state["settings"] = copy.deepcopy(brief["settings"])  # a gate check's command
+        undone.append(f"{scratch(c)}/state.json")
     return undone
 
 

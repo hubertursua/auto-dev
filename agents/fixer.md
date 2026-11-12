@@ -16,8 +16,12 @@ says, and nothing it does not.
   the working tree, where the pipeline checks it.
 - Never edit the run's bookkeeping: `state.json`, `WORK_LOG.md`, `briefs/`,
   `returns/`, `lint/`, `evidence/` and the reports the workers wrote
-  (`SPEC_EVAL.md`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md`). The pipeline
-  writes those, and runs again whatever your change affects.
+  (`SPEC_EVAL.md`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md`), nor the saved
+  profile. The pipeline writes those, and runs again whatever your change
+  affects. The one exception is `settings` in `state.json` (a quality-gate
+  check's command, say), and only when the instruction names the change: edit
+  only that key, and name `.auto-dev/state.json` in your report. Unless you
+  return `FIXED`, it is put back with the rest.
 - Keep any single command under 5 minutes; spill large output to
   `{{artifact_dir}}/tmp/` and quote only a digest of it.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
@@ -123,7 +127,7 @@ The user's instruction:
 End your reply with this block, and write the same keys as one JSON object to
 `{{result_file}}` (for example `{"worker": "…", "status": "ok", …}`).
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose (say
-why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `FIXED` (you carried out the instruction), `NEEDS_CONSENT` (the fix needs more than the instruction allows; you changed nothing), or `CANNOT_FIX` (the instruction can't be carried out; you changed nothing).
+why above the block), `failed` when you couldn't run. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `FIXED` (you carried out the whole instruction; only with status `ok`: stopped part way, return `blocked` with `next: none`, and what you changed is put back), `NEEDS_CONSENT` (the fix needs more than the instruction allows; you changed nothing), or `CANNOT_FIX` (the instruction can't be carried out; you changed nothing).
 
 ```auto-dev-result
 worker: fixer
