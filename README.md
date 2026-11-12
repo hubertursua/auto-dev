@@ -409,6 +409,11 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
     `SPEC.md`, plan or held-out checks when you name them. If the fix needs
     more than you said, it changes nothing and asks you to approve its
     proposal. `record` refuses its report if it leaves out a file it changed.
+    It changes a held-out check through the pipeline, never by hand: it edits
+    an installed check in the worktree and `record` seals it again, and
+    `autodev.py amend-checks` drops a check or reseals one before the install.
+    Auto mode can refuse an agent's own edit of those files as test removal;
+    the `autodev.py` permission rule below covers the command.
   - **I fixed it myself:** only the step that stopped runs again.
   - **Sign off and go on:** the result is accepted as if it passed, and the
     sign-off is named in the PR gate summary and the PR body. Never on red CI,
@@ -519,7 +524,8 @@ works in a worktree next to your repo, so both need rules too. Add these to
 ```
 
 - The `autodev.py` rule also lets workers run the profile's gate and test
-  commands through `autodev.py run`. It runs only the commands in the profile
+  commands through `autodev.py run`, and lets the fixer change held-out checks
+  with `autodev.py amend-checks` while the fix you asked for is open. It runs only the commands in the profile
   you confirmed, never one a worker writes.
 - One rule per script, not `scripts/*`, so you can leave one out. The
   `autodev.py` rule also covers the test-integrity audit and mutation testing:

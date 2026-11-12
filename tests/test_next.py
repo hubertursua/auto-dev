@@ -7107,6 +7107,78 @@ class OverrideTest(OverrideCase):
         self.assertEqual((files / "list.test.ts.base").read_text(), base_before)
         self.assertEqual((files / "list.test.ts.installed").read_text(), sealed_before)
 
+    def amend(self, *args):
+        return self.autodev("amend-checks", "--dir", self.dir, *args)
+
+    def test_amend_checks_is_refused_with_no_fix_open(self):
+        self.red_gate()
+        r = self.amend("--drop", "src/sort.acceptance.test.ts :: sorts earliest first")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no fix is open", r.stdout + r.stderr)
+
+    def test_the_fixer_drops_a_check_through_amend_checks(self):
+        # A check file the checks added, with its one row dropped: the row, the
+        # sealed copy and the installed file go, and the fixer's report names them.
+        out, _ = self.red_gate()
+        n = self.fix(out, "drop the sort check")[1]
+        installed = self.worktree / "src" / "sort.acceptance.test.ts"
+        self.assertTrue(installed.exists())
+        r = self.amend("--drop", '`src/sort.acceptance.test.ts` :: "sorts earliest first"')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        manifest = (self.dir / "acceptance" / "MANIFEST.md").read_text()
+        self.assertNotIn("sorts earliest first", manifest)
+        self.assertIn("shows the due date", manifest)
+        self.assertFalse((self.dir / "acceptance" / "files" / "src" /
+                          "sort.acceptance.test.ts.sealed").exists())
+        self.assertFalse(installed.exists())
+        changed = [ln.split("changed: ", 1)[1] for ln in r.stdout.splitlines()
+                   if "changed: " in ln]
+        self.assertEqual(changed, [".auto-dev/acceptance/MANIFEST.md",
+                                   ".auto-dev/acceptance/files/src/sort.acceptance.test.ts.sealed",
+                                   "src/sort.acceptance.test.ts"])
+        self.report(n, changed="\n".join(f"- `{p}` — dropped" for p in changed))
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="3")
+        self.expect("cleanup")
+        self.assertEqual(self.state()["overrides"][-1]["status"], "fixed")
+
+    def test_amend_checks_refuses_a_check_no_row_names(self):
+        out, _ = self.red_gate()
+        self.fix(out)
+        before = (self.dir / "acceptance" / "MANIFEST.md").read_text()
+        r = self.amend("--drop", "src/sort.acceptance.test.ts :: sorts earliest first",
+                       "--drop", "src/sort.acceptance.test.ts :: no such test")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('no MANIFEST.md row names `src/sort.acceptance.test.ts` :: '
+                      '"no such test"', r.stdout + r.stderr)
+        self.assertEqual((self.dir / "acceptance" / "MANIFEST.md").read_text(), before)
+
+    def test_amend_checks_reseals_only_before_the_install_and_only_by_adding(self):
+        out, _ = self.red_gate()
+        self.fix(out)
+        new = self.dir / "tmp" / "list.test.ts"
+        new.parent.mkdir(exist_ok=True)
+        r = self.amend("--sealed", "src/list.test.ts", "--from", str(new))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("the checks are installed", r.stdout + r.stderr)
+        # Before the install (Phase 4 not done), a copy that only adds lines
+        # to its base goes in; one that changes a base line is refused.
+        state = json.loads((self.dir / "state.json").read_text())
+        state["phases"]["4"]["status"] = "in-progress"
+        (self.dir / "state.json").write_text(json.dumps(state))
+        files = self.dir / "acceptance" / "files" / "src"
+        (files / "list.test.ts.base").write_text("describe list\nend\n")
+        (files / "list.test.ts.sealed").write_text("describe list\ncheck\nend\n")
+        new.write_text("describe list\ncheck v2\nend\n")
+        r = self.amend("--sealed", "src/list.test.ts", "--from", str(new))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((files / "list.test.ts.sealed").read_text(), new.read_text())
+        new.write_text("describe list v2\ncheck\nend\n")
+        r = self.amend("--sealed", "src/list.test.ts", "--from", str(new))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("may only add lines", r.stdout + r.stderr)
+        self.assertEqual((files / "list.test.ts.sealed").read_text(),
+                         "describe list\ncheck v2\nend\n")
+
     def test_a_red_gate_signed_off_goes_on_to_the_verifier(self):
         out, job = self.red_gate()
         r = self.answer_stop(out, "Sign off and go on", "the lint rule is wrong here")

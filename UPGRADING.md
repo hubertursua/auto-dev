@@ -4,6 +4,19 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.26
+
+- **The fixer changes held-out checks through a command.** In auto mode,
+  Claude Code could refuse an agent's own edit of a sealed copy, its base or
+  `acceptance/MANIFEST.md` as test removal, even when the user had asked for
+  the fix. Now the fixer edits an installed check in the worktree (`record`
+  seals it again, since 4.26.1), and runs `autodev.py amend-checks` to drop a
+  check's rows (and a check file left with none) or to reseal a check before
+  the install. The command works only while the fix the user asked for is
+  open, and records what it changed in `WORK_LOG.md`. The `autodev.py`
+  permission rule already covers it.
+- A run in flight resumes on 4.27.
+
 ## Upgrading from 4.25
 
 - **A stop asks how to go on.** Every stop on a result (a red quality gate,
