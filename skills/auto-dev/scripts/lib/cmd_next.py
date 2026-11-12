@@ -625,7 +625,7 @@ def fixer_spawn(c, fix):
     stop_ = fix["stop"]
     c.would("spawn the fixer with the user's instruction",
             "the user said how to fix the stop")
-    rebase_installed(c)  # a check file it edits is copied whole over its sealed copy
+    rebase_installed(c)  # each whole check file is its sealed copy: `record` reseals an edit
     if st.phase(c.state, 6)["status"] == "in-progress" and \
             not c.state.get("phase6", {}).get("verified_sha"):
         cmd_checks.git_add_intent(c.wt)

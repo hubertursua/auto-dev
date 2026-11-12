@@ -7054,7 +7054,7 @@ class OverrideTest(OverrideCase):
         # The fixer edits only the worktree's file, a coder line and a check
         # line side by side; `record` writes the sealed copy and the base.
         files, shared, n = self.shared_check_stop()
-        shared.write_text("describe list\nthe coder's test v2\ncheck v2\nnew check\nend\n")
+        shared.write_text("describe list\nthe coder's test v2\ncheck v2\nend\n")
         self.report(n, changed="- `src/list.test.ts` — what the user asked")
         self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
         self.expect("cleanup")
@@ -7062,6 +7062,29 @@ class OverrideTest(OverrideCase):
         self.assertEqual((files / "list.test.ts.base").read_text(),
                          "describe list\nthe coder's test v2\nend\n")
         self.assertEqual(self.state()["overrides"][-1]["status"], "fixed")
+
+    def test_a_check_broken_before_the_fixer_is_not_sealed_again(self):
+        # The checks weren't whole when the fixer was spawned: its fix is
+        # elsewhere, and the broken check is refused, not resealed.
+        files = self.dir / "acceptance" / "files" / "src"
+        files.mkdir(parents=True, exist_ok=True)
+        (files / "list.test.ts.base").write_text("describe list\nend\n")
+        (files / "list.test.ts.sealed").write_text("describe list\ncheck\nend\n")
+        shared = self.worktree / "src" / "list.test.ts"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_text("describe list\nend\n")
+        out, _ = self.red_gate()
+        shared.write_text("describe list\ncheck weakened\nend\n")
+        n = self.fix(out)[1]
+        (self.worktree / "src" / "sorted.ts").write_text("x\n")
+        self.report(n, changed="- `src/sorted.ts` — the sort")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        out = self.next(0, refused_ok=True)
+        self.assertIn(f"fixer-{n}: refused (MISMATCH)", out["RECORDED"])
+        issues = self.state()["refused"][f"fixer-{n}"]
+        self.assertTrue(any("no longer match" in i for i in issues), issues)
+        self.assertEqual((files / "list.test.ts.sealed").read_text(),
+                         "describe list\ncheck\nend\n")
 
     def test_a_fixer_that_proposes_leaves_the_seal_as_it_was(self):
         files, shared, n = self.shared_check_stop()

@@ -2956,6 +2956,13 @@ class ResealTest(WorkCase):
                               "a\nmine v2\ncheck v2\nb\n")
         self.assertEqual(read["base"], "a\nmine v2\nb\n")
 
+    def test_a_run_with_a_check_line_rewritten_unevenly_stays_a_check(self):
+        # One own line deleted and the check rewritten: one uneven run. The
+        # check is held out still, never let go.
+        _, read = self.reseal("a\nmine\ncheck\nb\n", "a\nmine\nb\n", "a\ncheck v2\nb\n")
+        self.assertEqual(read["base"], "a\nb\n")
+        self.assertEqual(read["sealed"], "a\ncheck v2\nb\n")
+
     def test_a_file_with_no_check_left_or_gone_is_no_longer_sealed(self):
         touched, read = self.reseal("a\ncheck\nb\n", "a\nb\n", "a\nb\n")
         self.assertEqual(read, {"sealed": None, "base": None, "installed": None})
@@ -2972,6 +2979,7 @@ class ResealTest(WorkCase):
         self.assertEqual(touched, [])
         self.assertEqual((self.files / f"{rel}.sealed").read_text(), "a\ncheck\n")
         self.assertEqual((self.files / f"{rel}.base").read_text(), "a\n")
+        self.assertEqual((self.files / f"{rel}.installed").read_text(), "a\ncheck\n")
 
     def test_a_new_check_file_is_sealed_whole(self):
         _, read = self.reseal("check\n", None, "check v2\n")

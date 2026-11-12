@@ -334,14 +334,13 @@ def reseal(ad, rel, old_sealed, old_base, current, names=()):
     file now, None when it was removed; `names` are its checks' test names.
 
     Each line of the file now is a check's or the file's own. A line the edit
-    kept keeps its kind, and so does one it rewrote in place (paired in order
-    within a changed run). A line it added is a check's when the line it
-    follows in that run was one, when it is inserted next to one, or when the
-    lines it came with name a check's test; otherwise it is the file's own,
-    and goes into the base. It is a best guess: a misread line is held out
-    too much (the coder can't edit it) or too little. The file becomes
-    the sealed copy. When no check line is left, or the file is gone, the seal
-    files go. Returns the seal files it wrote or removed, as paths under
+    kept keeps its kind, and so does each line of a run it rewrote line for
+    line. Any other line it wrote is a check's when the run it replaced held a
+    check line, when it is inserted next to one, or when the lines it came
+    with name a check's test; otherwise it is the file's own, and goes into
+    the base. When in doubt a line is held out, never let go: a seal goes only
+    when every check line was deleted, or the file is gone. The file becomes
+    the sealed copy. Returns the seal files it wrote or removed, as paths under
     acceptance/files/."""
     files = Path(ad) / "acceptance" / "files"
     seal, base_file, snap = files / f"{rel}.sealed", base_path(ad, rel), snapshot_path(ad, rel)
@@ -360,6 +359,7 @@ def reseal(ad, rel, old_sealed, old_base, current, names=()):
         if old_base is None:
             return []
         base_file.write_bytes(old_base.encode("utf-8", "surrogateescape"))
+        snapshot(ad, rel, old_sealed)
         return []
     if old_base is None:  # a new file: all of it is the check
         Path(seal).write_bytes(current.encode("utf-8", "surrogateescape"))
@@ -376,19 +376,16 @@ def reseal(ad, rel, old_sealed, old_base, current, names=()):
     kinds, ai = [], 0
     for a0, ac, b0, bc in hunks(was, now):
         kinds += check[ai:a0]
-        # Lines rewritten in place keep their kind, in order; lines past the
-        # old ones take the last old line's kind, or, for an insertion, a
-        # check's when either neighbour is one; any naming a check's test is one.
-        paired = min(ac, bc)
-        kinds += check[a0:a0 + paired]
-        if bc > paired:
-            extra = now[b0 + paired:b0 + bc]
-            if ac:
-                is_check = check[a0 + ac - 1]
+        if ac and ac == bc:  # a run rewritten line for line keeps its kinds
+            kinds += check[a0:a0 + ac]
+        elif bc:
+            new = now[b0:b0 + bc]
+            if ac:  # any check line in the run makes all of it a check's
+                is_check = any(check[a0:a0 + ac])
             else:
                 is_check = (a0 > 0 and check[a0 - 1]) or (a0 < len(was) and check[a0])
-            is_check = is_check or any(k in line for line in extra for k in keys)
-            kinds += [is_check] * len(extra)
+            is_check = is_check or any(k in line for line in new for k in keys)
+            kinds += [is_check] * bc
         ai = a0 + ac
     kinds += check[ai:]
     if not any(kinds):
