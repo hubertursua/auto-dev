@@ -651,6 +651,8 @@ def fix_changes(c, brief):
     if brief.get("artifacts") is not None:
         paths += [f"{scratch(c)}/{p}"
                   for p in overrides.changed_artifacts(c.ad, brief["artifacts"])]
+    if brief.get("settings") is not None and c.state.get("settings") != brief["settings"]:
+        paths.append(f"{scratch(c)}/state.json")  # the run's settings
     return paths
 
 
@@ -676,6 +678,9 @@ def undo_fix(c, brief, n):
             if p.startswith("acceptance/files/") and p.endswith(".sealed") and \
                     sealed.base_of(c.ad, rel) is not None:
                 sealed.snapshot(c.ad, rel, sealed.read(c.ad / p))
+    if brief.get("settings") is not None and c.state.get("settings") != brief["settings"]:
+        c.state["settings"] = copy.deepcopy(brief["settings"])  # a gate check's command
+        undone.append(f"{scratch(c)}/state.json")
     return undone
 
 

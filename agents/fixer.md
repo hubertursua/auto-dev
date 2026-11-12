@@ -18,8 +18,10 @@ says, and nothing it does not.
   `returns/`, `lint/`, `evidence/` and the reports the workers wrote
   (`SPEC_EVAL.md`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md`), nor the saved
   profile. The pipeline writes those, and runs again whatever your change
-  affects. When the fix needs a gate setting changed, propose it and return
-  `NEEDS_CONSENT`: `record` refuses a fixer that changed the run's settings.
+  affects. The one exception is `settings` in `state.json` (a quality-gate
+  check's command, say), and only when the instruction names the change: edit
+  only that key, and name `.auto-dev/state.json` in your report. Unless you
+  return `FIXED`, it is put back with the rest.
 - Keep any single command under 5 minutes; spill large output to
   `{{artifact_dir}}/tmp/` and quote only a digest of it.
 - Write every command out in full: literal absolute paths, `git -C <path> …`

@@ -123,8 +123,8 @@ record <worker> <n>
     the plan, a sealed copy or MANIFEST.md's test names. The log entry notes the steps or conditions
     such an answer changed.
     A fixer's return is refused when its status is not ok but its `next` is
-    FIXED, and, whatever its status, when it changed the run's settings in
-    state.json, which `record` puts back as they were at its brief.
+    FIXED; for FIXED, its report names every path it changed, the run's
+    settings in state.json as `.auto-dev/state.json`.
     On a match it updates state.json (for an ok return of the Define agent, the
     size check; after Define or its reviewer, a Security/Compliance criterion in
     SPEC.md turns a run that FITS high-risk with the post-plan gate on; a note
@@ -738,9 +738,6 @@ def derive(worker, data, ad, state, n):
         # Whatever the status: a filer that edited SPEC.md never gets past it.
         issues += proposals.spec_edit_issues(ad, issued["spec"])
     if worker == "fixer":
-        # Whatever the status: a fixer that edited the run's settings never
-        # gets past it, and they go back to what they were at its brief.
-        issues += settings_issues(state, issued)
         if data.get("status") != "ok" and data.get("next") == "FIXED":
             issues.append(f"status is {data.get('status')} but next is FIXED: return "
                           "FIXED only with status ok, once you carried out the whole "
@@ -976,19 +973,17 @@ def result_issues(worker, data, ad, state, n):
     return issues
 
 
-def settings_issues(state, issued):
-    """A fixer never edits the run's settings in state.json (a gate check's
-    command, a gate switch): `record` puts them back as they were at its
-    brief, and refuses the return."""
+def settings_changed(state, issued):
+    """Whether the fixer of brief `issued` changed the run's settings in
+    state.json since its brief, while its fix is still open (a new answer
+    at the stop may change them once the fix is dropped)."""
     before = issued.get("settings")
-    if before is None or state.get("settings") == before:
-        return []
-    now = state.get("settings") or {}
-    keys = sorted(k for k in set(before) | set(now) if before.get(k) != now.get(k))
-    state["settings"] = copy.deepcopy(before)
-    return [(f"you changed the run's settings in state.json ({', '.join(keys)}); they "
-             "are put back. You never edit the run's bookkeeping: when the fix needs a "
-             "settings change, propose it and return NEEDS_CONSENT")]
+    first = issued.get("artifacts_n", issued.get("n"))  # a retry keeps the first's
+    if before is None or not any(o.get("status") == "open" and
+                                 (o.get("job") or [None, None])[1] == first
+                                 for o in overrides.fixes(state)):
+        return False
+    return state.get("settings") != before
 
 
 FIX_SECTIONS = {"FIXED": "Changed", "NEEDS_CONSENT": "Proposal", "CANNOT_FIX": "Why not"}
@@ -1037,6 +1032,8 @@ def fixer_issues(nxt, ad, state, n):
     if issued.get("artifacts") is not None:
         changed += [f"{scratch}/{p}"
                     for p in overrides.changed_artifacts(ad, issued["artifacts"])]
+    if settings_changed(state, issued):
+        changed.append(f"{scratch}/state.json")
     listed = set(re.findall(r"`([^`]+)`", body))
     issues = [f"you changed {p} but your report's Changed section does not name it "
               f"(as `{p}`): name every path you changed, with what and why"
