@@ -2910,3 +2910,77 @@ class SpacedArtifactDirTest(MovedCloneCase):
                    "`src/route.test.ts`")
         self.ok(self.planner(batch, rulings, self.plan_with(s3=revised), "PLAN_REVISED",
                              mode="blocked", stopped="- step 3: the store has no lookup\n"))
+
+
+class ResealTest(WorkCase):
+    """sealed.reseal: a fixer's edit to an installed check file, sealed again."""
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import sealed
+        self.sealed = sealed
+        self.files = self.dir / "acceptance" / "files"
+        self.files.mkdir(parents=True, exist_ok=True)
+
+    def reseal(self, old_sealed, old_base, current, names=()):
+        rel = "src/list.test.ts"
+        (self.files / "src").mkdir(exist_ok=True)
+        (self.files / f"{rel}.sealed").write_text(old_sealed)
+        if old_base is not None:
+            (self.files / f"{rel}.base").write_text(old_base)
+        touched = self.sealed.reseal(self.dir, rel, old_sealed, old_base, current, names)
+        read = {s: (self.files / f"{rel}.{s}").read_text()
+                if (self.files / f"{rel}.{s}").exists() else None
+                for s in ("sealed", "base", "installed")}
+        return touched, read
+
+    def test_a_line_inserted_between_the_file_s_own_lines_is_its_own(self):
+        _, read = self.reseal("a\ncheck\nb\nc\n", "a\nb\nc\n", "a\ncheck\nb\nmine\nc\n")
+        self.assertEqual(read["base"], "a\nb\nmine\nc\n")
+        self.assertEqual(read["sealed"], "a\ncheck\nb\nmine\nc\n")
+        self.assertEqual(read["installed"], read["sealed"])
+
+    def test_a_line_that_names_a_check_s_test_is_a_check_s(self):
+        _, read = self.reseal("a\ncheck\nb\nc\n", "a\nb\nc\n",
+                              'a\ncheck\nb\ntest("sorts by due date")\nc\n',
+                              ["sorts by due date"])
+        self.assertEqual(read["base"], "a\nb\nc\n")
+
+    def test_a_line_next_to_a_check_is_a_check_s(self):
+        _, read = self.reseal("a\ncheck\nb\n", "a\nb\n", "a\ncheck\nmore\nb\n")
+        self.assertEqual(read["base"], "a\nb\n")
+
+    def test_lines_rewritten_in_place_keep_their_kind(self):
+        _, read = self.reseal("a\nmine\ncheck\nb\n", "a\nmine\nb\n",
+                              "a\nmine v2\ncheck v2\nb\n")
+        self.assertEqual(read["base"], "a\nmine v2\nb\n")
+
+    def test_a_run_with_a_check_line_rewritten_unevenly_stays_a_check(self):
+        # One own line deleted and the check rewritten: one uneven run. The
+        # check is held out still, never let go.
+        _, read = self.reseal("a\nmine\ncheck\nb\n", "a\nmine\nb\n", "a\ncheck v2\nb\n")
+        self.assertEqual(read["base"], "a\nb\n")
+        self.assertEqual(read["sealed"], "a\ncheck v2\nb\n")
+
+    def test_a_file_with_no_check_left_or_gone_is_no_longer_sealed(self):
+        touched, read = self.reseal("a\ncheck\nb\n", "a\nb\n", "a\nb\n")
+        self.assertEqual(read, {"sealed": None, "base": None, "installed": None})
+        self.assertEqual(touched, ["src/list.test.ts.sealed", "src/list.test.ts.base"])
+        _, read = self.reseal("check\n", None, None)
+        self.assertIsNone(read["sealed"])
+
+    def test_an_unchanged_file_keeps_its_seal_as_it_was(self):
+        rel = "src/list.test.ts"
+        (self.files / "src").mkdir(exist_ok=True)
+        (self.files / f"{rel}.sealed").write_text("hand edited\n")
+        (self.files / f"{rel}.base").write_text("hand edited\n")
+        touched = self.sealed.reseal(self.dir, rel, "a\ncheck\n", "a\n", "a\ncheck\n")
+        self.assertEqual(touched, [])
+        self.assertEqual((self.files / f"{rel}.sealed").read_text(), "a\ncheck\n")
+        self.assertEqual((self.files / f"{rel}.base").read_text(), "a\n")
+        self.assertEqual((self.files / f"{rel}.installed").read_text(), "a\ncheck\n")
+
+    def test_a_new_check_file_is_sealed_whole(self):
+        _, read = self.reseal("check\n", None, "check v2\n")
+        self.assertEqual((read["sealed"], read["base"]), ("check v2\n", None))

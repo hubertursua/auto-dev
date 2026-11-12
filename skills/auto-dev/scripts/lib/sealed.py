@@ -327,6 +327,75 @@ def rebase(ad, rel, current):
     return True
 
 
+def reseal(ad, rel, old_sealed, old_base, current, names=()):
+    """Seal <path> again after a fixer edited it in the worktree, so it never
+    keeps the seal by hand. `old_sealed` and `old_base` are the sealed copy and
+    base before the edit (the file was its sealed copy then); `current` is the
+    file now, None when it was removed; `names` are its checks' test names.
+
+    Each line of the file now is a check's or the file's own. A line the edit
+    kept keeps its kind, and so does each line of a run it rewrote line for
+    line. Any other line it wrote is a check's when the run it replaced held a
+    check line, when it is inserted next to one, or when the lines it came
+    with name a check's test; otherwise it is the file's own, and goes into
+    the base. When in doubt a line is held out, never let go: a seal goes only
+    when every check line was deleted, or the file is gone. The file becomes
+    the sealed copy. Returns the seal files it wrote or removed, as paths under
+    acceptance/files/."""
+    files = Path(ad) / "acceptance" / "files"
+    seal, base_file, snap = files / f"{rel}.sealed", base_path(ad, rel), snapshot_path(ad, rel)
+    touched = [f"{rel}.sealed", f"{rel}.base"]
+
+    def drop():
+        for path in (seal, base_file, snap):
+            if path.exists():
+                path.unlink()
+        return touched
+
+    if current is None:
+        return drop()
+    if current == old_sealed:  # the file is as it was: so is its seal
+        Path(seal).write_bytes(old_sealed.encode("utf-8", "surrogateescape"))
+        if old_base is None:
+            return []
+        base_file.write_bytes(old_base.encode("utf-8", "surrogateescape"))
+        snapshot(ad, rel, old_sealed)
+        return []
+    if old_base is None:  # a new file: all of it is the check
+        Path(seal).write_bytes(current.encode("utf-8", "surrogateescape"))
+        return touched[:1]
+    was, base0, now = lines(old_sealed) or [], lines(old_base) or [], lines(current)
+    blks = blocks(base0, was)
+    if blks is None:
+        return []  # the seal was broken before the edit; `record` says so
+    check, at = [False] * len(was), 0
+    for k, body in blks:
+        check[k + at:k + at + len(body)] = [True] * len(body)
+        at += len(body)
+    keys = test_keys(names)
+    kinds, ai = [], 0
+    for a0, ac, b0, bc in hunks(was, now):
+        kinds += check[ai:a0]
+        if ac and ac == bc:  # a run rewritten line for line keeps its kinds
+            kinds += check[a0:a0 + ac]
+        elif bc:
+            new = now[b0:b0 + bc]
+            if ac:  # any check line in the run makes all of it a check's
+                is_check = any(check[a0:a0 + ac])
+            else:
+                is_check = (a0 > 0 and check[a0 - 1]) or (a0 < len(was) and check[a0])
+            is_check = is_check or any(k in line for line in new for k in keys)
+            kinds += [is_check] * bc
+        ai = a0 + ac
+    kinds += check[ai:]
+    if not any(kinds):
+        return drop()
+    write(base_file, [x for x, c in zip(now, kinds) if not c], current)
+    Path(seal).write_bytes(current.encode("utf-8", "surrogateescape"))
+    snapshot(ad, rel, current)
+    return touched
+
+
 def snapshot(ad, rel, current):
     """Remember a shared file as it is with its checks whole (`undo_edits`)."""
     write(snapshot_path(ad, rel), lines(current), current)

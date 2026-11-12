@@ -625,7 +625,7 @@ def fixer_spawn(c, fix):
     stop_ = fix["stop"]
     c.would("spawn the fixer with the user's instruction",
             "the user said how to fix the stop")
-    rebase_installed(c)  # a check file it edits is copied whole over its sealed copy
+    rebase_installed(c)  # each whole check file is its sealed copy: `record` reseals an edit
     if st.phase(c.state, 6)["status"] == "in-progress" and \
             not c.state.get("phase6", {}).get("verified_sha"):
         cmd_checks.git_add_intent(c.wt)
@@ -671,6 +671,11 @@ def undo_fix(c, brief, n):
         paths = overrides.changed_artifacts(c.ad, brief["artifacts"])
         overrides.put_back_artifacts(c.ad, brief.get("artifacts_n", n), paths)
         undone += [f"{scratch(c)}/{p}" for p in paths]
+        for p in paths:  # `record` may have resealed it: its snapshot goes back too
+            rel = p[len("acceptance/files/"):-len(".sealed")]
+            if p.startswith("acceptance/files/") and p.endswith(".sealed") and \
+                    sealed.base_of(c.ad, rel) is not None:
+                sealed.snapshot(c.ad, rel, sealed.read(c.ad / p))
     return undone
 
 
