@@ -316,7 +316,11 @@ def level_of(text):
 
 def manifest(path):
     """MANIFEST.md: (check rows, not-automatable rows)."""
-    text = read(path)
+    return manifest_text(read(path), path)
+
+
+def manifest_text(text, path="MANIFEST.md"):
+    """MANIFEST.md's text: (check rows, not-automatable rows)."""
     _, rows = first_table(text.split("## Not automatable")[0],
                           ("#", "Check (path :: test name)", "Kind", "Base run"),
                           f"{path} (checks table)")

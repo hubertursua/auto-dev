@@ -96,15 +96,21 @@ The user's instruction:
        `python3 {{skill_dir}}/scripts/autodev.py amend-checks --dir {{artifact_dir}} --sealed <path> --from {{artifact_dir}}/tmp/<file name>`.
        A sealed copy may only add lines to the file in the worktree, so a
        change to a line that file already has goes in the worktree's file.
-     - To remove a check, take its test out of the test file as above, then
-       run `python3 {{skill_dir}}/scripts/autodev.py amend-checks --dir {{artifact_dir}} --drop "<path> :: <test name>"`
-       (once per check; `--drop` and `--sealed` can go in one call). It
-       removes the check's rows from `MANIFEST.md`, and a check file left
-       with no rows, if the check added the file.
+     - The rest goes through the same command, `amend-checks`, with one
+       option per change (they can go in one call):
+       - `--drop "<path> :: <test name>"` removes a check's rows from
+         `MANIFEST.md`, once you took its test out of the file as above. A
+         check file left with no rows goes too, when the checks added it.
+       - `--row "<the whole table row>"` adds a row to the checks table, as
+         many cells as its header. A rename is a `--drop` and a `--row`.
+       - `--not-automatable "<row>"` adds a Not automatable row, for a
+         condition the instruction leaves with no check but keeps in SPEC.md.
+       - `--add <path>`, once installed, seals a new check file you wrote in
+         the worktree.
      Name each path the command prints on a `changed:` line in your report.
-     The one hand edit allowed: when the instruction renames or adds a
-     check's test, change or add its row in
-     `{{artifact_dir}}/acceptance/MANIFEST.md`.
+     When a condition loses its last check, the instruction decides: remove
+     the condition from SPEC.md if it says so, else add a Not automatable row
+     if it says so, else return `NEEDS_CONSENT`.
 4. Write your report to {{fix_report}}, filling in
    `{{skill_dir}}/templates/FIX_REPORT.md`. For `FIXED`, its Changed section
    names every path you changed, in backticks, relative to the worktree (the

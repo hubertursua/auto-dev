@@ -7123,7 +7123,8 @@ class OverrideTest(OverrideCase):
         n = self.fix(out, "drop the sort check")[1]
         installed = self.worktree / "src" / "sort.acceptance.test.ts"
         self.assertTrue(installed.exists())
-        r = self.amend("--drop", '`src/sort.acceptance.test.ts` :: "sorts earliest first"')
+        r = self.amend("--drop", '`src/sort.acceptance.test.ts` :: "sorts earliest first"',
+                       "--not-automatable", "| 2 | sorted | the user dropped it | none |")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         manifest = (self.dir / "acceptance" / "MANIFEST.md").read_text()
         self.assertNotIn("sorts earliest first", manifest)
@@ -7160,11 +7161,9 @@ class OverrideTest(OverrideCase):
         r = self.amend("--sealed", "src/list.test.ts", "--from", str(new))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("the checks are installed", r.stdout + r.stderr)
-        # Before the install (Phase 4 not done), a copy that only adds lines
-        # to its base goes in; one that changes a base line is refused.
-        state = json.loads((self.dir / "state.json").read_text())
-        state["phases"]["4"]["status"] = "in-progress"
-        (self.dir / "state.json").write_text(json.dumps(state))
+        # Not installed (as when installing hit a conflict), a copy that only
+        # adds lines to its base goes in; one that changes a base line is refused.
+        (self.dir / "acceptance" / "INSTALLED").unlink()
         files = self.dir / "acceptance" / "files" / "src"
         (files / "list.test.ts.base").write_text("describe list\nend\n")
         (files / "list.test.ts.sealed").write_text("describe list\ncheck\nend\n")
@@ -7178,6 +7177,75 @@ class OverrideTest(OverrideCase):
         self.assertIn("may only add lines", r.stdout + r.stderr)
         self.assertEqual((files / "list.test.ts.sealed").read_text(),
                          "describe list\ncheck v2\nend\n")
+
+    def test_a_condition_left_with_no_check_is_refused_until_it_is_covered(self):
+        # S1's one check is dropped: `record` refuses until S1 has a Not
+        # automatable row (or leaves SPEC.md); a dropped test still in its
+        # file is refused too.
+        files = self.dir / "acceptance" / "files" / "src"
+        (files / "due.acceptance.test.ts.sealed").write_text('test("owner only")\n')
+        out, _ = self.red_gate()
+        n = self.fix(out, "drop the owner check, keep S1 as not automatable")[1]
+        r = self.amend("--drop", "src/due.acceptance.test.ts :: owner only")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        changed = [ln.split("changed: ", 1)[1] for ln in r.stdout.splitlines()
+                   if "changed: " in ln]
+        self.assertEqual(changed, [".auto-dev/acceptance/MANIFEST.md"])  # other rows stay
+        self.report(n, changed="- `.auto-dev/acceptance/MANIFEST.md` — dropped")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        self.next(0, refused_ok=True)
+        issues = self.state()["refused"][f"fixer-{n}"]
+        self.assertTrue(any("still holds its test" in i for i in issues), issues)
+        self.assertTrue(any("condition S1 has no check left" in i for i in issues), issues)
+        # The retry takes the test out and adds the row.
+        _, jobs = self.expect("fixer")
+        installed = self.worktree / "src" / "due.acceptance.test.ts"
+        installed.write_text("")
+        r = self.amend("--not-automatable",
+                       "| S1 | owner only | the user dropped it | none |")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        manifest = (self.dir / "acceptance" / "MANIFEST.md").read_text()
+        self.assertIn("| S1 | owner only | the user dropped it | none |", manifest)
+        self.assertNotIn("None.", manifest)
+        self.report(jobs[0][1], changed="- `.auto-dev/acceptance/MANIFEST.md` — dropped\n"
+                    "- `src/due.acceptance.test.ts` — the test out")
+        self.answer(*jobs[0], "FIXED", fix_report="x", changed="2")
+        self.expect("cleanup")
+        self.assertEqual((files / "due.acceptance.test.ts.sealed").read_text(), "")
+        r = self.amend("--drop", "src/sort.acceptance.test.ts :: sorts earliest first")
+        self.assertIn("no fix is open", r.stdout + r.stderr)  # recorded: closed
+
+    def test_amend_checks_adds_rows_and_a_new_check_file(self):
+        out, _ = self.red_gate()
+        self.fix(out, "rename the sort check and add a check file")
+        new = self.worktree / "src" / "new.acceptance.test.ts"
+        new.write_text('test("new check")\n')
+        path = self.dir / "acceptance" / "MANIFEST.md"
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))  # kept CRLF
+        r = self.amend(
+            "--drop", "src/sort.acceptance.test.ts :: sorts earliest first",
+            "--row", '| 2 | sorted | `src/sort.acceptance.test.ts` :: "sorts by date" | '
+                     "Example | unit | fail-to-pass | failed: unsorted |",
+            "--row", '| 2 | sorted | `src/new.acceptance.test.ts` :: "new check" | '
+                     "Edge | unit | fail-to-pass | failed: unsorted |",
+            "--add", "src/new.acceptance.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        manifest = path.read_bytes().decode()
+        self.assertNotIn("sorts earliest first", manifest)
+        self.assertIn('"sorts by date" | Example | unit | fail-to-pass | failed: unsorted |\r\n',
+                      manifest)
+        self.assertNotIn("\n", manifest.replace("\r\n", ""))
+        self.assertEqual((self.dir / "acceptance" / "files" / "src" /
+                          "new.acceptance.test.ts.sealed").read_text(), new.read_text())
+        # The sort file still has a row, so it stays.
+        self.assertTrue((self.worktree / "src" / "sort.acceptance.test.ts").exists())
+        for args, why in ((["--row", "| 2 | too few |"], "needs 7 cells"),
+                          (["--add", "../outside.ts"], "not a path inside the repo"),
+                          (["--add", "/abs.ts"], "not a path inside the repo"),
+                          (["--add", "src/new.acceptance.test.ts"], "sealed copy already")):
+            r = self.amend(*args)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn(why, r.stdout + r.stderr)
 
     def test_a_red_gate_signed_off_goes_on_to_the_verifier(self):
         out, job = self.red_gate()

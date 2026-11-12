@@ -411,7 +411,7 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
     proposal. `record` refuses its report if it leaves out a file it changed.
     It changes a held-out check through the pipeline, never by hand: it edits
     an installed check in the worktree and `record` seals it again, and
-    `autodev.py amend-checks` drops a check or reseals one before the install.
+    `autodev.py amend-checks` drops, adds or renames a check's `MANIFEST.md` rows, seals a new check file, or reseals one before the install.
     Auto mode can refuse an agent's own edit of those files as test removal;
     the `autodev.py` permission rule below covers the command.
   - **I fixed it myself:** only the step that stopped runs again.

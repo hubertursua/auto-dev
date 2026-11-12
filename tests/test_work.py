@@ -2984,3 +2984,31 @@ class ResealTest(WorkCase):
     def test_a_new_check_file_is_sealed_whole(self):
         _, read = self.reseal("check\n", None, "check v2\n")
         self.assertEqual((read["sealed"], read["base"]), ("check v2\n", None))
+
+
+class AmendManifestTest(WorkCase):
+    """cmd_amend.amend_manifest: rows split as the artifact parser splits them."""
+
+    HEAD = ("| # | Condition | Check (path :: test name) | Covers | Level | Kind | Base run |\n"
+            "|---|---|---|---|---|---|---|\n")
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_amend
+        self.amend = cmd_amend.amend_manifest
+
+    def test_pipes_in_code_spans_and_escaped_ones_do_not_shift_cells(self):
+        text = ("# x\n\n" + self.HEAD +
+                '| 1 | a `x | y` cond | `src/a.test.ts` :: "keeps" | E | unit | f | p |\n'
+                '  | 1 | c | `src/a.test.ts` :: "a \\| b" | E | unit | f | p |\n'
+                '| 1 | c | `src/a.test.ts` :: `quoted` | E | unit | f | p |\n'
+                "\n## Not automatable\nNone.\n")
+        out, missing = self.amend(text, [("src/a.test.ts", "a | b"),
+                                         ("src/a.test.ts", "quoted")], [], [])
+        self.assertEqual(missing, [])
+        self.assertIn('"keeps"', out)
+        self.assertNotIn("a \\| b", out)
+        self.assertNotIn("quoted", out)
+        out, missing = self.amend(text, [("src/a.test.ts", "x")], [], [])
+        self.assertEqual(missing, [("src/a.test.ts", "x")])

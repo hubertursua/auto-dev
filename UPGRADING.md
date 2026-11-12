@@ -10,11 +10,16 @@ can resume on the new one. Newest first. The current version is in
   Claude Code could refuse an agent's own edit of a sealed copy, its base or
   `acceptance/MANIFEST.md` as test removal, even when the user had asked for
   the fix. Now the fixer edits an installed check in the worktree (`record`
-  seals it again, since 4.26.1), and runs `autodev.py amend-checks` to drop a
-  check's rows (and a check file left with none) or to reseal a check before
-  the install. The command works only while the fix the user asked for is
-  open, and records what it changed in `WORK_LOG.md`. The `autodev.py`
-  permission rule already covers it.
+  seals it again, since 4.26.1), and runs `autodev.py amend-checks` for the
+  rest: drop, add or rename a check's `MANIFEST.md` rows, add a Not automatable
+  row, seal a new check file, or reseal a check before the install. The
+  command works only while the fix the user asked for is open, and records
+  what it changed in `WORK_LOG.md`. The `autodev.py` permission rule already
+  covers it. `record` refuses a fixer that dropped a check but left its test in
+  the file, or left a condition with no check and no Not automatable row.
+- A fixer's `record` now goes by `acceptance/INSTALLED` for whether the checks
+  are in the worktree, so a stop while installing hit a conflict no longer
+  reads the sealed copies as broken.
 - A run in flight resumes on 4.27.
 
 ## Upgrading from 4.25
