@@ -53,6 +53,7 @@ Exit codes:
        can't be read or written)
 """
 
+import subprocess
 from pathlib import Path, PurePosixPath
 
 from . import artifacts as art
@@ -117,6 +118,17 @@ def row_check(cell):
     return (path, unmark(cell.split("::", 1)[1])) if path and "::" in cell else None
 
 
+def there_before(wt, tree, rel):
+    """Whether <rel> was in the worktree when the fixer was spawned: listed in
+    its snapshot, or, unlisted, at the snapshot's HEAD."""
+    files = tree.get("files") or {}
+    if rel in files:
+        return files[rel] is not None
+    head = tree.get("head") or "HEAD"
+    return subprocess.run(["git", "-C", str(wt), "cat-file", "-e", f"{head}:{rel}"],
+                          capture_output=True, check=False).returncode == 0
+
+
 def open_fix(state):
     """The fix the fixer is working on now: open, spawned, and not recorded."""
     fix = next((o for o in overrides.fixes(state) if o.get("status") == "open"), None)
@@ -147,7 +159,7 @@ def table_end(lines, header):
 
 def checked_row(text, header_line, what):
     width = len(art.split_row(header_line))
-    cells = art.split_row(text, width)
+    cells = art.split_row(text)
     if not text.strip().startswith("|") or len(cells) != width:
         refuse(f"{what} {text!r} needs {width} cells, as the table's header has")
     return text.strip()
@@ -190,7 +202,9 @@ def amend_manifest(text, drops, rows, na_rows):
         else:
             end = table_end(lines, na_header)
             new = [checked_row(r, lines[na_header], "--not-automatable") for r in na_rows]
-            lines = lines[:end] + new + lines[end:]
+            rest = [line for line in lines[end:next_head]  # a "None." under the table
+                    if line.strip().rstrip(".").lower() != "none"]
+            lines = lines[:end] + new + rest + lines[next_head:]
     return "\n".join(lines), [d for d in drops if d not in found]
 
 
@@ -221,10 +235,15 @@ def main(args):
     root = ad / "acceptance" / "files"
     writes, removes = {}, []  # {Path: bytes}, [Path]
 
+    tree = next((b.get("fix_tree") for b in state.get("briefs", [])
+                 if b["worker"] == "fixer" and b["n"] == fix["job"][1]), None) or {}
     for rel in args.add:
         rel = repo_path(rel)
         if rel in files:
             refuse(f"{rel} has a sealed copy already: `record` reseals an edit to it")
+        if there_before(wt, tree, rel):
+            refuse(f"{rel} was there before the fix: --add seals only a new check file "
+                   "you wrote; a check goes into a file that holds one already")
         body = sealed.read(wt / rel)
         if body is None:
             refuse(f"{rel} is not in the worktree: write the new check file first")

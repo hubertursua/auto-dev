@@ -7247,6 +7247,40 @@ class OverrideTest(OverrideCase):
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             self.assertIn(why, r.stdout + r.stderr)
 
+    def test_a_check_dropped_and_added_back_is_kept(self):
+        # A drop and a --row with the same name moves the check (here to an
+        # Edge row): its test rightly stays, and `record` takes it.
+        files = self.dir / "acceptance" / "files" / "src"
+        (files / "sort.acceptance.test.ts.sealed").write_text('test("sorts earliest first")\n')
+        out, _ = self.red_gate()
+        n = self.fix(out, "make the sort check an Edge check")[1]
+        r = self.amend("--drop", "src/sort.acceptance.test.ts :: sorts earliest first",
+                       "--row", '| 2 | sorted | `src/sort.acceptance.test.ts` :: '
+                                '"sorts earliest first" | Edge | unit | fail-to-pass | '
+                                "failed: unsorted |")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.report(n, changed="- `.auto-dev/acceptance/MANIFEST.md` — Covers")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        self.expect("cleanup")
+
+    def test_add_refuses_a_file_that_was_there_before_the_fix(self):
+        out, _ = self.red_gate()
+        self.fix(out)
+        r = self.amend("--add", "src/sort.acceptance.test.ts.orig")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not in the worktree", r.stdout + r.stderr)
+        mine = self.worktree / "src" / "coder.test.ts"
+        mine.parent.mkdir(exist_ok=True)
+        # A file the coder wrote is in the fixer's snapshot: it was there.
+        state = json.loads((self.dir / "state.json").read_text())
+        brief = [b for b in state["briefs"] if b["worker"] == "fixer"][-1]
+        brief["fix_tree"]["files"]["src/coder.test.ts"] = "abc 644"
+        (self.dir / "state.json").write_text(json.dumps(state))
+        mine.write_text('test("the coder\'s")\n')
+        r = self.amend("--add", "src/coder.test.ts")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("was there before the fix", r.stdout + r.stderr)
+
     def test_a_red_gate_signed_off_goes_on_to_the_verifier(self):
         out, job = self.red_gate()
         r = self.answer_stop(out, "Sign off and go on", "the lint rule is wrong here")

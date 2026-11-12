@@ -1033,28 +1033,50 @@ def amended_issues(state, ad, issued, on):
     and no Not automatable row while SPEC.md still has it."""
     issues = []
     fix = next((o for o in overrides.fixes(state) if o.get("status") == "open"), {})
-    wt = Path(state["worktree"])
-    for rel, name in fix.get("dropped") or []:
-        copies = [ad / "acceptance" / "files" / f"{rel}.sealed"] + ([wt / rel] if on else [])
-        if name and any(name in (sealed.read(c) or "") for c in copies):
-            issues.append(f'you dropped "{name}" from MANIFEST.md but {rel} still holds '
-                          "its test: take it out of the file")
     before = overrides.backup_dir(ad, issued.get("artifacts_n", issued["n"])) / \
         "acceptance" / "MANIFEST.md"
-    if not fix.get("dropped") or not before.is_file():
+    if not fix.get("dropped"):
         return issues
     try:
-        had = {r["#"].strip() for r in art.manifest(before)[0]}
         rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
         ids = {c["id"] for c in art.spec_conditions(ad / "SPEC.md")}
+        had = {row_id(r["#"]) for r in art.manifest(before)[0]} if before.is_file() else set()
     except art.ArtifactError as exc:
-        return issues + [str(exc)]
-    covered = {r["#"].strip() for r in rows} | {r.get("#", "").strip() for r in na_rows}
-    for cid in sorted(had & ids - covered):
+        return [str(exc)]
+    names = check_props.test_names(rows)
+    wt = Path(state["worktree"])
+    for rel, name in fix["dropped"]:
+        if name in names.get(rel, []):
+            continue  # a row names it again: kept, moved or re-added
+        others = sealed.test_keys(names.get(rel, []))
+        keys = [k for k in sealed.test_keys([name])
+                if not any(k in other for other in others)]
+        copies = [ad / "acceptance" / "files" / f"{rel}.sealed"] + ([wt / rel] if on else [])
+        if any(names_test(sealed.read(c) or "", k) for c in copies for k in keys):
+            issues.append(f'you dropped "{name}" from MANIFEST.md but {rel} still holds '
+                          "its test: take it out of the file")
+    covered = {row_id(r["#"]) for r in rows} | {row_id(r.get("#", "")) for r in na_rows}
+    for cid in sorted((had & ids) - covered):
         issues.append(f"condition {cid} has no check left and no Not automatable row: "
                       "remove it from SPEC.md if the instruction says so, add a row with "
                       "`amend-checks --not-automatable`, or return NEEDS_CONSENT")
     return issues
+
+
+def row_id(cell):
+    """A MANIFEST.md row's condition id: `3 (Edge)` is 3's."""
+    return (cell.strip().split() or [""])[0].split("(")[0]
+
+
+def names_test(text, key):
+    """Whether source text names a test `key`: as a quoted string, or, for a
+    name shaped like a function name (`testAdds`, `test_adds`), as a whole
+    word. A plain lowercase word is only found quoted: as a word it would
+    match inside another test's name."""
+    if any(f"{q}{key}{q}" in text for q in ('"', "'", "`")):
+        return True
+    function = re.fullmatch(r"\w+", key) and re.search(r"[A-Z_0-9]", key)
+    return bool(function) and re.search(rf"(?<!\w){re.escape(key)}(?!\w)", text) is not None
 
 
 def reseal_fixed(state, ad, issued):
