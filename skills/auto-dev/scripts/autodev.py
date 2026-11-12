@@ -31,6 +31,7 @@ Subcommands:
     apply-fix          apply a reviewer's FIX blocks to SPEC.md or IMPLEMENTATION.md
     spec-overlap       refuse a brief or plan that copies SPEC.md's wording
     install-checks     install the sealed acceptance checks in the worktree
+    amend-checks       drop or reseal held-out checks for a fix the user asked for
     security-reviewer  name the security reviewer to spawn for this SPEC.md
     votes              plan the code-review re-votes, or apply them
     review-scope       snapshot the tree before a correction; list what it changed
@@ -60,6 +61,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lib import (
+    cmd_amend,
     cmd_checks,
     cmd_handoff,
     cmd_init,
@@ -100,6 +102,7 @@ COMMANDS = {
     "apply-fix": (cmd_checks, cmd_checks.apply_fix),
     "spec-overlap": (cmd_checks, cmd_checks.spec_overlap),
     "install-checks": (cmd_checks, cmd_checks.install_checks),
+    "amend-checks": (cmd_amend, cmd_amend.main),
     "security-reviewer": (cmd_checks, cmd_checks.security_reviewer),
     "votes": (cmd_review, cmd_review.votes),
     "review-scope": (cmd_review, cmd_review.review_scope),

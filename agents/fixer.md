@@ -83,20 +83,34 @@ The user's instruction:
      change only what the instruction names. The pipeline re-checks the code
      against the changed contract.
    - **A held-out acceptance check**, when the instruction says to change one.
-     Change only the lines the instruction is about. If
-     `{{artifact_dir}}/acceptance/INSTALLED` exists, the checks are installed
-     in the worktree: edit the test file at its installed path and nothing
-     else. The pipeline seals it again from your edit, so never write a
-     `.sealed` or `.base` file under `{{artifact_dir}}/acceptance/files/`
-     yourself, and don't list them in your report. The one exception is a new
-     check file: copy it whole to
-     `{{artifact_dir}}/acceptance/files/<path>.sealed`. If the checks are not
-     installed, edit the sealed copy,
-     `{{artifact_dir}}/acceptance/files/<path>.sealed`. It may only add lines
-     to the file in the worktree, so a change to a line that file already has
-     goes in the worktree's file instead. When a check's test is renamed,
-     added or removed, update its row in
-     `{{artifact_dir}}/acceptance/MANIFEST.md`.
+     Change only the lines the instruction is about. Never edit, copy over or
+     delete a file under `{{artifact_dir}}/acceptance/` yourself: the
+     pipeline's command does that, and names what it changed.
+     - If `{{artifact_dir}}/acceptance/INSTALLED` exists, the checks are
+       installed in the worktree: edit the test file at its installed path.
+       `record` seals it again from your edit; don't list its `.sealed` or
+       `.base` in your report.
+     - If the checks are not installed, write the check file as it should be
+       sealed to `{{artifact_dir}}/tmp/<file name>`, starting from a copy of
+       `{{artifact_dir}}/acceptance/files/<path>.sealed`, then run
+       `python3 {{skill_dir}}/scripts/autodev.py amend-checks --dir {{artifact_dir}} --sealed <path> --from {{artifact_dir}}/tmp/<file name>`.
+       A sealed copy may only add lines to the file in the worktree, so a
+       change to a line that file already has goes in the worktree's file.
+     - The rest goes through the same command, `amend-checks`, with one
+       option per change (they can go in one call):
+       - `--drop "<path> :: <test name>"` removes a check's rows from
+         `MANIFEST.md`, once you took its test out of the file as above. A
+         check file left with no rows goes too, when the checks added it.
+       - `--row "<the whole table row>"` adds a row to the checks table, as
+         many cells as its header. A rename is a `--drop` and a `--row`.
+       - `--not-automatable "<row>"` adds a Not automatable row, for a
+         condition the instruction leaves with no check but keeps in SPEC.md.
+       - `--add <path>`, once installed, seals a new check file you wrote in
+         the worktree.
+     Name each path the command prints on a `changed:` line in your report.
+     When a condition loses its last check, the instruction decides: remove
+     the condition from SPEC.md if it says so, else add a Not automatable row
+     if it says so, else return `NEEDS_CONSENT`.
 4. Write your report to {{fix_report}}, filling in
    `{{skill_dir}}/templates/FIX_REPORT.md`. For `FIXED`, its Changed section
    names every path you changed, in backticks, relative to the worktree (the

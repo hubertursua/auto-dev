@@ -998,7 +998,8 @@ def fixer_issues(nxt, ad, state, n):
                  "changed no file)")]
     scratch = tree_guard.scratch(wt, ad) or ".auto-dev"
     resealed = set()
-    if cmd_checks.installed(ad) and issued.get("artifacts") is not None:
+    on = (ad / "acceptance" / "INSTALLED").exists()  # the checks are in the worktree
+    if on and issued.get("artifacts") is not None:
         resealed = {f"{scratch}/acceptance/files/{p}"
                     for p in reseal_fixed(state, ad, issued)}
     changed = []
@@ -1011,7 +1012,7 @@ def fixer_issues(nxt, ad, state, n):
     issues = [f"you changed {p} but your report's Changed section does not name it "
               f"(as `{p}`): name every path you changed, with what and why"
               for p in changed if p not in listed and p not in resealed]
-    if cmd_checks.installed(ad):
+    if on:
         for rel in sealed.sealed_files(ad):
             try:
                 whole = sealed.intact(ad, rel, sealed.read(Path(wt) / rel))
@@ -1020,10 +1021,62 @@ def fixer_issues(nxt, ad, state, n):
             if not whole:
                 issues.append(f"the held-out checks in {rel} no longer match their sealed "
                               f"copy {scratch}/acceptance/files/{rel}.sealed: put back the "
-                              "check lines the instruction did not name (a new check file "
-                              "goes whole into its sealed copy)")
+                              "check lines the instruction did not name")
+    issues += amended_issues(state, ad, issued, on)
     issues += seal_bases(state, ad)
     return issues
+
+
+def amended_issues(state, ad, issued, on):
+    """After `amend-checks`: each test the fixer dropped is gone from its
+    file, and no condition that had a check before the fix is left with none
+    and no Not automatable row while SPEC.md still has it."""
+    issues = []
+    fix = next((o for o in overrides.fixes(state) if o.get("status") == "open"), {})
+    before = overrides.backup_dir(ad, issued.get("artifacts_n", issued["n"])) / \
+        "acceptance" / "MANIFEST.md"
+    if not fix.get("dropped"):
+        return issues
+    try:
+        rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
+        ids = {c["id"] for c in art.spec_conditions(ad / "SPEC.md")}
+        had = {row_id(r["#"]) for r in art.manifest(before)[0]} if before.is_file() else set()
+    except art.ArtifactError as exc:
+        return [str(exc)]
+    names = check_props.test_names(rows)
+    wt = Path(state["worktree"])
+    for rel, name in fix["dropped"]:
+        if name in names.get(rel, []):
+            continue  # a row names it again: kept, moved or re-added
+        others = sealed.test_keys(names.get(rel, []))
+        keys = [k for k in sealed.test_keys([name])
+                if not any(k in other for other in others)]
+        copies = [ad / "acceptance" / "files" / f"{rel}.sealed"] + ([wt / rel] if on else [])
+        if any(names_test(sealed.read(c) or "", k) for c in copies for k in keys):
+            issues.append(f'you dropped "{name}" from MANIFEST.md but {rel} still holds '
+                          "its test: take it out of the file")
+    covered = {row_id(r["#"]) for r in rows} | {row_id(r.get("#", "")) for r in na_rows}
+    for cid in sorted((had & ids) - covered):
+        issues.append(f"condition {cid} has no check left and no Not automatable row: "
+                      "remove it from SPEC.md if the instruction says so, add a row with "
+                      "`amend-checks --not-automatable`, or return NEEDS_CONSENT")
+    return issues
+
+
+def row_id(cell):
+    """A MANIFEST.md row's condition id: `3 (Edge)` is 3's."""
+    return (cell.strip().split() or [""])[0].split("(")[0]
+
+
+def names_test(text, key):
+    """Whether source text names a test `key`: as a quoted string, or, for a
+    name shaped like a function name (`testAdds`, `test_adds`), as a whole
+    word. A plain lowercase word is only found quoted: as a word it would
+    match inside another test's name."""
+    if any(f"{q}{key}{q}" in text for q in ('"', "'", "`")):
+        return True
+    function = re.fullmatch(r"\w+", key) and re.search(r"[A-Z_0-9]", key)
+    return bool(function) and re.search(rf"(?<!\w){re.escape(key)}(?!\w)", text) is not None
 
 
 def reseal_fixed(state, ad, issued):
@@ -1048,11 +1101,16 @@ def reseal_fixed(state, ad, issued):
     for old in sorted(before.rglob("*.sealed")) if before.is_dir() else []:
         rel = old.relative_to(before).with_suffix("").as_posix()
         base = before / f"{rel}.base"
+        if rel not in edited:
+            continue
         was = str(tree["files"].get(rel, tree_guard.CLEAN)).split(" ")[0]
         if was == tree_guard.CLEAN:  # committed: the file is its blob at HEAD
-            was = tree_guard.git(wt, "rev-parse", f"{tree['head']}:{rel}").decode().strip()
+            try:
+                was = tree_guard.git(wt, "rev-parse", f"{tree['head']}:{rel}").decode().strip()
+            except Fail:
+                continue  # not at HEAD either: it wasn't there to be whole
         sha = tree_guard.git(wt, "hash-object", "--stdin", data=old.read_bytes())
-        if rel not in edited or was != sha.decode().strip():
+        if was != sha.decode().strip():
             continue
         try:
             touched += sealed.reseal(ad, rel, sealed.read(old),

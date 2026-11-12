@@ -2984,3 +2984,65 @@ class ResealTest(WorkCase):
     def test_a_new_check_file_is_sealed_whole(self):
         _, read = self.reseal("check\n", None, "check v2\n")
         self.assertEqual((read["sealed"], read["base"]), ("check v2\n", None))
+
+
+class AmendManifestTest(WorkCase):
+    """cmd_amend.amend_manifest: rows split as the artifact parser splits them."""
+
+    HEAD = ("| # | Condition | Check (path :: test name) | Covers | Level | Kind | Base run |\n"
+            "|---|---|---|---|---|---|---|\n")
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_amend
+        self.amend = cmd_amend.amend_manifest
+
+    def test_pipes_in_code_spans_and_escaped_ones_do_not_shift_cells(self):
+        text = ("# x\n\n" + self.HEAD +
+                '| 1 | a `x | y` cond | `src/a.test.ts` :: "keeps" | E | unit | f | p |\n'
+                '  | 1 | c | `src/a.test.ts` :: "a \\| b" | E | unit | f | p |\n'
+                '| 1 | c | `src/a.test.ts` :: `quoted` | E | unit | f | p |\n'
+                "\n## Not automatable\nNone.\n")
+        out, missing = self.amend(text, [("src/a.test.ts", "a | b"),
+                                         ("src/a.test.ts", "quoted")], [], [])
+        self.assertEqual(missing, [])
+        self.assertIn('"keeps"', out)
+        self.assertNotIn("a \\| b", out)
+        self.assertNotIn("quoted", out)
+        out, missing = self.amend(text, [("src/a.test.ts", "x")], [], [])
+        self.assertEqual(missing, [("src/a.test.ts", "x")])
+
+    def test_a_row_with_extra_cells_is_refused_and_none_goes(self):
+        sys.path.insert(0, str(SCRIPTS))
+        from lib.output import Fail
+        text = ("# x\n\n" + self.HEAD +
+                '| 1 | c | `src/a.test.ts` :: "keeps" | E | unit | f | p |\n'
+                "\n## Not automatable\n| # | Condition | Why | Proxy |\n|---|---|---|---|\n"
+                "None.\n\n## Assumptions\n- none\n")
+        with self.assertRaises(Fail):
+            self.amend(text, [], ['| 1 | c | `p` :: "n" | E | unit | f | p | extra |'], [])
+        out, _ = self.amend(text, [], [], ["| 2 | d | why | none |"])
+        self.assertIn("| 2 | d | why | none |\n\n## Assumptions", out)
+        self.assertNotIn("None.", out)
+
+
+class AmendedNamesTest(WorkCase):
+    """How `record` tells a dropped test is still in its file, and a row's id."""
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_work
+        self.work = cmd_work
+
+    def test_a_name_counts_quoted_or_as_a_whole_word(self):
+        named = self.work.names_test
+        self.assertTrue(named('it("adds two numbers", () => {})', "adds two numbers"))
+        self.assertFalse(named('it("adds two numbers", () => {})', "adds"))
+        self.assertTrue(named("export function testAdds() {}", "testAdds"))
+        self.assertFalse(named("export function testAddsMore() {}", "testAdds"))
+
+    def test_an_edge_row_counts_for_its_condition(self):
+        self.assertEqual([self.work.row_id(c) for c in ("3 (Edge)", " S1 ", "2")],
+                         ["3", "S1", "2"])
