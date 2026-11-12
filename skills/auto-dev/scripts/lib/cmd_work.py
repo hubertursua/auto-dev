@@ -997,6 +997,10 @@ def fixer_issues(nxt, ad, state, n):
         return [(f"{report.name} has no `## Changed` section (write `none` in it when you "
                  "changed no file)")]
     scratch = tree_guard.scratch(wt, ad) or ".auto-dev"
+    resealed = set()
+    if cmd_checks.installed(ad) and issued.get("artifacts") is not None:
+        resealed = {f"{scratch}/acceptance/files/{p}"
+                    for p in reseal_fixed(state, ad, issued.get("artifacts_n", n))}
     changed = []
     if issued.get("fix_tree"):
         changed += tree_guard.changed(issued["fix_tree"], tree_guard.snapshot(wt, ad))
@@ -1006,7 +1010,7 @@ def fixer_issues(nxt, ad, state, n):
     listed = set(re.findall(r"`([^`]+)`", body))
     issues = [f"you changed {p} but your report's Changed section does not name it "
               f"(as `{p}`): name every path you changed, with what and why"
-              for p in changed if p not in listed]
+              for p in changed if p not in listed and p not in resealed]
     if cmd_checks.installed(ad):
         for rel in sealed.sealed_files(ad):
             try:
@@ -1015,10 +1019,34 @@ def fixer_issues(nxt, ad, state, n):
                 raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
             if not whole:
                 issues.append(f"the held-out checks in {rel} no longer match their sealed "
-                              f"copy: after editing a check, copy the whole file over "
+                              f"copy: a new check file goes whole into "
                               f"{scratch}/acceptance/files/{rel}.sealed")
     issues += seal_bases(state, ad)
     return issues
+
+
+def reseal_fixed(state, ad, n):
+    """Seal again each installed check file a fixer edited in the worktree,
+    from its sealed copy and base before fixer #n ran (they are never the
+    fixer's to keep). Returns the seal files written or removed, as paths
+    under acceptance/files/."""
+    wt, before = Path(state["worktree"]), overrides.backup_dir(ad, n) / "acceptance" / "files"
+    try:
+        rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
+        names = check_props.test_names(rows)
+    except art.ArtifactError:
+        names = {}
+    touched = []
+    for old in sorted(before.rglob("*.sealed")) if before.is_dir() else []:
+        rel = old.relative_to(before).with_suffix("").as_posix()
+        base = before / f"{rel}.base"
+        try:
+            touched += sealed.reseal(ad, rel, sealed.read(old),
+                                     sealed.read(base) if base.is_file() else None,
+                                     sealed.read(wt / rel), names.get(rel, ()))
+        except sealed.SealError as exc:
+            raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
+    return touched
 
 
 # A decline's line, under any markdown a model wraps it in: `OUT_OF_SCOPE:`,

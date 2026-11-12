@@ -83,15 +83,19 @@ The user's instruction:
      change only what the instruction names. The pipeline re-checks the code
      against the changed contract.
    - **A held-out acceptance check**, when the instruction says to change one.
-     Its sealed copy is `{{artifact_dir}}/acceptance/files/<path>.sealed`. If
+     Change only the lines the instruction is about. If
      `{{artifact_dir}}/acceptance/INSTALLED` exists, the checks are installed
-     in the worktree: edit the check at its installed path, change only the
-     lines the instruction is about, then copy the whole file over its sealed
-     copy so the two are byte-identical. If you also changed a line that is
-     not a check's own (the code's own lines in a shared test file), make the
-     same change in `{{artifact_dir}}/acceptance/files/<path>.base`. If the
-     checks are not installed, edit the sealed copy. When a check's test is
-     renamed, added or removed, update its row in
+     in the worktree: edit the test file at its installed path and nothing
+     else. The pipeline seals it again from your edit, so never write a
+     `.sealed` or `.base` file under `{{artifact_dir}}/acceptance/files/`
+     yourself, and don't list them in your report. The one exception is a new
+     check file: copy it whole to
+     `{{artifact_dir}}/acceptance/files/<path>.sealed`. If the checks are not
+     installed, edit the sealed copy,
+     `{{artifact_dir}}/acceptance/files/<path>.sealed`. It may only add lines
+     to the file in the worktree, so a change to a line that file already has
+     goes in the worktree's file instead. When a check's test is renamed,
+     added or removed, update its row in
      `{{artifact_dir}}/acceptance/MANIFEST.md`.
 4. Write your report to {{fix_report}}, filling in
    `{{skill_dir}}/templates/FIX_REPORT.md`. For `FIXED`, its Changed section

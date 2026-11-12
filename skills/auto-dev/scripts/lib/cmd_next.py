@@ -671,6 +671,11 @@ def undo_fix(c, brief, n):
         paths = overrides.changed_artifacts(c.ad, brief["artifacts"])
         overrides.put_back_artifacts(c.ad, brief.get("artifacts_n", n), paths)
         undone += [f"{scratch(c)}/{p}" for p in paths]
+        for p in paths:  # `record` may have resealed it: its snapshot goes back too
+            rel = p[len("acceptance/files/"):-len(".sealed")]
+            if p.startswith("acceptance/files/") and p.endswith(".sealed") and \
+                    sealed.base_of(c.ad, rel) is not None:
+                sealed.snapshot(c.ad, rel, sealed.read(c.ad / p))
     return undone
 
 

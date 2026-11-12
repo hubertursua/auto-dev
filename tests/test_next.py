@@ -7034,6 +7034,56 @@ class OverrideTest(OverrideCase):
         _, jobs = self.expect("fixer")
         self.assertIn("approved the proposal", self.sets(*jobs[0])["instruction"])
 
+    def shared_check_stop(self):
+        """A red gate with a shared test file installed: the coder's line, then
+        the check's. The fixer is spawned with an instruction."""
+        files = self.dir / "acceptance" / "files" / "src"
+        files.mkdir(parents=True, exist_ok=True)
+        (files / "list.test.ts.base").write_text("describe list\nend\n")
+        (files / "list.test.ts.sealed").write_text("describe list\ncheck\nend\n")
+        shared = self.worktree / "src" / "list.test.ts"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_text("describe list\nend\n")
+        out, _ = self.red_gate()
+        self.assertEqual(shared.read_text(), "describe list\ncheck\nend\n")
+        shared.write_text("describe list\nthe coder's test\ncheck\nend\n")
+        n = self.fix(out, "change the coder test and the check")[1]
+        return files, shared, n
+
+    def test_a_fixer_edit_to_an_installed_check_is_sealed_again(self):
+        # The fixer edits only the worktree's file, a coder line and a check
+        # line side by side; `record` writes the sealed copy and the base.
+        files, shared, n = self.shared_check_stop()
+        shared.write_text("describe list\nthe coder's test v2\ncheck v2\nnew check\nend\n")
+        self.report(n, changed="- `src/list.test.ts` — what the user asked")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        self.expect("cleanup")
+        self.assertEqual((files / "list.test.ts.sealed").read_text(), shared.read_text())
+        self.assertEqual((files / "list.test.ts.base").read_text(),
+                         "describe list\nthe coder's test v2\nend\n")
+        self.assertEqual(self.state()["overrides"][-1]["status"], "fixed")
+
+    def test_a_fixer_that_proposes_leaves_the_seal_as_it_was(self):
+        files, shared, n = self.shared_check_stop()
+        sealed_before = (files / "list.test.ts.sealed").read_text()
+        base_before = (files / "list.test.ts.base").read_text()
+        # A first try is resealed, then refused (it left a path out); the retry
+        # proposes instead, and everything goes back, the snapshot included.
+        shared.write_text("describe list\nthe coder's test\ncheck v2\nend\n")
+        (self.worktree / "src" / "other.ts").write_text("y\n")
+        self.report(n, changed="- `src/list.test.ts` — the check")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        out = self.next(0, refused_ok=True)
+        self.assertIn(f"fixer-{n}: refused (MISMATCH)", out["RECORDED"])
+        self.assertEqual((files / "list.test.ts.installed").read_text(), shared.read_text())
+        _, jobs = self.expect("fixer")
+        self.report(jobs[0][1], proposal="- change the check too")
+        self.answer(*jobs[0], "NEEDS_CONSENT", fix_report="x", changed="0")
+        self.next(4)
+        self.assertEqual((files / "list.test.ts.sealed").read_text(), sealed_before)
+        self.assertEqual((files / "list.test.ts.base").read_text(), base_before)
+        self.assertEqual((files / "list.test.ts.installed").read_text(), sealed_before)
+
     def test_a_red_gate_signed_off_goes_on_to_the_verifier(self):
         out, job = self.red_gate()
         r = self.answer_stop(out, "Sign off and go on", "the lint rule is wrong here")
