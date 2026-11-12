@@ -585,8 +585,10 @@ def fix_step(c):
     fix.update({"status": "fixed", "changed": changed,
                 "spec_changed": any(p.endswith("/SPEC.md") or p.endswith("/IMPLEMENTATION.md")
                                     for p in changed),
+                # A gate check's command in the settings counts: the gate runs again.
                 "code_changed": any(not p.startswith(scratch(c) + "/") or
-                                    p.startswith(scratch(c) + "/acceptance/")
+                                    p.startswith(scratch(c) + "/acceptance/") or
+                                    p == scratch(c) + "/state.json"
                                     for p in changed)})
     stop_ = fix["stop"]
     if stop_.get("after_fix") == "fits":

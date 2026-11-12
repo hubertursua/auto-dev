@@ -7070,6 +7070,7 @@ class OverrideTest(OverrideCase):
         self.assertEqual(state["settings"]["gate"][0]["command"], command)
         fix = state["overrides"][-1]
         self.assertEqual((fix["status"], fix["changed"]), ("fixed", [".auto-dev/state.json"]))
+        self.assertTrue(fix["code_changed"])  # the new gate command runs
 
     def test_a_fixer_settings_change_is_put_back_when_it_does_not_fix(self):
         out, _ = self.red_gate()
