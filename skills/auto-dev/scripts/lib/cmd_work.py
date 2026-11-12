@@ -122,6 +122,9 @@ record <worker> <n>
     first attempt. Neither may write a stands reason into
     the plan, a sealed copy or MANIFEST.md's test names. The log entry notes the steps or conditions
     such an answer changed.
+    A fixer's return is refused when its status is not ok but its `next` is
+    FIXED, and, whatever its status, when it changed the run's settings in
+    state.json, which `record` puts back as they were at its brief.
     On a match it updates state.json (for an ok return of the Define agent, the
     size check; after Define or its reviewer, a Security/Compliance criterion in
     SPEC.md turns a run that FITS high-risk with the post-plan gate on; a note
@@ -154,6 +157,7 @@ check-artifact <file>
 All exit 2 when they could not run — never a pass.
 """
 
+import copy
 import json
 import os
 import re
@@ -560,6 +564,7 @@ def write_brief(state, where, worker, mode, given, retry=None):
             entry["fix_tree"] = tree_guard.snapshot(auto["worktree"], ad)
             entry["artifacts"] = overrides.save_artifacts(ad, n)
             entry["artifacts_n"] = n
+            entry["settings"] = copy.deepcopy(state["settings"])  # never the fixer's
         state.setdefault("briefs", []).append(entry)
         for old in state["briefs"]:
             if retry is not None and old["worker"] == worker and old["n"] == retry:
@@ -576,7 +581,7 @@ def watch_spec(state, ad, worker, given, retry, entry):
         old = next((b for b in state.get("briefs", [])
                     if b["worker"] == worker and b["n"] == retry), {})
         for key in ("spec", "held", "plan", "sealed", "whole", "fix_tree", "artifacts",
-                    "artifacts_n"):
+                    "artifacts_n", "settings"):
             if key in old:
                 entry[key] = old[key]
         return
@@ -732,6 +737,15 @@ def derive(worker, data, ad, state, n):
     if worker in proposals.FILERS and issued.get("spec"):
         # Whatever the status: a filer that edited SPEC.md never gets past it.
         issues += proposals.spec_edit_issues(ad, issued["spec"])
+    if worker == "fixer":
+        # Whatever the status: a fixer that edited the run's settings never
+        # gets past it, and they go back to what they were at its brief.
+        issues += settings_issues(state, issued)
+        if data.get("status") != "ok" and data.get("next") == "FIXED":
+            issues.append(f"status is {data.get('status')} but next is FIXED: return "
+                          "FIXED only with status ok, once you carried out the whole "
+                          "instruction; stopped part way, return blocked with next "
+                          "none (what you changed is put back) and say why")
     if data.get("status") != "ok":
         return issues
     issues += result_issues(worker, data, ad, state, n) + artifact_issues(
@@ -960,6 +974,21 @@ def result_issues(worker, data, ad, state, n):
     elif worker == "fixer":
         issues += fixer_issues(nxt, ad, state, n)
     return issues
+
+
+def settings_issues(state, issued):
+    """A fixer never edits the run's settings in state.json (a gate check's
+    command, a gate switch): `record` puts them back as they were at its
+    brief, and refuses the return."""
+    before = issued.get("settings")
+    if before is None or state.get("settings") == before:
+        return []
+    now = state.get("settings") or {}
+    keys = sorted(k for k in set(before) | set(now) if before.get(k) != now.get(k))
+    state["settings"] = copy.deepcopy(before)
+    return [(f"you changed the run's settings in state.json ({', '.join(keys)}); they "
+             "are put back. You never edit the run's bookkeeping: when the fix needs a "
+             "settings change, propose it and return NEEDS_CONSENT")]
 
 
 FIX_SECTIONS = {"FIXED": "Changed", "NEEDS_CONSENT": "Proposal", "CANNOT_FIX": "Why not"}

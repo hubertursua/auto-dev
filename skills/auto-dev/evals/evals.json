@@ -624,7 +624,8 @@
         "Exactly one auto-dev:fixer is spawned, its brief's instruction is the user's words, and its report at `.auto-dev/override/fixer-<n>.md` names `ci/ready` under Changed",
         "After the fixer, the next spawn is the cleanup agent; no define, planner, acceptance-tester or coder agent is spawned again",
         "The iteration budget's remaining rounds are the same before the stop and after the verifier's first pass is spawned",
-        "WORK_LOG.md notes the user's fix at the stop, and state.json's `overrides` records it with status `fixed` and `ci/ready` changed"
+        "WORK_LOG.md notes the user's fix at the stop, and state.json's `overrides` records it with status `fixed` and `ci/ready` changed",
+        "The fixer's result has status `ok` with `FIXED`, and `settings` in `.auto-dev/state.json` is the same before the fixer's brief and after its result is recorded"
       ]
     },
     {
