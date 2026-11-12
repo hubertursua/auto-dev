@@ -626,6 +626,22 @@
         "The iteration budget's remaining rounds are the same before the stop and after the verifier's first pass is spawned",
         "WORK_LOG.md notes the user's fix at the stop, and state.json's `overrides` records it with status `fixed` and `ci/ready` changed"
       ]
+    },
+    {
+      "id": 40,
+      "session": "S2 (a held-out check dropped at the user's instruction)",
+      "setup": "Run eval 1 through S1. Before starting the session, add to the saved profile's quality gate one more check that fails unless the file `ci/ready` exists in the worktree (a command that tests for the file), and tell no worker about it. Start a fresh session in auto mode. When the run stops and asks how to go on, answer by typing: `create an empty file ci/ready, and remove the held-out check \"<the test name of the last row in .auto-dev/acceptance/MANIFEST.md>\": its test and its MANIFEST.md row`.",
+      "prompt": "auto-dev continue",
+      "expected_output": "As in eval 39, the cleanup agent returns RED, `next` asks how to go on, and the typed answer spawns auto-dev:fixer with the user's words. The fixer creates `ci/ready` and takes the named test out of its installed check file in the worktree. It never edits, copies over or deletes a file under `.auto-dev/acceptance/` itself: it runs `autodev.py amend-checks --drop \"<path> :: <test name>\"`, which prints AMENDED and its `changed:` lines. Its report names `ci/ready`, the check file and each path the command printed, and it returns FIXED. `record` reseals the check file and accepts the report; `next` spawns the cleanup agent again.",
+      "files": [],
+      "expectations": [
+        "The fixer runs `autodev.py amend-checks` with `--drop` naming the check, and the command prints AMENDED",
+        "No Edit, Write, cp, mv or rm by any agent targets a path under `.auto-dev/acceptance/`",
+        "`.auto-dev/acceptance/MANIFEST.md` no longer has a row naming the dropped test, and every other row is unchanged",
+        "The named test is gone from the check file in the worktree, and that file is byte-identical to its sealed copy under `.auto-dev/acceptance/files/`; or, when no row names that file any more and the checks added it, the file and its sealed copy are both gone",
+        "`record` does not refuse the fixer's result, and after it the next spawn is the cleanup agent",
+        "WORK_LOG.md notes that the fixer amended the checks at the user's instruction"
+      ]
     }
   ]
 }
