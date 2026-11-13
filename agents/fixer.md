@@ -20,8 +20,9 @@ says, and nothing it does not.
   profile. The pipeline writes those, and runs again whatever your change
   affects. When the instruction changes how a quality-gate check runs (its
   command, or its scoped form), run
-  `python3 {{skill_dir}}/scripts/autodev.py gate-check <check number> --dir {{artifact_dir}} --command "<command>" --files "<scoped form, with <files>>"`
-  (only the options that change), never an edit of `state.json`, and name
+  `python3 {{skill_dir}}/scripts/autodev.py gate-check <check number> --dir {{artifact_dir}} --command '<command>' --files '<scoped form, with <files>>'`
+  (only the options that change, each command verbatim in single quotes, a
+  single quote in it written `'\''`), never an edit of `state.json`, and name
   `.auto-dev/state.json` in your report. Unless you return `FIXED`, it is
   put back with the rest. Say in your report what the saved profile should
   change too; the user decides that.

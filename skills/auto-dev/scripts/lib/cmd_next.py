@@ -87,7 +87,8 @@ Every path and value in a printed command is shell-quoted. A `<...>`
 placeholder (a reason, a commit subject) sits in single quotes: replace it,
 inside them, with text that holds no single quote (rephrase, or use the
 typographic apostrophe U+2019). Nothing else is special inside single quotes,
-so the text needs no other escaping.
+so the text needs no other escaping. A command (a gate check's, for
+`gate-check`) stays verbatim: write each single quote in it as '\''.
 
 Exit codes:
     0  an action to take
@@ -545,11 +546,12 @@ def ask_at_stop(c, result, entry, last):
                    "AskUserQuestion. A typed answer (Other) is the user's instruction for "
                    f'the fixer: run the "{TYPED}" AFTER line with their words, unless all '
                    "they ask is that a quality-gate check run differently (its command, or "
-                   f'its scoped form): then run the "{GATE}" AFTER line with it (only the '
-                   "options that change; `--no-files` drops the scoped form), asking "
-                   "them first whether to save it in the saved profile too (`--profile` "
-                   "with the file profile-path.py names, only on a yes), then the \"I "
-                   "fixed it myself\" one. Otherwise run "
+                   f'its scoped form): then run the "{GATE}" AFTER line instead, with '
+                   "only the options that change (`--no-files` drops the scoped form) and "
+                   "each command verbatim, a single quote in it written '\\''. Add "
+                   "`--profile` with the file profile-path.py names only when they said "
+                   "yes to saving it in the saved profile too (ask, unless they already "
+                   "said). It runs the step that stopped again. Otherwise run "
                    "the AFTER line for their pick. Then run `next`, except after \"Leave it "
                    f'stopped": stop there ({FILL})'),
         "SUMMARY": summary, "QUESTION": json.dumps({"questions": [question]}),
@@ -695,8 +697,9 @@ def undo_fix(c, brief, n):
         c.state["settings"] = copy.deepcopy(brief["settings"])  # a gate check's command
         undone.append(f"{scratch(c)}/state.json")
         cmd_gate.refresh_profile_md(c.ad, c.state["settings"])
+        first = brief_entry(c, "fixer", brief.get("artifacts_n", n)) or brief
         for change in c.state.get("gate_changes") or []:
-            if change.get("by") == "the fixer" and change.get("seq", 0) >= brief.get("seq", 0):
+            if change.get("by") == "the fixer" and change.get("seq", 0) >= first.get("seq", 0):
                 change["undone"] = True
     return undone
 

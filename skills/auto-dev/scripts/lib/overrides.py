@@ -294,7 +294,7 @@ def summary_lines(state):
         first = (o.get("text") or "").splitlines()[0] if o.get("text") else ""
         if o["choice"] == "signoff":
             out.append(f"Signed off by the user at a stop ({what}): {first}")
-        elif o["choice"] == "fix" and o.get("status") == "fixed":
+        elif o["choice"] == "fix" and o.get("status") == "fixed" and not o.get("gate"):
             files = o.get("changed") or []
             out.append(f"Fixed at the user's instruction at a stop ({what}): {first}"
                        + (f" ({len(files)} file(s): {', '.join(files[:6])}"
