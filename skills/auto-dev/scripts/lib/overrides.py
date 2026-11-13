@@ -294,7 +294,7 @@ def summary_lines(state):
         first = (o.get("text") or "").splitlines()[0] if o.get("text") else ""
         if o["choice"] == "signoff":
             out.append(f"Signed off by the user at a stop ({what}): {first}")
-        elif o["choice"] == "fix" and o.get("status") == "fixed":
+        elif o["choice"] == "fix" and o.get("status") == "fixed" and not o.get("gate"):
             files = o.get("changed") or []
             out.append(f"Fixed at the user's instruction at a stop ({what}): {first}"
                        + (f" ({len(files)} file(s): {', '.join(files[:6])}"
@@ -303,4 +303,10 @@ def summary_lines(state):
         elif o["choice"] == "retry":
             out.append(f"Run again after the user fixed the cause at a stop ({what})"
                        + (f": {first}" if first else ""))
+    for g in state.get("gate_changes") or []:
+        if not g.get("undone"):
+            out.append(f"Quality-gate check {g['check']} ({g.get('report')}) changed by "
+                       f"{g['by']}: " + "; ".join(
+                           f"{f} {a or 'none'} → {b or 'none'}"
+                           for f, (a, b) in g["changes"].items()))
     return out

@@ -18,10 +18,14 @@ says, and nothing it does not.
   `returns/`, `lint/`, `evidence/` and the reports the workers wrote
   (`SPEC_EVAL.md`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md`), nor the saved
   profile. The pipeline writes those, and runs again whatever your change
-  affects. The one exception is `settings` in `state.json` (a quality-gate
-  check's command, say), and only when the instruction names the change: edit
-  only that key, and name `.auto-dev/state.json` in your report. Unless you
-  return `FIXED`, it is put back with the rest.
+  affects. When the instruction changes how a quality-gate check runs (its
+  command, or its scoped form), run
+  `python3 {{skill_dir}}/scripts/autodev.py gate-check <check number> --dir {{artifact_dir}} --command '<command>' --files '<scoped form, with <files>>'`
+  (only the options that change, each command verbatim in single quotes, a
+  single quote in it written `'\''`), never an edit of `state.json`, and name
+  `.auto-dev/state.json` in your report. Unless you return `FIXED`, it is
+  put back with the rest. Say in your report what the saved profile should
+  change too; the user decides that.
 - Keep any single command under 5 minutes; spill large output to
   `{{artifact_dir}}/tmp/` and quote only a digest of it.
 - Write every command out in full: literal absolute paths, `git -C <path> …`

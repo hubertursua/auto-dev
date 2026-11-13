@@ -8,6 +8,7 @@ AFTER command, and runs `next` again. GitHub is tests/fake_gh/gh. Examples are
 in TypeScript, as CLAUDE.md asks.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -6944,6 +6945,203 @@ class OverrideCase(NextCase):
                         f"## Proposal\n{proposal}\n\n## Why not\n{why}\n")
         return path
 
+
+
+class GateCheckTest(OverrideCase):
+    """`autodev.py gate-check`: how a quality-gate check runs, changed at a
+    stop on the user's word or by the fixer while its fix is open."""
+
+    def gate_check(self, *args):
+        return self.autodev("gate-check", *args, "--dir", self.dir)
+
+    def test_refused_with_no_stop_and_no_fix(self):
+        self.plan_session()
+        r = self.gate_check("1", "--command", "env X=1 run")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("only at a stop", r.stdout + r.stderr)
+
+    def test_bad_forms_are_refused(self):
+        self.red_gate()
+        for args, why in ((["9", "--command", "x"], "no check 9"),
+                          (["nope", "--command", "x"], "names no check"),
+                          (["1", "--files", "x y"], "<files>"),
+                          (["1", "--command", "a\nb"], "one non-empty line"),
+                          (["1", "--command", "<the command>"], "placeholder"),
+                          (["1", "--files", "<the scoped form, with <files>>"],
+                           "placeholder")):
+            r = self.gate_check(*args)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn(why, r.stdout + r.stderr)
+        old = self.state()["settings"]["gate"][0]["command"]
+        r = self.gate_check("1", "--command", old)
+        self.assertIn("nothing to change", r.stdout + r.stderr)
+
+    def test_at_a_stop_it_changes_the_check_then_the_step_runs_again(self):
+        out, _ = self.red_gate()
+        self.assertTrue(any(ln.startswith('"<a typed change to a gate check>" → ') and
+                            "gate-check" in ln for ln in out["AFTER"]), out["AFTER"])
+        check = self.state()["settings"]["gate"][0]
+        r = self.gate_check(check["report"], "--command", "env X=1 " + check["command"],
+                            "--files", "env X=1 run <files>")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("GATE-CHECK: check 1", r.stdout + r.stderr)
+        gate = self.state()["settings"]["gate"][0]
+        self.assertEqual((gate["command"], gate["files"]),
+                         ("env X=1 " + check["command"], "env X=1 run <files>"))
+        self.assertIn("`env X=1 run <files>`", (self.dir / "profile.md").read_text())
+        self.assertNotIn("stop", self.state())  # it answered the stop
+        self.expect("cleanup")  # the step that stopped, with no retry
+        lines = self.overrides().summary_lines(self.state())
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("changed by the user at a stop", lines[0])
+
+    def test_after_a_fixer_proposal_it_still_runs_the_step_again(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        self.report(n, proposal="Wrap the test command.")
+        self.answer("fixer", n, "NEEDS_CONSENT", fix_report="x", changed="0")
+        self.next(4)
+        r = self.gate_check("test", "--command", "env X=1 run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.expect("cleanup")
+
+    def test_refused_at_a_stop_in_phase_6(self):
+        self.red_gate()
+        state = self.state()
+        state["stop"]["phase"] = 6
+        (self.dir / "state.json").write_text(json.dumps(state, indent=2))
+        r = self.gate_check("1", "--command", "env X=1 run")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("In Phase 6".lower(), (r.stdout + r.stderr).lower())
+
+    def test_a_check_changed_at_a_verifier_stop_is_gated_again(self):
+        """Not the gate's stop: in Phase 5 the gate runs again before the loop
+        ends, so the new command is run."""
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.expect("cleanup")
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.answer(*jobs[0], "none", status="failed")
+        _, jobs = self.expect("verifier")
+        self.answer(*jobs[0], "none", status="failed")
+        out = self.next(4)
+        self.assertIn("QUESTION", out)
+        r = self.gate_check("1", "--command", "env X=1 run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("verifier")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        self.expect("cleanup")  # the new command runs before the loop ends
+
+    @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
+    def test_the_saved_profile_is_changed_in_place(self):
+        self.red_gate()
+        check = self.state()["settings"]["gate"][0]
+        profile = self.tmp / "saved.yml"
+        text = ("# kept comment\nsetup: []\ngate:\n"
+                f"  - {{ kind: {check['kind']}, command: {json.dumps(check['command'])}, "
+                f"report: {check['report']} }}\n")
+        profile.write_text(text)
+        r = self.gate_check("1", "--command", 'env X="1" ' + check["command"],
+                            "--profile", profile)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"profile: updated {profile}", r.stdout + r.stderr)
+        got = profile.read_text()
+        self.assertIn("# kept comment", got)
+        self.assertEqual(got, text.replace(json.dumps(check["command"]),
+                                           json.dumps('env X="1" ' + check["command"])))
+
+    @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
+    def test_a_profile_edit_that_touches_more_than_the_check_is_refused(self):
+        self.red_gate()
+        check = self.state()["settings"]["gate"][0]
+        profile = self.tmp / "saved.yml"
+        text = ("setup: []\ngate:\n"
+                f"  - {{ kind: {check['kind']}, command: &c {json.dumps(check['command'])}, "
+                f"report: {check['report']} }}\n"
+                "  - { kind: lint, command: *c, report: LINT.md }\n")
+        profile.write_text(text)
+        r = self.gate_check("1", "--command", "env X=1 run", "--profile", profile)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("only those values changed", r.stdout)
+        self.assertEqual(profile.read_text(), text)
+
+    @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
+    def test_the_profile_keeps_its_mode_line_endings_and_link(self):
+        self.red_gate()
+        check = self.state()["settings"]["gate"][0]
+        cmd = check["command"]
+        real = self.tmp / "dotfiles" / "saved.yml"
+        real.parent.mkdir()
+        text = ("setup: []\r\ngate:\r\n  - kind: test\r\n"
+                f'    command: "{cmd}"\r\n    report: {check["report"]}\r\n'
+                f'    files: "{cmd} -- <files>"\r\n')
+        real.write_bytes(text.encode())
+        real.chmod(0o600)
+        link = self.tmp / "saved.yml"
+        link.symlink_to(real)
+        r = self.gate_check("1", "--command", f"env X=1 {cmd}", "--profile", link)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("profile: updated", r.stdout)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(real.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(real.read_bytes().decode(), text.replace(
+            f'command: "{cmd}"', f'command: "env X=1 {cmd}"'))
+
+    def test_a_profile_it_cannot_change_in_place_is_left_as_it_was(self):
+        self.red_gate()
+        profile = self.tmp / "saved.yml"
+        profile.write_text("# other, as before\nsetup: []\ngate:\n"
+                           "  - { kind: test, command: other, report: TEST.md }\n")
+        before = profile.read_text()
+        r = self.gate_check("1", "--command", "env X=1 run", "--profile", profile)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("left as it was", r.stdout + r.stderr)
+        self.assertIn("Change it by hand", r.stdout + r.stderr)
+        self.assertEqual(profile.read_text(), before)
+        self.assertEqual(self.state()["settings"]["gate"][0]["command"], "env X=1 run")
+
+    def test_the_fixer_s_change_is_put_back_unless_it_fixed(self):
+        out, _ = self.red_gate()
+        n = self.fix(out, "wrap the test command in env X=1")[1]
+        before = self.state()["settings"]
+        table = (self.dir / "profile.md").read_text()
+        r = self.gate_check("1", "--command", "env X=1 run", "--profile",
+                            self.tmp / "saved.yml")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("never changes the saved profile", r.stdout + r.stderr)
+        r = self.gate_check("1", "--command", "env X=1 run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("changed: .auto-dev/state.json", r.stdout + r.stderr)
+        self.report(n, proposal="Also change the lint command.")
+        self.answer("fixer", n, "NEEDS_CONSENT", fix_report="x", changed="0")
+        self.next(4)
+        state = self.state()
+        self.assertEqual(state["settings"], before)
+        self.assertEqual((self.dir / "profile.md").read_text(), table)
+        self.assertEqual(self.overrides().summary_lines(state), [])
+
+    def test_the_fixer_s_change_is_kept_when_it_fixed_and_named_it(self):
+        out, _ = self.red_gate()
+        n = self.fix(out, "wrap the test command in env X=1")[1]
+        r = self.gate_check("1", "--command", "env X=1 run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        report = str(self.report(n, changed="none"))
+        self.answer("fixer", n, "FIXED", fix_report=report, changed="0")
+        out = self.next(0, refused_ok=True)
+        self.assertIn(f"fixer-{n}: refused (MISMATCH)", out["RECORDED"])
+        _, jobs = self.expect("fixer")
+        m = jobs[0][1]
+        report = str(self.report(m, changed="- `.auto-dev/state.json` — the test command"))
+        self.answer("fixer", m, "FIXED", fix_report=report, changed="1")
+        self.expect("cleanup")
+        state = self.state()
+        self.assertEqual(state["settings"]["gate"][0]["command"], "env X=1 run")
+        self.assertIn("changed by the fixer", "\n".join(
+            self.overrides().summary_lines(state)))
 
 
 class OverrideTest(OverrideCase):

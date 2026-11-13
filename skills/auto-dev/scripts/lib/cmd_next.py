@@ -87,7 +87,8 @@ Every path and value in a printed command is shell-quoted. A `<...>`
 placeholder (a reason, a commit subject) sits in single quotes: replace it,
 inside them, with text that holds no single quote (rephrase, or use the
 typographic apostrophe U+2019). Nothing else is special inside single quotes,
-so the text needs no other escaping.
+so the text needs no other escaping. A command (a gate check's, for
+`gate-check`) stays verbatim: write each single quote in it as '\\''.
 
 Exit codes:
     0  an action to take
@@ -142,6 +143,7 @@ from . import artifacts as art
 from . import (
     check_props,
     cmd_checks,
+    cmd_gate,
     cmd_review,
     cmd_work,
     judgment,
@@ -475,6 +477,7 @@ STOP_OPTIONS = {
               "The run stays here and the worktree is kept; a new session asks again."),
 }
 TYPED = "<a typed answer>"
+GATE = "<a typed change to a gate check>"
 
 
 def stop_point(c, result):
@@ -501,6 +504,12 @@ def stop_point(c, result):
              "session (`auto-dev continue`) asks again how to go on.")]
         return result
     return ask_at_stop(c, result, entry, last)
+
+
+def gate_route(entry):
+    """Whether `gate-check` may answer this stop: not in Phase 6 (the fixer
+    and a review take a gate change there), nor on the task's size."""
+    return entry.get("phase") != 6 and not (entry.get("retry") or {}).get("oversized")
 
 
 def ask_at_stop(c, result, entry, last):
@@ -541,12 +550,23 @@ def ask_at_stop(c, result, entry, last):
     result.update({
         "ACTION": ("tell the user the REPORT lines (and SUMMARY), then ask QUESTION with "
                    "AskUserQuestion. A typed answer (Other) is the user's instruction for "
-                   f'the fixer: run the "{TYPED}" AFTER line with their words. Otherwise run '
+                   f'the fixer: run the "{TYPED}" AFTER line with their words, unless all '
+                   "they ask is that a quality-gate check run differently (its command, or "
+                   f'its scoped form) and there is a "{GATE}" AFTER line: run it instead, with '
+                   "only the options that change (`--no-files` drops the scoped form) and "
+                   "each command verbatim, a single quote in it written '\\''. Add "
+                   "`--profile` with the file profile-path.py names only when they said "
+                   "yes to saving it in the saved profile too (ask, unless they already "
+                   "said). It runs the step that stopped again. Otherwise run "
                    "the AFTER line for their pick. Then run `next`, except after \"Leave it "
                    f'stopped": stop there ({FILL})'),
         "SUMMARY": summary, "QUESTION": json.dumps({"questions": [question]}),
         "AFTER": [f'"{TYPED}" → ' + c.cmd("override", "fix", "--text",
                                             "<what the user said>")]
+                 + ([f'"{GATE}" → ' + c.cmd("gate-check", "<check number>", "--command",
+                                            "<the command>", "--files",
+                                            "<the scoped form, with <files>>")]
+                    if gate_route(entry) else [])
                  + [f'"{STOP_OPTIONS[k][0]}" → {commands[k]}' for k in keys]})
     return result
 
@@ -683,6 +703,11 @@ def undo_fix(c, brief, n):
     if brief.get("settings") is not None and c.state.get("settings") != brief["settings"]:
         c.state["settings"] = copy.deepcopy(brief["settings"])  # a gate check's command
         undone.append(f"{scratch(c)}/state.json")
+        cmd_gate.refresh_profile_md(c.ad, c.state["settings"])
+        first = brief_entry(c, "fixer", brief.get("artifacts_n", n)) or brief
+        for change in c.state.get("gate_changes") or []:
+            if change.get("by") == "the fixer" and change.get("seq", 0) >= first.get("seq", 0):
+                change["undone"] = True
     return undone
 
 

@@ -111,7 +111,9 @@ Its exit code says what kind of step it is:
 Every path and value in a printed command is already shell-quoted. A `<…>`
 placeholder (a reason, a commit subject) sits inside single quotes: replace it
 there with text that holds no single quote (rephrase, or use the typographic
-apostrophe ’), and change nothing else on the line.
+apostrophe ’), and change nothing else on the line. A command (a gate
+check's, for `gate-check`) stays verbatim: write each single quote in it as
+`'\''`.
 
 `next --explain` only looks: it prints the action `next` would take and a
 `RULE:` line naming why, but writes no brief and saves nothing. Use it when the
@@ -126,7 +128,9 @@ and never fix the worker's file yourself.
 **A stop** is not final. When it prints a `QUESTION`, show the `SUMMARY`
 lines and ask it with AskUserQuestion. A typed answer (Other) is the user's
 instruction for the fixer: run the `"<a typed answer>"` `AFTER` line with
-their words, then `next`, which spawns the fixer to do exactly that. For a
+their words, then `next`, which spawns the fixer to do exactly that; when all
+it asks is that a quality-gate check run differently, run the `"<a typed
+change to a gate check>"` line instead (it runs the stopped step again). For a
 pick, run its `AFTER` line, then `next`: _I fixed it myself_ runs the step
 that stopped again; _Sign off and go on_ (offered only where it is safe)
 accepts the result; _Approve the fixer's proposal_ lets the fixer do what it

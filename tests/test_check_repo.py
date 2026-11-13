@@ -211,14 +211,14 @@ class CheckRepoTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("NO-SUCH-RULINGS.md", result.stdout)
 
-    def test_the_release_is_4_27_with_notes_on_upgrading_from_4_26(self):
+    def test_the_release_is_4_28_with_notes_on_upgrading_from_4_27(self):
         root = TOOL.parent.parent
         plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
-        self.assertRegex(plugin["version"], r"^4\.27\.\d+$")  # a patch keeps the notes
+        self.assertRegex(plugin["version"], r"^4\.28\.\d+$")  # a patch keeps the notes
         upgrading = (root / "UPGRADING.md").read_text(encoding="utf-8")
         first = re.search(r"^## (.*)$", upgrading, re.MULTILINE)
-        self.assertEqual(first.group(1).strip(), "Upgrading from 4.26")
-        section = re.search(r"^## Upgrading from 4\.26\b.*?(?=^## |\Z)", upgrading,
+        self.assertEqual(first.group(1).strip(), "Upgrading from 4.27")
+        section = re.search(r"^## Upgrading from 4\.27\b.*?(?=^## |\Z)", upgrading,
                             re.MULTILINE | re.DOTALL)
         self.assertRegex(section.group(0), r"(?i)resum")
 

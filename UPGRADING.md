@@ -4,6 +4,20 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.27
+
+- **Change a gate check at a stop.** When a stop's cause is how a
+  quality-gate check runs (a missing env wrapper, no scoped form), the user's
+  answer now goes to `autodev.py gate-check`, not a fixer: it changes the
+  run's copy of the check (`state.json` and `profile.md`), then the stopped
+  step runs again, and in Phase 5 the gate runs again on the new command. In
+  Phase 6 the change still goes to the fixer, so a review checks it. On the user's yes, `--profile` makes the same change in the
+  saved profile, in place, or leaves the file and says what to change by hand
+  when it can't do that safely. The fixer may run it too while its fix is
+  open, never with `--profile`; its change is put back unless it returns
+  `FIXED`. Each change is noted in `WORK_LOG.md` and listed in the PR body.
+- A run in flight resumes on 4.28.
+
 ## Upgrading from 4.26
 
 - **The fixer changes held-out checks through a command.** In auto mode,

@@ -416,6 +416,14 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
     `autodev.py amend-checks` drops, adds or renames a check's `MANIFEST.md` rows, seals a new check file, or reseals one before the install.
     Auto mode can refuse an agent's own edit of those files as test removal;
     the `autodev.py` permission rule below covers the command.
+  - **A change to a gate check:** when all you say is that a quality-gate
+    check should run differently (an env wrapper in front of its command, or
+    a scoped form for some files), `autodev.py gate-check` changes the run's
+    copy of the check and the step that stopped runs again, with no fixer;
+    in Phase 5 the gate runs again on the new command. (In Phase 6 the change
+    goes to the fixer, so a review checks it too.) On
+    your yes it changes your saved profile too, in place, or says what to edit
+    when it can't do that safely. Named in the PR body.
   - **I fixed it myself:** only the step that stopped runs again.
   - **Sign off and go on:** the result is accepted as if it passed, and the
     sign-off is named in the PR gate summary and the PR body. Never on red CI,
