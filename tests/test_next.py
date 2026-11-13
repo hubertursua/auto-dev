@@ -7069,6 +7069,28 @@ class GateCheckTest(OverrideCase):
         self.assertIn("only those values changed", r.stdout)
         self.assertEqual(profile.read_text(), text)
 
+    @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
+    def test_the_profile_keeps_its_mode_line_endings_and_link(self):
+        self.red_gate()
+        check = self.state()["settings"]["gate"][0]
+        cmd = check["command"]
+        real = self.tmp / "dotfiles" / "saved.yml"
+        real.parent.mkdir()
+        text = ("setup: []\r\ngate:\r\n  - kind: test\r\n"
+                f'    command: "{cmd}"\r\n    report: {check["report"]}\r\n'
+                f'    files: "{cmd} -- <files>"\r\n')
+        real.write_bytes(text.encode())
+        real.chmod(0o600)
+        link = self.tmp / "saved.yml"
+        link.symlink_to(real)
+        r = self.gate_check("1", "--command", f"env X=1 {cmd}", "--profile", link)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("profile: updated", r.stdout)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(real.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(real.read_bytes().decode(), text.replace(
+            f'command: "{cmd}"', f'command: "env X=1 {cmd}"'))
+
     def test_a_profile_it_cannot_change_in_place_is_left_as_it_was(self):
         self.red_gate()
         profile = self.tmp / "saved.yml"

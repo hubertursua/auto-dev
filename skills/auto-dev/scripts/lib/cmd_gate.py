@@ -33,7 +33,8 @@ while the fix the user asked for is open (its report names
     At a stop only, when the user said yes to saving it for later runs: the
     same change in the saved profile (`profile-path.py` names it), to its
     check with the same report. Each changed value is replaced in place when
-    the file has it exactly once, and the edited file must read back (PyYAML)
+    the file has it as that key's value exactly once and it is the value this
+    run used, and the edited file must read back (PyYAML)
     as the old one with only those values changed and pass
     `validate-config.py --profile`; then it replaces the file whole.
     Otherwise (dropping a scoped form included) the file is left as it was
@@ -47,7 +48,8 @@ the PR body.
 
 Exit codes:
     0  GATE-CHECK: changed (a profile left as it was still exits 0)
-    1  refused: no stop and no open fix, a stop in Phase 6, an unknown or
+    1  refused: no stop and no open fix, a stop in Phase 6 or on the task's
+       size, an unknown or
        ambiguous check, nothing to change, a --files form with no <files>, a
        value on more than one line or still a placeholder (`<…>`), or
        --profile from the fixer
@@ -57,6 +59,8 @@ Exit codes:
 import copy
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -95,8 +99,10 @@ def find_check(gate, key):
     want = key.lower().removesuffix(".md")
     by_report = [i for i, c in enumerate(gate)
                  if str(c.get("report", "")).lower().removesuffix(".md") == want]
-    if by_report:
+    if len(by_report) == 1:
         return by_report[0]
+    if by_report:
+        refuse(f"{key!r} is the report of more than one check: give its number")
     by_kind = [i for i, c in enumerate(gate) if str(c.get("kind", "")).lower() == want]
     if len(by_kind) == 1:
         return by_kind[0]
@@ -144,24 +150,34 @@ def scalar(text, at, new):
     """`new` written in the quoting of the YAML scalar that starts at `at`."""
     before = text[at - 1] if at else ""
     if before == '"':
-        return json.dumps(new)[1:-1]
+        return json.dumps(new, ensure_ascii=False)[1:-1]
     if before == "'":
         return new.replace("'", "''")
-    return json.dumps(new)
+    return json.dumps(new, ensure_ascii=False)
 
 
-def save_profile(path, report, changes):
+def at_key(text, field, old):
+    """Where `old` starts as the value of a `field:` key (after an optional
+    anchor and opening quote), when it does exactly once; else None."""
+    found = [m.end(1) for m in re.finditer(
+        rf"(?<![\w-]){re.escape(field)}\s*:[ \t]*(?:&[\w-]+[ \t]+)?[\"']?({re.escape(old)})",
+        text)]
+    return found[0] - len(old) if len(found) == 1 else None
+
+
+def save_profile(path, report, changes, old_run):
     """Make `changes` to the check with `report` in the saved profile at `path`, in
     place; None when done, or why not. The file is written only when the
     edited text passes validate-config.py and reads back as the old file with
     just those values changed."""
-    path = Path(path).expanduser()
+    path = Path(path).expanduser().resolve()  # a symlinked profile: its target
     try:
         import yaml
     except ImportError:
         return "PyYAML is not installed, so the change could not be checked"
     try:
-        text = path.read_text(encoding="utf-8")
+        with open(path, encoding="utf-8", newline="") as f:  # keep its line endings
+            text = f.read()
         before = yaml.safe_load(text) or {}
     except (OSError, yaml.YAMLError) as exc:
         return f"could not read it ({exc})"
@@ -179,9 +195,12 @@ def save_profile(path, report, changes):
             return f"dropping its `{field}` is not done in place"
         if not isinstance(old, str):
             return f"its {report} check has no `{field}` to replace in place"
-        if new_text.count(old) != 1:
-            return f"it does not have `{old}` exactly once"
-        at = new_text.index(old)
+        if old != old_run.get(field):
+            return (f"its {report} check's `{field}` is `{old}`, not what this run used "
+                    f"(`{old_run.get(field)}`)")
+        at = at_key(new_text, field, old)
+        if at is None:
+            return f"it does not have `{field}: {old}` exactly once"
         new_text = new_text[:at] + scalar(new_text, at, value) + new_text[at + len(old):]
         expected["gate"][index][field] = value
     try:
@@ -192,7 +211,9 @@ def save_profile(path, report, changes):
         return "the edited file does not read back with only those values changed"
     tmp = path.with_name(f".{path.name}.gate-check")
     try:
-        tmp.write_text(new_text, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(new_text)
+        shutil.copymode(path, tmp)  # a 0600 profile stays 0600
         r = subprocess.run([sys.executable, str(SCRIPTS / "validate-config.py"),
                             "--profile", str(tmp)], capture_output=True, text=True,
                            check=False)
@@ -240,6 +261,8 @@ def main(args):
     if stop and (stop.get("phase") == 6 or st.phase(state, 6).get("status") == "in-progress"):
         refuse("in Phase 6, give the change to the fixer as the user's instruction (the "
                "typed answer's line): the gate, the verifier and a review then check it")
+    if stop and (stop.get("retry") or {}).get("oversized"):
+        refuse("this stop is about the task's size, not a gate check")
     if fixing and args.profile:
         refuse("the fixer never changes the saved profile: say in your report what to "
                "change there")
@@ -264,7 +287,7 @@ def main(args):
         st.add_note(state, f"gate check changed by {who}: {line}")
     profile = None
     if args.profile:
-        why = save_profile(args.profile, check.get("report"), changes)
+        why = save_profile(args.profile, check.get("report"), changes, old)
         profile = (f"updated {args.profile}" if why is None else
                    f"left as it was: {why}. Change it by hand: "
                    + "; ".join(lines))
