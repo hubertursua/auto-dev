@@ -115,7 +115,9 @@ dropped, and a nested path (a GitLab subgroup) keeps every segment.
 building the path by hand. A fork has its own `origin`, so it gets its own file.
 
 The file is the user's: they can edit it, or delete it to have the next run
-research the profile again. Its commands run verbatim, like a profile's, so it
+research the profile again. At a stop, when the user changes how a gate check
+runs and says yes to keeping it, `autodev.py gate-check --profile <file>`
+makes the same change in it, in place. Its commands run verbatim, like a profile's, so it
 belongs only in the user's own home directory, never in a repo. It is kept out of
 `~/.claude/`, which Claude Code protects: every write there prompts, whatever the
 allow rules say.

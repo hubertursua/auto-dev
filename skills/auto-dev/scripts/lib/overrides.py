@@ -303,4 +303,10 @@ def summary_lines(state):
         elif o["choice"] == "retry":
             out.append(f"Run again after the user fixed the cause at a stop ({what})"
                        + (f": {first}" if first else ""))
+    for g in state.get("gate_changes") or []:
+        if not g.get("undone"):
+            out.append(f"Quality-gate check {g['check']} ({g.get('report')}) changed by "
+                       f"{g['by']}: " + "; ".join(
+                           f"{f} {a or 'none'} → {b or 'none'}"
+                           for f, (a, b) in g["changes"].items()))
     return out

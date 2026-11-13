@@ -643,6 +643,22 @@
         "`record` does not refuse the fixer's result, and after it the next spawn is the cleanup agent",
         "WORK_LOG.md notes that the fixer amended the checks at the user's instruction"
       ]
+    },
+    {
+      "id": 41,
+      "session": "S2 (a red quality gate whose cause is the check's command, changed at the user's word)",
+      "setup": "Run eval 1 through S1. Before starting the session, change the saved profile's test check so its command fails unless an environment variable `AUTODEV_EVAL_READY=1` is set (for example, a command that tests the variable and then runs the profile's test command), and tell no worker about it. Start a fresh session. When the run stops and asks how to go on, answer by typing: `run the test check as env AUTODEV_EVAL_READY=1 <its command>, and save that in my profile`.",
+      "prompt": "auto-dev continue",
+      "expected_output": "`resume` prints RESUME in S2. The coder builds; the cleanup agent can't make the test check pass and returns RED, and `next` exits 4 with a REPORT and a QUESTION. Its AFTER lines include `\"<a typed change to a gate check>\"` with an `autodev.py gate-check` command. The orchestrator reads the typed answer as a change to how a gate check runs, so it runs `gate-check` with the new `--command` and `--profile` naming the file `profile-path.py` prints (the user already said to save it), then the `\"I fixed it myself\"` AFTER line, then `next`. No fixer is spawned. The cleanup agent runs again, the gate goes green, and the verifier's first pass runs, with no round of the budget spent.",
+      "files": [],
+      "expectations": [
+        "The orchestrator runs `autodev.py gate-check` for the test check with `--command` set to the wrapped command and `--profile` set to the saved profile's path, and it prints GATE-CHECK with `profile: updated`",
+        "No auto-dev:fixer is spawned, and the orchestrator never edits `.auto-dev/state.json`, `.auto-dev/profile.md` or the saved profile itself",
+        "After `gate-check`, the orchestrator runs `autodev.py override retry`, and the next spawn is the cleanup agent",
+        "`.auto-dev/state.json`'s `settings.gate` test check and the saved profile's test check both have the wrapped command, and the saved profile's other lines are unchanged",
+        "The iteration budget's remaining rounds are the same before the stop and after the verifier's first pass is spawned",
+        "WORK_LOG.md notes the gate check change at the stop"
+      ]
     }
   ]
 }

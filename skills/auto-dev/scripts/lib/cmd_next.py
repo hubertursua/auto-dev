@@ -142,6 +142,7 @@ from . import artifacts as art
 from . import (
     check_props,
     cmd_checks,
+    cmd_gate,
     cmd_review,
     cmd_work,
     judgment,
@@ -475,6 +476,7 @@ STOP_OPTIONS = {
               "The run stays here and the worktree is kept; a new session asks again."),
 }
 TYPED = "<a typed answer>"
+GATE = "<a typed change to a gate check>"
 
 
 def stop_point(c, result):
@@ -541,12 +543,21 @@ def ask_at_stop(c, result, entry, last):
     result.update({
         "ACTION": ("tell the user the REPORT lines (and SUMMARY), then ask QUESTION with "
                    "AskUserQuestion. A typed answer (Other) is the user's instruction for "
-                   f'the fixer: run the "{TYPED}" AFTER line with their words. Otherwise run '
+                   f'the fixer: run the "{TYPED}" AFTER line with their words, unless all '
+                   "they ask is that a quality-gate check run differently (its command, or "
+                   f'its scoped form): then run the "{GATE}" AFTER line with it (only the '
+                   "options that change; `--no-files` drops the scoped form), asking "
+                   "them first whether to save it in the saved profile too (`--profile` "
+                   "with the file profile-path.py names, only on a yes), then the \"I "
+                   "fixed it myself\" one. Otherwise run "
                    "the AFTER line for their pick. Then run `next`, except after \"Leave it "
                    f'stopped": stop there ({FILL})'),
         "SUMMARY": summary, "QUESTION": json.dumps({"questions": [question]}),
         "AFTER": [f'"{TYPED}" → ' + c.cmd("override", "fix", "--text",
-                                            "<what the user said>")]
+                                            "<what the user said>"),
+                  f'"{GATE}" → ' + c.cmd("gate-check", "<check number>", "--command",
+                                         "<the command>", "--files",
+                                         "<the scoped form, with <files>>")]
                  + [f'"{STOP_OPTIONS[k][0]}" → {commands[k]}' for k in keys]})
     return result
 
@@ -683,6 +694,10 @@ def undo_fix(c, brief, n):
     if brief.get("settings") is not None and c.state.get("settings") != brief["settings"]:
         c.state["settings"] = copy.deepcopy(brief["settings"])  # a gate check's command
         undone.append(f"{scratch(c)}/state.json")
+        cmd_gate.refresh_profile_md(c.ad, c.state["settings"])
+        for change in c.state.get("gate_changes") or []:
+            if change.get("by") == "the fixer" and change.get("seq", 0) >= brief.get("seq", 0):
+                change["undone"] = True
     return undone
 
 

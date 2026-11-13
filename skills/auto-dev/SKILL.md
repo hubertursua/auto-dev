@@ -126,7 +126,9 @@ and never fix the worker's file yourself.
 **A stop** is not final. When it prints a `QUESTION`, show the `SUMMARY`
 lines and ask it with AskUserQuestion. A typed answer (Other) is the user's
 instruction for the fixer: run the `"<a typed answer>"` `AFTER` line with
-their words, then `next`, which spawns the fixer to do exactly that. For a
+their words, then `next`, which spawns the fixer to do exactly that; when all
+it asks is that a quality-gate check run differently, run the `"<a typed
+change to a gate check>"` line instead, then _I fixed it myself_'s. For a
 pick, run its `AFTER` line, then `next`: _I fixed it myself_ runs the step
 that stopped again; _Sign off and go on_ (offered only where it is safe)
 accepts the result; _Approve the fixer's proposal_ lets the fixer do what it

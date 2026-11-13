@@ -32,6 +32,7 @@ Subcommands:
     spec-overlap       refuse a brief or plan that copies SPEC.md's wording
     install-checks     install the sealed acceptance checks in the worktree
     amend-checks       drop or reseal held-out checks for a fix the user asked for
+    gate-check         change how a quality-gate check runs, at a stop or a fix
     security-reviewer  name the security reviewer to spawn for this SPEC.md
     votes              plan the code-review re-votes, or apply them
     review-scope       snapshot the tree before a correction; list what it changed
@@ -63,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import (
     cmd_amend,
     cmd_checks,
+    cmd_gate,
     cmd_handoff,
     cmd_init,
     cmd_mutants,
@@ -103,6 +105,7 @@ COMMANDS = {
     "spec-overlap": (cmd_checks, cmd_checks.spec_overlap),
     "install-checks": (cmd_checks, cmd_checks.install_checks),
     "amend-checks": (cmd_amend, cmd_amend.main),
+    "gate-check": (cmd_gate, cmd_gate.main),
     "security-reviewer": (cmd_checks, cmd_checks.security_reviewer),
     "votes": (cmd_review, cmd_review.votes),
     "review-scope": (cmd_review, cmd_review.review_scope),
