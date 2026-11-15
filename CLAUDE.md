@@ -152,7 +152,7 @@ against this list and edit each README section it touches:
 | how the build is verified (spec format, acceptance checks, verifier, audit, mutation) | *How the build is verified* |
 | the size check or the number of worker roles               | *Size check* |
 | session boundaries or the context budget                   | *Three sessions, not one* |
-| the code review panel, security review or rubric           | *Review before the PR* |
+| the code review panel, security review or rubric           | *Review on the draft PR* |
 | a gate, a conditional pause, Jira, CI, or the merge method | *Human gates & integrations* |
 | profile research, saved profiles, permissions guidance, or a `.auto-dev.yml` key | *Stack profiles* |
 | a script in `skills/auto-dev/scripts/`, or a new tool or dependency | *Dependencies* |

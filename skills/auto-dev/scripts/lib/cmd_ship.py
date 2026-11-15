@@ -5,7 +5,8 @@ Phase 6's git and gh steps. Each takes `--dir <artifact-dir>` (default
 state, and records what it did in state.json.
 
 commit --message "<type>(<scope>): <summary>" [--body TEXT]
-    Re-checks that every report checked the code as it is now (check-fresh.py),
+    Re-checks that every report checked the code as it is now (check-fresh.py;
+    before the first review pass, which runs on the draft PR, only Phase 5's),
     stages every changed path outside .auto-dev/ by name (deleted paths with
     `git rm --cached`), runs check-staged.py on exactly that list, commits, then
     checks the commit carries the checked code (check-fresh.py --ref HEAD) and
@@ -15,8 +16,8 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     again on the clean tree and it checks that commit instead of committing.
     `next` uses the same path for commits pushed to the PR branch outside the
     pipeline, once they are brought into the worktree and re-checked.
-    Exit: 0 committed and verified (push it); 1 refused: stale results (re-run
-    them and ask the PR gate again), nothing to commit, staged-set check or the
+    Exit: 0 committed and verified (push it); 1 refused: stale results (run
+    `next`: it re-runs them), nothing to commit, staged-set check or the
     commit failed; 3 committed but NOT verified: do not push, stop and report.
     A refusal is recorded for `next` as `commit_attempt`, except "nothing to
     commit" (`next` never asks for a commit with nothing changed) and exit 2.
@@ -253,9 +254,9 @@ def make_commit(args, state):
             and git(wt, "rev-parse", "HEAD").strip() == unverified:
         # An earlier run committed but could not finish checking the commit.
         return verify_commit(args, state, unverified, 0)
-    code, detail = check_fresh(wt, ad)
+    code, detail = check_fresh(wt, ad, *fresh_phase(state))
     if code != 0:
-        raise Fail(f"results are stale; re-run them and ask the PR gate again:\n{detail}",
+        raise Fail(f"results are stale; run `next`, which re-runs them:\n{detail}",
                    FAILED, "STALE")
     if not add and not remove:
         raise Fail("nothing to commit", FAILED, "NOTHING")
@@ -286,12 +287,19 @@ def make_commit(args, state):
     return verify_commit(args, state, sha, len(staged))
 
 
+def fresh_phase(state):
+    """The check-fresh arguments a commit is held to: Phase 5's reports for the
+    first commit, which opens the draft PR before any review; every report once
+    a review pass has run."""
+    return () if state.get("phase6", {}).get("passes") else ("--phase", "5")
+
+
 def verify_commit(args, state, sha, paths):
     """Check the commit carries the checked code; record it as verified or not."""
     wt, ad = state["worktree"], state["artifact_dir"]
     phase6 = state.setdefault("phase6", {})
     code, out, err = run([sys.executable, str(SCRIPTS / "check-fresh.py"), wt, ad,
-                          "--ref", sha], check=False)
+                          "--ref", sha, *fresh_phase(state)], check=False)
     detail = (err or out).strip()
     if code not in (0, 1):
         raise Fail(f"commit {sha} was made, but check-fresh.py could not check it "

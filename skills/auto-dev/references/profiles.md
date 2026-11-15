@@ -278,9 +278,10 @@ security_docs:                # the security directives every worker must obey, 
   - "SECURITY.md"             # instead of the repo defaults; [] turns them off, and
   - "docs/security/authz.md"  # a listed path that doesn't exist is dropped with a warning
 pr_review:
-  inline_comments: false      # when the PR opens, post the review findings left open or advisory on it
+  inline_comments: false      # once the reviews finish, post the findings left open or advisory on the PR
 gates:
   post_plan: true             # force the Phase 3 post-plan gate on for this repo
+  open_pr: false              # ask before the first push (default off: the draft PR opens before review)
 mutation:
   max: 20                     # mutants kept across the verifier's passes (0 = off; at most 50)
 jira:
@@ -294,7 +295,7 @@ Resolution order (last wins): **saved or researched profile → `.auto-dev.yml`*
 The fully-resolved values are written to `.auto-dev/profile.md`.
 
 `iteration_budget`, `ci_timeout_minutes`, `checkpoint_events`, `security_docs`,
-`pr_review`, `gates.post_plan` and `mutation.max` are not stack settings, but they resolve the
+`pr_review`, `gates.post_plan`, `gates.open_pr` and `mutation.max` are not stack settings, but they resolve the
 same way and land in the same `profile.md`: the budget is in
 `references/tables.md`; the verifier reads the mutation cap. Turn mutation off
 only for a repo whose suite cannot run a scoped subset in seconds: each mutant

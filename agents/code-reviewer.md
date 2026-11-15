@@ -52,9 +52,9 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    tool on the files `{{files}}` lists: args `{{review_effort}} <path> …`
    (`high` when it is `none`), one literal path per
    file, quoted when it has a space. Never run it with no path: it then
-   reviews the branch against its upstream, which is empty while the change
-   is uncommitted. When the list is `none`, skip the skill. Its findings are
-   your starting point, not your answer. In scope `review-fix` or `after-commit`
+   reviews the branch against its upstream, which is empty once the branch
+   is pushed. When the list is `none`, skip the skill. Its findings are
+   your starting point, not your answer. In scope `after-commit`
    (a correction's re-review), skip the skill and review the correction
    yourself in step 2, following what it changed downstream: every caller
    and every use of the values it changed, however few lines it touched.
@@ -115,13 +115,9 @@ A finding shaped like this, example in TypeScript:
 
 `{{scope}}` is one of these; `{{files}}` lists files when the scope needs them.
 
-- **first** — the whole change. Nothing on the branch is committed yet, so it
-  is the uncommitted working tree against HEAD (`git -C {{worktree}} diff HEAD`). New files are
-  marked intent-to-add, so the diff shows them. {{files}} lists the files it
-  changes.
-- **review-fix** — only these files, which a correction just changed:
-  {{files}}. Review the code in them, and the callers of anything the
-  correction changed.
+- **first** — the whole change. It is committed and pushed as a draft PR, so
+  it is the branch against the commit it was cut from (`git -C {{worktree}}
+  diff {{cut}} HEAD`). {{files}} lists the files it changes.
 - **after-commit** — the uncommitted correction: the working tree against HEAD
   (`git -C {{worktree}} diff HEAD`), new files included.
 - **outside** — the files changed outside the pipeline since the last review:

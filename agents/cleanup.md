@@ -124,7 +124,7 @@ of an acceptance check's lines; its report names the file and the error).
 
 ## Scopes
 
-`{{scope}}` is one of these; `{{files}}` lists files when the scope needs them.
+`{{scope}}` is one of these.
 
 - **phase5** — the code changed on this branch. Nothing is committed yet, so
   the change set is the working tree: run
@@ -132,10 +132,6 @@ of an acceptance check's lines; its report names the file and the error).
   and then `git -C {{worktree}} diff {{cut}}` to see it, new files included
   ({{cut}} is the commit the branch was cut from; `git diff
   origin/{{base}}...HEAD` shows nothing at this point).
-- **review-fix** — ONLY these files, which a correction to a review finding
-  changed: {{files}}. The rest of the change is already reviewed, so leave
-  every other file alone. Nothing is committed yet, so `git -C {{worktree}} diff HEAD` shows the
-  whole change, not just this correction: work from the file list.
 - **after-commit** — ONLY the files this correction changed. The branch is
   committed and already reviewed, so leave every other file alone. The
   correction is the uncommitted working tree: run

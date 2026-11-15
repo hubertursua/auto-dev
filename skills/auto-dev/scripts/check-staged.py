@@ -14,11 +14,11 @@ Usage:
 <worktree> is the worktree about to commit. Each --expect path is relative to
 the worktree root (an absolute path inside it also works); repeat the flag or
 list several paths after one. With --expect, the staged set must equal the
-expected set exactly — the files the PR gate summary listed.
+expected set exactly — the changed files `autodev.py commit` found.
 
 The staged set is `git -C <worktree> diff --cached --name-only --no-renames`.
 `--no-renames` makes a staged rename list both its old (deleted) path and its
-new one, as the PR gate's `git status --porcelain --untracked-files=all
+new one, as `commit`'s `git status --porcelain --untracked-files=all
 --no-renames --ignore-submodules=dirty` list does; without it git lists only the new path, and an
 --expect list that names the old path could never match.
 
@@ -227,7 +227,7 @@ def check() -> int:
                   f"that are not staged:", file=sys.stderr)
             for path in unstaged:
                 print(f"  {printable(path)}", file=sys.stderr)
-            print("  Stage each one the PR gate summary listed (deleted paths "
+            print("  Stage each changed file `commit` found (deleted paths "
                   "with `git rm --cached`), and fix the --expect list to "
                   "match.", file=sys.stderr)
 

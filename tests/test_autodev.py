@@ -655,7 +655,7 @@ class StateCommandsTest(RunCase):
         state["phase6"] = {"commit_seq": 20, "exhausted": {"seq": 15, "open": ["x"]}}
         self.write_state(state)
         self.assertEqual(self.cmd("budget", "raise", "--by", "1").returncode, 0)
-        self.assertIn("exhausted", self.state()["phase6"])  # the PR gate's call stands
+        self.assertIn("exhausted", self.state()["phase6"])  # the ready gate's call stands
         self.assertIn("ran out (x)", (self.dir / "WORK_LOG.md").read_text())
 
     def test_mark_records_a_triage_answer(self):

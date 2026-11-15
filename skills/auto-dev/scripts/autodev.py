@@ -34,7 +34,6 @@ Subcommands:
     amend-checks       drop or reseal held-out checks for a fix the user asked for
     security-reviewer  name the security reviewer to spawn for this SPEC.md
     votes              plan the code-review re-votes, or apply them
-    review-scope       snapshot the tree before a correction; list what it changed
     gate-summary       check a gate's preconditions; print its summary and question
     review-build       build CODE_REVIEW.md from the review judge's JUDGMENT.md
     brief              write a worker's brief file and print the prompt to spawn it with
@@ -105,7 +104,6 @@ COMMANDS = {
     "amend-checks": (cmd_amend, cmd_amend.main),
     "security-reviewer": (cmd_checks, cmd_checks.security_reviewer),
     "votes": (cmd_review, cmd_review.votes),
-    "review-scope": (cmd_review, cmd_review.review_scope),
     "gate-summary": (cmd_review, cmd_review.gate_summary),
     "review-build": (cmd_review, cmd_review.review_build),
     "brief": (cmd_work, cmd_work.brief),

@@ -247,6 +247,7 @@
     "inline_comments": false,
     "jira_states": {},
     "mutation_max": 20,
+    "open_pr_gate": false,
     "post_plan_gate": true,
     "security_docs": [],
     "setup": [

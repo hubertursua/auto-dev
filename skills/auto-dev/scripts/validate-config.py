@@ -80,7 +80,7 @@ TOP_LEVEL = {
     "checkpoint_events": (int, "events one session writes before `next` checkpoints it"),
     "security_docs": (list, "paths to the security directives"),
     "pr_review": (dict, "inline_comments"),
-    "gates": (dict, "post_plan"),
+    "gates": (dict, "post_plan, open_pr"),
     "mutation": (dict, "max"),
     "jira": (dict, "states"),
 }
@@ -92,7 +92,7 @@ PROFILE_REQUIRED = ("setup", "gate")
 assert set(PROFILE_KEYS) <= set(TOP_LEVEL), "PROFILE_KEYS must be TOP_LEVEL keys"
 BRANCHES = {"base": str, "prefix": str}
 PR_REVIEW = {"inline_comments": bool}
-GATES = {"post_plan": bool}
+GATES = {"post_plan": bool, "open_pr": bool}
 MUTATION = {"max": int}
 MUTATION_MAX = 50
 # Each symbol-lookup command is run with <symbol> replaced by the name sought.

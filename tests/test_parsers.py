@@ -1,5 +1,5 @@
 """Tests for autodev.py's artifact parsers (check-manifest, eval-status,
-apply-fix, spec-overlap, votes, review-scope, gate-summary).
+apply-fix, spec-overlap, votes, gate-summary).
 
 Run: python3 -m unittest discover -s tests -v   (from the repo root)
 
@@ -627,30 +627,10 @@ class ReviewAndGateTest(RunCase):
         (self.dir / "CODE_REVIEW.md").write_text(CODE_REVIEW.format(tree=tree))
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=tree))
 
-    def test_review_scope_snapshot_and_files(self):
-        (self.worktree / "due.ts").write_text("export const due = 1;\n")
-        r = self.cmd("review-scope", "--snapshot")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        snap = self.state()["phase6"]["snapshot"]
-        (self.worktree / "app.ts").write_text("export const one = 2;\n")
-        r = self.cmd("review-scope", "--snapshot")
-        self.assertIn("KEPT", r.stdout)  # one snapshot per pending correction
-        r = self.cmd("review-scope", "--files")
-        self.assertIn("file: app.ts", r.stdout)
-        self.assertNotIn("due.ts", r.stdout)
-        self.assertEqual(self.state()["phase6"]["snapshot"], snap)
-        self.cmd("review-scope", "--clear")
-        self.assertEqual(self.cmd("review-scope", "--files").returncode, 1)
-
-    def test_next_pass_counts_up(self):
-        self.assertIn("PASS: 1", self.cmd("review-scope", "--next-pass").stdout)
-        self.assertIn("PASS: 2", self.cmd("review-scope", "--next-pass").stdout)
-        self.assertTrue((self.dir / "review" / "pass-2").is_dir())
-
-    def test_pr_gate_summary_and_triage_question(self):
+    def test_ready_gate_summary_and_triage_question(self):
         (self.worktree / "app.ts").write_text("export const one = 2;\n")
         self.reports()
-        r = self.cmd("gate-summary", "pr", "--json")
+        r = self.cmd("gate-summary", "ready", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
         summary = "\n".join(out["summary"])
@@ -658,16 +638,30 @@ class ReviewAndGateTest(RunCase):
         self.assertIn("Test changes: 1 justified", summary)
         self.assertIn("S2 (Medium) `src/auth.ts:88`", summary)
         self.assertEqual([q["header"] for q in out["questions"]], ["Gate", "S2"])
+        self.assertEqual(out["questions"][0]["options"][0]["label"],
+                         "Mark ready for review")
+
+    def test_the_open_pr_gate_needs_no_review_and_asks_no_triage(self):
+        self.reports()
+        for name in ("CODE_REVIEW.md", "SECURITY_REVIEW.md"):  # no review has run yet
+            (self.dir / name).unlink()
+        r = self.cmd("gate-summary", "pr", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        summary = "\n".join(out["summary"])
+        self.assertIn("Acceptance — 3 met", summary)
+        self.assertIn("Not reviewed yet", summary)
+        self.assertEqual([q["header"] for q in out["questions"]], ["Gate"])
         self.assertEqual(out["questions"][0]["options"][0]["label"], "Open PR")
 
-    def test_pr_gate_refuses_stale_results_and_open_integrity_findings(self):
+    def test_ready_gate_refuses_stale_results_and_open_integrity_findings(self):
         self.reports()
         (self.worktree / "app.ts").write_text("export const one = 5;\n")
-        r = self.cmd("gate-summary", "pr")
+        r = self.cmd("gate-summary", "ready")
         self.assertEqual(r.returncode, 1)
         self.assertIn("stale", r.stderr)
         self.reports(judgment="Unjustified")
-        r = self.cmd("gate-summary", "pr")
+        r = self.cmd("gate-summary", "ready")
         self.assertEqual(r.returncode, 1)
         self.assertIn("Unjustified", r.stderr)
 
@@ -693,28 +687,28 @@ class ReviewAndGateTest(RunCase):
         self.env = {**self.env, **env,
                     "PATH": f"{bin_dir}:{self.env['PATH']}"}
 
-    def test_pr_gate_cannot_run_when_check_fresh_cannot(self):
+    def test_ready_gate_cannot_run_when_check_fresh_cannot(self):
         self.reports()
         self.stub_git(STUB_GIT_FAIL="-C")  # check-fresh.py runs `git -C <worktree>`
-        r = self.cmd("gate-summary", "pr")
+        r = self.cmd("gate-summary", "ready")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertNotIn("stale", r.stderr)
 
-    def test_pr_gate_cannot_run_when_submodule_foreach_fails(self):
+    def test_ready_gate_cannot_run_when_submodule_foreach_fails(self):
         self.reports()
         self.stub_git(STUB_GIT_FAIL="foreach")
-        r = self.cmd("gate-summary", "pr")
+        r = self.cmd("gate-summary", "ready")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("submodule", r.stderr)
 
-    def test_pr_gate_refuses_edits_inside_a_submodule(self):
+    def test_ready_gate_refuses_edits_inside_a_submodule(self):
         self.reports()
         self.stub_git(STUB_GIT_SUBMODULE="Entering 'vendor/lib'\n?? src/generated.ts")
-        r = self.cmd("gate-summary", "pr")
+        r = self.cmd("gate-summary", "ready")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("vendor/lib: ?? src/generated.ts", r.stderr)
 
-    def test_pr_gate_asks_about_the_most_severe_findings_for_the_user(self):
+    def test_ready_gate_asks_about_the_most_severe_findings_for_the_user(self):
         self.reports()
         rows = [("S2", "Medium", "for the user"), ("S3", "Low", "advisory"),
                 ("S4", "High", "for the user"), ("S5", "High", "advisory"),
@@ -724,7 +718,7 @@ class ReviewAndGateTest(RunCase):
             f"| {i} | finding {i} | `src/auth.ts:{n}` | pre-existing | {conf} | confirmed "
             f"| {verdict} | — |\n" for n, (i, conf, verdict) in enumerate(rows))
         path.write_text(text)
-        r = self.cmd("gate-summary", "pr", "--json")
+        r = self.cmd("gate-summary", "ready", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
         self.assertEqual([q["header"] for q in out["questions"]],

@@ -14,11 +14,18 @@ moving Jira, watching CI after the merge, and the final report. Each is below.
 Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
 see in S3, in order:
 
-1. Three `code-reviewer`s and a security reviewer in one message, then the
-   `review-judge` (twice in one message when the security review found
-   something to verify), maybe re-votes by the reviewers. Must-fix findings
-   from either review run one correction (`coder`, `cleanup`, `verifier`), and
-   the panel and the security reviewer review it, without the nested skills. A finding that a held-out
+1. Commit, push, the PR body and `pr publish`: steps 3–5 below. The verified
+   build opens as a **draft PR before any review**, so CI starts on it while
+   the reviews run; its description says it is not reviewed yet. With
+   `gates.open_pr: true` in `.auto-dev.yml`, the open-the-PR gate asks first
+   (exit 5): `Open PR`, `Hold (don't push yet)` or `Stop`.
+2. Three `code-reviewer`s and a security reviewer in one message, on the
+   draft's commit, then the `review-judge` (twice in one message when the
+   security review found something to verify), maybe re-votes by the
+   reviewers. Must-fix findings from either review run one correction
+   (`coder`, `cleanup`, `verifier`), and the panel and the security reviewer
+   review it, without the nested skills, before it is committed on top,
+   pushed and published again (steps 3–5). A finding that a held-out
    acceptance check is wrong goes to the `acceptance-tester` in repair mode,
    never the coder, on the same round; it repairs the check, or answers
    `STANDS` when it finds the check right, which stops the run and asks the
@@ -28,28 +35,33 @@ see in S3, in order:
    the judge has consolidated the pass and checked the security findings,
    before any correction (#21): no worker changes the
    spec, the user decides (`references/S2-build.md`, step 4).
-2. The PR gate (exit 5). With pre-existing security findings it asks one more
+   Once the reviews settle, `next` asks you to run `pr publish` again: the
+   description gets the reviews.
+3. `ci-watch` on the draft. Whatever it exits, run its `AFTER` line (`next`):
+   `next` asks for `ci-watch` again only while CI is `PENDING`. A draft with no
+   check after the grace period (some workflows skip drafts) is `UNAVAILABLE`:
+   the run goes on, and CI is watched again once the PR is marked ready; CI
+   that never ran is shown as not monitored, never as green. A red check
+   sends the `triager`. A code failure runs a correction, a review and a new
+   commit. Any other class (`INFRA`, `FLAKY`, `UNKNOWN`, `SECRET`) is not the
+   code's to fix: `next` stops and reports it (exit 4). Once the cause is
+   fixed and CI re-run, _I fixed it myself_ (or `auto-dev continue`) watches
+   it again.
+4. The ready-for-review gate (exit 5): `Mark ready for review`, `Hold (keep it
+   a draft)` or `Stop`. With pre-existing security findings it asks one more
    question per finding (_What each gate option does_ in
    `references/tables.md`): run the `mark triage-<ID>` line for each answer.
-3. Commit, push, PR body, publish: steps 3–5 below.
-4. `ci-watch`. Whatever it exits, run its `AFTER` line (`next`): `next` asks
-   for `ci-watch` again only while CI is `PENDING`. After `TIMEOUT` or
-   `UNAVAILABLE` the run goes on, and the main gate shows CI as not monitored;
-   never call it green. A red check sends the `triager`. A code failure runs a
-   correction, a review and a new commit. Any other class (`INFRA`, `FLAKY`,
-   `UNKNOWN`, `SECRET`) is not the code's to fix: `next` stops and reports it
-   (exit 4) before Jira moves to In Review. Once the cause is fixed and CI
-   re-run, _I fixed it myself_ (or `auto-dev continue`) watches it again.
-5. Jira In Review, the `triager` on human PR comments, `gh pr ready`, CI watched once more (some workflows skip drafts, so green from the
-   draft's checks doesn't count), the main gate, `merge-pr`. A human blocker
-   goes to the coder; a comment saying a held-out check is wrong goes to the
-   acceptance tester's repair mode (the triager writes it to
-   `triage/human-<n>-checks.md`), and a `STANDS` stops the run as above. When
-   both come back, the tester goes first, on one round. A comment that says
-   the spec itself is wrong is a claim: the triager lists it, in its own
-   words and naming the comment's id, in `spec-problems/triager-<n>.md`, and
-   the run stops for the user before any correction (#21). CI mode never
-   reports one.
+   Then `gh pr ready`, as printed.
+5. Jira In Review, CI watched once more (workflows that skip drafts run now,
+   so green from the draft's checks doesn't count), the `triager` on human
+   PR comments, the main gate, `merge-pr`. A human blocker goes to the coder;
+   a comment saying a held-out check is wrong goes to the acceptance tester's
+   repair mode (the triager writes it to `triage/human-<n>-checks.md`), and a
+   `STANDS` stops the run as above. When both come back, the tester goes
+   first, on one round. A comment that says the spec itself is wrong is a
+   claim: the triager lists it, in its own words and naming the comment's id,
+   in `spec-problems/triager-<n>.md`, and the run stops for the user before
+   any correction (#21). CI mode never reports one.
 6. CI on the base branch, Jira Done, the final report, the worktree question.
 
 ## 3. Commit
@@ -107,8 +119,8 @@ open findings, between the `<!-- auto-dev:quoted -->` markers), and each
 condition title and gate command it copies, is exempt from the ID,
 `.auto-dev/` path, term and tier checks; it is not in
 `pr-write.md`, and not yours to edit. Change nothing else in `pr-write.md`:
-the follow-ups the user sent to a separate PR at the PR gate are already listed
-in the description.
+the follow-ups the user sent to a separate PR at the ready-for-review gate are
+listed in the description once `next` publishes it again.
 `pr publish` ends everything it posts with `<!-- auto-dev -->`, which tells
 the triager to skip it; never post on the PR yourself. Then run the `AFTER`
 line, `autodev.py pr publish`:
@@ -166,7 +178,7 @@ printed. Then run its `AFTER` line.
 
 **Deviations from the plan:** <each step the coder built differently from the plan, and why (the `deviated from the plan` lines of the gate summaries) — or "none">
 
-**Overrides at a stop:** <each sign-off, fix and retry the user chose when the run stopped, as the PR gate summary's `Signed off by the user` / `Fixed at the user's instruction` / `Run again after the user fixed the cause` lines name them — or "none">
+**Overrides at a stop:** <each sign-off, fix and retry the user chose when the run stopped, as the ready-for-review gate summary's `Signed off by the user` / `Fixed at the user's instruction` / `Run again after the user fixed the cause` lines name them — or "none">
 
 **Unresolved / skipped:** <unmet conditions, open findings, skipped steps — or "none">
 
