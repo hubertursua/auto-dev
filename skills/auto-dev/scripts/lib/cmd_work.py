@@ -17,15 +17,10 @@ brief lookup --out <dir> --set worktree=<repo> --set question='<question>'
     (none when it wrote no result file) (--set
     overrides), and job N is marked replaced, so `next` never re-spawns it
     too. Without --retry it is `none`. It refuses when a slot the worker needs has no value.
-    A brief for a spec-proposal filer (the verifier, the review judge, the
-    security reviewers, the triager), or for Define ruling on proposals, also
-    copies SPEC.md to proposals/spec-<sha>.md and keeps the sha on the brief's
-    state entry (a --retry keeps the first brief's): `record` compares SPEC.md
-    with it. So does a planner brief in blocked mode, or in revise mode for a
-    spec change or plan proposals (IMPLEMENTATION.md to
-    proposals/snapshots/plan-<sha>.md), and an acceptance tester's repair brief
-    (MANIFEST.md and the sealed copies to
-    proposals/snapshots/acceptance-tester-<n>/).
+    A brief for a worker that judges against SPEC.md and may report it wrong
+    (the verifier, the review judge, the security reviewers, the triager)
+    keeps SPEC.md's digest on its state entry (a --retry keeps the first
+    brief's): `record` refuses a return that changed SPEC.md.
     A brief for a worker that never changes the repo (define, the define and
     plan reviewers, the planner, the review judge, the triager)
     keeps the worktree's HEAD and the content of every file `git status` lists
@@ -77,51 +72,15 @@ record <worker> <n>
     the lint reports, a code reviewer's report or votes, CODE_REVIEW.md and
     SECURITY_REVIEW.md. Each must exist, except a lint report, which only
     cleanup's GREEN requires (every report passing).
-    Spec proposals (proposals/<worker>-<n>.md, counted by the result's
-    `proposals` key, which a return may leave out): only the verifier, the
-    review judge in consolidate mode, the security reviewers and the triager in
-    human mode may file one; the count must match the file; each proposal needs
-    a Target, a Why and the whole new text, names only conditions SPEC.md has,
-    never an existing S row, never removes or renumbers a condition, adds at
-    most one item, numbered next, changes something, and (from a PR comment)
-    names the comment's id; the filer's correction file must not copy a
-    proposal's new text; and a filer's SPEC.md items must read as they did when
-    it was briefed (checked whatever its status). Define ruling on a batch must
-    write a ruling for each proposal (stands with a reason), return REVISED
-    when it applied any and STANDS when none, and leave SPEC.md changed exactly
-    as the rulings say: an applied proposal's conditions changed, nothing else
-    did, no condition gone or renumbered, no existing S row edited, and only
-    the new items the applied proposals asked for. An acceptance tester in a
-    spec redo must leave unchanged every sealed copy whose checks all belong to
-    conditions outside its scope.
-    Who may propose against what: SPEC.md, the filers above; the plan's build
-    steps and the held-out checks, the coder (build and correction mode)
-    alone. A spec filer's Target naming a step or a check is refused (a check
-    is questioned only through its own route: the verifier's REPAIR, an
-    `acceptance-check` finding, an ACCEPTANCE_CHECK comment). The coder's
-    proposals (proposals/coder-<n>.md) each name steps the plan has (`step
-    <n>`, `steps <n>, <m>`, changing them) or add one (`new step`, numbered
-    after the last), never both, or name one check its brief listed that
-    MANIFEST.md lists; never a condition or criterion. A coder returning
-    BLOCKED writes blocked/coder-<n>.md; when it also proposes a plan change,
-    the file lists each step it stopped as a line `- step <n>: <why>`, and a
-    file with no such line, or a list line opening on a step in another form,
-    is refused. The planner ruling on a
-    batch (proposals/plan-<k>.md) writes a ruling for each (stands with a
-    reason), returns REVISED or STANDS in revise mode, and leaves the build
-    sequence changed exactly as the rulings say (spacing aside; in blocked
-    mode the steps the coder stopped may change too); the tester ruling on a
-    batch (proposals/checks-<k>.md) rules each condition repaired or stands,
-    changes a sealed copy or MANIFEST.md rows only for a condition it
-    repaired (another condition's row only to rename a check the two share),
-    and must have changed each one it ruled repaired. Each answer is held to
-    the copy taken when its batch was first briefed, a re-spawn after an
-    answer that was not ok included; a planner or tester brief with no batch
-    re-spawned after a not-ok answer keeps the copy of the brief it replaces,
-    so the steps or conditions its log entry notes count from before the
-    first attempt. Neither may write a stands reason into
-    the plan, a sealed copy or MANIFEST.md's test names. The log entry notes the steps or conditions
-    such an answer changed.
+    Spec problems (spec-problems/<worker>-<n>.md, counted by the result's
+    `spec_problems` key): only the verifier, the review judge in consolidate
+    mode, the security reviewers and the triager in human mode may report one;
+    the count must match the file's `- condition <id>: <why>` and `- missing:
+    <why>` lines, and each id must be a condition or criterion SPEC.md has.
+    Such a worker's return is refused, whatever its status, when SPEC.md
+    changed since its brief. The coder's deviations from the plan
+    (deviations/coder-<n>.md, counted by `deviations`): the count must match
+    the file's list lines.
     A fixer's return is refused when its status is not ok but its `next` is
     FIXED; for FIXED, its report names every path it changed, the run's
     settings in state.json as `.auto-dev/state.json`.
@@ -146,18 +105,16 @@ check-artifact <file>
     CODE_REVIEW.md, SECURITY_REVIEW.md, review/pass-<n>/R<k>.md and
     VOTES-R<k>.md, lint/<CHECK>.md, a required-changes file (corrections.md,
     triage/*.md; also refused when it copies the run's SPEC.md, as
-    `spec-overlap` checks), a FIX file (fixes/*.md), a spec proposal file
-    (proposals/<worker>-<n>.md, held to the run's SPEC.md as `record` holds it),
-    the coder's plan and check proposals (proposals/coder-<n>.md, held to the
-    plan and MANIFEST.md), a batch of proposals or its rulings
-    (proposals/batch-<k>.md, plan-<k>.md, checks-<k>.md and their
-    -rulings.md), or a returns/*.json file.
+    `spec-overlap` checks), a FIX file (fixes/*.md), a spec-problems file
+    (spec-problems/<worker>-<n>.md, held to the run's SPEC.md), the coder's
+    deviations (deviations/coder-<n>.md), or a returns/*.json file.
     Exit: 0 it follows the template; 1 problems (each printed).
 
 All exit 2 when they could not run — never a pass.
 """
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -170,11 +127,8 @@ from pathlib import Path
 from . import artifacts as art
 from . import (
     briefs,
-    check_props,
     cmd_checks,
     overrides,
-    plan_props,
-    proposals,
     sealed,
     tree_guard,
 )
@@ -192,6 +146,13 @@ IMPLEMENTATION_HEADINGS = ("## Files", "## Design", "## Data flow", "## Build se
                            "## Test plan", "## Migrations / config")
 VERDICTS = {"met", "partial", "unmet", "manual"}
 FIX_PREFIX = {"define-reviewer": "define", "plan-reviewer": "plan"}
+# The workers that judge against SPEC.md and may report a criterion wrong or
+# missing (spec-problems/<worker>-<n>.md); they never edit SPEC.md.
+SPEC_JUDGES = ("verifier", "review-judge", "security-reviewer",
+               "security-reviewer-sensitive", "triager")
+SPEC_PROBLEM_RE = re.compile(r"^\s*[-*]\s*(?:condition\s+(S?\d+)|missing)\s*:\s*(.*)$",
+                             re.IGNORECASE)
+DEVIATION_RE = re.compile(r"^\s*[-*]\s+\S")
 
 
 def add_arguments(parser, name):
@@ -273,17 +234,30 @@ def seal_bases(state, ad):
 SUPPORT_SHOWN = 12  # lines the checks add besides their tests, per file
 
 
+def test_names(rows_):
+    """{check file: [its checks' test names]}, in MANIFEST.md's order, each
+    name once (a file with none maps to [])."""
+    names = {}
+    for r in rows_:
+        cell = r["Check (path :: test name)"]
+        path = art.check_path(cell)
+        if path:
+            name = cell.split("::", 1)[-1].strip().strip('"') if "::" in cell else ""
+            names.setdefault(path, [])
+            if name and name not in names[path]:
+                names[path].append(name)
+    return names
+
+
 def acceptance_paths(ad):
     """Each file that holds acceptance checks, with the checks' test names: a
     file can hold the coder's own tests too. Then the lines the checks add
-    besides them (an import, a shared setup), which are sealed as well. A
-    stands reason is kept out of the names as joined here
-    (check_props.names_text renders them the same way)."""
+    besides them (an import, a shared setup), which are sealed as well."""
     try:
         rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
     except art.ArtifactError:
         return "none"
-    names = check_props.test_names(rows)
+    names = test_names(rows)
     files = sealed.sealed_files(ad)
 
     def support(path):
@@ -387,7 +361,8 @@ def auto_values(worker, n, state, ad, mode):
         "answer_file": str(ad / "lookups" / f"{n}.md"),
         "blocked_file": str(ad / "blocked" / f"coder-{n}.md"),
         "fix_file": str(ad / "fixes" / f"{FIX_PREFIX.get(worker, 'plan')}-{n}.md"),
-        "proposal_file": str(ad / "proposals" / f"{worker}-{n}.md"),
+        "deviations_file": str(ad / "deviations" / f"coder-{n}.md"),
+        "spec_problem_file": str(ad / "spec-problems" / f"{worker}-{n}.md"),
         "fix_report": str(ad / overrides.FIX_DIR / f"fixer-{n}.md"),
     }
     return values
@@ -544,19 +519,17 @@ def write_brief(state, where, worker, mode, given, retry=None):
                    f"{', '.join(unknown)}", FAILED, "REFUSED")
     directory.mkdir(parents=True, exist_ok=True)
     if ad is not None:
-        for sub in ("returns", "fixes", "triage", "lookups", "blocked", "proposals",
-                    overrides.FIX_DIR):
+        for sub in ("returns", "fixes", "triage", "lookups", "blocked", "deviations",
+                    "spec-problems", overrides.FIX_DIR):
             (ad / sub).mkdir(exist_ok=True)
     path = directory / f"{worker}-{n}.md"
     path.write_text(briefs.render(worker, n, mode, values), encoding="utf-8")
     if state is not None:
         entry = {"worker": worker, "n": n, "mode": mode, "sets": given, "at": st.now(),
                  "retry": retry, "seq": st.seq(state)}
-        watch_spec(state, ad, worker, given, retry, entry)
+        watch_spec(state, ad, worker, retry, entry)
         if retry is None and worker in ("coder", "cleanup"):
             entry["whole"] = whole_checks(state, ad)
-        if retry is None:
-            watch_owner(state, ad, worker, mode, given, entry, n)
         if worker in tree_guard.GUARDED:
             entry["tree"] = tree_guard.snapshot(auto["worktree"], ad)
         if worker == "fixer" and retry is None:
@@ -572,89 +545,45 @@ def write_brief(state, where, worker, mode, given, retry=None):
     return path, values
 
 
-def watch_spec(state, ad, worker, given, retry, entry):
-    """A filer, or Define ruling on proposals, is held to SPEC.md as it was
-    when it was briefed: copy SPEC.md (proposals/spec-<sha>.md) and keep the
-    sha on its brief entry. A retry keeps the first brief's copy (and the
-    sealed files a redo tester was held to), so the base never moves."""
+def watch_spec(state, ad, worker, retry, entry):
+    """A worker that judges against SPEC.md is held to it as it was when it was
+    briefed: keep SPEC.md's digest on its brief entry. A retry keeps the first
+    brief's copies, so the base never moves."""
     if retry is not None:
         old = next((b for b in state.get("briefs", [])
                     if b["worker"] == worker and b["n"] == retry), {})
-        for key in ("spec", "held", "plan", "sealed", "whole", "fix_tree", "artifacts",
-                    "artifacts_n", "settings"):
+        for key in ("spec", "whole", "fix_tree", "artifacts", "artifacts_n", "settings"):
             if key in old:
                 entry[key] = old[key]
         return
-    ruling = worker == "define" and str(given.get("proposals") or "none").strip().lower() \
-        not in ("", "none")
-    if worker in proposals.FILERS or ruling:
-        sha = proposals.snapshot(ad)
-        if sha:
-            entry["spec"] = sha
+    if worker in SPEC_JUDGES:
+        entry["spec"] = digest(ad / "SPEC.md")
+
+
+def digest(path):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def fresh_tree(state, issued):
     """A brief `next` sends out again (no result came back) is held to the tree
-    as it is now: what changed while no worker was out is not this spawn's."""
+    and SPEC.md as they are now: what changed while no worker was out is not
+    this spawn's."""
     if issued.get("tree"):
         issued["tree"] = tree_guard.snapshot(state["worktree"], state["artifact_dir"])
+    if issued.get("spec"):
+        issued["spec"] = digest(Path(state["artifact_dir"]) / "SPEC.md")
 
 
-def is_set(value):
-    return str(value or "none").strip().lower() not in ("", "none")
-
-
-def watch_owner(state, ad, worker, mode, given, entry, n):
-    """The planner revising the plan (blocked mode, or revise mode for a spec
-    change or plan proposals) and the tester repairing checks are held to
-    what they were briefed on: copy IMPLEMENTATION.md
-    (proposals/snapshots/plan-<sha>.md) or MANIFEST.md and the sealed copies
-    (proposals/snapshots/acceptance-tester-<n>/), and keep the key on the
-    brief's entry. `record` diffs against it; a retry keeps the first brief's
-    (watch_spec), and so does a new brief on the same batch of proposals (a
-    re-spawn after an answer that was not ok), so an edit the first attempt
-    left behind is never taken for the base. A brief with no batch does the
-    same through replaced(): the brief a re-spawn after a not-ok answer
-    replaces lends it its copy."""
-    key = {"planner": "plan", "acceptance-tester": "sealed"}.get(worker)
-    batch = proposals._batch_path(given) if is_set(given.get("proposals")) else None
-    first = next((b for b in state.get("briefs", []) if batch and b["worker"] == worker
-                  and key in b and is_set(b.get("sets", {}).get("proposals"))
-                  and proposals._batch_path(b["sets"]) == batch), None)
-    if first is None and key and batch is None:
-        first = replaced(state, worker, mode, given, key)
-    if first is not None:
-        entry[key] = first[key]
-    elif worker == "planner" and (mode == "blocked" or (mode == "revise" and (
-            is_set(given.get("spec_change")) or is_set(given.get("proposals"))))):
-        sha = plan_props.snapshot(ad)
-        if sha:
-            entry["plan"] = sha
-    elif worker == "acceptance-tester" and mode == "repair":
-        entry["sealed"] = check_props.snapshot(ad, f"{worker}-{n}")
-
-
-def replaced(state, worker, mode, given, key):
-    """The brief a new one with no batch replaces, or None: the latest earlier
-    brief for the same worker and mode, also with no batch, briefed on the same
-    `blocked` (the planner) or `scope` (the tester), that holds a copy
-    (`key`), whose job returned a status other than ok, with no ok result from
-    that worker since. Its copy is the base from before the first attempt."""
-    same = "blocked" if worker == "planner" else "scope"
-    want = str(given.get(same) or "").strip()
-    last = next((b for b in reversed(state.get("briefs", []))
-                 if b["worker"] == worker and b.get("mode") == mode
-                 and not is_set(b.get("sets", {}).get("proposals"))
-                 and str(b.get("sets", {}).get(same) or "").strip() == want), None)
-    if last is None or key not in last:
-        return None
-    log = [e for e in state.get("log") or [] if e.get("worker") == worker]
-    done = next((e for e in log if e.get("n") == last["n"]), None)
-    if done is None or done.get("status") == "ok":
-        return None
-    if any(e.get("status") == "ok" and e.get("seq", 0) > done.get("seq", 0) for e in log):
-        return None
-    return last
+def refresh_spec(state, ad):
+    """After a fix at a stop changed SPEC.md: every brief not yet recorded is
+    held to SPEC.md as it is now, not as it was before the fix."""
+    done = {(e["worker"], e["n"]) for e in state.get("log") or []}
+    for b in state.get("briefs") or []:
+        if b.get("spec") and (b["worker"], b["n"]) not in done:
+            b["spec"] = digest(Path(ad) / "SPEC.md")
 
 
 # ---------------------------------------------------------------- record
@@ -734,9 +663,12 @@ def derive(worker, data, ad, state, n):
     issued = next((b for b in state.get("briefs", [])
                    if b["worker"] == worker and b["n"] == n), {})
     issues = []
-    if worker in proposals.FILERS and issued.get("spec"):
-        # Whatever the status: a filer that edited SPEC.md never gets past it.
-        issues += proposals.spec_edit_issues(ad, issued["spec"])
+    if worker in SPEC_JUDGES and issued.get("spec") and \
+            digest(ad / "SPEC.md") != issued["spec"]:
+        # Whatever the status: only the user changes SPEC.md (a fix at a stop).
+        issues.append("SPEC.md changed since your brief: never edit it. Put it back as "
+                      "it was, and report a criterion you find wrong or missing in "
+                      "spec_problems instead")
     if worker == "fixer":
         if data.get("status") != "ok" and data.get("next") == "FIXED":
             issues.append(f"status is {data.get('status')} but next is FIXED: return "
@@ -747,20 +679,9 @@ def derive(worker, data, ad, state, n):
         return issues
     issues += result_issues(worker, data, ad, state, n) + artifact_issues(
         worker, data, ad, state, n)
-    as_int(data, "proposals")  # a count that is not a number is MALFORMED
-    shown = check_props.shown_paths(ad, worker, n) if worker == "coder" else None
-    issues += proposals.filer_issues(worker, issued.get("mode"), data, ad, n,
-                                     handed_correction(worker, issued, data, ad, state),
-                                     shown=shown)
-    sets = issued.get("sets", {})
-    if worker == "define" and is_set(sets.get("proposals")):
-        issues += proposals.answer_issues(ad, sets, issued.get("spec"), data.get("next"))
-    if worker == "planner" and is_set(sets.get("proposals")):
-        issues += plan_props.answer_issues(ad, sets, issued, data.get("next"))
-    if worker == "acceptance-tester" and is_set(sets.get("proposals")):
-        issues += check_props.answer_issues(ad, sets, issued, data.get("next"))
-    if worker == "acceptance-tester" and issued.get("held"):
-        issues += proposals.held_issues(ad, issued["held"])
+    issues += spec_problem_issues(worker, issued.get("mode"), data, ad, n)
+    if worker == "coder":
+        issues += deviation_issues(data, ad, n)
     if worker in ("coder", "cleanup"):
         issues += edited_check_issues(worker, ad, state, issued.get("whole", []))
     return issues
@@ -843,22 +764,81 @@ def edited_check_issues(worker, ad, state, whole):
     return issues
 
 
-def handed_correction(worker, issued, data, ad, state):
-    """The required-changes file a filer's result hands the coder, which must
-    not copy its proposals' new text either; None when it hands none."""
-    nxt = data.get("next")
-    if worker == "verifier" and nxt in ("CORRECT", "INSTALL_CONFLICT"):
-        return ad / "evidence" / "corrections.md"
-    if worker == "review-judge" and issued.get("mode") == "consolidate" and \
-            nxt in ("MUST_FIX", "REVOTE"):
-        n = state.get("phase6", {}).get("review_pass") or 1
-        path = ad / "review" / f"pass-{n}" / "corrections.md"
-        return path if path.exists() else None
-    if worker == "triager" and issued.get("mode") == "human" and \
-            as_int(data, "blockers") > 0:
-        given = str(data.get("triage_file") or "").strip()
-        return Path(given) if given not in ("", "none") else None
-    return None
+def spec_problem_items(path):
+    """[(condition id, or `missing`, why)] of a spec-problems file."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    items = []
+    for line in text.splitlines():
+        match = SPEC_PROBLEM_RE.match(line)
+        if match:
+            cid = match.group(1).upper() if match.group(1) else "missing"
+            items.append((cid, match.group(2).strip()))
+    return items
+
+
+def spec_problem_lines(path, spec):
+    """Problems with a spec-problems file: no item, an item with no why, or a
+    condition the run's SPEC.md does not have."""
+    items = spec_problem_items(path)
+    if not items:
+        return ["no `- condition <id>: <why>` or `- missing: <why>` line"]
+    try:
+        ids = {c["id"] for c in art.spec_conditions(spec)} if spec else None
+    except art.ArtifactError:
+        ids = None
+    out = []
+    for cid, why in items:
+        if not why:
+            out.append(f"{cid}: say what is wrong and what shows it")
+        elif ids is not None and cid != "missing" and cid not in ids:
+            out.append(f"condition {cid} is not in SPEC.md (an added criterion is "
+                       "`- missing: <why>`)")
+    return out
+
+
+def spec_problem_issues(worker, mode, data, ad, n):
+    """The `spec_problems` count against spec-problems/<worker>-<n>.md."""
+    count = as_int(data, "spec_problems")
+    if count == 0:
+        return []
+    if worker not in SPEC_JUDGES or (worker, mode) in (("review-judge", "security-verify"),
+                                                         ("triager", "ci")):
+        return [(f"spec_problems is {count}, but {worker} ({mode or 'no mode'}) never "
+                 "reports a spec problem: return 0")]
+    path = ad / "spec-problems" / f"{worker}-{n}.md"
+    if not path.is_file():
+        return [f"spec_problems is {count} but {path} does not exist"]
+    issues = [f"{path.name}: {p}" for p in spec_problem_lines(path, ad / "SPEC.md")]
+    found = len(spec_problem_items(path))
+    if found and found != count:
+        issues.append(f"spec_problems is {count} but {path.name} lists {found}")
+    return issues
+
+
+def deviation_lines(path):
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [ln for ln in text.splitlines() if DEVIATION_RE.match(ln)]
+
+
+def deviation_issues(data, ad, n):
+    """The coder's `deviations` count against deviations/coder-<n>.md."""
+    count = as_int(data, "deviations")
+    path = ad / "deviations" / f"coder-{n}.md"
+    found = len(deviation_lines(path))
+    if count == 0:
+        return [f"deviations is 0 but {path} lists {found}"] if found else []
+    if not path.is_file():
+        return [f"deviations is {count} but {path} does not exist"]
+    if found != count:
+        return [(f"deviations is {count} but {path.name} lists {found} `- step <n>: …` "
+                 "line(s)")]
+    return []
 
 
 def written_files(worker, data, ad, state, n):
@@ -935,7 +915,7 @@ def result_issues(worker, data, ad, state, n):
         fix = str(data.get("fix_file", "none")).strip()
         if fix not in ("none", "") and not Path(fix).exists():
             issues.append(f"fix_file {fix} does not exist")
-    elif worker == "planner" and nxt in ("WRITTEN", "REVISED", "STANDS", "PLAN_REVISED",
+    elif worker == "planner" and nxt in ("WRITTEN", "REVISED", "PLAN_REVISED",
                                          "UPDATE_OLD_TEST"):
         issues += [f"IMPLEMENTATION.md: {p}" for p in check_file(ad / "IMPLEMENTATION.md")]
     elif worker == "acceptance-tester" and nxt in ("SEALED", "REPAIRED", "FOLDED"):
@@ -948,10 +928,6 @@ def result_issues(worker, data, ad, state, n):
         listed = ad / "blocked" / f"coder-{n}.md"
         if nxt == "BLOCKED" and not listed.exists():
             issues.append(f"next is BLOCKED but {listed} does not exist")
-        elif nxt == "BLOCKED" and plan_props.files_plan_proposal(ad, n):
-            # Only the planner's combined answer reads the stopped steps out of
-            # the file; with no plan proposal it is read as prose, as before.
-            issues += plan_props.blocked_file_issues(listed)
     elif worker == "verifier":
         issues += derive_verifier(nxt, ad)
     elif worker == "cleanup":
@@ -1069,7 +1045,7 @@ def amended_issues(state, ad, issued, on):
         had = {row_id(r["#"]) for r in art.manifest(before)[0]} if before.is_file() else set()
     except art.ArtifactError as exc:
         return [str(exc)]
-    names = check_props.test_names(rows)
+    names = test_names(rows)
     wt = Path(state["worktree"])
     for rel, name in fix["dropped"]:
         if name in names.get(rel, []):
@@ -1120,7 +1096,7 @@ def reseal_fixed(state, ad, issued):
     edited = set(tree_guard.changed(tree, tree_guard.snapshot(wt, ad)))
     try:
         rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
-        names = check_props.test_names(rows)
+        names = test_names(rows)
     except art.ArtifactError:
         names = {}
     touched = []
@@ -1430,10 +1406,6 @@ def record_ok(state, ad, worker, n, data):
     entry = {"worker": worker, "n": n, "mode": issued.get("mode"),
              "sets": issued.get("sets", {}), "status": data.get("status"),
              "next": data.get("next", ""), "data": data, "seq": st.seq(state)}
-    if ok and worker == "planner" and issued.get("plan"):
-        entry["steps_changed"] = plan_props.changed_steps(ad, issued["plan"])
-    if ok and worker == "acceptance-tester" and issued.get("sealed"):
-        entry["checks_changed"] = check_props.changed_conditions(ad, issued["sealed"])
     again = next((i for i, e in enumerate(log)
                   if e["worker"] == worker and e["n"] == n), None)
     if again is None:
@@ -1447,28 +1419,20 @@ def record_ok(state, ad, worker, n, data):
 
 # ---------------------------------------------------------------- check-artifact
 
-def is_snapshot(path):
-    """Whether `path` lies in a run's proposals/snapshots/ folder: `proposals`
-    then `snapshots`, directly inside the artifact dir (`.auto-dev`). The same
-    names elsewhere in the clone's path never count."""
-    parts = Path(os.path.abspath(path)).parts
-    return any(parts[i - 1] == ".auto-dev" and parts[i] == "proposals"
-               and parts[i + 1] == "snapshots" for i in range(1, len(parts) - 2))
-
-
 def check_file(path):
     """Problems with one artifact, by its name; [] when it follows its template."""
     path = Path(path)
     name, parent = path.name, path.parent.name
-    if is_snapshot(path):
-        return []  # a copy taken at brief time, not a worker's file
     try:
         text = art.read(path)
     except art.ArtifactError as exc:
         return [str(exc)]
     try:
-        if parent == "proposals":
-            return check_proposals(path, text)
+        if parent == "spec-problems":
+            return spec_problem_lines(path, run_spec(path))
+        if parent == "deviations":
+            return [] if deviation_lines(path) else [
+                "no `- step <n>: <what you built instead, and why>` line"]
         if name == "SPEC.md":
             return check_spec(path)
         if name == "IMPLEMENTATION.md":
@@ -1553,62 +1517,6 @@ def run_spec(path):
         if (parent / "SPEC.md").is_file():
             return parent / "SPEC.md"
     return None
-
-
-def check_rulings(text, answers):
-    """A rulings file: a block per proposal, each answered one of `answers`,
-    a stands with a reason."""
-    found = art.rulings(text)
-    if not found:
-        return ["no `## P<k>` ruling block"]
-    problems = []
-    for pid, ruling in found.items():
-        if ruling["answer"] not in answers:
-            problems.append(f"{pid}: `Answer:` must be {' or '.join(answers)}")
-        elif ruling["answer"] == "stands" and not ruling["reason"]:
-            problems.append(f"{pid} stands with no reason")
-    return problems
-
-
-def check_proposals(path, text):
-    """A file under proposals/: a filer's proposals, a batch, or its rulings."""
-    name = path.name
-    if name.startswith("spec-"):
-        return []  # a copy of SPEC.md, not a worker's file
-    if re.match(r"(batch|plan)-\d+-rulings\.md$", name):
-        return check_rulings(text, ("applied", "stands"))
-    if re.match(r"checks-\d+-rulings\.md$", name):
-        return check_rulings(text, ("repaired", "stands"))
-    blocks = art.proposal_blocks(text)
-    if not blocks:
-        return ["no `## P<k>` proposal block"]
-    if re.match(r"(batch|plan|checks)-\d+\.md$", name):
-        return []  # next wrote it; once applied, its new text is the artifact's own
-    ad = path.resolve().parent.parent
-    if re.match(r"coder-\d+\.md$", name):
-        # The brief's check files are unknown here: record checks those.
-        return proposals.coder_problems(blocks, ad, shown=None)
-    spec = run_spec(path)
-    if spec is None:
-        return ["no SPEC.md beside it to check the proposals against"]
-    items = art.spec_items(art.read(spec), str(spec))
-    worker = re.sub(r"-\d+\.md$", "", name)
-    label = proposals.WORKER_LABEL.get(worker, "a filer")
-    out = []
-    for block in blocks:
-        artifact, _ = proposals.classify(block["target"])
-        if artifact == "plan":
-            out.append(f"{block['pid']} names a plan step: {label} may not propose against "
-                       "the plan; only the coder files plan proposals")
-        elif artifact == "checks":
-            route = proposals.CHECK_ROUTE.get(worker)
-            out.append(f"{block['pid']} names a check: {label} questions a check only "
-                       f"through {route}, never in a proposal file" if route else
-                       f"{block['pid']} names a check: {label} may not question a check; "
-                       "it files against SPEC.md alone")
-        else:
-            out += proposals.problems(block, items, from_comment=name.startswith("triager-"))
-    return out
 
 
 def check_spec(path):

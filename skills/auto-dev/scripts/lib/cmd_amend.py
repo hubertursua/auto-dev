@@ -59,8 +59,9 @@ from pathlib import Path, PurePosixPath
 from . import artifacts as art
 from . import overrides, sealed, tree_guard
 from . import state as st
-from .check_props import CHECK_COLUMN
 from .output import CANNOT_RUN, FAILED, Fail, emit
+
+CHECK_COLUMN = "Check (path :: test name)"
 
 NA_HEADER = ("| # | Condition | Why no check can drive it | Proxy a verifier can run |\n"
              "|---|-----------|---------------------------|--------------------------|")

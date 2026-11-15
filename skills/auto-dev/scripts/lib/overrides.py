@@ -173,6 +173,8 @@ def apply_retry(state, retry, seq):
     p6 = state.setdefault("phase6", {})
     for key in retry.get("clear") or []:
         p6.pop(key, None)
+    if retry.get("revote") is not None:
+        p6.get("votes", {}).pop(str(retry["revote"]), None)
     if retry.get("reopen"):
         for corr in p6.get("corrections") or []:
             if corr.get("spend_id") == retry["reopen"] and corr.get("closed"):
@@ -202,8 +204,10 @@ def reopen_define(state):
 
 def apply_signoff(state, signoff, seq):
     set_aside(state, signoff.get("aside"), seq)
-    rewrite = signoff.get("rewrite")
-    if rewrite:
+    rewrites = list(signoff.get("rewrites") or [])
+    if signoff.get("rewrite"):
+        rewrites.append(signoff["rewrite"])
+    for rewrite in rewrites:
         entry = log_entry(state, rewrite[:2])
         if entry is not None:
             entry["signed_off"] = {"from": entry.get("next"), "seq": seq}

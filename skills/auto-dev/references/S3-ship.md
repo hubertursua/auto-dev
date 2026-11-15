@@ -20,27 +20,14 @@ see in S3, in order:
    from either review run one correction (`coder`, `cleanup`, `verifier`), and
    the panel and the security reviewer review it, without the nested skills. A finding that a held-out
    acceptance check is wrong goes to the `acceptance-tester` in repair mode,
-   never the coder, as a batch with one ruling per condition (every condition
-   with a check in the file the finding's Location names); it may fix the
-   checks or rule they stand with its reason. A condition whose checks stood,
-   at any point of the run, is not sent back: the correction covers the rest,
-   and when nothing else is open `next` stops and reports both sides (#22). A
-   coder in the correction may file plan and check proposals: they go to the
-   planner and the tester as in S2 (`references/S2-build.md`, step 1), paid
-   from the correction's consumer.
-   A pass's **spec proposals** (the judge files for the panel; the security
-   reviewer files its own, most often a new security criterion) wait until the
-   pass has settled: consolidation, re-votes, the check of the security
-   findings, and a security run focused on any lead the panel passed on. Then they go
-   to the `define` agent in one brief, before any correction, for the round
-   that correction would spend. `STANDS` leaves the pass to go on as if there
-   were none; if a later verifier finds the code doing what the stood proposal
-   described, the deviation gate asks the user (`references/S2-build.md`,
-   step 4). An applied change runs the redo as in S2 (planner, the changed
-   conditions' checks, then a correction with the plan's change and the
-   pass's own fixes, cleanup, a verifier first pass), then a review pass on
-   what the redo changed (none when it changed no file) and the PR gate again,
-   whose summary names each spec change and who proposed it.
+   never the coder, on the same round; it repairs the check, or answers
+   `STANDS` when it finds the check right, which stops the run and asks the
+   user (#22).
+   A criterion the judge (for the panel) or the security reviewer finds wrong
+   or missing in SPEC.md (`spec-problems/<worker>-<n>.md`) stops the run once
+   the judge has consolidated the pass and checked the security findings,
+   before any correction (#21): no worker changes the
+   spec, the user decides (`references/S2-build.md`, step 4).
 2. The PR gate (exit 5). With pre-existing security findings it asks one more
    question per finding (_What each gate option does_ in
    `references/tables.md`): run the `mark triage-<ID>` line for each answer.
@@ -57,16 +44,12 @@ see in S3, in order:
    draft's checks doesn't count), the main gate, `merge-pr`. A human blocker
    goes to the coder; a comment saying a held-out check is wrong goes to the
    acceptance tester's repair mode (the triager writes it to
-   `triage/human-<n>-checks.md`), one ruling per condition with a check in the
-   file its entry's `Where:` line names (a comment naming no such file goes as
-   one item with no condition); a condition whose checks stood is not sent
-   again. When both come back, the tester goes first.
-   A comment that says the spec itself is wrong may become the triager's spec
-   proposal, in its own words, naming the comment's id: the `define` agent gets
-   it marked as a claim to check against the ticket (CI mode never files). An
-   applied one runs the redo, a review, a new commit, and the main gate is
-   asked again, its summary naming the change and that a PR comment prompted
-   it; nothing merges before that answer.
+   `triage/human-<n>-checks.md`), and a `STANDS` stops the run as above. When
+   both come back, the tester goes first, on one round. A comment that says
+   the spec itself is wrong is a claim: the triager lists it, in its own
+   words and naming the comment's id, in `spec-problems/triager-<n>.md`, and
+   the run stops for the user before any correction (#21). CI mode never
+   reports one.
 6. CI on the base branch, Jira Done, the final report, the worktree question.
 
 ## 3. Commit
@@ -181,7 +164,7 @@ printed. Then run its `AFTER` line.
 
 **Assumptions:** <the ones a reviewer should know about>
 
-**Accepted deviations:** <each condition the user let the code deviate from at the deviation gate, and what the code does instead (the `Deviations from the spec the user accepted` line of the gate summaries) — or "none">
+**Deviations from the plan:** <each step the coder built differently from the plan, and why (the `deviated from the plan` lines of the gate summaries) — or "none">
 
 **Overrides at a stop:** <each sign-off, fix and retry the user chose when the run stopped, as the PR gate summary's `Signed off by the user` / `Fixed at the user's instruction` / `Run again after the user fixed the cause` lines name them — or "none">
 

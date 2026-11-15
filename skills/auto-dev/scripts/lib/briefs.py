@@ -33,13 +33,13 @@ AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "tick
         "binding_rules", "test_command", "test_notes", "mutation_cap",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
         "symbol_lookup", "pass", "tree", "cut", "run", "pr", "triage_file", "checks_file",
-        "answer_file", "blocked_file", "proposal_file", "fix_report"}
+        "answer_file", "blocked_file", "deviations_file", "spec_problem_file",
+        "fix_report"}
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
           "report", "blocked", "failing", "question", "corrections_file", "leads",
           "instruction", "stopped"}
 OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
-            "previous_issues", "earlier", "focus", "proposals", "rulings_file",
-            "spec_change", "rulings", "deviations", "answers", "plan_change",
+            "previous_issues", "earlier", "focus", "spec_kept", "checks_kept",
             "review_effort"}
 # fix_file is AUTO for the reviewers, who write it; OPTIONAL for the authors.
 AUTO_FOR = {"fix_file": {"define-reviewer", "plan-reviewer"}}
@@ -49,9 +49,9 @@ CALLER_FOR = {"tree": {"review-judge"}}
 
 RESULTS = {
     "profiler": {"CONFIRM"},
-    "define": {"FITS", "OVERSIZED", "REVISED", "STANDS"},
+    "define": {"FITS", "OVERSIZED", "REVISED"},
     "define-reviewer": {"CLEAN", "BLOCKERS"},
-    "planner": {"WRITTEN", "REVISED", "STANDS", "PLAN_REVISED", "UPDATE_OLD_TEST",
+    "planner": {"WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST",
                 "SPEC_IMPOSSIBLE"},
     "plan-reviewer": {"CLEAN", "BLOCKERS"},
     "acceptance-tester": {"SEALED", "REPAIRED", "STANDS", "FOLDED"},
@@ -68,10 +68,9 @@ RESULTS = {
     "fixer": {"FIXED", "NEEDS_CONSENT", "CANNOT_FIX"},
 }
 STATUSES = {"ok", "blocked", "failed"}
-# Result keys a return may leave out: `proposals` (the proposals a filer wrote)
-# came in 4.10 (and for the coder in 4.12), and a worker briefed before it
-# never writes it.
-LENIENT_KEYS = {"proposals"}
+# Result keys a return may leave out (read as none): none. A worker briefed
+# before `deviations` and `spec_problems` existed is briefed again.
+LENIENT_KEYS = set()
 
 
 class BriefError(Exception):

@@ -27,7 +27,7 @@ eval-status [--install-conflict] [--mutation-left-changes]
     Turns SPEC_EVAL.md into one decision, printed as one token (pass the
     verifier's INSTALL CONFLICT or MUTATION LEFT CHANGES report as a flag):
       STOP                    mutation left changes: stop and report the paths
-      CORRECT                 correct the coder (spend a round, consumer 3):
+      CORRECT                 correct the coder (spend a round):
                               each open condition and Unjustified finding is a
                               `correct:` line. An install conflict is CORRECT
                               with that one item, without reading SPEC_EVAL.md
@@ -343,8 +343,8 @@ def eval_status(args):
     message = {
         "STOP": "the mutation step may have left changes in the source: stop and "
                 "report the paths the verifier gave; build nothing more on this tree",
-        "CORRECT": f"{len(fields.get('correct', []))} open item(s): spend a round "
-                   "(consumer 3), then brief the coder" + (
+        "CORRECT": f"{len(fields.get('correct', []))} open item(s): spend a round, "
+                   "then brief the coder" + (
                        "; repair the listed checks first" if fields.get("repair") else ""),
         "REPAIR": "only defective acceptance checks are open: repair mode for these "
                   "conditions, then a verifier re-check",

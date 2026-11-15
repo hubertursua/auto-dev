@@ -50,7 +50,7 @@ is the one other path you may write to. Do NOT ask the user. Do NOT modify sourc
 or tests: your only writes are installing the sealed acceptance checks,
 {{artifact_dir}}/evidence/ (evidence/corrections.md included),
 {{artifact_dir}}/SPEC_EVAL.md, and, only when SPEC.md itself is wrong,
-{{proposal_file}} (see *Spec proposals* below).
+{{spec_problem_file}} (see *Spec problems* below).
 
 You did not build this change and you have not seen its plan. Your job is to find
 the condition that is NOT met. Missing evidence means not met.
@@ -198,11 +198,8 @@ against origin/{{base}} directly — it moves when anything fetches.
    whose base run doesn't match its kind (Strong (b)), or whose Level is below
    Verify by, is not defective: it only keeps its condition from Strong.
    Listing a check under *Defective acceptance checks* (and `next: REPAIR`) is
-   the only way you question a check: a proposal file whose Target names a
-   check is refused. The acceptance tester rules on it per condition. Once it
-   rules a condition's checks stand, they are not sent to it again for the
-   rest of the run unless something changes them (a spec change rewrites
-   them); judging them defective again, with nothing else open, stops the run.
+   the only way you question a check. The acceptance tester repairs it; if it
+   rules the check right as written, the run stops and the user decides.
 7. Mutation check (cap: {{mutation_cap}}).
    Passing tests show the code works; mutants show the tests would notice if it
    stopped working. At cap 0, write "off" and stop here.
@@ -299,23 +296,13 @@ against origin/{{base}} directly — it moves when anything fetches.
    that condition `partial` (evidence: the mutant survived); any other Test gap
    is advisory.
 
-Spec rulings: {{rulings}}. When set, the Define agent has already ruled on a
-spec proposal about these conditions and SPEC.md stands as written: judge them
-as worded. It is never sent to the Define agent again. The acceptance tester's
-stands are listed here too. Each line says what to do:
-- **The checks of condition(s) … stand as written:** the acceptance tester
-  ruled those conditions' checks right against SPEC.md. Judge them as written,
-  not as defective, and don't list them under *Defective acceptance checks*
-  again: with nothing else open, that stops the run.
-- **Stands:** if the code still does what that proposal described, judge the
-  condition as worded and propose it again (see *Spec proposals*): it goes to
-  the user, who decides whether to accept the deviation.
-- **The user accepted the deviation:** when that deviation is the condition's
-  only gap, judge it `met` with Evidence starting `accepted deviation:` and the
-  tier its evidence earned (Weak still caps it at `partial`), and put nothing
-  in evidence/corrections.md that undoes it. Judge any other gap in it as
-  usual.
-- **The user kept the spec:** judge it as worded and don't propose it again.
+Spec kept: {{spec_kept}}. When set, the user already decided these at a stop
+and kept SPEC.md as written: judge them as worded, and never report them as
+spec problems again.
+
+Checks kept: {{checks_kept}}. When set, the acceptance tester ruled these
+checks right as written and the user kept them: judge them as written, and
+never list them under *Defective acceptance checks* again.
 
 Write {{artifact_dir}}/SPEC_EVAL.md to the template at `{{skill_dir}}/templates/SPEC_EVAL.md` (strict): read
 it there and copy everything below its first comment line.
@@ -343,30 +330,23 @@ down, never the mutant: "nothing fails if 10 items are rejected; add a test
 that a list of exactly 10 is accepted". With nothing open, write
 `# Required changes` and `None.`
 
-### Spec proposals
+### Spec problems
 
 Sometimes SPEC.md itself is wrong or incomplete: the code rightly does something
 a condition does not allow, a condition can't be met as worded, or the change
-needs a condition or security criterion the spec lacks. When the code does
-something a condition doesn't allow, the proposal's `Why:` says what the code
-does and why that is right: the user may be shown it. Still judge every
-condition against SPEC.md as written (your verdicts and evidence/corrections.md
-don't change), and also write {{proposal_file}} to the template at
-`{{skill_dir}}/templates/PROPOSAL.md` (strict): one `## P<k>` block per
-proposal, each with its Target, its Why in your own words, and the whole new
-text of each condition it names, or of the one item it adds. The Define agent,
-who owns SPEC.md, applies it or rules that SPEC.md stands.
-- Never edit SPEC.md yourself: a script refuses your return if its conditions
-  or criteria changed while you ran.
-- One proposal per added item. Never remove or renumber a condition, and never
-  name an existing S row: a security criterion can only be added.
-- Never copy a proposal's new text into evidence/corrections.md: the coder never
-  sees a proposal.
-With nothing to propose, write no file.
+needs a condition or security criterion the spec lacks. No worker changes the
+spec: the run stops and the user decides. Still judge every condition against
+SPEC.md as written (your verdicts and evidence/corrections.md don't change),
+and also write {{spec_problem_file}}, one line per problem:
+`- condition <id>: <what is wrong, and what in the code or the ticket shows it>`,
+or `- missing: <the criterion the spec lacks, and why the change needs it>`.
+Return `spec_problems: <k>`, the number of lines. With none, write no file.
+Never edit SPEC.md yourself: a script refuses your return if it changed while
+you ran.
 
 Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact` on
-{{artifact_dir}}/SPEC_EVAL.md, on evidence/corrections.md and on {{proposal_file}}
-if you wrote it, and fix anything they report.
+{{artifact_dir}}/SPEC_EVAL.md, on evidence/corrections.md and on
+{{spec_problem_file}} if you wrote it, and fix anything they report.
 
 Spill long output to {{artifact_dir}}/tmp/; keep each command under 5 minutes,
 except `verify prep`.
@@ -389,5 +369,5 @@ status: ok
 next: ALL_MET | CORRECT | REPAIR | INSTALL_CONFLICT | MUTATION_LEFT_CHANGES
 tree: <the Tree line you wrote>
 corrections: <entries in evidence/corrections.md>
-proposals: <number of proposals in {{proposal_file}}; 0 if none>
+spec_problems: <number of lines in {{spec_problem_file}}; 0 if none>
 ```
