@@ -90,6 +90,19 @@ class CheckIdentityTest(unittest.TestCase):
         code, out = self.run_check({"b.md": "Mail noreply@example.com.\n"})
         self.assertEqual(code, 1, out)
 
+    def test_a_shared_bot_email_is_not_a_term(self):
+        # A Claude Code session commits as this address; the repo's own commit
+        # trailer names it, and it names no person.
+        self.identify(name="Claude", email="noreply@anthropic.com", login="root",
+                      gh_login="")
+        trailer = "Co-Authored-By: Claude Code <noreply@anthropic.com>\n"
+        code, out = self.run_check({"a.py": f"TRAILER = {trailer!r}\n"})
+        self.assertEqual(code, 0, out)
+        # A GitHub noreply address names its user: it is still a term.
+        self.identify(email="12345+octo-jane@users.noreply.github.com", gh_login="")
+        code, out = self.run_check({"b.md": "Mail 12345+octo-jane@users.noreply.github.com.\n"})
+        self.assertEqual(code, 1, out)
+
     def test_without_an_origin_the_owner_slug_is_not_allowed(self):
         self.identify(remote=None)
         code, out = self.run_check({"a.md": "See octo-jane/widget.\n"})
