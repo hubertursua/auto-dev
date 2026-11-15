@@ -12,7 +12,9 @@ as (`gh config get -h github.com user`, skipped when gh is missing). Then it
 looks for each one, as a whole word and ignoring case, in the path and text of
 each file. A name split across a line break still matches. A one-word term
 that is a common account name (root, dev, runner, Claude, noreply, …) is
-skipped, since it would match ordinary text. Two mentions are allowed: the
+skipped, since it would match ordinary text, and so is an email address a
+tool shares across every user (BOT_EMAILS: a Claude Code session commits as
+noreply@anthropic.com, which the repo's own commit trailer names). Two mentions are allowed: the
 repo's own `<owner>/<repo>` slug from the origin remote, and the plugin's
 author or owner name in .claude-plugin/*.json.
 
@@ -43,6 +45,10 @@ GENERIC = {"admin", "administrator", "app", "build", "ci", "claude", "default",
            "dev", "developer", "docker", "git", "github", "guest", "jenkins",
            "node", "noreply", "no-reply", "root", "runner", "test", "ubuntu",
            "user", "vagrant", "ec2-user"}
+# Whole email addresses a tool or bot commits as for everyone, so naming one
+# names no person. A GitHub `<id>+<user>@users.noreply.github.com` address is
+# not one of them: it names its user.
+BOT_EMAILS = {"noreply@anthropic.com", "noreply@github.com"}
 REMOTE = re.compile(r"[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
 
@@ -75,7 +81,7 @@ def identity(root):
     unique = {}
     for term in terms:
         term = " ".join(term.split())
-        if len(term) < MIN_LENGTH or term.lower() in GENERIC:
+        if len(term) < MIN_LENGTH or term.lower() in GENERIC or term.lower() in BOT_EMAILS:
             continue
         unique.setdefault(term.lower(), term)
     return sorted(unique.values(), key=len, reverse=True), slug
