@@ -77,7 +77,7 @@ class CheckRepoTest(unittest.TestCase):
             "Do NOT modify code. Return: your votes, one line each.\n"
             "Return a structured summary:\nReturn the findings.\nSay what you changed.\n"
             "Report what changed, TEST CHANGES and BLOCKED.\n"
-            "Return `proposals: <k>`, and return `next: STANDS`.\n")
+            "Return `deviations: <k>`, and return `next: STANDS`.\n")
         self.assertEqual([e.split(": asks")[0] for e in errors],
                          [f"coder.md:{n}" for n in range(2, 8)], errors)
 
@@ -233,9 +233,9 @@ class CheckRepoTest(unittest.TestCase):
     def test_an_unknown_define_token_or_missing_template_fails_the_repo_check(self):
         agents = ROOT_DIR / "agents"
         define = (agents / "define.md").read_text(encoding="utf-8")
-        self.assertIn("| REVISED | STANDS\n", define)
+        self.assertIn("| OVERSIZED | REVISED\n", define)
         errors = self.check_agents_dir({"define.md": define.replace(
-            "| REVISED | STANDS\n", "| REVISED | STANDS | SHRUGGED\n", 1)})
+            "| OVERSIZED | REVISED\n", "| OVERSIZED | REVISED | SHRUGGED\n", 1)})
         self.assertTrue(any("define.md" in e and "SHRUGGED" in e for e in errors), errors)
         errors = self.check_agents_dir({"define.md": define + "\nSee templates/NOPE.md.\n"})
         self.assertTrue(any("templates/NOPE.md" in e for e in errors), errors)

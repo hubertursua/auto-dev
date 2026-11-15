@@ -611,19 +611,22 @@ class StateCommandsTest(RunCase):
         state = self.state()
         state["budget"].update(total=2, remaining=2)
         self.write_state(state)
-        r = self.cmd("budget", "spend", "--consumer", "3", "--id", "p5-r1")
+        r = self.cmd("budget", "spend", "--id", "p5-r1")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("1 of 2 left", r.stdout)
-        r = self.cmd("budget", "spend", "--consumer", "3", "--id", "p5-r1")
+        r = self.cmd("budget", "spend", "--id", "p5-r1")
         self.assertIn("ALREADY-SPENT", r.stdout)
         self.assertEqual(self.state()["budget"]["remaining"], 1)
-        self.assertEqual(self.cmd("budget", "spend", "--consumer", "3", "--id",
-                                  "p5-r2").returncode, 0)
-        r = self.cmd("budget", "spend", "--consumer", "4", "--id", "6a-r1")
+        self.assertEqual(self.cmd("budget", "spend", "--id", "p5-r2").returncode, 0)
+        r = self.cmd("budget", "spend", "--id", "6a-r1")
         self.assertEqual(r.returncode, 3)
         self.assertIn("EXHAUSTED", r.stdout)
-        self.assertIn("every open must-fix finding by name", r.stdout)  # consumer 4
         self.assertEqual(self.state()["budget"]["remaining"], 0)
+        self.assertEqual([s["id"] for s in self.state()["budget"]["spends"]],
+                         ["p5-r1", "p5-r2"])
+        # One counter: there is no consumer to name any more.
+        self.assertEqual(self.cmd("budget", "spend", "--consumer", "3", "--id",
+                                  "x").returncode, 2)
         self.assertIn("(0 remaining)", (self.dir / "WORK_LOG.md").read_text())
 
     def test_budget_raise_only_after_a_budget_stop(self):
@@ -631,7 +634,8 @@ class StateCommandsTest(RunCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("not stopped on the budget", r.stderr + r.stdout)
         state = self.state()
-        state["budget"].update(total=2, remaining=0, stopped={"consumer": 3, "seq": 4})
+        state["budget"].update(total=2, remaining=0,
+                               stopped={"seq": 4, "what": "no round left for a correction"})
         self.write_state(state)
         for by in ("0", "11"):
             self.assertEqual(self.cmd("budget", "raise", "--by", by).returncode, 1, by)
@@ -645,23 +649,14 @@ class StateCommandsTest(RunCase):
         self.assertNotIn("stopped", budget)
         self.assertIn("(3 remaining)", (self.dir / "WORK_LOG.md").read_text())
 
-    def test_budget_raise_forgets_only_what_the_stopped_step_left_unsent(self):
+    def test_budget_raise_keeps_the_pr_gate_s_call(self):
         state = self.state()
-        state["budget"].update(remaining=0, stopped={"consumer": 5, "seq": 30})
-        state["phase6"] = {"commit_seq": 20,
-                           "exhausted": {"consumer": 4, "seq": 15, "open": ["x"]}}
-        state["proposals"] = {
-            "unsent": [{"key": "pass-1", "seq": 12, "items": []},
-                       {"key": "human-1", "seq": 30, "items": []}],
-            "filings": [{"job": ["coder", 2], "status": "unsent", "seq": 14},
-                        {"job": ["coder", 3], "status": "sent", "seq": 30},
-                        {"job": ["coder", 4], "status": "unsent", "seq": 30}]}
+        state["budget"].update(remaining=0, stopped={"seq": 30, "what": "x"})
+        state["phase6"] = {"commit_seq": 20, "exhausted": {"seq": 15, "open": ["x"]}}
         self.write_state(state)
         self.assertEqual(self.cmd("budget", "raise", "--by", "1").returncode, 0)
-        state = self.state()
-        self.assertEqual([u["key"] for u in state["proposals"]["unsent"]], ["pass-1"])
-        self.assertEqual([f["job"][1] for f in state["proposals"]["filings"]], [2, 3])
-        self.assertIn("exhausted", state["phase6"])  # the PR gate's call stands
+        self.assertIn("exhausted", self.state()["phase6"])  # the PR gate's call stands
+        self.assertIn("ran out (x)", (self.dir / "WORK_LOG.md").read_text())
 
     def test_mark_records_a_triage_answer(self):
         r = self.cmd("mark", "triage-S2", "--value", "separate")
@@ -686,24 +681,12 @@ class StateCommandsTest(RunCase):
         self.assertEqual(r.returncode, 1)
         self.assertEqual(self.state()["gates"], [])
 
-    def test_the_deviation_gate_needs_a_condition_and_never_accepts_a_criterion(self):
-        for args in (("accept",), ("accept", "--condition", "S1"),
-                     ("accept", "--condition", "four"), ("proceed", "--condition", "4")):
+    def test_the_deviation_gate_is_gone(self):
+        for args in (("deviation", "accept", "--condition", "4"),
+                     ("pr", "proceed", "--condition", "4")):
             with self.subTest(args):
-                self.assertEqual(self.cmd("gate", "deviation", *args).returncode, 1)
-        self.assertEqual(self.cmd("gate", "pr", "proceed", "--condition", "4").returncode, 1)
+                self.assertNotEqual(self.cmd("gate", *args).returncode, 0)
         self.assertEqual(self.state()["gates"], [])
-        r = self.cmd("gate", "deviation", "keep", "--condition", "S1")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        r = self.cmd("gate", "deviation", "accept", "--condition", "4")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual([(g["choice"], g["condition"]) for g in self.state()["gates"]],
-                         [("keep", "S1"), ("accept", "4")])
-        self.assertIn("condition 4: the user accepted", (self.dir / "WORK_LOG.md").read_text())
-        first_open = next(n for n in "123456"
-                          if self.state()["phases"][n]["status"] not in ("done", "n/a"))
-        self.cmd("gate", "deviation", "stop", "--condition", "4")
-        self.assertEqual(self.state()["phases"][first_open]["status"], "stopped")
 
     def test_the_staging_gate_and_mark_are_gone(self):
         r = self.cmd("gate", "staging", "proceed")

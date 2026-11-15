@@ -123,8 +123,11 @@ and the same `next` briefs that job again with the issues in its
 `previous_issues` slot. Never write the retry brief yourself (`brief --retry`)
 and never fix the worker's file yourself.
 
-**A stop** is not final. When it prints a `QUESTION`, show the `SUMMARY`
-lines and ask it with AskUserQuestion. A typed answer (Other) is the user's
+**A stop** is not final. Some stops are the user's call by design: a worker
+found a SPEC.md criterion wrong or missing, or the acceptance tester ruled a
+check right that another worker called wrong. Workers never settle the
+contract between themselves. When a stop prints a `QUESTION`, show the
+`SUMMARY` lines and ask it with AskUserQuestion. A typed answer (Other) is the user's
 instruction for the fixer: run the `"<a typed answer>"` `AFTER` line with
 their words, then `next`, which spawns the fixer to do exactly that. For a
 pick, run its `AFTER` line, then `next`: _I fixed it myself_ runs the step
@@ -155,11 +158,11 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Worker | Agent type | Model · effort |
 | ------ | ---------- | -------------- |
 | Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high |
-| Define agent (Phase 2; rules on spec proposals in Phases 5–6) | `auto-dev:define` | `opus` · high |
+| Define agent (Phase 2) | `auto-dev:define` | `opus` · high |
 | Define reviewer (Phase 2) | `auto-dev:define-reviewer` | `opus` · high |
-| Planner (Phase 3; rules on the coder's plan proposals in Phases 4–6) | `auto-dev:planner` | `opus` · xhigh |
+| Planner (Phase 3; settles a step the coder stopped) | `auto-dev:planner` | `opus` · xhigh |
 | Plan reviewer (Phase 3) | `auto-dev:plan-reviewer` | `opus` · high |
-| Acceptance tester (Phase 3; rules on check proposals in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
+| Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
 | Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
 | Verifier (Phase 5, re-spawned on every change) | `auto-dev:verifier` | `opus` · high |
 | Cleanup agent (Phase 5, re-spawned on fixes) | `auto-dev:cleanup` | `sonnet` · high |

@@ -1,6 +1,6 @@
 ---
 name: auto-dev-acceptance-tester
-description: auto-dev pipeline only — Phase 3 acceptance tester. Turns each SPEC.md condition into a held-out executable check before any code is written, proves each new-behavior check fails on the untouched tree, then seals the checks away from the coder; in repair mode, fixes a named check in place, or says why it stands, ruling per condition on the check proposals it is sent. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 3 acceptance tester. Turns each SPEC.md condition into a held-out executable check before any code is written, proves each new-behavior check fails on the untouched tree, then seals the checks away from the coder; in repair mode, fixes a named check in place, or says why it stands. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
@@ -219,23 +219,6 @@ re-spawns you (in S1 at the cost of a round) or stops the run. Leave a gap you
 can't fix after two tries, or one in a condition outside the scope. An `ERROR:`
 or `MALFORMED:` result is not a gap: return as you would without it.
 
-After the build (the scope says the checks are installed: SPEC.md changed
-after the code was built, and you rewrite only the named conditions' checks):
-- Never start clean: restore or delete no file you did not write, since the
-  tree holds the coder's build.
-- Rewrite the named conditions' checks IN PLACE, as repair mode does when the
-  checks are installed: edit each at its installed path, changing only your
-  own tests, then copy the whole file over its sealed copy so the two are
-  byte-identical. A check for a new condition or criterion goes into a file
-  that already holds checks of a condition in the scope, or into a new file:
-  never into a file whose checks all belong to other conditions, nor into a
-  file of the repo that holds no check yet.
-- Never change a sealed copy whose checks all belong to conditions outside the
-  scope: `record` refuses a return that does.
-- Skip the base run: record each rewritten or new check's Base run as `not
-  re-run (repair)`, updating its MANIFEST rows and its base-run/C<n>.txt as
-  repair mode does.
-
 ## Mode: repair
 
 The task above applies, scoped to the conditions {{scope}} names, with these
@@ -253,29 +236,12 @@ Any other report: first decide, against SPEC.md alone, whether it is right. If
 the check is right as it is, change nothing and return `next: STANDS`, with your
 reason above the result block.
 
-When `{{proposals}}` is set, the report's claims come to you as a batch of
-check proposals, one item per condition (from the coder, the verifier, the
-code review or a PR comment): its first line names the batch file, and the
-rest says how many to rule on:
-{{proposals}}
-Rule on each item, against SPEC.md alone, and write {{rulings_file}} to the
-template at `{{skill_dir}}/templates/RULINGS.md` (strict), one block per item,
-same numbers:
-- *repaired* — you changed that condition's checks (in place, as below) or its
-  MANIFEST.md rows.
-- *stands* — its checks are right against SPEC.md as written: change none of
-  them, and give the reason.
-An item that names no condition (a comment or finding that names no check
-file) is answered the same way. Never edit a sealed copy none of whose
-conditions you ruled repaired (with an unnamed item in the batch: one whose
-conditions all stand), nor the MANIFEST.md rows of a condition that stands:
-`record` refuses a return that does. Never write a reason into a
-check file or a MANIFEST.md test name: a coder's correction brief names those
-files, and its brief quotes the test names. `next` is
-`REPAIRED` when you ruled any item repaired, `STANDS` when every item stands.
+Never write a stands reason into a check file or a MANIFEST.md test name: a
+coder's correction brief names those files, and its brief quotes the test
+names. A STANDS on a check a worker questioned stops the run, and the user
+decides between your reason and theirs.
 
-To repair, change only the checks of the conditions in {{scope}} (with a
-batch, only those you rule repaired):
+To repair, change only the checks of the conditions in {{scope}}:
 - When the checks are installed (they are in the worktree): fix each one IN
   PLACE at its installed path, changing only your own tests (the file may hold
   the coder's tests too; leave every other line as it is), then copy the whole

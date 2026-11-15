@@ -213,8 +213,8 @@ def render_ledger(state):
         reason = f" — {gate['reason']}" if gate.get("reason") else ""
         lines.append(f"- {gate['at']} gate `{gate['gate']}`: {gate['choice']}{reason}")
     for spend in budget["spends"]:
-        lines.append(f"- {spend['at']} round spent (consumer #{spend['consumer']}, "
-                     f"`{spend['id']}`): {spend.get('what') or 'correction'}")
+        lines.append(f"- {spend['at']} round spent (`{spend['id']}`): "
+                     f"{spend.get('what') or 'correction'}")
     for note in state["notes"]:
         lines.append(f"- {note['at']} {note['text']}")
     return "\n".join(lines) + "\n"

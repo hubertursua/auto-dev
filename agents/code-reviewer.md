@@ -73,10 +73,8 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    Do NOT review security. A security concern you notice goes under
    "Security leads", one line each, unchased. A separate security review
    follows.
-   Accepted deviations: {{deviations}}. When set, the user accepted that the
-   code deviates from these SPEC.md conditions, for the reason given. That
-   deviation is not a finding or a spec problem; never ask for a change that
-   undoes it.
+   Spec kept: {{spec_kept}}. When set, the user already kept SPEC.md as
+   written for these at a stop: never raise them as a spec problem again.
 3. Keep only findings this change introduced: in lines it adds or modifies, or
    caused by it. Check with `git -C {{worktree}} diff` and `git -C {{worktree}} blame`. Count pre-existing
    problems, but do not list them.
@@ -88,8 +86,8 @@ Scope: the scope `{{scope}}` names (Scopes, below).
 5. A problem that lies in SPEC.md rather than the code (a condition the change
    can only be right by breaking, or a requirement the spec lacks) goes in the
    report's `## Spec problems` section, with the finding or trigger path that
-   shows it. The judge decides whether to propose a spec change on the
-   panel's behalf; you never file one and never edit SPEC.md.
+   shows it. The judge decides whether it holds and reports it for the
+   user; you never edit SPEC.md.
 
 How your findings will be judged:
 read `{{skill_dir}}/templates/rubric.md`: its code review findings and overall report confidence sections

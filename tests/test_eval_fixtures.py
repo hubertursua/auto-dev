@@ -95,10 +95,12 @@ class FixtureFilesTest(unittest.TestCase):
         on_disk = {str(p.relative_to(SKILL)) for p in FILES.rglob("*") if p.is_file()}
         self.assertEqual(on_disk - named, set(), "fixtures no eval names")
 
-    def test_the_eval_suite_has_the_four_spec_proposal_cases(self):
+    def test_the_eval_suite_has_the_cases_where_the_user_decides(self):
         sessions = [e.get("session", "") for e in EVALS["evals"]]
-        for label in ("S2 (spec proposal: filed)", "S2 (spec proposal: applied)",
-                      "S3 (spec proposal: stands)", "S3 (spec proposal: PR comment)"):
+        for label in ("S2 (spec problem: the run stops)",
+                      "S2 (spec problem: fixed at the user's instruction)",
+                      "S3 (spec problem: a PR comment)", "S2 (a deviation from the plan)",
+                      "S2 (a check the tester rules right)"):
             self.assertTrue(any(s.startswith(label) for s in sessions), label)
 
     def test_each_state_fixture_has_its_generated_work_log(self):
@@ -207,33 +209,15 @@ class OldVersionFixtureTest(FixtureRunCase):
         self.assertEqual(status.strip(), "?? .auto-dev/")
 
 
-class SpecProposalEvalsTest(unittest.TestCase):
-    """The eval suite covers the spec-proposal path."""
+class NoProposalEvalsTest(unittest.TestCase):
+    """5.0 has no proposals, rulings or deviation gate: no eval may expect one."""
 
-    def test_the_evals_cover_a_filing_a_stands_a_redo_and_a_steering_pr_comment(self):
-        texts = [json.dumps(e, ensure_ascii=False) for e in EVALS["evals"]]
-        cases = [t for t in texts if re.search(r"(?i)\bproposals?\b", t)]
-        self.assertGreaterEqual(len(cases), 4, "fewer than four evals about spec proposals")
-        self.assertTrue(any("STANDS" in t for t in cases), "no eval of a proposal that stands")
-        self.assertTrue(any(re.search(r"(?i)\bappl(?:y|ies|ied)\b", t) and
-                            re.search(r"(?i)\bplanner\b|\bredo\b", t) for t in cases),
-                        "no eval of an applied proposal's redo")
-        self.assertTrue(any(re.search(r"(?i)PR comment", t) and
-                            re.search(r"(?i)instruction|ignore your brief|steer", t)
-                            for t in cases),
-                        "no eval of a PR comment that tries to steer the spec")
-
-    def test_the_evals_cover_a_coder_plan_proposal_and_the_order(self):
-        texts = [json.dumps(e, ensure_ascii=False) for e in EVALS["evals"]]
-        self.assertTrue(any(re.search(r"(?i)\bcoder\b", t) and
-                            re.search(r"(?i)\bplan proposal\b", t) and
-                            re.search(r"auto-dev:planner", t) and
-                            "proposals/plan-<k>" in t for t in texts),
-                        "no eval of a coder's plan proposal ruled on by the planner")
-        self.assertTrue(any(re.search(r"(?i)spec then checks|spec, then plan", t) and
-                            "auto-dev:define" in t and "auto-dev:acceptance-tester" in t
-                            for t in texts),
-                        "no eval of the order spec proposals and check proposals settle in")
+    def test_no_eval_expects_a_proposal_a_ruling_or_a_consumer(self):
+        for e in EVALS["evals"]:
+            text = json.dumps(e, ensure_ascii=False)
+            for word in (r"proposals?/", r"rulings?_file", r"\bconsumer\b", r"deviation gate",
+                         r"gate deviation", r"--consumer"):
+                self.assertIsNone(re.search(word, text), f"eval {e['id']}: {word}")
 
 
 if __name__ == "__main__":

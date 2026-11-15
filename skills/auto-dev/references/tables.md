@@ -20,32 +20,27 @@ One budget of revise rounds per task: `iteration_budget` in `.auto-dev.yml`,
 default 4. `next` spends a round before the action that needs it and prints a
 `BUDGET:` line when it does. You never spend one yourself.
 
-When none is left, the stop's `REPORT` names `autodev.py budget raise --by
-<n>`. Run it only when the user asks for more rounds and gives the number (1
-to 10; it is refused unless `next` just stopped on the budget). Then `next`
-takes the step that stopped, spending the new rounds as usual, and sends the
-proposals that step had no round for. Proposals an earlier step left unsent
-stay unsent, since the run went past them, and the reports keep naming them.
+Each of these spends one round: a re-review after a reviewer's FIX blocks
+applied (Define or plan), re-spawning the acceptance tester for gaps or for the
+other reading of an ambiguous condition, a re-dispatched `BLOCKED` step, a
+quality-gate repair of a check, and each correction: after verification (a
+repair of the checks the verifier calls defective rides on the same round), for
+a review pass's findings, for people's comments on the PR, or for red CI.
 
-| Consumer | Spends a round on | When none is left |
-|---|---|---|
-| 1 | a Define re-review after its FIX blocks applied | stop; report the Define review's open blockers one by one |
-| 2 | a plan re-review, or re-spawning the acceptance tester for gaps | stop; report the plan review's open blockers or the gaps one by one |
-| 3 | a correction after verification, a re-dispatched `BLOCKED` step, an acceptance-check repair (the verifier's defective checks go to the tester as check proposals, on the round its correction would spend), a batch of the verifier's spec proposals sent to the Define agent (the same round its correction would spend), a Phase 4 or 5 coder result's plan and check proposals (one round for the owners' rulings and the coder's next run, `BLOCKED` included) | stop; report each unmet condition by name and what was tried, and each spec, plan or check proposal not sent; no cleanup, no Phase 6. A `BUILT` coder result whose proposals can't be sent goes on as if it filed none; a `BLOCKED` one goes to the planner in blocked mode first |
-| 4 | a correction for a review finding or a human reviewer's blocker (a finding or comment about a check goes to the tester as check proposals, on that round), a batch of a review pass's or a PR comment's spec proposals sent to the Define agent (the same round its correction would spend, or one when it asks for none), the plan and check proposals of a coder in that correction (one round, as for consumer 3) | before the commit: `next` goes on to the PR gate, whose summary names every open must-fix finding and each spec, plan or check proposal not sent. After it: stop; report every open must-fix finding and each unsent proposal by name |
-| 5 | a correction for red CI caused by the code, the plan and check proposals of a coder in that correction (one round, as for consumer 3) | stop; report each red check and each plan or check proposal not sent. Never merge over it |
+When none is left, `next` stops and its `REPORT` names what is still open, one
+item at a time, and `autodev.py budget raise --by <n>`. One exception: a review
+pass's correction with no round left before the commit goes on to the PR gate,
+whose summary names every open must-fix finding. Run `budget raise` only when
+the user asks for more rounds and gives the number (1 to 10; it is refused
+unless `next` just stopped on the budget). Then `next` takes the step that
+stopped, spending the new rounds as usual.
 
 Free (no round): the first review of anything, every verifier re-check, every
-cleanup run, a user's "Revise plan" at the post-plan gate, a re-spawn after
-a worker failed once, and a spec redo after the Define agent applied a
-proposal (the planner's revision, the tester's rewrite with one re-spawn for
-gaps and one ambiguity ruling, the entry-point repair and the carried check
-proposals' repair, the hand-off, cleanup and the verifier's first pass); after
-the owners ruled on a coder result's plan and check proposals, the
-entry-point repair a plan revision calls for and the coder's next run (both
-paid by that result's one round); and a proposal on a step or condition
-already ruled to stand, which is not sent. Open items that first pass finds
-are a new correction, paid as usual.
+cleanup run, a user's "Revise plan" at the post-plan gate, a re-spawn after a
+worker failed once, the entry-point repair a plan revision calls for, a stop
+and whatever the user's answer to it runs (a fix, a retry, a sign-off), and
+the re-check after a sign-off. Open items a re-check finds are a new
+correction, paid as usual.
 
 ## Stop conditions
 
@@ -67,7 +62,7 @@ reports, except #12, #20 and a merge whose outcome is unknown, comes with a
 | 9 | the planner judged the spec impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
 | 10 | the quality gate can't be made green | cleanup returns `RED` |
 | 11 | the mutation step may have left a planted change in the source | verifier returns `MUTATION_LEFT_CHANGES` |
-| 12 | the budget ran out (consumers 1–3; 4 and 5 after the commit). Lifted when the user adds rounds (`budget raise`, above) | `next`, per the table above |
+| 12 | the budget ran out (a review pass's correction before the commit goes to the PR gate instead). Lifted when the user adds rounds (`budget raise`, above) | `next` |
 | 13 | a report is stale again right after its own re-run (lifted by `auto-dev continue`) | `check-fresh`, inside `next` |
 | 14 | no code reviewer wrote a usable report, twice | `next` |
 | 15 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
@@ -76,8 +71,8 @@ reports, except #12, #20 and a merge whose outcome is unknown, comes with a
 | 18 | CI is red at the main gate | `next` |
 | 19 | GitHub refused or only queued the merge | `merge-pr` exit 3 or 4, then `next` |
 | 20 | the user chose Stop at a gate or pause | `gate … stop` |
-| 21 | the tester could not settle a spec redo's rewritten checks: gaps after its one free re-spawn, or a condition that reads two ways after the Define agent's one ruling | `next` |
-| 22 | a check the acceptance tester ruled to stand, questioned again by the verifier, a review finding or a PR comment with nothing else open: the report names both sides, and no round is spent | `next` |
+| 21 | a later worker found a SPEC.md criterion wrong or missing (the verifier, the review judge, a security reviewer, or the triager from a PR comment): the report names each item from `spec-problems/<worker>-<n>.md`. Workers never change the spec; the user decides, and a sign-off keeps it as written | `next`, on a result with `spec_problems` |
+| 22 | the acceptance tester ruled a check right as written (STANDS) that the verifier, a review finding or a PR comment called wrong: the report names both sides. A sign-off keeps the check as written | `next` |
 
 ## Hold and Stop
 
@@ -101,7 +96,8 @@ the next session:
   --checkpoint`) lifts nothing: it ended at a clean point, with no stop to
   lift, so a worker that failed once before it and once after still stops.
 - A stop on a **result** (a red quality gate #10, an impossible spec #9, a
-  mutation that may have left changes #11, …) comes back in a resumed run,
+  mutation that may have left changes #11, a wrong criterion #21, a disputed
+  check #22, …) comes back in a resumed run,
   since the result is still there. The user overrides it, in the same session
   or a new one (below). The budget stop (#12) is lifted only when the user
   adds rounds: `budget raise`, then `next` takes the step that stopped.
@@ -118,7 +114,7 @@ correction its new result calls for is paid as usual.
 | a typed instruction | `override fix --text "<the user's words>"` | the **fixer** is spawned with the words, its consent. It does what they say and nothing more: in the code, the tests, or the run's SPEC.md, plan or acceptance checks when they name them. `FIXED`: the step that stopped runs again, and so does what depends on what changed (the quality gate and the verifier on changed code; the verifier's first pass on a changed SPEC.md or plan; in Phase 6, a review of the changed files). `record` refuses a report that leaves out a path the fixer changed. An installed check the fixer edits in the worktree is sealed again from its edit (`.sealed` and `.base`), so the fixer never keeps the seal by hand; for every other change to the checks (a sealed copy before the install, a new check file, MANIFEST.md rows) it runs `autodev.py amend-checks`, which works only while its fix is open. `record` refuses a dropped test still in its file, a condition left with no check and no Not automatable row, and `FIXED` with a status other than ok. A change to the run's settings in `state.json` (a gate check's command) counts as a changed path: kept with `FIXED`, put back otherwise. Auto mode can refuse an agent's own edit of those files as test removal. `NEEDS_CONSENT` (the fix needs more than the words allow) or `CANNOT_FIX`: whatever it changed is put back, and the question comes again, with its proposal or its reason |
 | Approve the fixer's proposal | `override approve` | the fixer runs again, told to do what it proposed |
 | I fixed it myself | `override retry` | the result that stopped is set aside and its step runs again; a worker that failed twice, a refused `pr publish` or red CI (#6, #7, #13, #16, #18) get what `auto-dev continue` gives them |
-| Sign off and go on | `override signoff --text "<why>"` | the result is accepted as if it had passed: a red gate as green (for the rest of the run, while only the checks signed off fail), a disputed check as standing, a review with blockers and no FIX as clean, open findings as known (the PR gate names them), an `OVERSIZED` task as fitting. Named in `WORK_LOG.md`, the PR gate's summary and the PR body. Never offered on red CI, a confirmed security finding, a mutation that may have left changes, a stale report, an impossible spec or commits the pipeline didn't check |
+| Sign off and go on | `override signoff --text "<why>"` | the result is accepted as if it had passed: a red gate as green (for the rest of the run, while only the checks signed off fail), a disputed check as standing and a wrong criterion as written (each later worker that judges it is told the user kept it, `checks_kept` or `spec_kept` in its brief), a review with blockers and no FIX as clean, open findings as known (the PR gate names them), an `OVERSIZED` task as fitting. Named in `WORK_LOG.md`, the PR gate's summary and the PR body. Never offered on red CI, a confirmed security finding, a mutation that may have left changes, a stale report, an impossible spec or commits the pipeline didn't check |
 | Let's talk it through | `override talk` (records nothing) | talk it over with the user, sending a `lookup` for any fact about the code; then `next` asks again |
 | Leave it stopped | `override leave` | the stop is reported without the question for the rest of the session; `auto-dev continue` asks again |
 
@@ -147,9 +143,6 @@ what they said, then run `next`.
 | Main (Phase 6, once CI and human comments are settled) | Merge PR to main | `gate main proceed` | `merge-pr`, then Jira Done and the final report |
 | | Hold | `gate main hold --reason "<why>"` | the run is held at the main gate |
 | | Stop | `gate main stop --reason "<why>"` | the run stops; the PR stays open |
-| Deviation (Phases 5–6, when a verifier shows the code doing what a spec proposal that stood described; one condition at a time) | Accept the deviation | `gate deviation accept --condition <n>` | the verifier re-checks, told the deviation is accepted (no round); it writes no correction to undo it, and any other open item is corrected on the round already paid; later review passes are told not to undo it. Not offered when the condition is unmet (its acceptance check may fail, which fails the quality gate) |
-| | Keep the spec (correct the code) | `gate deviation keep --condition <n>` | the correction goes ahead, as after any `STANDS` |
-| | Stop | `gate deviation stop --condition <n>` | the run stops |
 | Worktree (after the final report) | Remove it / Keep it | `gate cleanup proceed` / `keep` | the worktree (and `.auto-dev/`) is removed or kept |
 
 The PR gate may add a question per pre-existing security finding (the two most
@@ -160,11 +153,6 @@ answer's `AFTER` line is `autodev.py mark triage-<ID> --value separate|ignore`:
 run the one for each answer the user gave. A `separate` finding is listed in
 the PR body and the final report as a follow-up for its own PR; the pipeline
 doesn't open that PR.
-
-Each deviation answer holds for the rest of the run, and a deviation from a
-security criterion is never accepted: a proposal can't name an existing S row,
-and `gate deviation accept` refuses an `S<n>`. Accepted deviations are listed
-in the PR and main gate summaries and the final report.
 
 The profile confirmation (Phase 1) has its own options: `S1-plan.md`, step 4.
 
