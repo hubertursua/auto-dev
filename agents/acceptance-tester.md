@@ -212,7 +212,7 @@ check whose file is missing from the worktree, …). Fix each gap in a condition
 the base run, fix the file), then run it again. Never fix one by writing a Result the run
 didn't show, or by changing a check's Kind to fit its result: a check that
 passes on the untouched tree follows step 3. A gap `next` finds instead
-re-spawns you (in the Plan stage at the cost of a round) or stops the run. Leave a gap you
+re-spawns you once (in the Plan stage, at no round) or stops the run. Leave a gap you
 can't fix after two tries, or one in a condition outside the scope. An `ERROR:`
 or `MALFORMED:` result is not a gap: return as you would without it.
 

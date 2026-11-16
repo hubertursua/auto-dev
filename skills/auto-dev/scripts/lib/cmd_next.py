@@ -1081,7 +1081,9 @@ def critic_step(c, after):
     if recheck is None:
         return spawn(c, "plan-critic", "recheck", {"earlier": findings},
                      rule="the critic checks the revision and each blocker (no round)")
-    if recheck["next"] == "REVISE" and c.state.get("plan_blockers") != recheck["n"]:
+    answered = c.gate("post-plan", after=recheck["seq"])  # the user saw them already
+    if recheck["next"] == "REVISE" and answered is None and \
+            c.state.get("plan_blockers") != recheck["n"]:
         c.would("send the open blockers to the post-plan gate",
                 "blockers are still open after the one revision")
         c.state["plan_blockers"] = recheck["n"]
@@ -1116,6 +1118,16 @@ def acceptance_step(c, after):
     if ambiguous.lower() not in ("none", ""):
         planner = next((r for r in c.recs("planner", after=tester["seq"], mode="revise")
                         if r.get("sets", {}).get("ambiguous")), None)
+        decided = [r for r in c.recs("planner", after=after, before=tester["seq"],
+                                     mode="revise") if r.get("sets", {}).get("ambiguous")]
+        if planner is None and decided:  # the planner decided once: no second loop
+            return stop([(f"The acceptance tester still finds condition(s) {ambiguous} "
+                          "reading two ways after the planner said which reading is "
+                          f"meant. Tell the user both readings ({c.ad}/acceptance/"
+                          f"AMBIGUOUS.md) and the planner's choice ({c.ad}/PLAN.md).")],
+                        "a condition still reads two ways after the planner's decision",
+                        retry={"aside": [job_of(tester)]},
+                        no_signoff="a check of an ambiguous condition tests a guess")
         if planner is None:
             return spawn(c, "planner", "revise", {
                 "ambiguous": f"conditions {ambiguous}; both readings, one line each, are "
@@ -1376,7 +1388,7 @@ def build_diff(c):
 # questioned, then the coder; the planner when the coder stops a step), then
 # the quality gate, which `next` has the orchestrator run as a script
 # (`autodev.py quality-gate`), never a worker. A red gate gets one coder
-# correction (a round); red again after it, the run stops and the user decides.
+# correction (no round); red again after it, the run stops and the user decides.
 
 DONE_MARK = object()
 

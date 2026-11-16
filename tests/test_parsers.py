@@ -1,5 +1,5 @@
 """Tests for autodev.py's artifact parsers (check-manifest, eval-status,
-votes, gate-summary).
+votes, and the gate summaries through tests/lib_cli.py).
 
 Run: python3 -m unittest discover -s tests -v   (from the repo root)
 

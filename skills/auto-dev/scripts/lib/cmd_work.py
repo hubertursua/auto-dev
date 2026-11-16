@@ -150,11 +150,11 @@ STEP_HEADINGS = ("## Files", "## Design", "## Build sequence", "## Test plan",
 VERDICTS = {"met", "partial", "unmet", "manual"}
 # The workers that judge against PLAN.md and may report a criterion wrong or
 # missing (spec-problems/<worker>-<n>.md); they never edit PLAN.md.
+SPEC_JUDGES = ("verifier", "reviewer", "review-judge", "security-reviewer",
+               "security-reviewer-sensitive", "triager")
 # The planner's keys `next` acts on, compared word for word.
 PLANNER_VALUES = {"reading": {"none", "tester", "other"},
                   "entry_points_changed": {"none", "yes", "no"}}
-SPEC_JUDGES = ("verifier", "reviewer", "review-judge", "security-reviewer",
-               "security-reviewer-sensitive", "triager")
 SPEC_PROBLEM_RE = re.compile(r"^\s*[-*]\s*(?:condition\s+(S?\d+)|missing)\s*:\s*(.*)$",
                              re.IGNORECASE)
 DEVIATION_RE = re.compile(r"^\s*[-*]\s+\S")

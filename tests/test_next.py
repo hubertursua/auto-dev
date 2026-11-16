@@ -657,6 +657,11 @@ class PlanTest(NextCase):
         out = self.next(5)  # asked again, without the old blockers
         self.assertNotIn("plan_blockers", self.state())
         self.assertNotIn("left these blockers open", json.dumps(out))
+        notes = [n["text"] for n in self.state()["notes"] if "still open" in n["text"]]
+        self.assertEqual(len(notes), 1)  # the critic's blockers are not sent twice
+        self.after(out, "Approve & build")
+        self.expect("acceptance-tester")
+        self.assertNotIn("plan_blockers", self.state())
 
     def test_no_round_left_for_a_revision_stops(self):
         state = self.state()
@@ -718,6 +723,18 @@ class PlanTest(NextCase):
         out, jobs = self.expect("acceptance-tester")
         self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 2"))
         self.assertNotIn("BUDGET", out)  # the other reading costs no round
+
+    def test_a_condition_still_ambiguous_after_the_planner_decided_stops(self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        (self.dir / "acceptance" / "AMBIGUOUS.md").write_text("- 2: a / b\n")
+        self.answer(*jobs[0], "WRITTEN", checks="4", ambiguous="2")
+        self.expect("planner", "REVISED", **{**PLANNED, "reading": "other"})
+        _, jobs = self.expect("acceptance-tester")
+        self.answer(*jobs[0], "WRITTEN", checks="1", ambiguous="2")  # still two ways
+        out = self.next(4)  # free, but once: no planner/tester loop
+        self.assertIn("still finds condition(s) 2 reading two ways",
+                      " ".join(out["REPORT"]))
 
     def test_an_ambiguous_condition_read_the_tester_s_way_goes_on(self):
         self.planned()
@@ -993,6 +1010,18 @@ class BuildTest(NextCase):
         (self.dir / "HANDOFF.md").write_text("# auto-dev handoff → Plan stage (checkpoint)\n")
         self.enter_stage("build")
         self.assertFalse((self.dir / "HANDOFF.md").exists())
+
+    def test_a_4x_run_that_ended_is_finished_not_old(self):
+        self.plan_session()
+        state = self.state()
+        state["schema"] = 4
+        for phase in state["phases"].values():
+            phase["status"] = "done"
+        self.write_state(state)
+        r = self.autodev("resume", "--repo", self.worktree)  # started in its worktree
+        self.assertTrue(r.stdout.startswith(f"FINISHED: {self.worktree}"), r.stdout)
+        r = self.autodev("resume", "--repo", self.repo)  # not picked as open
+        self.assertTrue(r.stdout.startswith("ASK"), r.stdout)
 
     def test_a_4x_run_is_refused(self):
         self.plan_session()

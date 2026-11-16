@@ -114,7 +114,12 @@ def old_state_fields(artifact_dir):
     if not isinstance(state, dict) or state.get("schema") != 4:
         return None
     task = state.get("task") if isinstance(state.get("task"), dict) else {}
-    return {"Task": task.get("text", ""), "Ticket": st.ticket_line(task), "version": "4.x"}
+    phases = state.get("phases") if isinstance(state.get("phases"), dict) else {}
+    statuses = [p.get("status") for p in phases.values() if isinstance(p, dict)]
+    ended = bool(statuses) and (all(s in st.COMPLETE for s in statuses)
+                                or "stopped" in statuses)
+    return {"Task": task.get("text", ""), "Ticket": st.ticket_line(task), "version": "4.x",
+            "ended": ended}
 
 
 def current_tree(repo):
@@ -197,7 +202,7 @@ def main(args):
              candidates=[f"{t} — {f.get('Task', '')}" for _, t, f, _ in open_runs])
         return 0
     unreadable(found)
-    old = [i for i in found if i[0] == "old"]
+    old = [i for i in found if i[0] == "old" and not i[2].get("ended")]
     if len(old) == 1:
         return decide_one(old[0], args)
     emit(args.json, "ASK", "no open run to continue; ask the user what to work on",
@@ -208,6 +213,10 @@ def main(args):
 
 def decide_one(item, args):
     kind, tree, fields, state = item
+    if kind == "old" and fields.get("ended"):  # nothing left to finish on 4.x
+        emit(args.json, "FINISHED", tree, run="ended on auto-dev 4.x",
+             task=fields.get("Task", ""))
+        return 0
     if kind == "old":
         version = fields["version"]
         last = {"3.x": "3.9", "4.x": "4.27"}[version]
