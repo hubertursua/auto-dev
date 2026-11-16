@@ -39,7 +39,7 @@ stack: typescript             # the stack's name, recorded in profile.md
 # creation. Run in order; stop on first failure and report.
 setup:
   - "npm ci"
-# The quality gate: the ordered checks that must all be green in Phase 5.
+# The quality gate: the ordered checks that must all be green before the push (Phase 5).
 # Each check maps to a lint/<report>.md artifact.
 # kind is advisory (compile|format|lint|typecheck|test|build); `command` is
 # what actually runs; `report` is the .auto-dev/lint/ filename; optional
@@ -85,7 +85,7 @@ Fields:
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
   before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.
-- **`test_notes`** (optional) — hints passed into the coding/cleanup briefs so
+- **`test_notes`** (optional) — hints passed into the coder's and the verifier's briefs so
   tests run at the right scope.
 - **`symbol_lookup`** (optional) — commands the `lookup` worker uses instead
   of grep to find where a module, function or class is defined (`definition`) and
@@ -224,7 +224,7 @@ Guidance to show (adapt the paths):
 > the CI and PR lookups (`gh api` can also write, so allow it only if you
 > accept that); the Jira tools, if a ticket is used
 > (`mcp__<server>__getJiraIssue` and the transition tools); and
-> `Skill(simplify)`, `Skill(code-review)` and `Skill(security-review)`.
+> `Skill(code-review)` and `Skill(security-review)`.
 
 The commands in the last snippet are an example in TypeScript; list this run's
 `setup` and `gate` commands there. Rules in `.claude/settings.json` or
@@ -237,7 +237,7 @@ the worktree you made when the run started in it.
 - **Workspaces** (example in TypeScript: `workspaces` in the root
   `package.json`, or `pnpm-workspace.yaml`): run the `gate` in the package the
   task touches (`npm test -w <package>`). Record the layout in `profile.md` and
-  pass it as a test note so the coder/cleanup run the right package's suite. The
+  pass it as a test note so the coder and the verifier run the right package's suite. The
   profiler describes the repo's layout in the profile's `test_notes`; which
   package a task touches is the run's call, so it goes in `profile.md`, never in
   the saved profile.

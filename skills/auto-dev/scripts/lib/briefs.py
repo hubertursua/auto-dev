@@ -30,7 +30,7 @@ SLOT_RE = re.compile(r"\{\{([a-z_]+)\}\}")
 MODE_RE = re.compile(r"^## Mode: ([a-z-]+)\s*$", re.MULTILINE)
 
 AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "ticket",
-        "binding_rules", "test_command", "test_notes", "mutation_cap",
+        "binding_rules", "test_command", "test_notes", "mutation_cap", "probes",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
         "symbol_lookup", "pass", "tree", "cut", "run", "pr", "triage_file", "checks_file",
         "answer_file", "blocked_file", "deviations_file", "spec_problem_file",
@@ -45,8 +45,9 @@ OPTIONAL = {"review_file", "ambiguous", "direction", "files", "since", "what_cha
 # planner, who revises from it.
 AUTO_FOR = {"review_file": {"plan-critic"}}
 # tree is AUTO (the tree at spawn time) for the security reviewers; the judge
-# needs the tree the panel reviewed, which only the caller noted.
-CALLER_FOR = {"tree": {"review-judge"}}
+# needs the tree the panel reviewed, and the reviewer the tree its pass
+# started on (review-build reads it from the brief), which only the caller noted.
+CALLER_FOR = {"tree": {"review-judge", "reviewer"}}
 
 RESULTS = {
     "profiler": {"CONFIRM"},
@@ -56,7 +57,7 @@ RESULTS = {
     "acceptance-tester": {"WRITTEN", "REPAIRED", "STANDS"},
     "coder": {"BUILT", "BLOCKED"},
     "verifier": {"ALL_MET", "CORRECT", "REPAIR", "MUTATION_LEFT_CHANGES"},
-    "cleanup": {"GREEN", "RED", "ACCEPTANCE_CHECK_FAILS_GATE"},
+    "reviewer": {"CLEAN", "MUST_FIX"},
     "code-reviewer": {"REVIEWED", "VOTED"},
     "review-judge": {"CLEAN", "MUST_FIX", "REVOTE", "VERIFIED"},
     "security-reviewer": {"CLEAN", "MUST_FIX"},

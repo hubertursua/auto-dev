@@ -1,6 +1,6 @@
 ---
 name: auto-dev-coder
-description: auto-dev pipeline only — Phase 4 coder (TDD) for the build and every correction round. Implements PLAN.md with tests; never commits; builds a wrong plan step the way that works and records the deviation. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 4 coder (TDD) for the build and every correction round. Implements PLAN.md with tests and runs the quality gate to green; never commits; builds a wrong plan step the way that works and records the deviation. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
@@ -57,6 +57,25 @@ Never type the test command yourself: a permission check refuses `cd
 check has no scoped form, run the whole suite. Scope hints: {{test_notes}}. Do NOT
 commit and do NOT open a PR — just leave the working tree with the change
 implemented.
+
+Before you return, run the quality gate (the Definition of Done, from
+{{artifact_dir}}/profile.md `gate`) and make it green. Run each check IN
+ORDER, with the `run:` command listed under it:
+{{gate_commands}}
+That command runs the profile's command exactly as written, in the worktree,
+saves its whole output under {{artifact_dir}}/tmp/run/, and prints the exit
+code and the output's last lines. Never type a profile command yourself. Run
+it IN FULL, never scoped or sampled; a slow check goes in the background with
+`--timeout <seconds>` added. Fix what it reports in your code; a check's final
+run must come after your last edit. Make at most 3 fix attempts per failing
+check; one still failing after that, or one that fails only on an acceptance
+check's lines (which you never touch), stays failing: say which and why in one
+line above the result block. A warning you must suppress, suppress as narrowly
+as possible. A check that fails only on files under {{artifact_dir}}/ (the
+pipeline's own scratch, which git ignores and nothing ships) passes: never
+edit those files, add them to an ignore file or change the command to hide
+them. You write no gate reports: once you return, the run confirms the gate
+itself (`autodev.py quality-gate`) before anything is pushed.
 
 The acceptance checks are already in the tree: the acceptance tester wrote a
 test for each condition before any code, and the run committed them as their
@@ -129,7 +148,8 @@ in the task above still apply, and so does BLOCKED: if a change cannot be
 made honestly, stop and say why.
 
 Report TEST CHANGES, BLOCKED and any deviation from the plan as in the task
-above. Do not commit or open a PR.
+above, and run the quality gate to green before you return, as the task above
+says. Do not commit or open a PR.
 
 ## Result
 

@@ -6,7 +6,8 @@ state, and records what it did in state.json.
 
 commit --message "<type>(<scope>): <summary>" [--body TEXT]
     Re-checks that every report checked the code as it is now (check-fresh.py;
-    before the first review pass, which runs on the draft PR, only Phase 5's),
+    before the first review pass, which runs on the draft PR, only the quality
+    gate's lint reports),
     stages every changed path outside .auto-dev/ by name (deleted paths with
     `git rm --cached`), runs check-staged.py on exactly that list, commits, then
     checks the commit carries the checked code (check-fresh.py --ref HEAD) and
@@ -560,7 +561,10 @@ def pr_body(args):
         sha = state.get("phase6", {}).get("verified_sha")
         if not sha:
             raise Fail("no verified commit yet: commit first", FAILED, "NO-COMMIT")
-        path = generate(state, Path(state["artifact_dir"]), sha)
+        ad = Path(state["artifact_dir"])
+        # Before the first review pass (the draft), the body says nothing ran yet.
+        path = generate(state, ad, sha, reviewed=bool(state["phase6"].get("passes"))
+                        or (ad / "CODE_REVIEW.md").exists())
         state["phase6"]["body"] = {"sha": sha, "path": str(path), "seq": st.seq(state)}
         st.save(args.dir, state)
         emit(args.json, "WRITTEN", str(path), commit=sha,

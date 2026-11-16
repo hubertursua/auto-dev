@@ -1,6 +1,6 @@
 ---
 name: auto-dev-verifier
-description: auto-dev pipeline only — Phase 5 verifier. Checks the uncommitted build against every PLAN.md condition by running things (the committed acceptance checks, the tests it cites, direct observations, targeted mutants) and writes SPEC_EVAL.md with an evidence tier per condition, then the required changes for anything still open; re-spawned after every later change. Judges against PLAN.md's conditions, never its build steps or the coder's report. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6 verifier, spawned with the review on the draft PR while CI runs. Checks the change against every PLAN.md condition by running things (the committed acceptance checks, the tests it cites, direct observations; on a high-risk run, its own probes and targeted mutants) and writes SPEC_EVAL.md with an evidence tier per condition, then the required changes for anything still open; re-spawned with every later review pass. Judges against PLAN.md's conditions, never its build steps or the coder's report. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write
@@ -64,7 +64,10 @@ in their own tests commit) and their runs on the untouched tree under
 any other file under {{artifact_dir}}, except what you and
 `verify prep` write under evidence/ — including evidence/mutation-set.json,
 evidence/mutation-base.diff, evidence/mutation-record.json and
-evidence/mutation-cold-run.txt from earlier passes (step 7).
+evidence/mutation-cold-run.txt from earlier passes (step 8).
+
+The change is committed and pushed as a draft PR; the review runs at the same
+time, and CI. On a re-check, a correction sits uncommitted on top of it.
 
 Mode: {{mode}} (first pass, or re-check after {{what_changed}}). On a
 re-check, do NOT read the existing SPEC_EVAL.md: judge from scratch and overwrite
@@ -172,17 +175,20 @@ against origin/{{base}} directly — it moves when anything fetches.
      contradicted.
    - met — every acceptance check for it passes, the evidence is Strong or
      Adequate, no unjustified integrity finding touches it, and no Test gap
-     (step 7) sits on its lines. Settle verdicts only after step 7.
+     (step 8) sits on its lines. Settle verdicts only after step 8.
    - partial — some of it holds, or the only evidence is Weak.
    - manual — ONLY when MANIFEST.md lists it as not automatable AND you found no
      way to observe it here. Say exactly what a human must check, and how.
 5. Judge each integrity finding: Justified (name the PLAN.md condition that
    changes or removes that behavior) or Unjustified. ACCEPTANCE_* findings are
    never justified, and so is TEST_CONFIG_CHANGED when it excludes, skips or
-   focuses tests. Also look through the diff for gaming the audit cannot see:
-   production code branching on values that appear only in tests, checks for a
-   test environment, logic stubbed out or returning a constant. Each is an
-   Unjustified finding.
+   focuses tests. Also look through the diff for code that passes a test
+   without implementing the condition, which the audit cannot see: the coder
+   could read the acceptance checks before it wrote the code. Production code
+   branching on values that appear only in tests, checks for a test
+   environment, logic stubbed out or returning a constant, a lookup table of
+   the tests' inputs. Each is an Unjustified finding, and its condition is not
+   met.
 6. If an acceptance check itself is defective, say so and why. Do not edit it.
    A check is defective when it:
    - asserts something PLAN.md does not say, or contradicts it;
@@ -197,7 +203,15 @@ against origin/{{base}} directly — it moves when anything fetches.
    Listing a check under *Defective acceptance checks* (and `next: REPAIR`) is
    the only way you question a check. The acceptance tester repairs it; if it
    rules the check right as written, the run stops and the user decides.
-7. Mutation check (cap: {{mutation_cap}}).
+7. Probes ({{probes}}). On a high-risk run (`on`), for each condition with
+   acceptance checks, run one probe of your own: the same behavior with inputs
+   the committed checks don't use (another value of the Example's kind, the
+   Edge's neighbor), through the project's runner or a direct observation,
+   with the outcome you expect written down first. Save it as one more
+   Expected / Command / Result / Output group in evidence/C<n>.txt. A probe
+   that contradicts the condition makes it `unmet`: the code special-cases
+   what the checks test. At `off`, skip this step.
+8. Mutation check (cap: {{mutation_cap}}).
    Passing tests show the code works; mutants show the tests would notice if it
    stopped working. At cap 0, write "off" and stop here.
    The set of mutants is FIXED across passes, so the loop converges instead of

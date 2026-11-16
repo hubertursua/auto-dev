@@ -30,9 +30,11 @@ The pipeline:
 Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (Plan)
 Phase 2  Plan    → PLAN.md (conditions, size, risk, steps), checked by a critic  (Plan)
 Phase 3  Tests   → acceptance checks, committed first; then the post-plan gate if it's on  (Plan)
-Phase 4  Build   → the coder builds from the plan                               (Build)
-Phase 5  Verify  → cleanup and the quality gate, then the verifier runs checks (Build)
-Phase 6  Ship    → draft PR, reviews alongside CI, ready gate, main gate, merge  (Ship)
+Phase 4  Build   → the coder builds from the plan and runs the quality gate     (Build)
+Phase 5  Gate    → you run `autodev.py quality-gate` (no worker); risk re-check  (Build)
+Phase 6  Ship    → draft PR; the verifier and the review together, alongside CI;
+                   one correction for what is open and red CI; ready gate,
+                   main gate, merge                                             (Ship)
 ```
 
 It runs straight through in one session, in three stages: **Plan**, **Build**,
@@ -48,8 +50,11 @@ One planner writes `PLAN.md`, and a fresh plan critic checks it against the
 ticket and the code. With blockers, the planner revises once and the critic
 re-checks only the revision; blockers still open go to the user at the
 post-plan gate. The planner proposes the risk tier, the critic can raise it,
-and `next` re-checks it from the diff once the build is verified; it never
-goes down.
+and `next` re-checks it from the diff once the quality gate is green, before
+anything is pushed; it never goes down. A standard-risk run gets one verifier
+and one reviewer (code and security); a high-risk run adds the review panel
+with its judge, the separate security reviewer, mutation and the verifier's
+own probes.
 
 ## Paths
 
@@ -168,16 +173,16 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Worker | Agent type | Model · effort |
 | ------ | ---------- | -------------- |
 | Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high |
-| Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · xhigh |
+| Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · high |
 | Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high |
 | Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
 | Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
-| Verifier (Phase 5, re-spawned on every change) | `auto-dev:verifier` | `opus` · high |
-| Cleanup agent (Phase 5, re-spawned on fixes) | `auto-dev:cleanup` | `sonnet` · high |
-| Code reviewer, ×3 panel + re-votes (Phase 6) | `auto-dev:code-reviewer` | `opus` · high |
-| Review judge (Phase 6) | `auto-dev:review-judge` | `opus` · xhigh |
-| Security reviewer (Phase 6) | `auto-dev:security-reviewer` | `opus` · xhigh |
-| Security reviewer, sensitive paths (Phase 6) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
+| Verifier (Phase 6, spawned with the review on every pass) | `auto-dev:verifier` | `opus` · high |
+| Reviewer (Phase 6, standard risk: code and security) | `auto-dev:reviewer` | `opus` · high |
+| Code reviewer, ×3 panel + re-votes (Phase 6, high risk) | `auto-dev:code-reviewer` | `opus` · high |
+| Review judge (Phase 6, high risk) | `auto-dev:review-judge` | `opus` · high |
+| Security reviewer (Phase 6, high risk) | `auto-dev:security-reviewer` | `opus` · high |
+| Security reviewer, sensitive paths (Phase 6, high risk) | `auto-dev:security-reviewer-sensitive` | `opus` · high |
 | Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high |
 | Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium |
 | Fixer: the user's instruction at a stop | `auto-dev:fixer` | `opus` · high |

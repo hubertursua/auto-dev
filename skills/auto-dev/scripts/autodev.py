@@ -39,6 +39,7 @@ Subcommands:
     check-artifact     check an artifact against its template before returning it
     mutants   pick which mutants a verifier re-check runs again; record a finished pass
     run       run one of the profile's gate or test commands in the worktree
+    quality-gate       run the whole quality gate and write its lint reports
     verify    the verifier's routine steps: prep a pass, then compare the tree
     next      print the pipeline's one next action (the orchestrator's loop)
     override  answer a stop: fix it as the user says, retry, sign off, talk, leave
@@ -60,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import (
     cmd_amend,
     cmd_checks,
+    cmd_gate,
     cmd_handoff,
     cmd_init,
     cmd_mutants,
@@ -108,6 +110,7 @@ COMMANDS = {
     "check-artifact": (cmd_work, cmd_work.check_artifact),
     "mutants": (cmd_mutants, cmd_mutants.main),
     "run": (cmd_run, cmd_run.main),
+    "quality-gate": (cmd_gate, cmd_gate.main),
     "verify": (cmd_verify, cmd_verify.main),
     "next": (cmd_next, cmd_next.main),
     "pr": (cmd_pr, cmd_pr.main),

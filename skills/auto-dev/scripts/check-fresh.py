@@ -27,8 +27,9 @@ With --ref, the hash is `<rev>^{tree}` instead: the code a commit carries
 (`--ref HEAD` after a commit, `--ref origin/<branch>` for what a PR holds).
 
 --phase picks which reports must match:
-    5   SPEC_EVAL.md and lint/*.md (the reports Phase 5 writes)
-    6   those plus CODE_REVIEW.md and SECURITY_REVIEW.md (the default)
+    5   lint/*.md (the quality gate's reports, which Phase 5 writes)
+    6   those plus SPEC_EVAL.md, CODE_REVIEW.md and SECURITY_REVIEW.md (the
+        default: the verifier and the review run on the draft PR, in Phase 6)
 A report that is missing, or has no `Tree:` line holding a hash, counts as
 stale: nothing says which code it checked.
 
@@ -154,9 +155,10 @@ def changed_since(top, old, new):
 def reports(artifact_dir, phase):
     """The reports that must match, in the order the pipeline writes them."""
     lint = sorted((artifact_dir / "lint").glob("*.md"))
-    found = [artifact_dir / "SPEC_EVAL.md", *(lint or [artifact_dir / "lint" / "*.md"])]
+    found = list(lint or [artifact_dir / "lint" / "*.md"])
     if phase == "6":
-        found += [artifact_dir / "CODE_REVIEW.md", artifact_dir / "SECURITY_REVIEW.md"]
+        found += [artifact_dir / "SPEC_EVAL.md", artifact_dir / "CODE_REVIEW.md",
+                  artifact_dir / "SECURITY_REVIEW.md"]
     return found
 
 

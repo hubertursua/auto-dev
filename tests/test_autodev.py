@@ -3902,3 +3902,150 @@ class ReviewBuildTest(RunCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SoloReviewBuildTest(RunCase):
+    """`review-build --solo`: a standard-risk pass's one reviewer judged its own
+    findings, with no findings.md, no `From:` lines and no security leads."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.init().returncode, 0)
+        self.folder = self.dir / "review" / "pass-1"
+        self.folder.mkdir(parents=True)
+        self.tree = subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"),
+                                    "--print-tree", str(self.worktree)], capture_output=True,
+                                   text=True, check=True).stdout.strip()
+        self.set_pass(1)
+
+    def set_pass(self, n, tree=None):
+        state = self.state()
+        state.setdefault("phase6", {})["review_pass"] = n
+        state.setdefault("briefs", []).append(
+            {"worker": "reviewer", "mode": None, "n": len(state["briefs"]) + 1,
+             "sets": {"scope": "first" if n == 1 else "after-commit",
+                      "tree": tree or self.tree}})
+        self.write_state(state)
+        self.folder = self.dir / "review" / f"pass-{n}"
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+    def solo(self, judgment_text):
+        (self.folder / "JUDGMENT.md").write_text(judgment_text)
+        return self.autodev("review-build", "--solo", "--dir", self.dir)
+
+    def finding(self, title="null due date crashes sort", **kw):
+        return "\n".join(ln for ln in judged("J1", "-", title, **kw).splitlines()
+                         if not ln.startswith("- From:")) + "\n\n"
+
+    def test_a_finding_that_holds_is_must_fix_on_its_one_vote(self):
+        r = self.solo("# Judgment — pass 1\n\n" + self.finding()
+                      + "## Earlier must-fix\nnone\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("next: MUST_FIX", r.stdout)
+        report = (self.dir / "CODE_REVIEW.md").read_text()
+        self.assertIn("**Overall confidence: Medium** — reviewers finished: 1/1", report)
+        self.assertIn("| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | "
+                      "1/1 | Medium | open |", report)
+        self.assertNotIn("| C1 |", report.split("## Pending re-vote")[1].split("##")[0])
+        self.assertIn(f"Tree: {self.tree}", report)
+        self.assertIn("make the comparator handle a missing due date",
+                      (self.folder / "corrections.md").read_text())
+
+    def test_an_advisory_or_refuted_finding_is_not_must_fix(self):
+        r = self.solo("# Judgment — pass 1\n\n"
+                      + self.finding("names are long", category="conventions", detail=False)
+                      + "## Earlier must-fix\nnone\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("next: CLEAN", r.stdout)
+        self.assertIn("conventions is an advisory category",
+                      (self.dir / "CODE_REVIEW.md").read_text())
+
+    def test_a_later_pass_marks_the_earlier_finding_fixed(self):
+        self.solo("# Judgment — pass 1\n\n" + self.finding()
+                  + "## Earlier must-fix\nnone\n")
+        self.set_pass(2)
+        r = self.solo("# Judgment — pass 2\n\n## Earlier must-fix\n- C1: fixed\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("next: CLEAN", r.stdout)
+        self.assertIn("| fixed (pass 2) |", (self.dir / "CODE_REVIEW.md").read_text())
+
+    def test_a_missing_detail_line_is_malformed(self):
+        text = self.finding().replace("- Required change:", "- Something:")
+        r = self.solo("# Judgment — pass 1\n\n" + text + "## Earlier must-fix\nnone\n")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a must-fix candidate needs `Required change:`", r.stdout)
+        self.assertFalse((self.dir / "CODE_REVIEW.md").exists())
+
+
+class QualityGateTest(RunCase):
+    """`autodev.py quality-gate`: the profile's whole gate, run by `next`'s
+    orchestrator before the push, with its lint reports and a state record."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.init().returncode, 0)
+
+    def set_gate(self, *checks):
+        state = self.state()
+        state["settings"]["gate"] = list(checks)
+        self.write_state(state)
+
+    def tree(self):
+        return subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"),
+                               "--print-tree", str(self.worktree)], capture_output=True,
+                              text=True, check=True).stdout.strip()
+
+    def test_green_writes_a_passing_report_on_the_tree(self):
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("GREEN: every check passed"), r.stdout)
+        report = (self.dir / "lint" / "TEST.md").read_text()
+        self.assertTrue(report.startswith("# TEST — pass"), report)
+        self.assertIn(f"- **Tree:** {self.tree()}", report)
+        check = self.autodev("check-artifact", str(self.dir / "lint" / "TEST.md"))
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["result"], run["tree"], run["failing"]),
+                         ("GREEN", self.tree(), []))
+
+    def test_every_check_runs_and_a_failure_is_red(self):
+        py = shlex.quote(sys.executable)
+        self.set_gate({"kind": "lint", "command": f"{py} -c 'print(\"bad line\"); "
+                                                  f"raise SystemExit(3)'",
+                       "report": "LINT.md"},
+                      {"kind": "test", "command": "true", "report": "TEST.md"})
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("RED: 1 of 2 checks failed"), r.stdout)
+        lint = (self.dir / "lint" / "LINT.md").read_text()
+        self.assertTrue(lint.startswith("# LINT — fail"), lint)
+        self.assertIn("bad line", lint)
+        self.assertTrue((self.dir / "lint" / "TEST.md").read_text().startswith(
+            "# TEST — pass"))  # the second check ran after the first failed
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["LINT.md"])
+
+    def test_a_check_that_rewrites_the_code_runs_again_on_what_it_wrote(self):
+        py = shlex.quote(sys.executable)
+        once = (f"{py} -c 'import pathlib; p = pathlib.Path(\"fmt.ts\"); "
+                f"p.exists() or p.write_text(\"x\\n\")'")
+        self.set_gate({"kind": "format", "command": once, "report": "FORMAT.md"})
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"- **Tree:** {self.tree()}",
+                      (self.dir / "lint" / "FORMAT.md").read_text())
+        self.assertIn("ran again", self.state()["notes"][-1]["text"])
+
+    def test_a_check_that_rewrites_the_code_every_run_is_red(self):
+        py = shlex.quote(sys.executable)
+        always = (f"{py} -c 'import pathlib, time; "
+                  f"pathlib.Path(\"stamp.ts\").write_text(str(time.time_ns()))'")
+        self.set_gate({"kind": "format", "command": always, "report": "FORMAT.md"})
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("the code changed on every run", r.stdout)
+
+    def test_no_gate_could_not_run(self):
+        self.set_gate()
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no quality gate", r.stderr)
