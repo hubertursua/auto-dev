@@ -135,7 +135,7 @@ what they said, then run `next`.
 | | Already In Progress (also run without asking when the ticket's status shows it) | `gate jira already` | no move now; Jira moves at each later milestone |
 | | Leave Jira alone | `gate jira leave` | no Jira move for the rest of the run |
 | | Stop | `gate jira stop` | the run stops |
-| Post-plan (Phase 3; on when `HIGH_RISK` or `gates.post_plan: true` in `.auto-dev.yml`) | Approve & build | `gate post-plan proceed` | Phase 3 ends; the session hands off |
+| Post-plan (Phase 3; on when `HIGH_RISK` or `gates.post_plan: true` in `.auto-dev.yml`) | Approve & build | `gate post-plan proceed` | Phase 3 ends; the Build stage starts |
 | | Revise plan (tell me what to change) | `gate post-plan revise --reason "<the user's words>"` | the planner revises (no round); if its entry points changed the tester repairs the checks; the gate is asked again |
 | | Stop | `gate post-plan stop` | the run stops |
 | Open the PR (Phase 6, before the first push; only with `gates.open_pr: true` in `.auto-dev.yml`) | Open PR | `gate pr proceed` | commit, push, open the draft PR |
@@ -158,7 +158,7 @@ run the one for each answer the user gave. A `separate` finding is listed in
 the PR body (published again before the PR is marked ready) and the final
 report as a follow-up for its own PR; the pipeline doesn't open that PR.
 
-The profile confirmation (Phase 1) has its own options: `S1-plan.md`, step 4.
+The profile confirmation (Phase 1) has its own options: `plan.md`, step 4.
 
 ## Freshness: when a report no longer matches the code
 
@@ -169,7 +169,7 @@ points; you never run it yourself.
 | When | A stale report means | What happens |
 |---|---|---|
 | End of Phase 5 | something rewrites the code on every run | stop (#13) |
-| Start of Phase 6, nothing committed yet | the code changed outside the pipeline since S2 | the quality gate and the verifier run again before the first commit; the review then runs on the draft PR |
+| Start of Phase 6, nothing committed yet | the code changed outside the pipeline since the Build stage | the quality gate and the verifier run again before the first commit; the review then runs on the draft PR |
 | `commit` | the code changed after its checks | re-checked as above, then committed |
 | The ready-for-review gate | the code changed after the reviews | the quality gate, the verifier and a review pass of the change run again; it is committed on top and the gate is asked again |
 | Before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#17); once the user brings the commits into the worktree, the quality gate and the verifier run again, a review pass covers what they changed, `commit` verifies the new head, or commits the re-check's edits on top, and the main gate is asked again |

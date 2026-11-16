@@ -5,18 +5,20 @@ Usage:
                        [--assumption "<text>" ...] [--do-not "<text>" ...]
                        [--pick-up-at "<text>"] [--json]
 
-Writes `<artifact-dir>/HANDOFF.md` for the session that holds the first phase
-not done: the task (a `Task:` line, and an `Ask:` line with the restated ask),
-what is done, the next phase, the run files that session's orchestrator may
-open (the workers read the rest; `next` names them), and the
-slots only you can fill (`--assumption`, `--do-not`, `--pick-up-at`). Without
-`--pick-up-at`, the pick-up point is `auto-dev continue`: `next` decides the
-step. `--checkpoint` marks a context checkpoint inside a session rather than a
-session boundary, and records it, so the `resume` that follows lifts no stop.
+The run goes straight through in one session; a session ends only at a
+checkpoint (`next` exits 6 with `handoff --checkpoint`, so no session's context
+grows without bound), or when the user asks to stop (SKILL.md). Writes `<artifact-dir>/HANDOFF.md`
+for the session that picks the run up: the task (a `Task:` line, and an `Ask:`
+line with the restated ask), what is done, the stage and phase it is in and
+that stage's runbook (references/<stage>.md), the run files its orchestrator
+may open (the workers read the rest; `next` names them), and the slots only you
+can fill (`--assumption`, `--do-not`, `--pick-up-at`). Without `--pick-up-at`,
+the pick-up point is `auto-dev continue`: `next` decides the step.
+`--checkpoint` records the checkpoint, so the `resume` that follows lifts no
+stop: nothing was stopped.
 
 Then prints the message to give the user: start a fresh session in the
-worktree and say `auto-dev continue`. Stop after that; do not begin the next
-phase.
+worktree and say `auto-dev continue`. Stop after that.
 
 Exit codes:
     0  HANDOFF.md written; the message is printed
@@ -29,15 +31,10 @@ from pathlib import Path
 from . import state as st
 from .output import Fail, emit
 
-# The run files the next session's orchestrator may open, by session. The
-# workers read the rest; S3 writes the PR's Summary from SPEC.md.
-FILES = {
-    "S1": ["profile.md", "WORK_LOG.md"],
-    "S2": ["profile.md"],
-    "S3": ["profile.md", "SPEC.md"],
-}
-LABELS = {"S1": "S1 Plan", "S2": "S2 Build", "S3": "S3 Ship"}
-DONE_MESSAGE = {"S1": "Setup", "S2": "Plan", "S3": "Build"}
+# The run files the next session's orchestrator may open, by stage. The
+# workers read the rest; the Ship stage writes the PR's Summary from SPEC.md.
+FILES = {"plan": ["profile.md", "WORK_LOG.md"], "build": ["profile.md"],
+         "ship": ["profile.md", "SPEC.md"]}
 
 
 def add_arguments(parser):
@@ -57,20 +54,20 @@ def main(args):
     if opened is None or st.run_state(state) == "stopped":
         raise Fail("nothing to hand off: the run is finished or stopped")
     number, _status = opened
-    session = st.SESSIONS[number]
+    stage = st.STAGES[number]
     artifact_dir = Path(state["artifact_dir"])
-    kind = "resume" if args.checkpoint else "next session"
+    kind = "checkpoint" if args.checkpoint else "session ended"
     pick_up = args.pick_up_at or "say `auto-dev continue`; `next` decides the step"
     budget = state["budget"]
     done = [f"- Phase {n} {name}: {st.phase(state, n)['notes'] or 'done'}"
             for n, name in st.PHASES if st.phase(state, n)["status"] in st.COMPLETE]
-    files = [f"- {artifact_dir / f}" for f in FILES[session]
+    files = [f"- {artifact_dir / f}" for f in FILES[stage]
              if (artifact_dir / f).exists()]
     task = state["task"]
     ticket = task.get("ticket")
     title = ticket if ticket and ticket != "none" else task.get("text", "")
     lines = [
-        f"# Handoff — {title} → {LABELS[session]} ({kind})",
+        f"# Handoff — {title} → {st.STAGE_NAMES[stage]} stage ({kind})",
         "",
         f"Task: {' '.join(str(task.get('text', '')).split())}",
         *([f"Ask: {' '.join(str(task['ask']).split())}"] if task.get("ask") else []),
@@ -82,7 +79,8 @@ def main(args):
         *(done or ["- nothing yet"]),
         "",
         "## Next",
-        f"Phase {number} — {st.PHASE_NAMES[number]}. Say `auto-dev continue`.",
+        (f"Phase {number} — {st.PHASE_NAMES[number]}, in the {st.STAGE_NAMES[stage]} stage "
+         f"(runbook: references/{stage}.md). Say `auto-dev continue`."),
         f"Pick up at: {pick_up}",
         "",
         "## Files you may open",
@@ -96,17 +94,13 @@ def main(args):
         *[f"- {d}" for d in args.do_not],
     ]
     (artifact_dir / "HANDOFF.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    st.add_note(state, f"handoff written for {LABELS[session]} ({kind})")
+    st.add_note(state, f"handoff written for the {st.STAGE_NAMES[stage]} stage ({kind})")
     if args.checkpoint:
         state["checkpoint_seq"] = st.seq(state)
     st.save(args.dir, state)
-    if args.checkpoint:
-        message = (f"Checkpoint: progress saved in {artifact_dir}. Start a fresh "
-                   f"session in {state['worktree']} and say `auto-dev continue`.")
-    else:
-        message = (f"{DONE_MESSAGE[session]} session complete. Artifacts in "
-                   f"{artifact_dir}. Start a fresh session in {state['worktree']} "
-                   f"and say `auto-dev continue` to run {LABELS[session]}.")
+    message = (f"{'Checkpoint: progress' if args.checkpoint else 'Progress'} saved in "
+               f"{artifact_dir}. Start a fresh session in {state['worktree']} and say "
+               "`auto-dev continue`: the run picks up where it is.")
     emit(args.json, "HANDOFF", str(artifact_dir / "HANDOFF.md"), tell_user=message,
-         then="stop; do not begin the next phase")
+         then="stop here")
     return 0

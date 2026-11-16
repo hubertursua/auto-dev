@@ -1,11 +1,11 @@
-# S1 — Plan (Phases 1–3)
+# Plan stage (Phases 1–3)
 
 Phase 1 is the one part of the run you do by hand: steps 1–6 below. From step 7
 on, `autodev.py next` drives. `autodev.py` means `python3
 <skill-dir>/scripts/autodev.py`; `<repo>` is the absolute path of the checkout
 you started in: the main checkout, or a worktree the user made for this task.
 
-On a run resumed in S1 (`resume` printed `RESUME <tree>`), `cd <tree>`. IF
+On a run resumed in the Plan stage (`resume` printed `RESUME <tree>`), `cd <tree>`. IF
 `resume` also printed an `action:` line (setup is not done), run it
 (`autodev.py init --continue <tree>`, adding `--profile <file>` when the fix
 was in the profile) and act on its exit code as step 5's table says. Then skip
@@ -154,7 +154,7 @@ used yours). Every later step runs there.
 ### 7. Run the loop
 
 Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
-see in S1, in order:
+see in the Plan stage, in order:
 
 1. `define` writes `SPEC.md` and the size check, from the ticket text `init`
    stored (else your `--ask`). `OVERSIZED` → exit 4: tell
@@ -176,11 +176,14 @@ see in S1, in order:
    briefed again by that `next`, with the refused issues.
 6. The post-plan gate (exit 5) when the task is high-risk or the repo turns it
    on.
-7. Exit 6: run its `AFTER` command exactly as printed (`handoff` at the end of the
-   session, `handoff --checkpoint` at a checkpoint), give the user its message,
-   stop.
+7. Once the plan is done, `next` says the run goes on to the Build stage in this
+   session: read `references/build.md`, as its `ACTION` says, then run `next`.
+   Don't stop or hand off.
+8. Exit 6, a checkpoint: run its `AFTER` command exactly as printed (`handoff
+   --checkpoint`), give the user its message, stop. A fresh session picks the
+   run up where it is.
 
-### Stops in S1
+### Stops in the Plan stage
 
 Every stop is exit 4 with its reason in `REPORT`, and most ask how to go on
 (`SKILL.md`, _A stop_). The full list is

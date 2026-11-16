@@ -8,7 +8,8 @@ run) or a `WORK_LOG.md` with no state.json (a 3.x run), and prints one
 decision on the first line:
 
     FRESH            --task names no run here: start a fresh run (init)
-    RESUME <tree>    continue this run: session, phase and status follow. It
+    RESUME <tree>    continue this run: its stage (and that stage's runbook,
+                     references/<stage>.md), phase and status follow. It
                      records that a new session holds the run, and un-holds a
                      phase held at a gate, so `next` asks that gate again. A
                      stop on a worker (blocked, failed twice, never returned)
@@ -113,7 +114,8 @@ def describe(tree, state):
         return {"tree": tree, "run": st.run_state(state)}
     number, status = opened
     info = {"tree": tree, "run": st.run_state(state),
-            "session": st.SESSION_NAMES[st.SESSIONS[number]],
+            "stage": st.STAGE_NAMES[st.STAGES[number]],
+            "runbook": f"references/{st.STAGES[number]}.md",
             "phase": f"{number} — {st.PHASE_NAMES[number]}", "status": status,
             "task": state["task"].get("text", ""),
             "budget": f"{state['budget']['remaining']} of {state['budget']['total']}"}
@@ -202,10 +204,12 @@ def decide_one(item, args):
 
 
 def start_session(tree, state):
-    """A new session picks the run up: it holds the first open phase's session,
-    and a held gate is asked again (`next` re-fires it)."""
+    """A new session picks the run up in the first open phase's stage (the
+    orchestrator reads its runbook), and a held gate is asked again (`next`
+    re-fires it)."""
     number, _ = st.first_open_phase(state)
-    state["session"] = st.SESSIONS[number]
+    state["stage"] = st.STAGES[number]
+    state.pop("session", None)  # 4.x named the session; the stage replaces it
     for n, _ in st.PHASES:
         if st.phase(state, n)["status"] == "held":
             st.set_phase(state, n, "in-progress")
@@ -217,5 +221,5 @@ def start_session(tree, state):
             brief.pop("emitted", None)  # a worker that never returned gets new tries
         state["resumed_seq"] = st.seq(state)
     state["session_seq"] = st.seq(state)
-    st.add_note(state, f"resumed in a new session ({st.SESSION_NAMES[state['session']]})")
+    st.add_note(state, f"resumed in a new session ({st.STAGE_NAMES[state['stage']]} stage)")
     st.save(Path(tree) / ".auto-dev", state)

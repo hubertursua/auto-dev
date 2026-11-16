@@ -18,7 +18,7 @@ any clone or worktree of the same repo find it.
   the right package.
 - **Repo-local override — `.auto-dev.yml`** — every key a project can override.
 
-How a run finds, researches and confirms the profile is `references/S1-plan.md`,
+How a run finds, researches and confirms the profile is `references/plan.md`,
 step 4. `autodev.py init` then validates it, applies `.auto-dev.yml` over it,
 refuses a quality gate with no test command, and writes `.auto-dev/profile.md`.
 

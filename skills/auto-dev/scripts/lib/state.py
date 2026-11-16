@@ -18,9 +18,11 @@ LEDGER = "WORK_LOG.md"
 PHASES = ((1, "Setup"), (2, "Define"), (3, "Plan"), (4, "Build"), (5, "Verify"),
           (6, "Ship"))
 PHASE_NAMES = dict(PHASES)
-# Which session holds each phase.
-SESSIONS = {1: "S1", 2: "S1", 3: "S1", 4: "S2", 5: "S2", 6: "S3"}
-SESSION_NAMES = {"S1": "S1 — Plan", "S2": "S2 — Build", "S3": "S3 — Ship"}
+# The run goes straight through in one session. Its phases fall in three
+# stages, each with the runbook the orchestrator reads as the run enters it
+# (references/<stage>.md).
+STAGES = {1: "plan", 2: "plan", 3: "plan", 4: "build", 5: "build", 6: "ship"}
+STAGE_NAMES = {"plan": "Plan", "build": "Build", "ship": "Ship"}
 
 # `held` pauses the run where it is (resuming re-fires the gate that held it, or
 # for Phase 1 a failed setup, which `init --continue` runs again);
@@ -59,7 +61,7 @@ def new_state(task, repo, worktree, branch, settings, budget_total):
         "init": {"setup": "pending"},
         "phase6": {},
         "events": 0,           # bumped on every write; `seq` stamps order events
-        "session": "S1",       # the session running now; `resume` moves it on
+        "stage": "plan",       # the stage whose runbook the orchestrator has read
     }
 
 
