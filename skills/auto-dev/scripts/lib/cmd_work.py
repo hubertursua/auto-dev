@@ -54,17 +54,17 @@ record <worker> <n>
     every key of the worker's `auto-dev-result` block is present. Then, for an
     ok return, it re-derives the same decision from the artifacts the worker
     wrote: the verifier's `next` against `eval-status`, and its required
-    changes (one entry at least for CORRECT and INSTALL_CONFLICT); the judge's
+    changes (one entry at least for CORRECT); the judge's
     `next`, must-fix and re-vote counts against CODE_REVIEW.md; the cleanup
     agent's GREEN against the lint reports; the triager's class and counts
-    against its triage files (blockers in `triage_file`, held-out check
+    against its triage files (blockers in `triage_file`, acceptance check
     comments in `checks_file`); the lookup's answer at lookups/<n>.md; for
-    the acceptance tester, that each sealed copy of a file that exists only
-    adds lines to it (before the build is installed, a sealed copy with no
-    files/<path>.base gets one first: the file at HEAD, when it is there). A
-    required-changes file that reaches the coder unedited (the verifier's, the
-    judge's, the triager's) must not copy the wording of PLAN.md's conditions
-    (`spec-overlap`), nor may the coder's other brief from a PLAN.md reader.
+    the acceptance tester, that each file MANIFEST.md names is in the
+    worktree (it leaves its checks there; `next` commits them). A coder's or
+    cleanup's return is refused when it changed or removed a line of the
+    committed acceptance checks (lib/protected.py) that was whole at its brief.
+    A required-changes file that reaches the coder unedited (the verifier's,
+    the judge's, the triager's) must follow its template.
     The planner's result must agree with PLAN.md (its size check and its
     `Risk:` tier, which is high when it has Security/Compliance criteria), and
     the plan critic's with its review file (plan-review/<n>.md: the verdict,
@@ -107,8 +107,7 @@ check-artifact <file>
     Evidence and Change lines, at most 7), acceptance/MANIFEST.md, SPEC_EVAL.md,
     CODE_REVIEW.md, SECURITY_REVIEW.md, review/pass-<n>/R<k>.md and
     VOTES-R<k>.md, lint/<CHECK>.md, a required-changes file (corrections.md,
-    triage/*.md; also refused when it copies the run's PLAN.md, as
-    `spec-overlap` checks), a spec-problems file
+    triage/*.md), a spec-problems file
     (spec-problems/<worker>-<n>.md, held to the run's PLAN.md), the coder's
     deviations (deviations/coder-<n>.md), or a returns/*.json file.
     Exit: 0 it follows the template; 1 problems (each printed).
@@ -130,15 +129,14 @@ from pathlib import Path
 from . import artifacts as art
 from . import (
     briefs,
-    cmd_checks,
     overrides,
-    sealed,
+    protected,
     tree_guard,
 )
 from . import state as st
-from .cmd_checks import overlaps
 from .cmd_review import pending_rows
 from .output import CANNOT_RUN, FAILED, Fail, emit
+from .testfiles import test_keys
 
 SCRIPTS = Path(__file__).resolve().parent.parent
 SKILL_DIR = SCRIPTS.parent
@@ -194,48 +192,87 @@ def next_number(directory, worker):
     return max(taken, default=0) + 1
 
 
-def seal_bases(state, ad):
-    """Give each sealed copy of a file that exists at HEAD its base (that file),
-    before the build is installed; after it, refuse a new check in a file the
-    repo had at the cut that holds none, and refresh the snapshot of each
-    shared file whose checks are whole. Check every sealed copy with a base
-    only adds lines to it. Returns the issues."""
+def tester_issues(state, ad):
+    """The acceptance tester leaves its checks in the worktree, where `next`
+    commits them: each file MANIFEST.md names must be there."""
+    wt = Path(state["worktree"])
+    return [f"{rel} is in MANIFEST.md but not in the worktree: write its checks there "
+            "(at the path the repo's test layout uses) and leave them in place"
+            for rel in check_files(ad) if not (wt / rel).is_file()]
+
+
+def tester_tree_issues(state, ad, nxt, n):
+    """The tester changes only the check files MANIFEST.md names, and in write
+    mode only adds to a file the repo had: a line it changed or removed there
+    is the repo's own test, not its to touch."""
     wt = state["worktree"]
-    installed = cmd_checks.installed(ad)
-    cut = None
+    checks = check_files(ad)
     issues = []
-    for rel in sealed.sealed_files(ad):
-        base = sealed.base_path(ad, rel)
-        if not base.exists() and not installed:
-            r = subprocess.run(["git", "-C", wt, "show", f"HEAD:{rel}"],
-                               capture_output=True, check=False)
-            if r.returncode == 0:
-                base.write_bytes(r.stdout)
-        elif not base.exists():
-            # After the build, a check with no base must be a new file: one the
-            # repo had at the cut would swallow the coder's lines in it.
-            cut = cut or cut_commit(wt, state["repo"]["base"])
-            r = subprocess.run(["git", "-C", wt, "cat-file", "-e", f"{cut}:{rel}"],
-                               capture_output=True, check=False)
-            if r.returncode == 0:
-                issues.append(f"files/{rel}.sealed adds checks to {rel}, which holds no "
-                              "check yet; after the build, add a check only to a file "
-                              "that holds one, or to a new file")
-                continue
-        try:
-            why = sealed.adds_only(ad, rel)
-            current = sealed.read(Path(wt) / rel)
-            if not why and installed and base.exists() and \
-                    sealed.intact(ad, rel, current):
-                sealed.snapshot(ad, rel, current)  # the checks as repaired or folded
-        except sealed.SealError as exc:
-            raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
-        if why:
-            issues.append(why)
+    if nxt == "WRITTEN":
+        for rel in checks:
+            try:
+                tree_guard.git(wt, "cat-file", "-e", f"HEAD:{rel}")
+            except Fail:
+                continue  # a new file: all of it is the tester's
+            try:
+                hit = sorted(protected.changed_lines(wt, "HEAD", rel))
+            except protected.GuardError as exc:
+                raise Fail(f"cannot read {rel} at HEAD: {exc}", CANNOT_RUN, "ERROR") from None
+            if hit:
+                issues.append(f"{rel}: you changed or removed line(s) "
+                              + ", ".join(map(str, hit)) + " the repo already had; add your "
+                              "checks to the file, and leave its own lines as they were")
+    issued = next((b for b in state.get("briefs", [])
+                   if b["worker"] == "acceptance-tester" and b["n"] == n), {})
+    before = issued.get("tester_tree")
+    if before:
+        after = tree_guard.snapshot(wt, ad)
+        if after["head"] == before["head"]:
+            other = [p for p in tree_guard.changed(before, after) if p not in checks]
+            if other:
+                issues.append("you changed " + ", ".join(other) + ", which MANIFEST.md names "
+                              "as no check file: change only your check files (and "
+                              "MANIFEST.md and base-run/); put the rest back, and remove "
+                              "any file your test runs left")
     return issues
 
 
-SUPPORT_SHOWN = 12  # lines the checks add besides their tests, per file
+def check_files(ad):
+    """The files MANIFEST.md says hold acceptance checks, sorted; [] when it
+    can't be read."""
+    try:
+        rows, _ = art.manifest(Path(ad) / "acceptance" / "MANIFEST.md")
+    except art.ArtifactError:
+        return []
+    return sorted(test_names(rows))
+
+
+def check_snapshot(state, ad):
+    """{path: blob sha, or None when absent} for every check file MANIFEST.md
+    names and every file a tests commit holds, as they are now."""
+    wt = Path(state["worktree"])
+    paths = sorted(set(check_files(ad)) | {p for c in state.get("tests_commits") or []
+                                           for p in c["paths"]})
+    present = [p for p in paths if (wt / p).is_file()]
+    found = tree_guard.blobs(wt, present) if present else {}
+    return {p: found.get(p) for p in paths}
+
+
+def tests_shas(state):
+    return [c["sha"] for c in state.get("tests_commits") or []]
+
+
+def guard_locations(state):
+    """Every committed acceptance check line changed or removed now, as
+    `path:line` (`path` for a file that is gone)."""
+    shas = tests_shas(state)
+    if not shas:
+        return []
+    try:
+        return protected.locations(state["worktree"], shas)
+    except protected.GuardError as exc:
+        raise Fail(f"cannot check the committed acceptance checks: {exc}", CANNOT_RUN,
+                   "ERROR") from None
 
 
 def test_names(rows_):
@@ -254,40 +291,14 @@ def test_names(rows_):
 
 
 def acceptance_paths(ad):
-    """Each file that holds acceptance checks, with the checks' test names: a
-    file can hold the coder's own tests too. Then the lines the checks add
-    besides them (an import, a shared setup), which are sealed as well."""
+    """Each file that holds committed acceptance checks, with their test names:
+    a file can hold the coder's own tests too."""
     try:
         rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
     except art.ArtifactError:
         return "none"
     names = test_names(rows)
-    files = sealed.sealed_files(ad)
-
-    def support(path):
-        if path not in files:
-            return ""
-        try:
-            runs = sealed.support_runs(ad, path, names[path])
-        except sealed.SealError:
-            return ""
-        shown, count = [], 0
-        for run, into_tests in runs:
-            if count >= SUPPORT_SHOWN:
-                break
-            room = SUPPORT_SHOWN - count
-            part = " + ".join(code_line(x) for x in run[:room])
-            count += len(run)
-            shown.append(part + (" + …" if len(run) > room else "")
-                         + (" + its tests" if into_tests else ""))
-        more = sum(len(run) for run, _ in runs) - SUPPORT_SHOWN
-        if not shown:
-            return ""
-        return ("; and the lines they add besides the tests, each run (joined by +) "
-                f"kept whole: {' | '.join(shown)}" + (f" and {more} more" if more > 0 else ""))
-
-    return "; ".join(f"{p} (tests: " + ", ".join(f'"{n}"' for n in names[p])
-                     + support(p) + ")"
+    return "; ".join(f"{p} (tests: " + ", ".join(f'"{n}"' for n in names[p]) + ")"
                      if names[p] else p for p in sorted(names)) or "none"
 
 
@@ -405,7 +416,7 @@ def blocked_last(state, worker, mode=None):
 REFUSED_RETRY = ("`record` refused your last return for this job, and the files you wrote "
                  "for it are still in place. If they are complete, and any Tree line in "
                  "them is the tree now, start from them: fix each issue below, redo what "
-                 "your fix makes stale (re-run, re-save, re-seal, re-judge and re-stamp "
+                 "your fix makes stale (re-run, re-save, re-judge and re-stamp "
                  "the Tree line of whatever depends on what you change, as your "
                  "instructions say), and redo nothing else, even where your instructions "
                  "say to start clean or from scratch. If they are missing, partial or "
@@ -533,9 +544,17 @@ def write_brief(state, where, worker, mode, given, retry=None):
                  "retry": retry, "seq": st.seq(state)}
         watch_spec(state, ad, worker, retry, entry)
         if retry is None and worker in ("coder", "cleanup"):
-            entry["whole"] = whole_checks(state, ad)
+            # A check line broken already is not this worker's doing.
+            entry["broken"] = guard_locations(state)
         if worker in tree_guard.GUARDED:
             entry["tree"] = tree_guard.snapshot(auto["worktree"], ad)
+        if worker == "acceptance-tester" and retry is None:
+            # It may change only its check files: compared at `record`.
+            entry["tester_tree"] = tree_guard.snapshot(auto["worktree"], ad)
+        if retry is None and (worker == "fixer" or (worker == "acceptance-tester"
+                                                    and mode == "repair")):
+            # The check files as they are: its tests commit takes only its change.
+            entry["check_blobs"] = check_snapshot(state, ad)
         if worker == "fixer" and retry is None:
             # What it changes is listed, and put back if it ends without fixing.
             entry["fix_tree"] = tree_guard.snapshot(auto["worktree"], ad)
@@ -556,7 +575,8 @@ def watch_spec(state, ad, worker, retry, entry):
     if retry is not None:
         old = next((b for b in state.get("briefs", [])
                     if b["worker"] == worker and b["n"] == retry), {})
-        for key in ("spec", "whole", "fix_tree", "artifacts", "artifacts_n", "settings"):
+        for key in ("spec", "broken", "tester_tree", "check_blobs", "fix_tree",
+                    "artifacts", "artifacts_n", "settings"):
             if key in old:
                 entry[key] = old[key]
         return
@@ -683,82 +703,28 @@ def derive(worker, data, ad, state, n):
     if worker == "coder":
         issues += deviation_issues(data, ad, n)
     if worker in ("coder", "cleanup"):
-        issues += edited_check_issues(worker, ad, state, issued.get("whole", []))
+        issues += edited_check_issues(worker, state, issued.get("broken", []))
     return issues
 
 
-def whole_checks(state, ad):
-    """The check files whose held-out lines are whole in the worktree now: the
-    ones a coder or cleanup briefed now must leave whole."""
-    out = []
-    for rel in sealed.sealed_files(ad):
-        try:
-            if sealed.intact(ad, rel, sealed.read(Path(state["worktree"]) / rel)):
-                out.append(rel)
-        except sealed.SealError:
-            pass
-    return out
-
-
-def code_line(line):
-    """A line as inline code, its indentation kept: whitespace counts."""
-    if not line.strip():
-        return "(blank line)"
-    return f"`` {line} ``" if "`" in line else f"`{line}`"
-
-
-def broken_run(run):
-    """What a worker broke in one run of a check's lines, in its words."""
-    body, changed = run["lines"], run["changed"]
-    real = [x for x in body if x.strip()]
-    if not real:
-        where = f"after {code_line(run['after'])}" if run["after"] else "at the top"
-        return (f"the {len(body)} blank line(s) they add {where} are gone or changed")
-    out = (f"the line {code_line(real[0])}" if len(real) == 1 else
-           f"the run of lines from {code_line(real[0])} to {code_line(real[-1])}")
-    if changed:
-        return out + (", of which these are changed or gone: "
-                      + "; ".join(code_line(x) for x in changed[:5])
-                      + (f" and {len(changed) - 5} more" if len(changed) > 5 else ""))
-    shown = " + ".join(code_line(x) for x in body[:8]) + (" + …" if len(body) > 8 else "")
-    return (out + ": a line was added inside it, or a blank line in it added or removed;"
-            f" it reads {shown}")
-
-
-def edited_check_issues(worker, ad, state, whole):
-    """Each check file, whole when the coder or cleanup was briefed (`whole`),
-    whose held-out lines it changed. `verify prep` would put them back and
-    break the worker's own lines that relied on the change, on every pass."""
+def edited_check_issues(worker, state, broken):
+    """The committed acceptance checks' lines the coder or cleanup changed or
+    removed (those `broken` already at its brief aside), one issue per file."""
+    new = [loc for loc in guard_locations(state) if loc not in set(broken)]
+    by_file = {}
+    for loc in new:
+        path, _, line = loc.rpartition(":") if ":" in loc else (loc, "", "")
+        by_file.setdefault(path or loc, []).append(line)
     issues = []
-    files = sealed.sealed_files(ad)
-    for rel in whole:
-        if rel not in files:
-            continue
-        current = sealed.read(Path(state["worktree"]) / rel)
-        try:
-            if sealed.intact(ad, rel, current):
-                continue
-            broken = sealed.broken_runs(ad, rel, current) if current is not None else []
-        except sealed.SealError as exc:
-            raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
-        if current is None:
-            what = (f"{rel} was removed or moved: put it back at that path; if a check "
-                    "in it is wrong, propose that instead")
-        elif broken:
-            what = (f"you changed lines of the held-out acceptance checks in {rel} "
-                    "(whitespace and blank lines count): "
-                    + "; ".join(broken_run(run) for run in broken[:5])
-                    + (f"; and {len(broken) - 5} more runs" if len(broken) > 5 else ""))
-        else:
-            what = (f"you moved lines of the held-out acceptance checks in {rel}: each "
-                    "run of them is whole, but not in its place or order")
+    for path, lines in sorted(by_file.items()):
+        what = (f"{path} was removed or moved: put it back at that path" if lines == [""]
+                else f"you changed the committed acceptance checks in {path} at line(s) "
+                     + ", ".join(lines))
         issues.append(
-            f"{what}. Put each back exactly as it was, with nothing added among them, "
-            "and make your own code fit them: when your test needs more from a module "
-            "one of their import lines names, add your own import line above the first "
-            "line of a run of theirs, or below its last line when the run doesn't go on "
-            "into its tests, never between two of them "
-            "(and keep an import sorter from moving it there), never edit theirs"
+            f"{what}. The acceptance checks are committed and never yours to edit: "
+            "put each line back exactly as the tests commit has it (`git diff "
+            "<tests commit> -- <path>` shows what changed), and make your code fit "
+            "them; add your own tests and imports around them"
             + (". If the quality gate then fails on one of their lines as it is, "
                "return ACCEPTANCE_CHECK_FAILS_GATE" if worker == "cleanup" else ""))
     return issues
@@ -852,7 +818,7 @@ def written_files(worker, data, ad, state, n):
     files = []
     if worker == "plan-critic":  # it has no shell to run check-artifact itself
         files.append((ad / "plan-review" / f"{n}.md", True))
-    elif worker == "verifier" and nxt not in ("INSTALL_CONFLICT", "MUTATION_LEFT_CHANGES"):
+    elif worker == "verifier" and nxt != "MUTATION_LEFT_CHANGES":
         files.append((ad / "SPEC_EVAL.md", True))
     elif worker == "cleanup":
         files += [(ad / "lint" / c["report"], False)
@@ -892,10 +858,11 @@ def result_issues(worker, data, ad, state, n):
     elif worker == "plan-critic":
         issues += critic_result_issues(data, ad / "plan-review" / f"{n}.md", ad / "PLAN.md",
                                        state)
-    elif worker == "acceptance-tester" and nxt in ("SEALED", "REPAIRED", "FOLDED"):
+    elif worker == "acceptance-tester" and nxt in ("WRITTEN", "REPAIRED"):
         # Gaps are not a disagreement: `next` re-spawns the tester for them.
         art.manifest(ad / "acceptance" / "MANIFEST.md")
-        issues += seal_bases(state, ad)
+        issues += tester_issues(state, ad)
+        issues += tester_tree_issues(state, ad, nxt, n)
     elif worker == "coder":
         if (nxt == "BLOCKED") != (as_int(data, "blocked") > 0):
             issues.append(f"next is {nxt} but blocked is {data.get('blocked')}")
@@ -998,8 +965,8 @@ FIX_SECTIONS = {"FIXED": "Changed", "NEEDS_CONSENT": "Proposal", "CANNOT_FIX": "
 def fixer_issues(nxt, ad, state, n):
     """A fixer's report must say what it did: for FIXED, name every path it
     changed (repo files, and the run's PLAN.md, plan or checks as
-    `.auto-dev/<path>`; an installed check file it edited is resealed here and
-    its seal files need no naming); for NEEDS_CONSENT its proposal, for
+    `.auto-dev/<path>`; an acceptance check file it edited is committed as a
+    new tests commit by `next`); for NEEDS_CONSENT its proposal, for
     CANNOT_FIX why. Whatever a fixer changed without fixing is put back by
     `next`, so only FIXED is held to its list."""
     report = ad / overrides.FIX_DIR / f"fixer-{n}.md"
@@ -1027,11 +994,6 @@ def fixer_issues(nxt, ad, state, n):
         return [(f"{report.name} has no `## Changed` section (write `none` in it when you "
                  "changed no file)")]
     scratch = tree_guard.scratch(wt, ad) or ".auto-dev"
-    resealed = set()
-    on = (ad / "acceptance" / "INSTALLED").exists()  # the checks are in the worktree
-    if on and issued.get("artifacts") is not None:
-        resealed = {f"{scratch}/acceptance/files/{p}"
-                    for p in reseal_fixed(state, ad, issued)}
     changed = []
     if issued.get("fix_tree"):
         changed += tree_guard.changed(issued["fix_tree"], tree_guard.snapshot(wt, ad))
@@ -1043,23 +1005,13 @@ def fixer_issues(nxt, ad, state, n):
     listed = set(re.findall(r"`([^`]+)`", body))
     issues = [f"you changed {p} but your report's Changed section does not name it "
               f"(as `{p}`): name every path you changed, with what and why"
-              for p in changed if p not in listed and p not in resealed]
-    if on:
-        for rel in sealed.sealed_files(ad):
-            try:
-                whole = sealed.intact(ad, rel, sealed.read(Path(wt) / rel))
-            except sealed.SealError as exc:
-                raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
-            if not whole:
-                issues.append(f"the held-out checks in {rel} no longer match their sealed "
-                              f"copy {scratch}/acceptance/files/{rel}.sealed: put back the "
-                              "check lines the instruction did not name")
-    issues += amended_issues(state, ad, issued, on)
-    issues += seal_bases(state, ad)
+              for p in changed if p not in listed]
+    issues += amended_issues(state, ad, issued)
+    issues += tester_issues(state, ad)
     return issues
 
 
-def amended_issues(state, ad, issued, on):
+def amended_issues(state, ad, issued):
     """After `amend-checks`: each test the fixer dropped is gone from its
     file, and no condition that had a check before the fix is left with none
     and no Not automatable row while PLAN.md still has it."""
@@ -1080,11 +1032,13 @@ def amended_issues(state, ad, issued, on):
     for rel, name in fix["dropped"]:
         if name in names.get(rel, []):
             continue  # a row names it again: kept, moved or re-added
-        others = sealed.test_keys(names.get(rel, []))
-        keys = [k for k in sealed.test_keys([name])
-                if not any(k in other for other in others)]
-        copies = [ad / "acceptance" / "files" / f"{rel}.sealed"] + ([wt / rel] if on else [])
-        if any(names_test(sealed.read(c) or "", k) for c in copies for k in keys):
+        others = test_keys(names.get(rel, []))
+        keys = [k for k in test_keys([name]) if not any(k in other for other in others)]
+        try:
+            text = (wt / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        if any(names_test(text, k) for k in keys):
             issues.append(f'you dropped "{name}" from MANIFEST.md but {rel} still holds '
                           "its test: take it out of the file")
     covered = {row_id(r["#"]) for r in rows} | {row_id(r.get("#", "")) for r in na_rows}
@@ -1109,48 +1063,6 @@ def names_test(text, key):
         return True
     function = re.fullmatch(r"\w+", key) and re.search(r"[A-Z_0-9]", key)
     return bool(function) and re.search(rf"(?<!\w){re.escape(key)}(?!\w)", text) is not None
-
-
-def reseal_fixed(state, ad, issued):
-    """Seal again each installed check file the fixer of brief `issued`
-    edited in the worktree, from its sealed copy and base before it ran (they
-    are never the fixer's to keep). Only a file whose checks were whole when
-    it was spawned (the file was its sealed copy then) is resealed: one a
-    worker broke earlier stays broken, and `intact` refuses it. Returns the
-    seal files written or removed, as paths under acceptance/files/."""
-    wt, tree = Path(state["worktree"]), issued.get("fix_tree")
-    if not tree:
-        return []
-    before = overrides.backup_dir(ad, issued.get("artifacts_n", issued["n"])) / \
-        "acceptance" / "files"
-    edited = set(tree_guard.changed(tree, tree_guard.snapshot(wt, ad)))
-    try:
-        rows, _ = art.manifest(ad / "acceptance" / "MANIFEST.md")
-        names = test_names(rows)
-    except art.ArtifactError:
-        names = {}
-    touched = []
-    for old in sorted(before.rglob("*.sealed")) if before.is_dir() else []:
-        rel = old.relative_to(before).with_suffix("").as_posix()
-        base = before / f"{rel}.base"
-        if rel not in edited:
-            continue
-        was = str(tree["files"].get(rel, tree_guard.CLEAN)).split(" ")[0]
-        if was == tree_guard.CLEAN:  # committed: the file is its blob at HEAD
-            try:
-                was = tree_guard.git(wt, "rev-parse", f"{tree['head']}:{rel}").decode().strip()
-            except Fail:
-                continue  # not at HEAD either: it wasn't there to be whole
-        sha = tree_guard.git(wt, "hash-object", "--stdin", data=old.read_bytes())
-        if was != sha.decode().strip():
-            continue
-        try:
-            touched += sealed.reseal(ad, rel, sealed.read(old),
-                                     sealed.read(base) if base.is_file() else None,
-                                     sealed.read(wt / rel), names.get(rel, ()))
-        except sealed.SealError as exc:
-            raise Fail(f"cannot diff {rel}: {exc}", CANNOT_RUN, "ERROR") from None
-    return touched
 
 
 # A decline's line, under any markdown a model wraps it in: `OUT_OF_SCOPE:`,
@@ -1193,21 +1105,12 @@ def coder_bound(path, ad, what):
     """Problems with a required-changes file the coder gets unedited."""
     if not path.exists():
         return [f"{what}: {path} does not exist"]
-    problems = [f"{what}: {p}" for p in check_corrections(art.read(path))]
-    problems += [f"{what} copies PLAN.md's wording ({hit}): say what the code must do "
-                 "and where, in your own words"
-                 for hit in overlaps(path, ad / "PLAN.md", quoted=False)]
-    return problems
+    return [f"{what}: {p}" for p in check_corrections(art.read(path))]
 
 
 def derive_verifier(nxt, ad):
     issues = []
     corrections = ad / "evidence" / "corrections.md"
-    if nxt == "INSTALL_CONFLICT":
-        if entries(corrections) == 0:
-            issues.append("next is INSTALL_CONFLICT but evidence/corrections.md has no "
-                          "entry naming a conflicting path")
-        return issues
     if nxt == "MUTATION_LEFT_CHANGES":
         return issues
     code, out, err = run_autodev("eval-status", "--dir", str(ad))
@@ -1497,13 +1400,7 @@ def check_file(path):
             art.first_table(text, ("Finding", "Vote", "Reason"), str(path))
             return []
         if name.endswith("corrections.md") or parent == "triage":
-            problems = check_corrections(text)
-            spec = run_spec(path)
-            if spec is not None:
-                problems += [f"copies PLAN.md's wording ({hit}): say what the code must "
-                             "do and where, in your own words"
-                             for hit in overlaps(path, spec, quoted=False)]
-            return problems
+            return check_corrections(text)
         if parent == "returns" and name.endswith(".json"):
             data = json.loads(text)
             return return_problems(data.get("worker", ""), data)

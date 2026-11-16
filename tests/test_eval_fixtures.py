@@ -74,9 +74,14 @@ def placeholders(state, worktree, main):
                 clock(value)
 
     clock(state)
+    for commit in state.get("tests_commits") or []:  # its sha changes with the clock
+        for note in state.get("notes", []):
+            note["text"] = note["text"].replace(commit["sha"][:12], "<tests-commit>")
+        commit["sha"] = "<tests-commit>"
     for brief in state.get("briefs", []):
-        if "tree" in brief:  # read only when its own job is recorded, all done in the Plan stage
-            brief["tree"]["head"] = "<head-at-brief>"
+        for key in ("tree", "tester_tree"):  # read only when its job is recorded
+            if key in brief:
+                brief[key]["head"] = "<head-at-brief>"
     state["init"]["setup_pid"] = SETUP_PID
     state["repo"]["name"] = "<repo-name>"
     settings = state["settings"]
@@ -131,7 +136,7 @@ class ResumeBuildReplayTest(NextCase):
         # the plan critic (who approves), the acceptance tester.
         self.expect("planner", "FITS", **PLANNED)
         self.critic()
-        self.expect("acceptance-tester", "SEALED", checks="4", ambiguous="none")
+        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
         self.after(self.next(5), "Approve & build")  # high risk: the post-plan gate
         self.assertIn("read references/build.md", self.next(0)["ACTION"])
         # The session ends here, as the Build stage starts (the user stops it, or
@@ -178,8 +183,17 @@ class ResumeBuildFixtureTest(FixtureRunCase):
                          "--task", "x", "--profile", self.profile, "--max-wait", "30")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         fixture = FILES / "resume-build"
+        # The Plan stage committed the acceptance checks: eval 6's setup does
+        # the same and fills <tests-commit> with that commit.
+        for path in NextCase.CHECKS:
+            check = self.worktree / path
+            check.parent.mkdir(parents=True, exist_ok=True)
+            check.write_text("test")
+        self.sh("git", "add", *NextCase.CHECKS, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "test: acceptance checks", cwd=self.worktree)
+        sha = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
         state = json.loads(fill((fixture / "state.json").read_text(encoding="utf-8"),
-                                self.worktree, self.repo))
+                                self.worktree, self.repo).replace("<tests-commit>", sha))
         self.write_state(state)
         (self.dir / "HANDOFF.md").write_text(fill(
             (fixture / "HANDOFF.md").read_text(encoding="utf-8"), self.worktree, self.repo))

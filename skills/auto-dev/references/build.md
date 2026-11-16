@@ -24,17 +24,14 @@ see in the Build stage, in order:
      works and lists the deviation in `deviations/coder-<n>.md`. Nothing is
      sent anywhere and no round is spent; the ready-for-review gate's summary names each
      deviation.
-2. `next` installs the sealed checks in the worktree itself (a check that
-   adds tests to an existing file goes in among the coder's lines; if one
-   can't, the `acceptance-tester` in fold mode adds its tests to the coder's
-   file first, no round spent), then `cleanup`
-   simplifies the change and runs the quality gate to green. A check that
+2. `cleanup` simplifies the change and runs the quality gate to green (the
+   acceptance checks are already in the tree, committed before the build). A check that
    fails the gate goes to the `acceptance-tester` in repair mode, then cleanup
    again.
-3. `verifier`, first pass, on the cleaned code: it runs the sealed checks
-   against the plan's conditions and writes its verdicts and, if anything is open,
-   `evidence/corrections.md`. (If a sealed check still can't go in after the
-   fold, `next` installs nothing and the verifier goes first, to report it.)
+3. `verifier`, first pass, on the cleaned code: it runs the acceptance checks
+   against the plan's conditions, audits the test changes (`check-tests.py`
+   refuses any change to a line a tests commit added), and writes its verdicts
+   and, if anything is open, `evidence/corrections.md`.
 4. While something is open: the `coder` in correction mode with that file
    (each one spends a round; `BUDGET:` shows what's left), then `cleanup`, then
    a `verifier` re-check. Defective checks go to the `acceptance-tester` first,

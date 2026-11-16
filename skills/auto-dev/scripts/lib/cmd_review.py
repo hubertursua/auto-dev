@@ -624,15 +624,13 @@ def pr_summary(state, ad, args, reviewed=True):
                    "a submodule. If all are generated output this run made, delete them "
                    "and run the gate summary again:\n" + "\n".join(subs), FAILED,
                    "PRECONDITION")
-    if state.get("phase6", {}).get("verified_sha"):  # committed: the branch's change
-        from .cmd_work import cut_commit
-        names = git(wt, "diff", "--name-only", cut_commit(wt, state["repo"]["base"]),
-                    "HEAD").splitlines()
-        files = [f for f in names if f and not f.startswith(".auto-dev/")]
-    else:
-        status = git(wt, "status", "--porcelain", "--untracked-files=all", "--no-renames",
-                     "--ignore-submodules=dirty")
-        files = [ln[3:] for ln in status.splitlines() if not ln[3:].startswith(".auto-dev/")]
+    # The branch's whole change: the tests commits, any build commit, and the
+    # working tree on top (untracked files too).
+    from .cmd_work import cut_commit
+    cut = cut_commit(wt, state["repo"]["base"])
+    names = git(wt, "diff", "--name-only", "--no-renames", cut).splitlines()
+    names += git(wt, "ls-files", "--others", "--exclude-standard").splitlines()
+    files = sorted({f for f in names if f and not f.startswith(".auto-dev/")})
     lines = [f"Branch {state['branch']} → {state['repo']['base']}",
              f"Files changed: {len(files)}" + (f" ({', '.join(files[:8])}"
                                                f"{', …' if len(files) > 8 else ''})"

@@ -58,3 +58,19 @@ def is_test_file(path):
 def code(line):
     """The line, or '' when it is only a comment."""
     return "" if COMMENT_ONLY.match(line) else line
+
+
+def test_keys(names):
+    """Each test name MANIFEST.md lists, and its last part when that is long
+    enough to mean something: a runner can name a test by its whole path
+    (`todos > shows the due date`, `TestX/case`, `file::test[param]`) where the
+    source holds only the last part."""
+    keys = set()
+    for name in names:
+        name = name.strip()
+        if name:
+            keys.add(name)
+            last = re.sub(r"\[[^\]]*\]$", "", re.split(r" > |::|/", name)[-1]).strip()
+            if len(last) >= 8:
+                keys.add(last)
+    return keys

@@ -24,5 +24,6 @@
 - 2026-10-20T02:04:34+00:00 high risk, post-plan gate on: the plan says the risk is high
 - 2026-10-20T02:04:34+00:00 planner #1 returned ok FITS
 - 2026-10-20T02:04:34+00:00 plan-critic #1 returned ok APPROVE
-- 2026-10-20T02:04:34+00:00 acceptance-tester #1 returned ok SEALED
+- 2026-10-20T02:04:34+00:00 acceptance-tester #1 returned ok WRITTEN
+- 2026-10-20T02:04:34+00:00 committed the acceptance checks as <tests-commit> (src/due.acceptance.test.ts, src/sort.acceptance.test.ts)
 - 2026-10-20T02:04:34+00:00 handoff written for the Build stage (session ended)

@@ -89,7 +89,7 @@ Sort each comment or review thread as one of:
 - QUESTION — asks something; no change requested.
 - ADDRESSED — already resolved by the current code, by a later reply, or by an
   earlier round of this run (below).
-- ACCEPTANCE_CHECK — says a held-out acceptance check (a test added before the
+- ACCEPTANCE_CHECK — says an acceptance check (a test committed before the
   code: one {{artifact_dir}}/acceptance/MANIFEST.md names) is wrong. A comment
   on another test in the same file is not one.
   Its entry in the checks file is the only way a comment questions a check;
@@ -142,7 +142,7 @@ worker: triager
 status: ok
 next: CODE | INFRA | FLAKY | SECRET | UNKNOWN | TRIAGED
 blockers: <number of blocker comments, human mode; else 0>
-acceptance_checks: <number of comments about a held-out check, human mode; else 0>
+acceptance_checks: <number of comments about an acceptance check, human mode; else 0>
 triage_file: {{triage_file}}
 checks_file: <{{checks_file}} in human mode; else none>
 spec_problems: <number of lines in {{spec_problem_file}}, human mode; else 0>

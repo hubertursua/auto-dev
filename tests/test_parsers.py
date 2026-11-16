@@ -1,5 +1,5 @@
 """Tests for autodev.py's artifact parsers (check-manifest, eval-status,
-spec-overlap, votes, gate-summary).
+votes, gate-summary).
 
 Run: python3 -m unittest discover -s tests -v   (from the repo root)
 
@@ -62,9 +62,9 @@ class ArtifactCase(unittest.TestCase):
         for name, text in BASE_RUNS.items():
             (acc / "base-run" / name).write_text(text)
         for path in ("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts"):
-            sealed = acc / "files" / f"{path}.sealed"
-            sealed.parent.mkdir(parents=True, exist_ok=True)
-            sealed.write_text("test")
+            check = self.tmp / path  # the tester leaves its checks in the worktree
+            check.parent.mkdir(parents=True, exist_ok=True)
+            check.write_text("test")
 
     def cmd(self, *args):
         return autodev(*args, "--dir", self.dir)
@@ -112,23 +112,12 @@ class CheckManifestTest(ArtifactCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("gap: 2:", r.stdout)
 
-    def test_a_check_added_to_an_existing_file_only_adds_lines(self):
-        files = self.dir / "acceptance" / "files" / "src"
-        (files / "due.acceptance.test.ts.base").write_text("old line\n")
-        (files / "due.acceptance.test.ts.sealed").write_text("old line\ntest\n")
-        (self.tmp / "src").mkdir()
-        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\n")
-        r = self.cmd("check-manifest")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\ntest\n")
-        r = self.cmd("check-manifest")  # the tester left its test in the file
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("still differs from HEAD", r.stdout)
-        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\n")
-        (files / "due.acceptance.test.ts.sealed").write_text("changed line\ntest\n")
+    def test_a_check_file_not_in_the_worktree_is_a_gap(self):
+        (self.tmp / "src" / "sort.acceptance.test.ts").unlink()
         r = self.cmd("check-manifest")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("may only add lines", r.stdout)
+        self.assertIn("gap: 2: src/sort.acceptance.test.ts is not in the worktree", r.stdout)
+        self.assertFalse((self.dir / "acceptance" / "files").exists())
 
     def test_each_gap_is_named(self):
         manifest = MANIFEST.replace(
@@ -140,14 +129,11 @@ class CheckManifestTest(ArtifactCase):
                                     "only\" | Example | unit |")
         self.write("acceptance/MANIFEST.md", manifest)
         (self.dir / "acceptance" / "base-run" / "C2.txt").unlink()
-        (self.tmp / "src").mkdir()
-        (self.tmp / "src" / "sort.acceptance.test.ts").write_text("left behind")
         r = self.cmd("check-manifest")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("1: its Edge has no check", r.stdout)
         self.assertIn("S1: a check is unit, below Verify by integration", r.stdout)
         self.assertIn("2: no base-run/C2.txt", r.stdout)
-        self.assertIn("still in the worktree", r.stdout)
         self.assertIn("respawn: 1, 2, S1", r.stdout)
 
     def test_a_pass_to_pass_check_must_have_passed(self):
@@ -288,12 +274,6 @@ class EvalStatusTest(ArtifactCase):
         r = self.cmd("eval-status")
         self.assertTrue(r.stdout.startswith("ALL_MET"), r.stdout)
 
-    def test_an_install_conflict_is_corrected_without_spec_eval(self):
-        r = self.cmd("eval-status", "--install-conflict")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertTrue(r.stdout.startswith("CORRECT: 1 open item"), r.stdout)
-        self.assertIn("correct: install conflict", r.stdout)
-
     def test_an_escaped_pipe_in_a_code_span_keeps_the_columns(self):
         self.spec_eval()
         path = self.dir / "SPEC_EVAL.md"
@@ -337,20 +317,6 @@ class SecurityReviewerTest(ArtifactCase):
         spec.write_text(spec.read_text().split("## Security/Compliance criteria")[0])
         r = self.cmd("security-reviewer")
         self.assertIn("AGENT: auto-dev:security-reviewer\n", r.stdout)
-
-
-class SpecOverlapTest(ArtifactCase):
-    def test_copied_wording_is_refused(self):
-        brief = self.write("brief.md", "Fix it so the list sorts todos by due date with "
-                                       "the earliest first.")
-        r = self.cmd("spec-overlap", brief)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("condition 2", r.stdout)
-
-    def test_concrete_behavior_passes(self):
-        brief = self.write("brief.md", "In src/todos/list.ts, order the array returned by "
-                                       "listTodos() ascending by dueAt; add a unit test.")
-        self.assertEqual(self.cmd("spec-overlap", brief).returncode, 0)
 
 
 class VotesTest(ArtifactCase):

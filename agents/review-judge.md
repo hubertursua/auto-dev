@@ -69,7 +69,7 @@ judge:
    <why>` (this change didn't introduce it). Be as ready to refute as to
    confirm: noise that reaches the coder costs a revise round.
 3. Give it its Category by the rubric below (a broken binding rule is
-   correctness). A finding about a held-out acceptance check itself (it
+   correctness). A finding about an acceptance check itself (it
    asserts the wrong thing, or can't fail when its condition is unmet) is
    `acceptance-check`: it goes to the acceptance tester's repair mode, never
    the coder. The checks are the tests

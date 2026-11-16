@@ -2,7 +2,7 @@
 # Acceptance checks — <task>
 
 Written from PLAN.md's conditions alone, run on the untouched tree at <short sha> (`git rev-parse HEAD` before any check was written: the commit the worktree was cut from).
-Sealed copies are under `files/`; the verifier installs them after the build.
+The checks are committed, before any code, as their own commit (`test: acceptance checks for <task>`).
 Each condition's run on that tree is in `base-run/C<n>.txt`.
 
 | # | Condition | Check (path :: test name) | Covers | Level | Kind | Base run |

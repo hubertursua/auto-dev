@@ -30,7 +30,7 @@ select
     included), a test file deleted, renamed or replaced, a skip or focus marker
     added, or a test-runner config changed. A test file is one the audit
     (`check-tests.py`) recognizes, anything under a test directory, or an
-    installed acceptance check. Lines only added to test files never force it.
+    acceptance check file MANIFEST.md names. Lines only added to test files never force it.
     Prints one token:
       RERUN_ALL: <n> mutant(s); every one runs again
                  then `reason: <why>` and a `rerun:` line per mutant
@@ -127,7 +127,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import cmd_run, mutation_run, proc, sealed, testfiles
+from . import cmd_run, cmd_work, mutation_run, proc, testfiles
 from . import state as st
 from .cmd_checks import worktree_of
 from .cmd_work import print_tree
@@ -136,7 +136,7 @@ from .output import CANNOT_RUN, Fail, emit
 STATUSES = ("killed", "timeout", "survived", "invalid")
 CAUGHT = {"killed", "timeout"}
 HASH = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
-HUNK = sealed.HUNK
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 FIELDS = ("id", "file", "line", "find", "replace", "condition", "status")
 
 SET = "evidence/mutation-set.json"
@@ -350,7 +350,7 @@ def patch(wt, old, new, path):
 
 def test_cause(wt, ad, old, new, changed):
     """Why a test change forces every mutant to run, or None."""
-    installed = set(sealed.sealed_files(ad))
+    installed = set(cmd_work.check_files(ad))
     for status, path in changed:
         if testfiles.TEST_CONFIG.search(path):
             return f"{path} — a test-runner config file changed"

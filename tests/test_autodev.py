@@ -1275,9 +1275,19 @@ NEW_PY_TEST = "\n\ndef test_zero():\n    assert total_of([0]) == 0\n"
 EVERY_MUTANT = ["M1", "M2", "M3", "M4"]
 
 
+CHECK_MANIFEST = """\
+| # | Check (path :: test name) | Kind | Base run | Covers | Level |
+|---|---------------------------|------|----------|--------|-------|
+| 1 | `src/due_check.ts` :: "due check" | fail-to-pass | failed | Example | unit |
+
+## Not automatable
+None.
+"""
+
+
 class MutantsCase(unittest.TestCase):
     """A committed throwaway repo, its git-ignored .auto-dev/ with a mutation
-    set M1-M4, and src/due_check.ts installed as a sealed acceptance check."""
+    set M1-M4, and src/due_check.ts an acceptance check MANIFEST.md names."""
 
     def setUp(self):
         self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
@@ -1294,8 +1304,7 @@ class MutantsCase(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "init")
         self.write(".auto-dev/.gitignore", "*\n")
-        self.write(".auto-dev/acceptance/files/src/due_check.ts.sealed",
-                   MUT_FILES["src/due_check.ts"])
+        self.write(".auto-dev/acceptance/MANIFEST.md", CHECK_MANIFEST)
         self.evidence.mkdir(parents=True)
         self.set_mutants(MUT_SET)
 
@@ -2271,18 +2280,18 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("TIMED_OUT: "), r.stdout)
 
-    def test_out_never_replaces_the_runs_state_or_a_sealed_check(self):
+    def test_out_never_replaces_the_runs_state_or_its_manifest(self):
         state = (self.ad / "state.json").read_text()
-        sealed = self.ad / "acceptance" / "files" / "x.test.ts.sealed"
-        sealed.parent.mkdir(parents=True)
-        sealed.write_text("sealed\n")
-        for target in (self.ad / "state.json", sealed, self.ad / "evidence",
+        manifest = self.ad / "acceptance" / "MANIFEST.md"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text("sealed\n")
+        for target in (self.ad / "state.json", manifest, self.ad / "evidence",
                        self.ad / "PLAN.md"):
             r = self.run_("test", "--out", str(target))
             self.assertEqual(r.returncode, 2, (target, r.stdout, r.stderr))
             self.assertIn("is not under", r.stderr)
         self.assertEqual((self.ad / "state.json").read_text(), state)
-        self.assertEqual(sealed.read_text(), "sealed\n")
+        self.assertEqual(manifest.read_text(), "sealed\n")
         base_run = self.ad / "acceptance" / "base-run" / "C1.txt"
         self.assertEqual(self.run_("test", "--out", str(base_run)).returncode, 0)
         self.assertTrue(base_run.exists())
@@ -2472,13 +2481,14 @@ class VerifyPrepTest(unittest.TestCase):
         self.write(".auto-dev/.gitignore", "*\n")
         self.write(".auto-dev/PLAN.md", VERIFY_SPEC)
         self.write(".auto-dev/acceptance/MANIFEST.md", VERIFY_MANIFEST)
-        self.write(".auto-dev/acceptance/files/tests/due.test.ts.sealed",
-                   "test: an old test\ntest: keeps the due date\n")
-        self.write(".auto-dev/acceptance/files/tests/due.test.ts.base",
-                   "test: an old test\n")
+        # The acceptance check, committed as its own commit before the build.
+        self.write("tests/due.test.ts", "test: an old test\ntest: keeps the due date\n")
+        self.git("commit", "-q", "-am", "test: acceptance checks")
+        self.tests_sha = self.git("rev-parse", "HEAD").strip()
         py = shlex.quote(sys.executable)
         (self.ad / "state.json").write_text(json.dumps({
             "schema": 4, "worktree": str(self.wt), "repo": {"base": "main"},
+            "tests_commits": [{"sha": self.tests_sha, "paths": ["tests/due.test.ts"]}],
             "settings": {"gate": [{"kind": "test", "command": f"{py} runner.py tests",
                                    "report": "TEST.md",
                                    "files": f"{py} runner.py <files>"}]}}))
@@ -2507,9 +2517,9 @@ class VerifyPrepTest(unittest.TestCase):
         r = self.verify("prep", "--pass", "first pass")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
-        # The check is installed among the file's lines, then audited.
-        self.assertIn("keeps the due date", (self.wt / "tests/due.test.ts").read_text())
-        self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit "))
+        # The committed check is audited against its tests commit.
+        self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit 0"),
+                        self.evidence("integrity.txt"))
         tree = subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"),
                                "--print-tree", str(self.wt)], capture_output=True,
                               text=True, check=True).stdout.strip()
@@ -2526,28 +2536,28 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertIn("runner.py tests/due.test.ts", c1[1])
         self.assertIn("ok  keeps the due date", c1)
         self.assertNotIn("ok  an old test", c1)
-        # Condition 2's check isn't in the sealed file: no line names it.
+        # Condition 2's check isn't in the check file: no line names it.
         self.assertIn('  unnamed: 2: flags an overdue todo', r.stdout)
         self.assertIn("C1.txt, C2.txt", r.stdout)
 
-    def test_a_check_that_cant_go_in_writes_the_corrections(self):
-        # The coder deleted the file the check adds to.
-        (self.wt / "tests" / "due.test.ts").unlink()
-        r = self.verify("prep", "--pass", "first pass")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertTrue(r.stdout.startswith("INSTALL_CONFLICT: "), r.stdout)
-        self.assertIn("  conflict: tests/due.test.ts", r.stdout)
-        text = self.evidence("corrections.md")
-        self.assertTrue(text.startswith("# Required changes\n1. `tests/due.test.ts`: "))
-        self.assertFalse((self.ad / "evidence" / "acceptance.txt").exists())
-
-    def test_a_recheck_audits_before_it_puts_an_edited_check_back(self):
-        self.assertEqual(self.verify("prep").returncode, 0)
+    def test_an_edited_check_is_audited_against_every_tests_commit(self):
         self.write("tests/due.test.ts", "test: an old test\ntest: keeps the date\n")
         r = self.verify("prep", "--pass", "re-check")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("ACCEPTANCE_MODIFIED", self.evidence("integrity.txt"))
-        self.assertIn("keeps the due date", (self.wt / "tests/due.test.ts").read_text())
+        integrity = self.evidence("integrity.txt")
+        self.assertTrue(integrity.startswith("check-tests.py exit 3"), integrity)
+        self.assertIn("ACCEPTANCE_MODIFIED\ttests/due.test.ts:2", integrity)
+        # Nothing is put back: the audit's finding goes to the verifier.
+        self.assertIn("keeps the date\n", (self.wt / "tests/due.test.ts").read_text())
+        # A repair committed as a later tests commit is what the line is held to.
+        self.git("commit", "-q", "-am", "test: repaired")
+        state = json.loads((self.ad / "state.json").read_text())
+        state["tests_commits"].append({"sha": self.git("rev-parse", "HEAD").strip(),
+                                       "paths": ["tests/due.test.ts"]})
+        (self.ad / "state.json").write_text(json.dumps(state))
+        self.verify("prep")
+        self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit 0"),
+                        self.evidence("integrity.txt"))
 
     def test_a_live_mutation_run_is_waited_for(self):
         self.write(".auto-dev/evidence/mutants.json", "[]")
@@ -2560,8 +2570,7 @@ class VerifyPrepTest(unittest.TestCase):
     def test_each_output_line_goes_to_the_longest_check_name_it_holds(self):
         self.write(".auto-dev/acceptance/MANIFEST.md", VERIFY_MANIFEST.replace(
             "flags an overdue todo", "keeps the due date when edited"))
-        self.write(".auto-dev/acceptance/files/tests/due.test.ts.sealed",
-                   "test: an old test\ntest: keeps the due date\n"
+        self.write("tests/due.test.ts", "test: an old test\ntest: keeps the due date\n"
                    "test: keeps the due date when edited\n")
         r = self.verify("prep")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -2571,30 +2580,8 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertIn("ok  keeps the due date when edited", c2)
         self.assertNotIn("unnamed:", r.stdout)
 
-    def test_a_first_pass_after_install_audits_before_it_reinstalls(self):
-        # `next` installed the checks before cleanup; cleanup then edited one.
-        self.assertEqual(self.verify("prep").returncode, 0)
-        (self.ad / "acceptance" / "INSTALLED").write_text("tests/due.test.ts\n")
-        self.write("tests/due.test.ts", "test: an old test\ntest: keeps the date\n")
-        r = self.verify("prep", "--pass", "first pass")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("checks re-installed", r.stdout)
-        self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit 3"))
-        self.assertIn("ACCEPTANCE_MODIFIED", self.evidence("integrity.txt"))
-        self.assertIn("keeps the due date", (self.wt / "tests/due.test.ts").read_text())
-
-    def test_a_recheck_conflict_is_an_install_conflict(self):
-        self.assertEqual(self.verify("prep").returncode, 0)
-        (self.wt / "tests" / "due.test.ts").unlink()
-        r = self.verify("prep", "--pass", "re-check")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("  conflict: tests/due.test.ts", r.stdout)
-        self.assertIn("`tests/due.test.ts`", self.evidence("corrections.md"))
-        self.assertTrue(self.evidence("integrity.txt").startswith("check-tests.py exit "))
-        self.assertFalse((self.ad / "evidence" / "acceptance.txt").exists())
-
     def test_a_line_naming_two_unrelated_checks_goes_to_both(self):
-        self.write(".auto-dev/acceptance/files/tests/due.test.ts.sealed",
+        self.write("tests/due.test.ts",
                    "test: an old test\ntest: keeps the due date\n"
                    "test: flags an overdue todo\n"
                    "summary: keeps the due date, flags an overdue todo\n")
@@ -3035,7 +3022,7 @@ FIRST_PASS = {"M1": "killed", "M2": "survived", "M3": "killed", "M4": "timeout"}
 
 
 class StaleMutantRepoCase(unittest.TestCase):
-    """A committed throwaway repo with its .auto-dev/ (git-ignored), an installed
+    """A committed throwaway repo with its .auto-dev/ (git-ignored), an
     acceptance check at src/due_check.ts, and a mutation set M1 to M4."""
 
     def setUp(self):
@@ -3056,9 +3043,7 @@ class StaleMutantRepoCase(unittest.TestCase):
 
     def prepare_artifacts(self, mutants=STALE_SET):
         self.write(".auto-dev/.gitignore", "*\n")
-        self.write(".auto-dev/acceptance/files/src/due_check.ts.sealed",
-                   STALE_FILES["src/due_check.ts"])
-        self.write(".auto-dev/acceptance/INSTALLED", "src/due_check.ts\n")
+        self.write(".auto-dev/acceptance/MANIFEST.md", CHECK_MANIFEST)
         self.evidence.mkdir(parents=True, exist_ok=True)
         self.set_mutants(mutants)
 
