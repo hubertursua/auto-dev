@@ -18,7 +18,8 @@ brief lookup --out <dir> --set worktree=<repo> --set question='<question>'
     overrides), and job N is marked replaced, so `next` never re-spawns it
     too. Without --retry it is `none`. It refuses when a slot the worker needs has no value.
     A brief for a worker that judges against PLAN.md and may report it wrong
-    (the verifier, the review judge, the security reviewers, the triager)
+    (the verifier, the reviewer, the review judge, the security reviewers,
+    the triager)
     keeps PLAN.md's digest on its state entry (a --retry keeps the first
     brief's): `record` refuses a return that changed PLAN.md.
     A brief for a worker that never changes the repo (the planner, the plan
@@ -149,6 +150,9 @@ STEP_HEADINGS = ("## Files", "## Design", "## Build sequence", "## Test plan",
 VERDICTS = {"met", "partial", "unmet", "manual"}
 # The workers that judge against PLAN.md and may report a criterion wrong or
 # missing (spec-problems/<worker>-<n>.md); they never edit PLAN.md.
+# The planner's keys `next` acts on, compared word for word.
+PLANNER_VALUES = {"reading": {"none", "tester", "other"},
+                  "entry_points_changed": {"none", "yes", "no"}}
 SPEC_JUDGES = ("verifier", "reviewer", "review-judge", "security-reviewer",
                "security-reviewer-sensitive", "triager")
 SPEC_PROBLEM_RE = re.compile(r"^\s*[-*]\s*(?:condition\s+(S?\d+)|missing)\s*:\s*(.*)$",
@@ -234,6 +238,23 @@ def tester_tree_issues(state, ad, nxt, n):
                               "MANIFEST.md and base-run/); put the rest back, and remove "
                               "any file your test runs left")
     return issues
+
+
+def tester_untouched_issues(state, ad, n):
+    """A tester that ruled its checks right as written (STANDS), or stopped
+    without a result, changed nothing in the worktree since its brief."""
+    issued = next((b for b in state.get("briefs", [])
+                   if b["worker"] == "acceptance-tester" and b["n"] == n), {})
+    before = issued.get("tester_tree")
+    if not before:
+        return []
+    after = tree_guard.snapshot(state["worktree"], ad)
+    changed = tree_guard.changed(before, after) if after["head"] == before["head"] else []
+    if not changed:
+        return []
+    return ["you changed " + ", ".join(changed) + " but returned no repair: a check you "
+            "rule right as written (STANDS), or a return that isn't ok, leaves the "
+            "worktree as it was. Put each back"]
 
 
 def check_files(ad):
@@ -352,7 +373,7 @@ def auto_values(worker, n, state, ad, mode):
     s = state["settings"]
     test = next((c["command"] for c in s.get("gate", []) if c.get("kind") == "test"), "")
     run = f"python3 {shlex.quote(str(SCRIPTS / 'autodev.py'))} run gate"
-    gate = "\n".join(f"{i}. `{c['command']}` → {ad}/lint/{c.get('report', '')}\n"
+    gate = "\n".join(f"{i}. `{c['command']}`\n"
                      f"   run: `{run} {i} --dir {shlex.quote(str(ad))}`"
                      for i, c in enumerate(s.get("gate", []), 1))
     phase6 = state.get("phase6", {})
@@ -630,13 +651,26 @@ def load_return(ad, worker, n):
     except ValueError as exc:
         raise Refused("MALFORMED", f"{path} is not JSON",
                       [f"{path} is not JSON: {exc}"]) from None
-    problems = return_problems(worker, data)
+    mode = mode_of(ad, worker, n)
+    problems = return_problems(worker, data, mode)
     if problems:
         raise Refused("MALFORMED", f"{path} is malformed", problems)
     return data
 
 
-def return_problems(worker, data):
+def mode_of(ad, worker, n):
+    """The mode job <worker>-<n> was briefed in (None when it has none, or the
+    brief isn't in state.json)."""
+    try:
+        state = st.load(ad)
+    except st.StateError:
+        return None
+    issued = next((b for b in state.get("briefs") or []
+                   if b["worker"] == worker and b["n"] == n), {})
+    return issued.get("mode")
+
+
+def return_problems(worker, data, mode=None):
     problems = []
     if not isinstance(data, dict):
         return ["not a JSON object"]
@@ -646,14 +680,15 @@ def return_problems(worker, data):
         problems.append(f"worker is {data.get('worker')!r}, expected {worker!r}")
     if data.get("status") not in briefs.STATUSES:
         problems.append(f"status {data.get('status')!r} is not ok/blocked/failed")
-    allowed = briefs.RESULTS.get(worker, set())
+    allowed = briefs.MODE_RESULTS.get((worker, mode)) or briefs.RESULTS.get(worker, set())
     nxt = data.get("next")
     if data.get("status") == "ok" or nxt not in (None, "", "none"):
         if nxt not in allowed:
-            problems.append(f"next {nxt!r} is not one of {', '.join(sorted(allowed))}")
+            problems.append(f"next {nxt!r} is not one of {', '.join(sorted(allowed))}"
+                            + (f" (in {mode} mode)" if (worker, mode) in briefs.MODE_RESULTS
+                               else ""))
     if data.get("status") == "ok" and worker in briefs.RESULTS:
-        missing = [k for k in briefs.result_keys(worker)
-                   if k not in data and k not in briefs.LENIENT_KEYS]
+        missing = [k for k in briefs.result_keys(worker) if k not in data]
         if missing:
             problems.append("no " + ", ".join(f"`{k}`" for k in missing) +
                             " (every key of the result block is required)")
@@ -699,6 +734,14 @@ def derive(worker, data, ad, state, n):
                           "FIXED only with status ok, once you carried out the whole "
                           "instruction; stopped part way, return blocked with next "
                           "none (what you changed is put back) and say why")
+    # Whatever the status: a coder never leaves a committed check's line
+    # changed (the next coder's brief would count it as broken already), and a
+    # tester that wrote nothing it returns leaves the tree as it found it.
+    if worker == "coder":
+        issues += edited_check_issues(state, issued.get("broken", []))
+    if worker == "acceptance-tester" and (data.get("status") != "ok" or
+                                          data.get("next") == "STANDS"):
+        issues += tester_untouched_issues(state, ad, n)
     if data.get("status") != "ok":
         return issues
     issues += result_issues(worker, data, ad, state, n) + artifact_issues(
@@ -706,8 +749,6 @@ def derive(worker, data, ad, state, n):
     issues += spec_problem_issues(worker, issued.get("mode"), data, ad, n)
     if worker == "coder":
         issues += deviation_issues(data, ad, n)
-    if worker == "coder":
-        issues += edited_check_issues(state, issued.get("broken", []))
     return issues
 
 
@@ -856,12 +897,22 @@ def result_issues(worker, data, ad, state, n):
         issues += [f"PLAN.md: {p}" for p in problems]
         if not problems:
             issues += plan_result_issues(data, ad / "PLAN.md", nxt)
+        for key, values in PLANNER_VALUES.items():
+            value = str(data.get(key, "none")).strip()
+            if value not in values:
+                issues.append(f"{key} is {data.get(key)!r}: write one of "
+                              + ", ".join(sorted(values)))
     elif worker == "plan-critic":
         issues += critic_result_issues(data, ad / "plan-review" / f"{n}.md", ad / "PLAN.md",
                                        state)
     elif worker == "acceptance-tester" and nxt in ("WRITTEN", "REPAIRED"):
         # Gaps are not a disagreement: `next` re-spawns the tester for them.
         art.manifest(ad / "acceptance" / "MANIFEST.md")
+        if str(data.get("ambiguous", "none")).strip().lower() not in ("none", "") and \
+                not (ad / "acceptance" / "AMBIGUOUS.md").is_file():
+            issues.append(f"ambiguous is {data.get('ambiguous')} but "
+                          f"{ad / 'acceptance' / 'AMBIGUOUS.md'} does not exist: write "
+                          "both readings of each condition there")
         issues += tester_issues(state, ad)
         issues += tester_tree_issues(state, ad, nxt, n)
     elif worker == "coder":
@@ -874,6 +925,8 @@ def result_issues(worker, data, ad, state, n):
         issues += derive_verifier(nxt, ad)
     elif worker == "reviewer":
         issues += derive_reviewer(data, ad, state)
+    elif worker in ("security-reviewer", "security-reviewer-sensitive"):
+        issues += derive_security(data, ad)
     elif worker == "review-judge":
         issues += derive_judge(data, ad, state)
     elif worker == "triager":
@@ -959,7 +1012,7 @@ FIX_SECTIONS = {"FIXED": "Changed", "NEEDS_CONSENT": "Proposal", "CANNOT_FIX": "
 
 def fixer_issues(nxt, ad, state, n):
     """A fixer's report must say what it did: for FIXED, name every path it
-    changed (repo files, and the run's PLAN.md, plan or checks as
+    changed (repo files, and the run's PLAN.md or acceptance checks as
     `.auto-dev/<path>`; an acceptance check file it edited is committed as a
     new tests commit by `next`); for NEEDS_CONSENT its proposal, for
     CANNOT_FIX why. Whatever a fixer changed without fixing is put back by
@@ -1182,12 +1235,43 @@ def derive_reviewer(data, ad, state):
     return issues
 
 
+def derive_security(data, ad):
+    """A high-risk pass's security reviewer: `must_fix` and `pre_existing`
+    against SECURITY_REVIEW.md, since `next` sends the judge to verify only
+    when they say there is something to verify."""
+    text = art.read(ad / "SECURITY_REVIEW.md")
+    issues = []
+    must, pending = security_open(text), for_the_user_pending(text)
+    if as_int(data, "must_fix") != must:
+        issues.append(f"must_fix is {data.get('must_fix')} but SECURITY_REVIEW.md has "
+                      f"{must} open must-fix findings")
+    if as_int(data, "pre_existing") != pending:
+        issues.append(f"pre_existing is {data.get('pre_existing')} but SECURITY_REVIEW.md "
+                      f"has {pending} pre-existing finding(s) for the user, Verified "
+                      "pending")
+    want = "MUST_FIX" if must else "CLEAN"
+    if data.get("next") != want:
+        issues.append(f"next is {data.get('next')} but SECURITY_REVIEW.md has {must} open "
+                      f"must-fix findings, which is {want}")
+    return issues
+
+
+def for_the_user_pending(text):
+    """SECURITY_REVIEW.md's pre-existing findings for the user that the judge
+    has yet to verify."""
+    _, rows = art.first_table(art.find_section(text, "Findings") or "",
+                              ("ID", "Verdict", "Status"), "SECURITY_REVIEW.md")
+    return sum(1 for r in rows if r["Verdict"].strip().lower() == "for the user"
+               and r.get("Verified", "").strip().lower() == "pending")
+
+
 def security_open(text):
-    """SECURITY_REVIEW.md's open must-fix findings."""
+    """SECURITY_REVIEW.md's open must-fix findings (a refuted one aside)."""
     _, rows = art.first_table(art.find_section(text, "Findings") or "",
                               ("ID", "Verdict", "Status"), "SECURITY_REVIEW.md")
     return sum(1 for r in rows if r["Verdict"].strip().lower() == "must-fix"
-               and r["Status"].strip().lower().startswith("open"))
+               and r["Status"].strip().lower().startswith("open")
+               and r.get("Verified", "").strip().lower() != "refuted")
 
 
 def derive_triager(data, ad, n):
@@ -1220,13 +1304,6 @@ def same_path(given, want):
     symlink (on macOS the temp dir's /var is /private/var). A relative path never
     does: the coder it is handed to may run in another directory."""
     return os.path.isabs(given) and os.path.realpath(given) == os.path.realpath(want)
-
-
-def lint_passes(path):
-    if not path.exists():
-        return False
-    first = path.read_text(encoding="utf-8").splitlines()[:1]
-    return bool(first) and first[0].rstrip().endswith("pass")
 
 
 def count_open(text):
@@ -1421,11 +1498,6 @@ def check_file(path):
         if name == "SECURITY_REVIEW.md":
             return need_lines(text, ("**Overall confidence", "Tree:", "Must-fix:")) + \
                 need_sections(text, ("Findings", "Coverage"))
-        if parent == "lint":
-            first = text.splitlines()[:1]
-            problems = [] if first and re.match(r"^# .+ — (pass|fail)\s*$", first[0]) else [
-                "first line must be `# <CHECK> — pass` or `— fail`"]
-            return problems + ([] if "Tree:" in text else ["no `Tree:` line"])
         if re.match(r"R\d\.md$", name):
             from .judgment import parse_report
             return need_sections(text, ("Findings", "Security leads", "Pre-existing")) + \
@@ -1437,7 +1509,8 @@ def check_file(path):
             return check_corrections(text)
         if parent == "returns" and name.endswith(".json"):
             data = json.loads(text)
-            return return_problems(data.get("worker", ""), data)
+            return return_problems(data.get("worker", "") if isinstance(data, dict) else "",
+                                   data)
     except art.ArtifactError as exc:
         return [str(exc)]
     except ValueError as exc:

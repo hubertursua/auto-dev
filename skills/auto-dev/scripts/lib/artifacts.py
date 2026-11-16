@@ -249,7 +249,8 @@ def header_line(text, prefix):
 
 
 # PLAN.md's `Review effort:` line: the effort the planner recommends for
-# the Phase 6 code reviewers. A plan without one (written before 4.3) means high.
+# the Phase 6 code reviewers (`record` requires it on a FITS plan; anything
+# else read there, after a fix at a stop say, means high).
 REVIEW_EFFORTS = ("high", "xhigh")
 DEFAULT_REVIEW_EFFORT = "high"
 REVIEW_EFFORT_RE = re.compile(r"^[-*_\s]*review effort[*_\s]*:[*_\s]*([^\s—–]*)",

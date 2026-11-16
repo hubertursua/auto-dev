@@ -1,10 +1,9 @@
-"""autodev.py show / phase / note / size / budget / gate — read and write state.json.
+"""autodev.py show / phase / note / budget / gate — read and write state.json.
 
 Usage (each takes `--dir <artifact-dir>`, default `./.auto-dev`, and `--json`):
     autodev.py show
     autodev.py phase <1-6> <pending|in-progress|done|n/a|held|stopped> [--notes TEXT]
     autodev.py note "<decision or assumption>"
-    autodev.py size <FITS|OVERSIZED> --high-risk <yes|no>
     autodev.py budget show
     autodev.py budget spend --id <round-id> [--what TEXT]
     autodev.py budget raise --by <n>
@@ -17,11 +16,6 @@ branch.
 
 Only these commands (and init) write state.json; WORK_LOG.md is regenerated on
 every write.
-
-`size` records the planner's size check. OVERSIZED also marks Phase 2
-stopped (Notes `OVERSIZED`) and Phases 3-6 n/a, and prints `STOP`. The risk
-tier only goes up: `--high-risk yes` raises it, and `no` leaves a high tier
-high.
 
 `budget spend` spends one round of the run's one iteration budget, before the
 re-review or correction it pays for is dispatched (references/tables.md, _The
@@ -91,9 +85,6 @@ def add_arguments(parser, name):
         parser.add_argument("--notes")
     elif name == "note":
         parser.add_argument("text")
-    elif name == "size":
-        parser.add_argument("size", choices=("FITS", "OVERSIZED"))
-        parser.add_argument("--high-risk", choices=("yes", "no"), required=True)
     elif name == "budget":
         parser.add_argument("action", choices=("show", "spend", "raise"))
         parser.add_argument("--id", dest="spend_id")
@@ -143,28 +134,6 @@ def note(args):
     st.add_note(state, args.text)
     st.save(args.dir, state)
     emit(args.json, "NOTED", args.text)
-    return 0
-
-
-def size(args):
-    state = load(args)
-    # The tier only goes up: `--high-risk no` never lowers a raised one.
-    state["size"] = args.size
-    state["high_risk"] = bool(state.get("high_risk")) or args.high_risk == "yes"
-    if args.size == "OVERSIZED":
-        st.set_phase(state, 2, "stopped", "OVERSIZED")
-        for number in (3, 4, 5, 6):
-            st.set_phase(state, number, "n/a", "")
-        st.save(args.dir, state)
-        emit(args.json, "STOP", "OVERSIZED: report the planner's reasons, subsystems and "
-             "suggested split lines to the user; keep the worktree; leave Jira alone",
-             worktree=state["worktree"], branch=state["branch"])
-        return 0
-    if state["high_risk"]:
-        state["settings"]["post_plan_gate"] = True
-    st.save(args.dir, state)
-    emit(args.json, "SIZE", f"FITS, high risk: {'yes' if state['high_risk'] else 'no'}",
-         post_plan_gate="on" if state["settings"]["post_plan_gate"] else "off")
     return 0
 
 

@@ -21,10 +21,7 @@ default 4. `next` spends a round before the action that needs it and prints a
 `BUDGET:` line when it does. You never spend one yourself.
 
 Each of these spends one round: the planner's one revision for the plan
-critic's blockers, re-spawning the acceptance tester for gaps or for the
-other reading of an ambiguous condition, a re-dispatched `BLOCKED` step, a
-the coder's correction for a red quality gate, and each correction after a
-review pass (one round for everything the pass left open: the verifier's
+critic's blockers, and each correction after a review pass (one round for everything the pass left open: the verifier's
 items, the review's findings, a repair of the checks either calls wrong, and
 red CI on the pushed commit, which joins it), for people's comments on the PR,
 or for red CI alone.
@@ -37,7 +34,11 @@ the user asks for more rounds and gives the number (1 to 10; it is refused
 unless `next` just stopped on the budget). Then `next` takes the step that
 stopped, spending the new rounds as usual.
 
-Free (no round): every review pass (the verifier with the review), every
+Free (no round), but bounded: the acceptance tester's one more go for gaps
+(gaps again stop) and its rewrite for the other reading of an ambiguous
+condition, the coder's one correction for a red quality gate (red again
+stops), and a `BLOCKED` step's one re-dispatch (blocked again in the same
+change stops). Free: every review pass (the verifier with the review), every
 quality-gate run, a user's "Revise plan" at the post-plan gate, a re-spawn after a
 worker failed once, the entry-point repair a plan revision calls for, a stop
 and whatever the user's answer to it runs (a fix, a retry, a sign-off), and

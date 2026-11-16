@@ -1,6 +1,6 @@
 ---
 name: auto-dev-security-reviewer-sensitive
-description: auto-dev pipeline only — Phase 6a security reviewer for changes on sensitive paths (auth, data handling, payments, access control). Same job as security-reviewer, with the sensitive paths weighted hardest. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6 security reviewer of a high-risk run, for changes on sensitive paths (auth, data handling, payments, access control). Same job as security-reviewer, with the sensitive paths weighted hardest. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write, Skill
@@ -115,7 +115,7 @@ file says goes above the result block; nothing reads a summary. Write every key 
 worker: security-reviewer-sensitive
 status: ok
 next: CLEAN | MUST_FIX
-must_fix: <introduced must-fix findings>
-pre_existing: <pre-existing findings for the user>
+must_fix: <open must-fix findings in SECURITY_REVIEW.md>
+pre_existing: <pre-existing findings for the user whose Verified is pending>
 spec_problems: <number of lines in {{spec_problem_file}}; 0 if none>
 ```

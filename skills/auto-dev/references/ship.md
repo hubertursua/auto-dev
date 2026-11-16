@@ -108,7 +108,6 @@ sections you write start here; keep this line -->`, never `pr-body.md`, and
 don't read `pr-body.md`: `pr publish` puts each of your sections into it by
 heading, and refuses when a heading is changed, missing or added (start no
 line of an answer with `## `).
-(A run whose `next` names `pr-body.md` alone predates this file: edit that.)
 Each section holds a line like `<!-- WRITE: ... -->`: always one for the
 Summary and one for the Assumptions, and one for each section of the repo's
 own PR template the script couldn't fill, or whose checklist is yours to tick.

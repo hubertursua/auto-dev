@@ -28,8 +28,9 @@ The pipeline:
 
 ```
 Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (Plan)
-Phase 2  Plan    → PLAN.md (conditions, size, risk, steps), checked by a critic  (Plan)
-Phase 3  Tests   → acceptance checks, committed first; then the post-plan gate if it's on  (Plan)
+Phase 2  Plan    → PLAN.md (conditions, size, risk, steps), checked by a critic;
+                   then the post-plan gate if it's on                            (Plan)
+Phase 3  Tests   → acceptance checks for the approved plan, committed first      (Plan)
 Phase 4  Build   → the coder builds from the plan and runs the quality gate     (Build)
 Phase 5  Gate    → you run `autodev.py quality-gate` (no worker); risk re-check  (Build)
 Phase 6  Ship    → draft PR; the verifier and the review, alongside CI;

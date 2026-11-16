@@ -78,7 +78,7 @@ against origin/{{base}} directly — it moves when anything fetches.
 
 1. Prepare. Before anything else, run, with that Bash call's timeout set to
    600000 ms:
-     python3 {{skill_dir}}/scripts/autodev.py verify prep --dir {{artifact_dir}} --pass "{{mode}}"
+     python3 {{skill_dir}}/scripts/autodev.py verify prep --dir {{artifact_dir}}
    It does this pass's routine steps in order and stops at the first that
    fails. Never do them by hand. When Previous issues tells you to start from
    the files you wrote, skip it: it rewrites evidence/C<n>.txt, which would
@@ -146,17 +146,12 @@ against origin/{{base}} directly — it moves when anything fetches.
      failing for the right reason, as the acceptance tester's brief defines it
      (an assertion; the entry point absent or wrong; a compile error that names
      it), not a crash in the check's own setup. A missing base-run file fails
-     (b), with one exception: a MANIFEST.md written before 3.9 (it has no
-     Covers column) never had them, so its Base run note is all there is;
-     trust it and say so in the Evidence cell. Never re-run the checks on the
-     old code yourself. A repaired check never meets (b).
+     (b). Never re-run the checks on the old code yourself. A repaired check never meets (b).
      (c) Together the checks cover the whole condition: its Example and its
      Edge (a security criterion has no Edge line; an Edge line starting with
      `none` needs no check). MANIFEST.md's Covers column says which check
-     covers which (one written before 3.9 has no such column: tell from the
-     checks). Confirm each by reading the check (step 6).
-     (d) No check's Level is below the condition's Verify by (a MANIFEST.md
-     written before 3.9 has no Level column: tell from the checks).
+     covers which. Confirm each by reading the check (step 6).
+     (d) No check's Level is below the condition's Verify by.
    - Adequate: not Strong, but everything the condition asks was observed:
      its acceptance checks passed in step 3 (a repaired check counts once you
      have read it against PLAN.md), and you ran something yourself for each

@@ -136,8 +136,8 @@ class ResumeBuildReplayTest(NextCase):
         # the plan critic (who approves), the acceptance tester.
         self.expect("planner", "FITS", **PLANNED)
         self.critic()
-        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
         self.after(self.next(5), "Approve & build")  # high risk: the post-plan gate
+        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
         self.assertIn("read references/build.md", self.next(0)["ACTION"])
         # The session ends here, as the Build stage starts (the user stops it, or
         # a checkpoint): the eval's fresh session resumes the run there.

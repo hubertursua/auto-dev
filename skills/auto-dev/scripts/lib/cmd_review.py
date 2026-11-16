@@ -1,4 +1,4 @@
-"""autodev.py votes / gate-summary / review-build.
+"""autodev.py votes / review-build, and the gate summaries `next` asks with.
 
 Each takes `--dir <artifact-dir>` (default `./.auto-dev`) and `--json`.
 
@@ -59,9 +59,10 @@ review-build [--solo]
     and the overall confidence is Medium at best; the scope and tree come from
     the reviewer's brief, and nothing is ever pending a re-vote.
 
-gate-summary <post-plan|pr|ready|main> [--pr N]
-    Checks the gate's preconditions, then prints the summary and the
-    AskUserQuestion JSON to ask with (on the line after `QUESTION:`).
+The gate summaries (post-plan, pr, ready, main)
+    `next` builds one when it asks a gate: it checks the gate's
+    preconditions, then shows the summary and asks the AskUserQuestion it
+    prints.
     ready (the ready-for-review gate, on the draft PR once its reviews have
     settled): every report is fresh, one passing lint report per gate command,
     no submodule holds uncommitted edits (`git submodule foreach` lists them),
@@ -78,10 +79,9 @@ gate-summary <post-plan|pr|ready|main> [--pr N]
     head commit.
     Each but post-plan also lists each deviation from the plan the coder
     recorded (deviations/coder-<n>.md), and each sign-off and fix made at a stop.
-    Exit: 0 printed; 1 a precondition failed (the reason says what to do; do
-    not ask the gate): `STALE` when a result no longer matches the code,
-    `PRECONDITION` otherwise; 2 check-fresh.py, `git submodule foreach` or gh
-    could not run.
+    A precondition that fails is a stop (`STALE` when a result no longer
+    matches the code, which `next` re-checks, `PRECONDITION` otherwise);
+    check-fresh.py, `git submodule foreach` or gh that could not run is exit 2.
 
 All exit 2 when they could not run — never a pass.
 """
@@ -125,9 +125,6 @@ def add_arguments(parser, name):
         mode = parser.add_mutually_exclusive_group(required=True)
         mode.add_argument("--plan", action="store_true")
         mode.add_argument("--apply", action="store_true")
-    elif name == "gate-summary":
-        parser.add_argument("gate", choices=sorted(GATE_OPTIONS))
-        parser.add_argument("--pr", help="the PR number (default: from state)")
 
 
 def wrap(fn):
@@ -428,43 +425,21 @@ def print_tree(wt):
     return out.strip()
 
 
-# ---------------------------------------------------------------- gate-summary
+# ---------------------------------------------------------------- the gate summaries
 
 def question(header, text, options):
     return {"question": text, "header": header, "multiSelect": False,
             "options": [{"label": o, "description": ""} for o in options]}
 
 
-@wrap
-def gate_summary(args):
-    state = st.load(args.dir)
-    ad = Path(args.dir)
-    builder = {"post-plan": post_plan_summary, "pr": open_pr_summary,
-               "ready": ready_summary, "main": main_summary}[args.gate]
-    lines, extra_questions = builder(state, ad, args)
-    questions = [question("Gate", f"{args.gate} gate: how do you want to proceed?",
-                          GATE_OPTIONS[args.gate])] + extra_questions
-    if args.json:
-        print(json.dumps({"result": "SUMMARY", "summary": lines,
-                          "questions": questions}, indent=2))
-    else:
-        print("SUMMARY:")
-        print("\n".join(f"  {ln}" for ln in lines))
-        print("QUESTION:")
-        print(json.dumps({"questions": questions}))
-    return 0
-
-
 def post_plan_summary(state, ad, args):
-    rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
-    per = {}
-    for row in rows:
-        per[row["#"].strip()] = per.get(row["#"].strip(), 0) + 1
+    """The plan, before any check is written: the tester writes them from the
+    plan the user approves here."""
+    conditions = art.spec_conditions(ad / "PLAN.md")
     lines = [f"Task: {state['task'].get('text', '')}",
              f"Plan: {ad / 'PLAN.md'}",
-             "Acceptance checks per condition: "
-             + ", ".join(f"{k}: {v}" for k, v in per.items()),
-             "Not automatable: " + (", ".join(r.get("#", "") for r in na_rows) or "none"),
+             f"Conditions ({len(conditions)}):",
+             *(f"- {c['id']}. {c['text']}" for c in conditions),
              f"Risk: {'high' if state.get('high_risk') else 'standard'}"]
     blockers = state.get("plan_blockers")
     if blockers is not None:

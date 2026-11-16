@@ -74,9 +74,7 @@ Scope: {{scope}} (ALL CONDITIONS, or ONLY the conditions it names, and why).
   are. One test file can hold checks for several conditions: in each file
   that holds a named condition's checks, change only the named conditions'
   tests, where they are in the worktree. Replace only the named conditions'
-  rows and base-run files. If MANIFEST.md has no
-  Covers column (it was written before 3.9), keep its columns as they are for
-  the rows you write. Still save their base runs when the tree is untouched;
+  rows and base-run files. Still save their base runs when the tree is untouched;
   in repair mode there is none to save (see Repair mode).
 
 For every PLAN.md condition, Security/Compliance criteria included:

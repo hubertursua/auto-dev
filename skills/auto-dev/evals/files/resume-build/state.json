@@ -33,7 +33,7 @@
       "mode": "write",
       "n": 1,
       "retry": null,
-      "seq": 8,
+      "seq": 9,
       "sets": {
         "scope": "ALL CONDITIONS"
       },
@@ -50,14 +50,14 @@
     "total": 4
   },
   "created": "2026-10-20T02:04:32+00:00",
-  "events": 13,
+  "events": 12,
   "gates": [
     {
       "at": "2026-10-20T02:04:34+00:00",
       "choice": "proceed",
       "gate": "post-plan",
       "reason": "",
-      "seq": 11
+      "seq": 8
     }
   ],
   "high_risk": true,
@@ -110,7 +110,7 @@
       "mode": "write",
       "n": 1,
       "next": "WRITTEN",
-      "seq": 9,
+      "seq": 10,
       "sets": {
         "scope": "ALL CONDITIONS"
       },
@@ -157,7 +157,7 @@
     },
     "3": {
       "notes": "",
-      "started_seq": 8,
+      "started_seq": 9,
       "status": "done"
     },
     "4": {
@@ -179,7 +179,7 @@
     "name": "<repo-name>",
     "prefix": "feat"
   },
-  "schema": 4,
+  "schema": 5,
   "settings": {
     "checkpoint_events": null,
     "ci": "none",

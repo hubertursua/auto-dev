@@ -1,12 +1,12 @@
 """autodev.py verify prep|tree — the verifier's routine steps, as one command each.
 
 Usage:
-    autodev.py verify prep --dir <artifact-dir> [--pass <first pass | re-check>]
+    autodev.py verify prep --dir <artifact-dir>
                            [--wait <seconds>] [--json]
     autodev.py verify tree --dir <artifact-dir> [--json]
 
-The Phase 5 verifier (agents/verifier.md) runs `prep` first on every pass and
-`tree` once its runs are done. Both write only under <artifact-dir>/ and to the
+The verifier (agents/verifier.md; Phase 6, on the draft PR) runs `prep` first
+on every pass and `tree` once its runs are done. Both write only under <artifact-dir>/ and to the
 worktree's index (intent-to-add, as the verifier's own diff would).
 
 prep
@@ -87,9 +87,6 @@ EXPECTED = "the tests written before the code to pass"
 def add_arguments(parser):
     parser.add_argument("action", choices=("prep", "tree"))
     parser.add_argument("--dir", required=True, help="the run's .auto-dev/")
-    parser.add_argument("--pass", dest="pass_", default="first pass",
-                        choices=("first pass", "re-check"),
-                        help="prep: the brief's mode (`first pass` or `re-check`)")
     parser.add_argument("--budget", type=int, default=BUDGET, help=argparse.SUPPRESS)
     parser.add_argument("--wait", type=int, default=WAIT,
                         help="prep: seconds to wait for a live mutation run")

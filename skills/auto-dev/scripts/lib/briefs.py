@@ -16,10 +16,9 @@ with `--retry <n>` fills it from the issues `record` saved when it refused job
 
 Each worker ends its reply with an `auto-dev-result` block and writes the same
 keys to returns/<worker>-<n>.json. RESULTS lists the `next` tokens each may
-return; `autodev.py record` checks the return against the artifacts. Every key
-of the block is required, except those in LENIENT_KEYS, which a return may
-leave out (read as none): a key added later, so a worker briefed before it
-existed can still be recorded.
+return (its agent file's block lists exactly these), and MODE_RESULTS narrows
+them for a worker briefed in a mode; `autodev.py record` checks the return
+against the artifacts. Every key of the block is required.
 """
 
 import re
@@ -66,10 +65,22 @@ RESULTS = {
     "lookup": {"ANSWERED", "OUT_OF_SCOPE"},
     "fixer": {"FIXED", "NEEDS_CONSENT", "CANNOT_FIX"},
 }
+# The tokens a worker briefed in a mode may return there (its agent file says
+# which mode returns which).
+MODE_RESULTS = {
+    ("planner", "write"): {"FITS", "OVERSIZED"},
+    ("planner", "revise"): {"REVISED"},
+    ("planner", "blocked"): {"PLAN_REVISED", "UPDATE_OLD_TEST", "SPEC_IMPOSSIBLE"},
+    ("acceptance-tester", "write"): {"WRITTEN"},
+    ("acceptance-tester", "repair"): {"REPAIRED", "STANDS"},
+    ("triager", "ci"): {"CODE", "INFRA", "FLAKY", "SECRET", "UNKNOWN"},
+    ("triager", "human"): {"TRIAGED"},
+    ("review-judge", "consolidate"): {"CLEAN", "MUST_FIX", "REVOTE"},
+    ("review-judge", "security-verify"): {"VERIFIED"},
+    ("code-reviewer", "review"): {"REVIEWED"},
+    ("code-reviewer", "re-vote"): {"VOTED"},
+}
 STATUSES = {"ok", "blocked", "failed"}
-# Result keys a return may leave out (read as none): none. A worker briefed
-# before `deviations` and `spec_problems` existed is briefed again.
-LENIENT_KEYS = set()
 
 
 class BriefError(Exception):

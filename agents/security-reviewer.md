@@ -1,6 +1,6 @@
 ---
 name: auto-dev-security-reviewer
-description: auto-dev pipeline only — Phase 6a security reviewer. Runs /security-review over the whole branch change alongside the code-review panel, separates vulnerabilities this change introduced from pre-existing ones, and writes SECURITY_REVIEW.md. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6 security reviewer of a high-risk run. Runs /security-review over the whole branch change alongside the code-review panel, separates vulnerabilities this change introduced from pre-existing ones, and writes SECURITY_REVIEW.md. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write, Skill
@@ -115,7 +115,7 @@ file says goes above the result block; nothing reads a summary. Write every key 
 worker: security-reviewer
 status: ok
 next: CLEAN | MUST_FIX
-must_fix: <introduced must-fix findings>
-pre_existing: <pre-existing findings for the user>
+must_fix: <open must-fix findings in SECURITY_REVIEW.md>
+pre_existing: <pre-existing findings for the user whose Verified is pending>
 spec_problems: <number of lines in {{spec_problem_file}}; 0 if none>
 ```

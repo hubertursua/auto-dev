@@ -42,9 +42,11 @@ right as written (STANDS), `next` stops and asks the user. What the user keeps
 at either stop is told to every later worker that judges it.
 
 One iteration budget of rounds covers the run: the planner's one revision for
-the plan critic's blockers, a tester re-spawn for gaps, a re-dispatched
-BLOCKED step, a red quality gate's correction, and each correction (after a
-review pass, a PR comment or red CI) spend one. With
+the plan critic's blockers, and each fix loop (the correction after a review
+pass, red CI folded into it, a PR comment's, or red CI's alone) spend one.
+Everything else is free but bounded: the tester goes once more for gaps, a
+red quality gate gets one coder correction, a BLOCKED step one planner
+decision; the same again is a stop. With
 none left, `next` stops, except a correction in Phase 6 before the PR is marked
 ready: what is open goes to the ready-for-review gate instead.
 
@@ -172,6 +174,7 @@ LOOP = ("coder", "acceptance-tester", "planner")
 NONE = ("none", "", None)
 ONLY_RE = re.compile(r"ONLY conditions ([^:]+):")
 ENTRY_POINT_SCOPE = "ALL CONDITIONS whose checks call an entry point the revised plan changed"
+GAP_NOTE = "the gaps check-manifest found:"
 HUMAN_SCOPE = "ONLY the conditions whose checks the PR comments in the report question"
 FILL = ("replace each '<...>' placeholder, inside its single quotes, with text that "
         "holds no single quote (rephrase, or use the typographic apostrophe U+2019)")
@@ -335,16 +338,16 @@ def job_of(rec):
     return [rec["worker"], rec["n"]]
 
 
-def spawn(c, worker, mode=None, sets=None, rule="", budget=None, agent=None):
-    return spawn_many(c, [(worker, mode, sets or {})], rule, budget, agent)
+def spawn(c, worker, mode=None, sets=None, rule="", budget=None):
+    return spawn_many(c, [(worker, mode, sets or {})], rule, budget)
 
 
-def spawn_many(c, jobs, rule, budget=None, agent=None):
+def spawn_many(c, jobs, rule, budget=None):
     """Spawn each (worker, mode, sets[, agent]) job in one message."""
     agents, briefs_, prompts, efforts = [], [], [], []
     for job in jobs:
         worker, mode, sets = job[:3]
-        job_agent = job[3] if len(job) > 3 else agent
+        job_agent = job[3] if len(job) > 3 else None
         kept, used = kept_texts(c), briefs.slots(worker, mode)
         sets = {**sets, **{slot: kept[slot] for slot in KEPT_SLOTS.get(worker, ())
                            if slot in kept and slot in used}}
@@ -377,8 +380,8 @@ def spawn_lines(agents, briefs_, prompts, rule, budget=None, efforts=None):
 
 
 def plan_effort(c):
-    """The code reviewers' effort the plan recommends; high when it names none
-    (a plan written before 4.3) or names something else."""
+    """The code reviewers' effort the plan recommends; high when it names
+    something else (a fix at a stop may have edited the line)."""
     try:
         value = art.review_effort(art.read(c.ad / "PLAN.md"))
     except art.ArtifactError:
@@ -555,11 +558,6 @@ def fix_step(c):
     changed = fix_changes(c, brief)
     fix.update({"status": "fixed", "changed": changed,
                 "spec_changed": any(p.endswith("/PLAN.md")
-                                    for p in changed),
-                # A gate check's command in the settings counts: the gate runs again.
-                "code_changed": any(not p.startswith(scratch(c) + "/") or
-                                    p.startswith(scratch(c) + "/acceptance/") or
-                                    p == scratch(c) + "/state.json"
                                     for p in changed)})
     stop_ = fix["stop"]
     if stop_.get("after_fix") == "fits":
@@ -576,8 +574,8 @@ def fix_step(c):
     open_corr = corrs and not corrs[-1].get("closed") and not (
         passes and passes[-1]["seq"] > corrs[-1]["seq"])
     if open_corr:
-        # The open correction's loop runs the gate and the verifier again, and
-        # its review pass covers the fixer's files with its own.
+        # The open correction runs the gate again, and its review pass covers
+        # the fixer's files with its own.
         return None
     if changed and st.phase(c.state, 6)["status"] == "in-progress":
         c.p6.setdefault("corrections", [])
@@ -903,8 +901,8 @@ def not_ok(c):
 
     Only results since the last `resume` count: once the user has fixed the
     cause and resumed, the step spawns the worker again."""
-    # A pass's workers run in parallel (the verifier with the reviewer, or with
-    # the panel and the security reviewer): review_step re-spawns a failed one,
+    # A pass's workers run in parallel (the verifier with the reviewer, or the
+    # panel with the security reviewer): review_step re-spawns a failed one,
     # and their results would hide the security reviewer's.
     log = [e for e in c.log if e.get("seq", 0) > c.resumed()
            and e["worker"] not in ("code-reviewer", "fixer", "verifier", "reviewer")]
@@ -960,8 +958,7 @@ def checkpoint_due(c):
     """Whether this session has written its share of events (counted from the
     session's start, which `resume` records as session_seq)."""
     limit = _int(c.state["settings"].get("checkpoint_events")) or CHECKPOINT_EVENTS
-    return c.state.get("events", 0) - c.state.get(
-        "session_seq", c.state.get("resumed_seq", 0)) >= limit
+    return c.state.get("events", 0) - c.state.get("session_seq", 0) >= limit
 
 
 def checkpoint(c):
@@ -989,6 +986,12 @@ def phase2(c):
     critic = critic_step(c, plan["seq"])
     if critic:
         return critic
+    if c.state["settings"].get("post_plan_gate"):
+        # Before any check is written: the tester writes them from the plan
+        # the user approved, and a revision never leaves a check stale.
+        gate = post_plan_gate(c, start)
+        if gate:
+            return gate
     c.finish(2, f"FITS, risk: {'high' if c.state.get('high_risk') else 'standard'}")
     return None
 
@@ -1063,7 +1066,9 @@ def critic_step(c, after):
     if review["next"] == "APPROVE":
         return None
     findings = str(c.ad / "plan-review" / f"{review['n']}.md")
-    revised = c.last("planner", after=review["seq"], mode="revise")
+    # The first revision after the review answers it; a later one is the
+    # user's, at the post-plan gate, which the critic doesn't see again.
+    revised = (c.recs("planner", after=review["seq"], mode="revise") or [None])[0]
     if revised is None:
         budget = c.spend(f"plan-critic-{review['n']}", "plan revision")
         if budget is None:
@@ -1097,10 +1102,6 @@ def phase3(c):
     tests = tests_step(c)
     if tests:
         return tests
-    if c.state["settings"].get("post_plan_gate"):
-        gate = post_plan_gate(c, start)
-        if gate:
-            return gate
     c.finish(3)
     return None
 
@@ -1110,7 +1111,7 @@ def acceptance_step(c, after):
     if tester is None:
         return spawn(c, "acceptance-tester", "write",
                      {"scope": "ALL CONDITIONS"},
-                     rule="the acceptance tester writes checks from the reviewed plan")
+                     rule="the acceptance tester writes checks from the approved plan")
     ambiguous = str(tester["data"].get("ambiguous", "none")).strip()
     if ambiguous.lower() not in ("none", ""):
         planner = next((r for r in c.recs("planner", after=tester["seq"], mode="revise")
@@ -1122,26 +1123,23 @@ def acceptance_step(c, after):
                 rule="the acceptance tester found a condition that reads two ways: "
                      "the planner decides which is meant")
         if planner["data"].get("reading") == "other":
-            budget = c.spend(f"acceptance-tester-{tester['n']}", "tester re-spawn")
-            if budget is None:
-                return exhausted(c, "no round left to rewrite the checks",
-                                 f"Conditions {ambiguous} read the other way now.")
             return spawn(c, "acceptance-tester", "write", {
                 "scope": f"ONLY conditions {ambiguous}: PLAN.md now says which reading "
                          "is meant, and it is not the one your checks test"},
-                rule="the planner chose the other reading: rewrite those checks",
-                budget=budget)
+                rule="the planner chose the other reading: rewrite those checks (no round)")
     gaps = manifest_gaps(c)
     if gaps:
         ids, lines = gaps
-        budget = c.spend(f"acceptance-tester-{tester['n']}", "tester re-spawn")
-        if budget is None:
-            return exhausted(c, "no round left for the acceptance gaps",
-                             "Tell the user each gap: " + "; ".join(lines))
+        if GAP_NOTE in tester.get("sets", {}).get("scope", ""):  # its one more go
+            return stop([("The acceptance checks still have gaps after the tester's second "
+                          "try. Tell the user each one:"), *lines,
+                         f"State and artifacts: {c.ad}"],
+                        "check-manifest found gaps twice", retry={"aside": [job_of(tester)]},
+                        no_signoff="a condition with no check is not tested")
         return spawn(c, "acceptance-tester", "write", {
-            "scope": f"ONLY conditions {', '.join(ids)}: " + "; ".join(lines)},
-            rule="check-manifest found gaps in the tester's return (a round)",
-            budget=budget)
+            "scope": f"ONLY conditions {', '.join(ids)}: {GAP_NOTE} " + "; ".join(lines)},
+            rule="check-manifest found gaps in the tester's return: it goes once more "
+                 "(no round)")
     return None
 
 
@@ -1233,22 +1231,13 @@ def post_plan_gate(c, after):
             return spawn(c, "planner", "revise", {"direction": gate["reason"] or
                                                   "the user asked for changes"},
                          rule="the user chose to revise the plan (no round is spent)")
-        if revised["data"].get("entry_points_changed") == "yes" and \
-                c.last("acceptance-tester", after=revised["seq"]) is None:
-            return spawn(c, "acceptance-tester", "repair", {
-                "scope": "ALL CONDITIONS whose checks call an entry point the revised "
-                         "plan changed",
-                "report": f"the plan was revised at the user's request and its entry "
-                          f"points changed: see {c.ad}/PLAN.md"},
-                rule="a plan revision changed the checks' entry points (no round)")
         if c.state.get("plan_blockers") is not None and not c.readonly:
             # The user has seen the open blockers and revised: the gate's next
             # summary no longer lists them as left open. Bookkeeping, so
             # --explain previews the gate question rather than this.
             c.state.pop("plan_blockers")
             c.dirty = True
-    latest = max([e["seq"] for e in c.recs(("planner", "acceptance-tester"), after=after)]
-                 + [after])
+    latest = max([e["seq"] for e in c.recs("planner", after=after)] + [after])
     if gate is None or (gate["choice"] == "revise" and gate["seq"] < latest):
         return gate_question(c, "post-plan", {
             "Approve & build": c.cmd("gate", "post-plan", "proceed"),
@@ -1402,16 +1391,16 @@ def change_step(c, start, first):
     latest = recs[-1]
     worker, nxt = latest["worker"], latest["next"]
     if worker == "coder":
-        return blocked_step(c, latest) if nxt == "BLOCKED" else DONE_MARK
+        return blocked_step(c, latest, start) if nxt == "BLOCKED" else DONE_MARK
     if worker == "planner":
         coder = c.last("coder", after=start, before=latest["seq"])
-        return blocked_step(c, coder)
+        return blocked_step(c, coder, start)
     # the acceptance tester
     trigger = next((r for r in reversed(recs[:-1])
                     if r["worker"] != "acceptance-tester"), None)
     if trigger and trigger["worker"] == "planner":
         coder = c.last("coder", after=start, before=trigger["seq"])
-        return blocked_step(c, coder)
+        return blocked_step(c, coder, start)
     if nxt == "STANDS" and questioned(latest) and not latest.get("signed_off"):
         corr = (c.p6.get("corrections") or [None])[-1]
         who = ("a PR comment" if (corr or {}).get("entry") == "human" else
@@ -1454,14 +1443,12 @@ def gate_step(c, start):
                      f"{reports}.")], "the quality gate is red after its correction",
                     retry={"gate": True},
                     signoff={"reports": failing}, kind="red-gate")
-    budget = c.spend(f"gate-{latest['seq']}", "quality-gate correction")
-    if budget is None:
-        return exhausted(c, "no round left for a quality-gate correction",
-                         f"The quality gate fails: {reports}.")
-    return coder_correction(c, f"the failing quality-gate checks: {reports} (each "
-                            "report's output tail says what fails; the whole output is "
-                            f"under {c.ad}/tmp/run/)", budget,
-                            "the quality gate is red: the coder makes it green (a round)")
+    return spawn(c, "coder", "correction", {
+        "corrections_file": f"the failing quality-gate checks: {reports} (each report's "
+                            f"output tail says what fails; the whole output is under "
+                            f"{c.ad}/tmp/run/)"},
+        rule="the quality gate is red: the coder makes it green (no round; red again "
+             "after it is a stop)")
 
 
 GATE_ASKS = 3  # the gate asked for this many times on one tree, with no run recorded
@@ -1512,9 +1499,18 @@ def coder_correction(c, corrections_file, budget, rule):
                  rule=rule, budget=budget)
 
 
-def blocked_step(c, coder):
-    """The coder stopped steps: the planner decides; then the coder again."""
+def blocked_step(c, coder, start):
+    """The coder stopped steps: the planner decides; then the coder again, at no
+    round. Stopped again after that, in the same change: the user decides."""
     planner = c.last("planner", after=coder["seq"], mode="blocked")
+    if planner is None and c.last("planner", after=start, before=coder["seq"],
+                                  mode="blocked"):
+        listed = c.ad / "blocked" / f"coder-{coder['n']}.md"
+        return stop([("The coder stopped a step again after the planner's decision on "
+                      f"the first. Tell the user the steps it stopped ({listed}) and what "
+                      f"the planner decided ({c.ad}/PLAN.md).")],
+                    "the coder returned BLOCKED again", retry={"aside": [job_of(coder)]},
+                    no_signoff="the stopped steps aren't built")
     if planner is None:
         listed = c.ad / "blocked" / f"coder-{coder['n']}.md"
         return spawn(c, "planner", "blocked", {"blocked": f"the steps listed in {listed}"},
@@ -1525,23 +1521,18 @@ def blocked_step(c, coder):
                     "the planner returned SPEC_IMPOSSIBLE",
                     retry={"aside": [job_of(planner)]},
                     no_signoff="the plan has no way to meet the spec; say how to change it")
-    budget = c.spend(f"planner-{planner['n']}", "blocked step re-dispatched")
-    if budget is None:
-        return exhausted(c, "no round left to re-dispatch a blocked step",
-                         f"The stopped steps are in {c.ad}/blocked/coder-{coder['n']}.md.")
     if planner["data"].get("entry_points_changed") == "yes" and \
             c.last("acceptance-tester", after=planner["seq"]) is None:
         return spawn(c, "acceptance-tester", "repair", {
-            "scope": "ALL CONDITIONS whose checks call an entry point the revised plan "
-                     "changed",
+            "scope": ENTRY_POINT_SCOPE,
             "report": f"the plan was revised after a blocked step: see {c.ad}/"
                       "PLAN.md"},
-            rule="the revised plan changed the checks' entry points", budget=budget)
-    if c.last("coder", after=planner["seq"]) is None:
-        return spawn(c, "coder", coder.get("mode") or "build", dict(coder.get("sets") or {}),
-                     rule=f"the planner returned {planner['next']}: the coder goes again "
-                          "(a round)", budget=budget)
-    return None
+            rule="the revised plan changed the checks' entry points (no round)")
+    # Only a planner's result or a tester after it leads here, so the coder
+    # has not gone again yet.
+    return spawn(c, "coder", coder.get("mode") or "build", dict(coder.get("sets") or {}),
+                 rule=f"the planner returned {planner['next']}: the coder goes again "
+                      "(no round)")
 
 
 # ---------------------------------------------------------------- what the user decides
@@ -1678,7 +1669,7 @@ def phase5(c):
     """The quality gate, run by `next` (no worker) on the built code, then the
     risk tier re-checked from the diff. A red gate goes back to the coder."""
     start = c.start(5)
-    result = settle_change(c, start, first=lambda: DONE_MARK)
+    result = settle_change(c, start, first=None)
     if result is not DONE_MARK:
         return result
     risk_recheck(c)
@@ -1789,7 +1780,6 @@ def open_correction(c):
                           "of the verified commit: the pass checks everything since it",
                           since=sha)
     if unchanged(c):  # nothing to review or commit: the verified commit stands
-        corr["unchanged"] = True
         mark_committed(c, "the correction changed nothing")
         return None
     if not reviewed_whole(c):
@@ -1905,10 +1895,11 @@ def check_fresh(c, *extra):
 
 
 def start_pass(c, scope, files, rule, since=None):
-    """A review pass: the verifier and the code review, spawned together, on
-    the draft PR while CI runs. On a standard-risk run the review is one
-    reviewer (code and security); on a high-risk one, the panel of three and
-    the security reviewer, then the judge."""
+    """A review pass: the verifier and the code review, on the draft PR while
+    CI runs. On a standard-risk run the verifier and one reviewer (code and
+    security) are spawned together; on a high-risk one the verifier goes first
+    (its mutants are planted in the tree), then the panel of three and the
+    security reviewer, then the judge."""
     n = c.p6.get("review_pass", 0) + 1
     high = bool(c.state.get("high_risk"))
     c.would(f"start review pass {n} ({scope}) and spawn the verifier and "
@@ -1952,11 +1943,14 @@ def verifier_job(c, p):
 
 
 def spec_changed(c):
-    """Whether a fix changed PLAN.md, or a retry at a spec-problem stop, came
-    after the last verifier was briefed: it judges every condition again."""
+    """Whether a fix changed PLAN.md, a retry at a spec-problem stop, or a
+    planner revision (a blocked step settled) came after the last verifier was
+    briefed: it judges every condition again."""
     changed = [f.get("done_seq") for f in overrides.fixes(c.state) if f.get("spec_changed")]
     changed += [o["seq"] for o in c.state.get("overrides") or []
                 if o["choice"] == "retry" and o["stop"].get("kind") == "spec-problem"]
+    changed += [r["seq"] for r in c.recs("planner", mode="blocked")
+                if r["next"] in ("PLAN_REVISED", "UPDATE_OLD_TEST")]
     last = max([e.get("seq", 0) for e in c.state.get("briefs", [])
                 if e["worker"] == "verifier"] + [0])
     return any(done is not None and done >= last for done in changed)
@@ -2009,8 +2003,8 @@ def reviewer_sets(c, p, slot):
 
 
 def review_step(c, p):
-    """Pass p: the verifier and the review (spawned together), then one
-    correction for whatever they left open. On a high-risk run the review is
+    """Pass p: the verifier and the review, then one correction for whatever
+    they left open. On a high-risk run the review is
     the panel and the security review, the judge (with its check of the
     security findings), the re-votes, or a security run on leads it has not
     seen."""
@@ -2038,7 +2032,9 @@ def review_step(c, p):
         # It failed once (or a retry at a stop set it aside): not_ok stops the
         # run when it fails twice running.
         last = secs[-1].get("sets", {}) if secs else {}
-        leads = last.get("leads") if secs else panel_leads(c)
+        # The pass's first security run comes before this pass's panel has
+        # written anything: its leads reach a later run (unreviewed_leads).
+        leads = last.get("leads") if secs else "none"
         first = not secs and not reviews
         return spawn_security(c, jobs, leads or "none",
                               "the verifier is done: the panel and the security reviewer "
@@ -2089,8 +2085,10 @@ def review_step(c, p):
     if spec is not None:
         return spec
     settled = settle_pass(c, p, vrec, rows, sec if security_open else None, spent_out)
-    if settled is not DONE_MARK:
+    if settled is not DONE_MARK and settled is not None:
         return settled
+    # Even with no round left for a correction, the leads get their security
+    # run: a lead nobody checked is not something the gate can name.
     leads = unreviewed_leads(c, p)
     if leads:
         return spawn_security(c, [], leads, "the panel passed the security review leads "
@@ -2618,14 +2616,9 @@ def commit_step(c):
 def body_step(c, sha):
     from . import cmd_pr  # imported here: cmd_pr imports this module's helpers
     body = c.p6.get("body") or {}
-    # A description written before 4.21.1 left some of what it copies outside
-    # a quoted region (before 4.0.2, it had none), so the lint refuses an ID
-    # it copied: write it again, unless a PR already carries it.
-    old = "quoted" not in c.p6 or "verbatim" not in c.p6
     reviewed, ready = reviewed_pass(c), ready_answered(c)
     if body.get("sha") != sha or body.get("reviewed") != reviewed or \
-            bool(body.get("ready")) != ready or triage_seq(c) > body.get("seq", 0) or \
-            (old and not c.p6.get("pr")):
+            bool(body.get("ready")) != ready or triage_seq(c) > body.get("seq", 0):
         c.would("generate the PR description for the verified commit",
                 "the commit is pushed: the PR opens next" if reviewed is None else
                 "the reviews have settled: the PR's description gets them")

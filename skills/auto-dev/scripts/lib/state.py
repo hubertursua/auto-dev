@@ -11,7 +11,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA = 4
+SCHEMA = 5  # 5.0: a 4.x run (schema 4) can't resume on it
 STATE_FILE = "state.json"
 LEDGER = "WORK_LOG.md"
 
@@ -34,7 +34,7 @@ LEDGER_STATUS = {"held": "blocked", "stopped": "blocked"}
 
 
 class StateError(Exception):
-    """state.json is missing, unreadable, or not a 4.x state."""
+    """state.json is missing, unreadable, or not this version's state."""
 
 
 def now():
@@ -83,7 +83,7 @@ def load(artifact_dir):
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        raise StateError(f"no {path} — not a 4.x auto-dev run") from None
+        raise StateError(f"no {path} — not an auto-dev run") from None
     except OSError as exc:
         raise StateError(f"cannot read {path}: {exc}") from None
     try:
@@ -92,10 +92,11 @@ def load(artifact_dir):
         raise StateError(f"{path} is not valid JSON: {exc}") from None
     if not isinstance(state, dict):
         raise StateError(f"{path} holds a JSON {type(state).__name__}, not a "
-                         "4.x state object")
+                         "state object")
     if state.get("schema") != SCHEMA:
-        raise StateError(f"{path} has schema {state.get('schema')!r}, "
-                         f"expected {SCHEMA}")
+        raise StateError(f"{path} has schema {state.get('schema')!r}, expected {SCHEMA}"
+                         + (": a run started on auto-dev 4.x, which this version "
+                            "can't resume" if state.get("schema") == 4 else ""))
     return state
 
 

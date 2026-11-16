@@ -233,18 +233,21 @@ class NextCase(RunCase):
                     blockers=str(blockers if verdict == "REVISE" else 0))
         return out, jobs
 
-    def planned(self):
+    def planned(self, gate=True):
         """Phase 2 on the happy path: the planner writes PLAN.md (the fixture),
-        the critic approves it."""
+        the critic approves it, and (with `gate`) the user approves it at the
+        post-plan gate, which the fixture's high risk turns on."""
         (self.dir / "PLAN.md").write_text(self.plan_text)
         self.expect("planner", "FITS", **PLANNED)
         self.critic()
+        if gate:
+            out = self.next(5)
+            self.assertIn("post-plan gate", out["QUESTION"])
+            self.after(out, "Approve & build")
 
     def plan_session(self):
-        self.planned()
+        self.planned()  # HIGH_RISK turns the post-plan gate on, before the tester
         self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
-        out = self.next(5)  # HIGH_RISK turns the post-plan gate on
-        self.after(out, "Approve & build")
         self.enter_stage("build")  # the same session goes on
 
     def enter_stage(self, stage):
@@ -385,7 +388,7 @@ OVERSIZED_PLAN = PLAN.split("## Size check")[0] + (
 
 
 class PlanTest(NextCase):
-    def test_the_checks_are_committed_after_the_tester_before_the_post_plan_gate(self):
+    def test_the_checks_are_committed_after_the_tester_before_the_build(self):
         self.planned()
         head = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
         _, jobs = self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
@@ -395,7 +398,7 @@ class PlanTest(NextCase):
         self.assertIn("commit the acceptance checks as their own commit", out.stdout)
         self.assertEqual(self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip(),
                          head)  # --explain commits nothing
-        out = self.next(5)  # the post-plan gate, on the committed checks
+        self.enter_stage("build")  # the gate came before the tester
         commits = self.state()["tests_commits"]
         self.assertEqual(len(commits), 1)
         self.assertEqual(self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip(),
@@ -405,8 +408,6 @@ class PlanTest(NextCase):
         self.assertTrue(shown[0].startswith("test: acceptance checks for Add due dates"))
         self.assertEqual(sorted(x for x in shown[1:] if x),
                          ["src/due.acceptance.test.ts", "src/sort.acceptance.test.ts"])
-        self.after(out, "Approve & build")
-        self.enter_stage("build")
         self.assertEqual(len(self.state()["tests_commits"]), 1)  # once
 
     def test_a_tests_commit_state_json_lost_is_adopted_not_refused(self):
@@ -415,15 +416,13 @@ class PlanTest(NextCase):
         # refusing the checks as unchanged.
         self.planned()
         self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
-        self.next(5)
+        self.next(0)  # the step to the Build stage, once the checks are committed
         sha = self.state()["tests_commits"][0]["sha"]
         state = self.state()
         del state["tests_commits"], state["tests_synced"]
         self.write_state(state)
-        out = self.next(5)  # the gate again, no stop
+        self.expect("coder")  # no stop: the commit is adopted
         self.assertEqual([c["sha"] for c in self.state()["tests_commits"]], [sha])
-        self.after(out, "Approve & build")
-        self.enter_stage("build")
 
     def test_the_checks_are_not_committed_while_the_manifest_has_gaps(self):
         self.planned()
@@ -433,7 +432,7 @@ class PlanTest(NextCase):
         self.assertNotIn("tests_commits", self.state())
         (self.dir / "acceptance" / "base-run" / "C2.txt").write_text(BASE_RUNS["C2.txt"])
         self.answer(*jobs[0], "WRITTEN", checks="1", ambiguous="none")
-        self.next(5)
+        self.next(0)
         self.assertEqual(len(self.state()["tests_commits"]), 1)
 
     def test_plan_session_ends_at_the_boundary(self):
@@ -620,12 +619,12 @@ class PlanTest(NextCase):
         self.critic("REVISE", risk="standard", blockers=2)
         self.expect("planner", "REVISED", **{**PLANNED, "risk": "standard"})
         self.critic("REVISE", risk="standard", blockers=1, mode="recheck")
-        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
+        out = self.next(5)  # asked even at standard risk, before any check is written
         state = self.state()
         self.assertEqual(state["plan_blockers"], 2)
         self.assertTrue(state["settings"]["post_plan_gate"])
         self.assertFalse(state["high_risk"])
-        out = self.next(5)  # asked even at standard risk
+        self.assertNotIn("tests_commits", state)
         self.assertIn("left these blockers open", " ".join(out["SUMMARY"]))
         text = json.dumps(out)
         self.assertIn("B1. the plan misses case 1", text)
@@ -651,7 +650,6 @@ class PlanTest(NextCase):
         self.critic("REVISE", risk="standard", blockers=1)
         self.expect("planner", "REVISED", **{**PLANNED, "risk": "standard"})
         self.critic("REVISE", risk="standard", blockers=1, mode="recheck")
-        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
         self.next(5)
         self.autodev("gate", "post-plan", "revise", "--reason", "drop case 1",
                      "--dir", self.dir)
@@ -674,13 +672,14 @@ class PlanTest(NextCase):
         self.standard_plan()
         self.assertFalse(self.state()["high_risk"])
         self.critic("APPROVE", risk="high")
-        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
+        out = self.next(5)
         state = self.state()
         self.assertTrue(state["high_risk"])
         self.assertTrue(state["settings"]["post_plan_gate"])
         self.assertTrue(any("plan critic says the risk is high" in n["text"]
                             for n in state["notes"]))
-        self.after(self.next(5), "Approve & build")
+        self.after(out, "Approve & build")
+        self.expect("acceptance-tester")
 
     def test_the_critic_can_t_lower_a_high_tier(self):
         self.expect("planner", "FITS", **PLANNED)  # the fixture: high
@@ -691,6 +690,24 @@ class PlanTest(NextCase):
                       " ".join(self.state()["refused"]["plan-critic-1"]))
         self.assertTrue(self.state()["high_risk"])
 
+    def test_an_ambiguous_return_needs_the_readings_file(self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        self.answer(*jobs[0], "WRITTEN", checks="4", ambiguous="2")
+        out = self.next(0, refused_ok=True)
+        self.assertIn(f"acceptance-tester-{jobs[0][1]}: refused (MISMATCH)", out["RECORDED"])
+        self.assertIn("AMBIGUOUS.md does not exist",
+                      " ".join(self.state()["refused"][f"acceptance-tester-{jobs[0][1]}"]))
+
+    def test_a_planner_value_next_compares_word_for_word_is_checked(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        _, jobs = self.expect("planner")
+        self.answer(*jobs[0], "FITS", **{**PLANNED, "entry_points_changed": "Yes"})
+        out = self.next(0, refused_ok=True)
+        self.assertIn("planner-1: refused (MISMATCH)", out["RECORDED"])
+        self.assertIn("entry_points_changed is 'Yes'",
+                      " ".join(self.state()["refused"]["planner-1"]))
+
     def test_an_ambiguous_condition_goes_to_the_planner(self):
         self.planned()
         _, jobs = self.expect("acceptance-tester")
@@ -700,7 +717,7 @@ class PlanTest(NextCase):
         self.assertIn("conditions 2", self.sets(*jobs[0])["ambiguous"])
         out, jobs = self.expect("acceptance-tester")
         self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 2"))
-        self.assertIn("BUDGET", out)
+        self.assertNotIn("BUDGET", out)  # the other reading costs no round
 
     def test_an_ambiguous_condition_read_the_tester_s_way_goes_on(self):
         self.planned()
@@ -708,7 +725,7 @@ class PlanTest(NextCase):
         (self.dir / "acceptance" / "AMBIGUOUS.md").write_text("- 2: a / b\n")
         self.answer(*jobs[0], "WRITTEN", checks="4", ambiguous="2")
         self.expect("planner", "REVISED", **{**PLANNED, "reading": "tester"})
-        self.after(self.next(5), "Approve & build")
+        self.enter_stage("build")
 
     # ------------------------------------------------------------------
 
@@ -718,11 +735,13 @@ class PlanTest(NextCase):
         self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
         out, jobs = self.expect("acceptance-tester")
         self.assertTrue(self.sets(*jobs[0])["scope"].startswith("ONLY conditions 2:"))
-        self.assertIn("acceptance-tester-1", out["BUDGET"])
+        self.assertNotIn("BUDGET", out)  # free, once
+        self.answer(*jobs[0], "WRITTEN", checks="1", ambiguous="none")  # gaps still
+        out = self.next(4)
+        self.assertIn("gaps after the tester's second try", " ".join(out["REPORT"]))
 
     def test_post_plan_revise_goes_to_the_planner_then_asks_again(self):
-        self.planned()
-        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
+        self.planned(gate=False)
         self.next(5)
         self.autodev("gate", "post-plan", "revise", "--reason", "store dates in UTC",
                      "--dir", self.dir)
@@ -730,6 +749,7 @@ class PlanTest(NextCase):
         self.assertEqual(self.sets(*jobs[0])["direction"], "store dates in UTC")
         self.assertNotIn("BUDGET", out)
         self.after(self.next(5), "Approve & build")
+        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
         self.enter_stage("build")
 
     def test_an_unrecorded_brief_is_reissued_then_stops(self):
@@ -749,6 +769,7 @@ class PlanTest(NextCase):
         (self.dir / "plan-review").mkdir(exist_ok=True)
         (self.dir / "plan-review" / "1.md").write_text(plan_review())
         self.answer(*jobs[0], "APPROVE", blockers="0", risk="high")
+        self.after(self.next(5), "Approve & build")  # a question comes before a checkpoint
         out = self.next(6)
         self.assertIn("--checkpoint", out["AFTER"][0])
         self.after(out)
@@ -889,7 +910,8 @@ class PlanTest(NextCase):
         self.critic()
         r = self.autodev("record", "planner", "1", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.expect("acceptance-tester")  # the review stands: planner-1 is no newer
+        # The review stands (planner-1 is no newer): on to the post-plan gate.
+        self.assertIn("post-plan gate", self.next(5)["QUESTION"])
 
     def test_a_worker_blocked_once_is_spawned_again_and_twice_stops(self):
         _, jobs = self.expect("planner")
@@ -950,7 +972,6 @@ class BuildTest(NextCase):
     def test_a_checkpoint_at_the_end_of_a_stage_resumes_into_the_next(self):
         self.planned()
         self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
-        self.after(self.next(5), "Approve & build")
         state = self.state()
         state["settings"]["checkpoint_events"] = 1  # due as the Plan stage ends
         self.write_state(state)
@@ -969,22 +990,22 @@ class BuildTest(NextCase):
         # a HANDOFF.md from an earlier stage must not brief a later session
         self.planned()
         self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
-        self.after(self.next(5), "Approve & build")
         (self.dir / "HANDOFF.md").write_text("# auto-dev handoff → Plan stage (checkpoint)\n")
         self.enter_stage("build")
         self.assertFalse((self.dir / "HANDOFF.md").exists())
 
-    def test_a_4x_state_resumes_in_the_stage_of_its_open_phase(self):
+    def test_a_4x_run_is_refused(self):
         self.plan_session()
         state = self.state()
-        del state["stage"]
-        state["session"] = "S2"  # what 4.x kept
+        state["schema"] = 4  # a run started on 4.x
         self.write_state(state)
-        self.resume()
-        state = self.state()
-        self.assertEqual(state["stage"], "build")
-        self.assertNotIn("session", state)
-        self.expect("coder")
+        r = self.autodev("resume", "--repo", self.repo)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith(f"OLD-VERSION: {self.worktree}"), r.stdout)
+        self.assertIn("auto-dev 4.x; finish it on 4.27", r.stdout)
+        r = self.autodev("next", "--dir", self.dir)  # nor does `next` run it
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("a run started on auto-dev 4.x", r.stderr)
 
     def test_explain_at_a_new_stage_writes_nothing(self):
         self.plan_session()
@@ -1006,8 +1027,21 @@ class BuildTest(NextCase):
         out, jobs = self.expect("planner", "PLAN_REVISED", **PLANNED)
         self.assertIn("blocked/coder-1.md", self.sets(*jobs[0])["blocked"])
         out, jobs = self.expect("coder", "BUILT", blocked="0", test_changes="none")
-        self.assertIn("planner-2", out["BUDGET"])
+        self.assertNotIn("BUDGET", out)  # a blocked step's re-dispatch is free
         self.quality_gate()
+
+    def test_a_step_blocked_again_after_the_planner_stops(self):
+        self.plan_session()
+        self.resume()
+        _, jobs = self.expect("coder")
+        (self.dir / "blocked" / "coder-1.md").write_text("- step 1: the store has no date type\n")
+        self.answer(*jobs[0], "BLOCKED", blocked="1", test_changes="none")
+        self.expect("planner", "PLAN_REVISED", **PLANNED)
+        _, jobs = self.expect("coder")
+        (self.dir / "blocked" / f"coder-{jobs[0][1]}.md").write_text("- step 2: still no type\n")
+        self.answer(*jobs[0], "BLOCKED", blocked="1", test_changes="none")
+        out = self.next(4)  # once is free; again in the same change, the user decides
+        self.assertIn("stopped a step again", " ".join(out["REPORT"]))
 
     def test_phase_5_runs_the_quality_gate_itself_on_the_committed_checks(self):
         self.plan_session()
@@ -1041,7 +1075,7 @@ class BuildTest(NextCase):
         self.assertEqual(self.mode(*jobs[0]), "correction")
         self.assertIn("the failing quality-gate checks", self.sets(*jobs[0])["corrections_file"])
         self.assertIn("lint/TEST.md", self.sets(*jobs[0])["corrections_file"])
-        self.assertIn("spent `gate-", out["BUDGET"])
+        self.assertNotIn("BUDGET", out)  # free: red again after it is a stop
         self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
         self.quality_gate(red=True)
         out = self.next(4)  # red again after its correction: the user decides
@@ -1171,31 +1205,18 @@ class BuildTest(NextCase):
         self.assertIn("'git'", r.stderr)
         self.assertNotIn("stale", r.stdout)
 
-    def test_the_budget_running_out_stops_a_red_gate(self):
-        self.plan_session()
-        state = self.state()
-        state["budget"]["remaining"] = 0
-        self.write_state(state)
-        self.resume()
-        self.expect("coder", "BUILT", blocked="0", test_changes="none")
-        self.quality_gate(red=True)
-        out = self.next(4)
-        self.assertIn("budget is used up", " ".join(out["REPORT"]))
-
     def test_rounds_added_after_the_stop_take_the_step_that_stopped(self):
-        self.plan_session()
         state = self.state()
         state["budget"].update(total=1, remaining=0)
         self.write_state(state)
-        self.resume()
-        self.expect("coder", "BUILT", blocked="0", test_changes="none")
-        self.quality_gate(red=True)
-        self.next(4)
-        out = self.next(4)  # a resumed run stops at the same place
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic("REVISE", blockers=1)
+        self.next(4)  # no round for the plan's revision
+        out = self.next(4)  # it stops at the same place again
         self.raise_from_report(out, 2)
-        out, jobs = self.expect("coder")
-        self.assertEqual(self.mode(*jobs[0]), "correction")
-        self.assertIn("spent `gate-", out["BUDGET"])
+        out, jobs = self.expect("planner")
+        self.assertEqual(self.mode(*jobs[0]), "revise")
+        self.assertIn("spent `plan-critic-1`", out["BUDGET"])
         self.assertIn("1 of 3 left", out["BUDGET"])
         budget = self.state()["budget"]
         self.assertNotIn("stopped", budget)
@@ -1499,7 +1520,7 @@ class ShipTest(NextCase):
         state["task"]["text"] = ("Ticket body\n## Summary\nThe ticket's own summary\n"
                                  "## Assumptions\nticket notes")
         self.write_state(state)
-        r = self.autodev("pr-body", "--dir", self.dir)  # generated again from the task
+        r = self.lib("pr-body", "--dir", self.dir)  # generated again from the task
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("pr-write.md", r.stdout)
         self.write_slots(*self.slots())
@@ -1712,10 +1733,13 @@ class ShipTest(NextCase):
         out = self.next(0)
         self.assertEqual(sorted({w for w, _ in self.spawned(out)}),
                          ["code-reviewer", "security-reviewer-sensitive"])
+        sec = next(j for j in self.spawned(out) if j[0].startswith("security"))
+        # The panel of this pass has written nothing yet: no stale leads.
+        self.assertEqual(self.sets(*sec)["leads"], "none")
 
     def test_a_security_must_fix_is_verified_then_corrected(self):
         self.draft_pr()
-        jobs = self.panel(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
+        jobs = self.panel(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "0"))
         self.assertEqual(len(jobs), 1)  # spawned with the consolidating judge
         self.assertEqual(self.sets(*jobs[0]), {})
         self.assertIn("mode: security-verify",
@@ -1735,7 +1759,7 @@ class ShipTest(NextCase):
         corrections = ("# Required changes\n1. C1: guard the sort in src/sort.ts against "
                        "a missing due date\n")
         jobs = self.panel(OPEN_REVIEW, "MUST_FIX", corrections=corrections,
-                          security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
+                          security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "0"))
         (self.dir / "review" / "security-corrections.md").write_text(
             "# Required changes\n1. S3: in src/due.ts, check that the caller owns the todo "
             "before its date is stored\n")
@@ -1781,36 +1805,7 @@ class ShipTest(NextCase):
         _, jobs = self.expect("security-reviewer-sensitive")
         self.assertEqual(self.sets(*jobs[0])["leads"], "none")
 
-    def old_pass_judged(self, review):
-        """A pass started before 4.4.0, with the panel and the judge done and
-        no security review yet."""
-        self.draft_pr()
-        self.panel(review)
-        state = self.state()  # as if the security reviewer had not run yet
-        state["log"] = [e for e in state["log"]
-                        if not e["worker"].startswith("security-reviewer")]
-        state["briefs"] = [b for b in state["briefs"]
-                           if not b["worker"].startswith("security-reviewer")]
-        state["phase6"]["security_run"] = 0
-        self.write_state(state)
-        (self.dir / "SECURITY_REVIEW.md").unlink()
-
-    def test_a_pass_judged_before_4_4_gets_its_security_review_with_the_leads(self):
-        lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
-                "the security review")
-        self.old_pass_judged(CLEAN_REVIEW.replace("## Security leads\nnone",
-                                                  f"## Security leads\n{lead}"))
-        _, jobs = self.expect("security-reviewer-sensitive")
-        self.assertEqual(self.sets(*jobs[0])["leads"], lead)
-        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
-            tree=self.tree()))
-        self.answer(*jobs[0], "CLEAN", must_fix="0", pre_existing="0")
-        self.lint()
-        self.spec_eval()
-        self.refresh_body()
-        self.assertIn("ready gate", self.next(5)["QUESTION"])  # the lead was given: no rerun
-
-    def test_with_no_round_left_open_findings_go_to_the_gate_not_to_a_leads_run(self):
+    def test_with_no_round_left_open_findings_go_to_the_gate_after_the_leads_run(self):
         self.draft_pr()
         state = self.state()
         state["budget"]["remaining"] = 0
@@ -1821,11 +1816,19 @@ class ShipTest(NextCase):
         jobs = self.panel(review, "MUST_FIX",
                           corrections="# Required changes\n1. C1: guard the sort in "
                                       "src/sort.ts against a missing due date\n",
-                          security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
+                          security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "0"))
         (self.dir / "review" / "security-corrections.md").write_text(
             "# Required changes\n1. S3: in src/due.ts, check that the caller owns the todo "
             "before its date is stored\n")
         self.answer(*jobs[0], "VERIFIED", must_fix_open="1", revote="0")
+        # No round for the correction, but the lead still gets its security run:
+        # the gate can only name what someone checked.
+        _, jobs = self.expect("security-reviewer-sensitive")
+        self.assertEqual(self.sets(*jobs[0])["leads"], lead)
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_MUST_FIX.format(
+            tree=self.tree()))
+        self.answer(*jobs[0], "MUST_FIX", must_fix="1", pre_existing="0")
+        self.expect("review-judge", "VERIFIED", must_fix_open="1", revote="0")
         self.lint()
         self.spec_eval()
         self.refresh_body()
@@ -1869,7 +1872,7 @@ class ShipTest(NextCase):
 
     def test_the_judge_s_two_modes_fail_apart(self):
         self.draft_pr()
-        _, jobs = self.reviewers(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
+        _, jobs = self.reviewers(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "0"))
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
              ).write_text(r_report("none"))
@@ -2067,6 +2070,15 @@ class ShipTest(NextCase):
         self.assertIn("main gate", self.next(5)["QUESTION"])
         self.assertNotIn("commit_attempt", self.state()["phase6"])
 
+    def test_commit_refuses_a_changed_acceptance_check(self):
+        self.ship_ready()
+        self.lint()
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("weakened\n")
+        r = self.autodev("commit", "--message", "feat: x", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("the committed acceptance checks changed", r.stdout + r.stderr)
+        self.assertNotIn("verified_sha", self.state()["phase6"])  # nothing pushed
+
     def test_a_commit_made_but_not_checked_is_checked_not_refused(self):
         self.ship_ready()
         self.lint()
@@ -2192,37 +2204,6 @@ class ShipTest(NextCase):
         self.resume()  # the user fixed it: a resume lifts the stop
         self.assertIn(str(body), self.next(0)["ACTION"])
 
-    def test_a_body_written_before_quoted_regions_is_written_again(self):
-        # A run stopped on 4.0.1, whose description had no quoted regions, gets
-        # a fresh one on resume instead of the same refusal.
-        _sha, _url, _out, body = self.to_body()
-        state = self.state()
-        del state["phase6"]["quoted"]
-        self.write_state(state)
-        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
-                               body.read_text()).replace(" <!-- auto-dev:quoted -->", "")
-                        .replace("  <!-- /auto-dev:quoted -->\n", ""))
-        self.resume()
-        self.assertIn(str(body), self.next(0)["ACTION"])
-        self.assertIn("auto-dev:quoted", body.read_text())
-        self.assertIn("<!-- WRITE:", body.read_text())
-        self.assertIn("quoted", self.state()["phase6"])
-
-    def test_a_body_written_before_titles_were_skipped_is_written_again(self):
-        # A run stopped on 4.21.0, whose description left a review's reason
-        # outside a quoted region, gets a fresh one on resume instead of the
-        # same refusal.
-        _sha, _url, _out, body = self.to_body()
-        state = self.state()
-        del state["phase6"]["verbatim"]
-        self.write_state(state)
-        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
-                               body.read_text()))
-        self.resume()
-        self.assertIn(str(body), self.next(0)["ACTION"])
-        self.assertIn("<!-- WRITE:", body.read_text())
-        self.assertIn("verbatim", self.state()["phase6"])
-
     def merge_ready(self, first=()):
         sha, _ = self.open_pr(first=first)
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
@@ -2247,7 +2228,7 @@ class ShipTest(NextCase):
         text = body.read_text()
         self.assertIn("Follow-up for a separate PR: session token not rotated", text)
         body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text))
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_an_edit_answered_at_the_ready_gate_is_re_checked_again(self):
@@ -2502,6 +2483,20 @@ class LeanTest(NextCase):
         self.assertEqual(self.open_rows(), [])  # fixed (pass 2)
         self.assertIn("commit: run", self.next(0)["ACTION"])
 
+    def test_a_plan_revised_in_a_correction_is_judged_again_whole(self):
+        self.draft_pr()
+        self.solo(verifier="CORRECT")
+        _, jobs = self.expect("coder")
+        (self.dir / "blocked" / f"coder-{jobs[0][1]}.md").write_text("- step 2: no type\n")
+        self.answer(*jobs[0], "BLOCKED", blocked="1", test_changes="none")
+        self.expect("planner", "PLAN_REVISED", **{**PLANNED, "risk": "standard"})
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        ver, _ = self.solo()
+        self.assertEqual(self.sets(*ver)["mode"], "first pass")  # PLAN.md changed
+
     def test_a_check_the_verifier_questions_is_repaired_then_re_checked(self):
         self.draft_pr()
         verified = self.state()["phase6"]["verified_sha"]
@@ -2727,6 +2722,33 @@ class LeanTest(NextCase):
 
 
 class PublishTest(NextCase):
+    def test_a_refresh_brings_the_overrides_made_after_the_draft_opened(self):
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        live = ("## Summary\nWritten on GitHub.\n\n## Acceptance conditions\nold\n\n"
+                "## Quality gate\nold\n\n## Review\nold\n\n## Assumptions\nUTC.\n")
+        new = ("## Summary\n<!-- WRITE: x -->\n\n## Acceptance conditions\nnew\n\n"
+               "## Quality gate\nnew\n\n## Review\nnew\n\n## Overrides by the user\n"
+               "- signed off TEST.md\n\n## Assumptions\n<!-- WRITE: y -->\n")
+        merged = cmd_pr.merge_live(live, new)
+        self.assertIn("## Overrides by the user\n- signed off TEST.md", merged)
+        again = cmd_pr.merge_live(merged, new.replace("signed off TEST.md", "a fix"))
+        self.assertIn("- a fix", again)  # refreshed, never frozen at the draft's
+        self.assertNotIn("signed off TEST.md", again)
+        gone = cmd_pr.merge_live(again, new.split("## Overrides")[0] + "## Assumptions\nx\n")
+        self.assertNotIn("## Overrides by the user", gone)
+
+    def test_the_review_line_names_one_reviewer_or_the_panel(self):
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree="x"))
+        lines = " ".join(cmd_pr.review_lines(self.dir, self.state()))
+        self.assertIn("Code review (3 independent reviewers)", lines)
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree="x").replace(
+            "reviewers finished: 3/3", "reviewers finished: 1/1"))
+        lines = " ".join(cmd_pr.review_lines(self.dir, self.state()))
+        self.assertIn("Code review (one reviewer)", lines)
+
     def test_a_refresh_keeps_the_live_summary_and_ticked_boxes(self):
         from importlib import import_module
         sys.path.insert(0, str(SCRIPTS))
@@ -2809,7 +2831,7 @@ class PublishTest(NextCase):
         self.lint()
         lint = self.dir / "lint" / "TEST.md"  # a verbose reporter names the tests
         lint.write_text(lint.read_text().replace("all good", "PASS criterion S1: owner only"))
-        r = self.autodev("pr-body", "--dir", self.dir)
+        r = self.lib("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         body = self.dir / "pr-body.md"
         text = body.read_text()
@@ -2820,17 +2842,17 @@ class PublishTest(NextCase):
         self.assertIn("expecting the S1 check passes", text)
         written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
         body.write_text(written)
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         body.write_text(written.replace("Todos can carry a due date.",
                                         "Todos can carry a due date (S1).", 1))
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("uses a condition or finding ID: S1", r.stdout)
         # A quoted region edited after generate is linted like any other text.
         body.write_text(written.replace("expecting the S1 check passes",
                                         "expecting the S1 check to pass"))
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("uses a condition or finding ID: S1", r.stdout)
 
@@ -2853,18 +2875,18 @@ class PublishTest(NextCase):
             tree=self.tree()))
         self.spec_eval()
         self.lint()
-        r = self.autodev("pr-body", "--dir", self.dir)
+        r = self.lib("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         body = self.dir / "pr-body.md"
         text = body.read_text()
         self.assertIn("[warn] .auto-dev/PLAN.md", text)
         written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
         body.write_text(written)
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         body.write_text(written.replace("Todos can carry a due date.",
                                         "See .auto-dev/PLAN.md.", 1))
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("names a .auto-dev/ path", r.stdout)
 
@@ -2909,7 +2931,7 @@ class PublishTest(NextCase):
             "| 2 | sorted | manual | Weak | a human must check: see S1 in `.auto-dev/x` | "
             "none |"))
         self.lint()
-        r = self.autodev("pr-body", "--dir", self.dir)
+        r = self.lib("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         body = self.dir / "pr-body.md"
         text = body.read_text()
@@ -2926,12 +2948,12 @@ class PublishTest(NextCase):
         self.assertIn("- `true --ignore .auto-dev/`: passed", text)
         written = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
         body.write_text(written)
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         # A person ticking the box on GitHub leaves the quoted region as it was.
         body.write_text(written.replace("- [ ] **an invalid date is rejected",
                                         "- [x] **an invalid date is rejected"))
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_a_finding_s_plain_words_stay_in_its_own_block(self):
@@ -2950,7 +2972,7 @@ class PublishTest(NextCase):
             tree=self.tree()))
         self.spec_eval()
         self.lint()
-        r = self.autodev("pr-body", "--dir", self.dir)
+        r = self.lib("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         body = self.dir / "pr-body.md"
         text = body.read_text()
@@ -2959,7 +2981,7 @@ class PublishTest(NextCase):
                                   "date. (`src/sort.ts:4`); shipped at the user's call at "
                                   "the ready-for-review gate")])
         body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text))
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
@@ -3163,7 +3185,7 @@ class TicketTest(NextCase):
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
         self.spec_eval()
         self.lint()
-        r = self.autodev("pr-body", "--dir", self.dir)
+        r = self.lib("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         text = (self.dir / "pr-body.md").read_text()
         self.assertIn("## Screenshots\n<!-- WRITE: the repo's PR template asks for this "
@@ -3174,14 +3196,14 @@ class TicketTest(NextCase):
         _, _, _, body = self.to_body()
         (self.worktree / "pull_request_template.md").write_text(
             "## Checklist\n- [ ] I added tests\n- [ ] Docs updated\n")
-        r = self.autodev("pr-body", "--dir", self.dir)
+        r = self.lib("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         text = body.read_text()
         self.assertIn("## Checklist\n- [ ] I added tests\n- [ ] Docs updated\n"
                       "<!-- WRITE: tick each box", text)
         text = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text)
         body.write_text(text.replace("- [ ] Docs updated", "- [x] Docs updated if needed"))
-        r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("keep the PR template's items", r.stdout)
         r = self.autodev("pr", "publish", "--dir", self.dir)
@@ -3202,7 +3224,7 @@ class TicketTest(NextCase):
             {"args": ["pr", "edit"], "stdout": ""}])
         (self.worktree / "pull_request_template.md").write_text(
             "## Checklist\n- [ ] Docs updated\n")
-        r = self.autodev("pr-body", "--dir", self.dir)
+        r = self.lib("pr-body", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         text = re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
                       body.read_text())
@@ -3893,9 +3915,9 @@ class RiskRecheckTest(NextCase):
         (self.dir / "PLAN.md").write_text(text)
         self.expect("planner", "FITS", **{**PLANNED, "risk": risk})
         self.critic("APPROVE", risk=risk)
-        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
         if risk == "high":
             self.after(self.next(5), "Approve & build")
+        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
         self.enter_stage("build")
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
 
@@ -4213,7 +4235,7 @@ class OverrideTest(OverrideCase):
         self.assertNotIn("stop", self.state())
         self.quality_gate()  # the gate runs again, no worker
         self.enter_stage("ship")
-        self.assertEqual(self.state()["budget"]["remaining"], 3)  # only the gate's correction
+        self.assertEqual(self.state()["budget"]["remaining"], 4)  # the gate's correction is free
 
     def test_a_typed_instruction_spawns_the_fixer_and_the_gate_runs_again(self):
         out, _ = self.red_gate()
@@ -4300,7 +4322,7 @@ class OverrideTest(OverrideCase):
         self.assertEqual(state["settings"]["gate"][0]["command"], command)
         fix = state["overrides"][-1]
         self.assertEqual((fix["status"], fix["changed"]), ("fixed", [".auto-dev/state.json"]))
-        self.assertTrue(fix["code_changed"])  # the new gate command runs
+        # The new gate command ran (quality_gate above): a run counts only for its gate.
 
     def test_a_fixer_settings_change_is_put_back_when_it_does_not_fix(self):
         out, _ = self.red_gate()

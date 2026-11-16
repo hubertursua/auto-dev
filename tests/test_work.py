@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_autodev import SCRIPTS, RunCase
 from test_autodev import RunCase as InitCase
-from test_parsers import CODE_REVIEW, FIXTURES, MANIFEST, PLAN, SPEC_EVAL
+from test_parsers import CODE_REVIEW, FIXTURES, MANIFEST, PLAN, SECURITY_REVIEW, SPEC_EVAL
 
 # The fixture plan at standard risk: no Security/Compliance criteria.
 PLAN_NO_SECURITY = PLAN.replace("Risk: high", "Risk: standard").split(
@@ -538,7 +538,6 @@ class RecordTest(WorkCase):
         self.assertIn("VOTES-R2.md", r.stdout)
 
     def test_a_security_review_must_follow_its_template(self):
-        from test_next import SECURITY_REVIEW
         broken = SECURITY_REVIEW.format(tree="0" * 40).split("## Coverage")[0]
         (self.dir / "SECURITY_REVIEW.md").write_text(broken)
         self.returned("security-reviewer", 1, next="CLEAN", must_fix="0", pre_existing="1")
@@ -564,13 +563,6 @@ class RecordTest(WorkCase):
         r = self.cmd("record", "verifier", "1")
         self.assertEqual(r.returncode, 1)
         self.assertIn("SPEC_EVAL.md: no `Tree:` line", r.stdout)
-
-    def test_a_lint_report_needs_its_tree_line(self):
-        (self.dir / "lint").mkdir(exist_ok=True)
-        (self.dir / "lint" / "TEST.md").write_text("# TEST — pass\n")
-        r = self.cmd("check-artifact", str(self.dir / "lint" / "TEST.md"))
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("no `Tree:` line", r.stdout)
 
     def test_a_malformed_return_is_refused(self):
         self.returned("coder", 1, next="DONE", blocked="0", test_changes="none")
@@ -823,6 +815,53 @@ class RecordTest(WorkCase):
         r = self.cmd("commit-tests", "--path", "app.ts")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("MANIFEST.md names no check in app.ts", r.stdout + r.stderr)
+
+    def test_a_coder_that_breaks_a_check_and_fails_is_refused_too(self):
+        # Whatever its status: a coder's edit left in a committed check would be
+        # counted as broken already by the next coder's brief, and excused.
+        self.tests_commit()
+        n = self.job("coder", "build")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("weakened\n")
+        self.returned("coder", n, status="failed")
+        r = self.cmd("record", "coder", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("committed acceptance checks in src/due.acceptance.test.ts", r.stdout)
+
+    def test_a_tester_that_rules_a_check_right_but_changed_the_tree_is_refused(self):
+        self.tests_commit()
+        n = self.job("acceptance-tester", "repair", scope="ONLY conditions 1: x",
+                     report="the review")
+        (self.worktree / "app.ts").write_text("the tester's edit\n")
+        self.returned("acceptance-tester", n, next="STANDS", checks="0", ambiguous="none")
+        r = self.cmd("record", "acceptance-tester", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("you changed app.ts but returned no repair", r.stdout)
+
+    def test_a_token_from_another_mode_is_refused(self):
+        n = self.job("planner", "blocked", blocked="the steps listed in x")
+        self.returned("planner", n, next="FITS", risk="high", reading="none",
+                      entry_points_changed="no")
+        r = self.cmd("record", "planner", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("is not one of PLAN_REVISED, SPEC_IMPOSSIBLE, UPDATE_OLD_TEST "
+                      "(in blocked mode)", r.stdout)
+
+    def test_a_security_reviewer_whose_counts_disagree_is_refused(self):
+        n = self.job("security-reviewer", leads="none")
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree="0" * 40)
+                                                     .replace(
+            "| S2 | session token not rotated |",
+            "| S3 | any user can set the date | `src/due.ts:9` | introduced | High "
+            "| pending | must-fix | open |\n| S2 | session token not rotated |"))
+        self.returned("security-reviewer", n, next="CLEAN", must_fix="0", pre_existing="0",
+                      spec_problems="0")
+        r = self.cmd("record", "security-reviewer", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("must_fix is 0 but SECURITY_REVIEW.md has 1 open must-fix", r.stdout)
+        self.returned("security-reviewer", n, next="MUST_FIX", must_fix="1",
+                      pre_existing="0", spec_problems="0")
+        r = self.cmd("record", "security-reviewer", str(n))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_a_coder_that_breaks_a_committed_check_is_refused_once_it_was_whole(self):
         self.tests_commit()
@@ -1313,6 +1352,11 @@ class CheckArtifactTest(WorkCase):
             self.assertEqual(r.returncode, 1, why)
             self.assertIn(why, r.stdout)
 
+    def test_a_return_that_is_not_an_object_is_a_problem_not_a_crash(self):
+        r = self.check("returns/coder-1.json", "[1, 2]")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not a JSON object", r.stdout)
+
     def test_corrections(self):
         self.assertEqual(self.check("evidence/corrections.md", "# Required changes\nNone.\n")
                          .returncode, 0)
@@ -1323,8 +1367,6 @@ class CheckArtifactTest(WorkCase):
         self.assertEqual(self.check("CODE_REVIEW.md", review).returncode, 0)
         self.assertEqual(self.check("CODE_REVIEW.md", review.replace("## Noise", "## Junk"))
                          .returncode, 1)
-        self.assertEqual(self.check("lint/TEST.md", "# TEST — pass\n\n- **Tree:** abc\n")
-                         .returncode, 0)
 
 
 class AmendManifestTest(WorkCase):
