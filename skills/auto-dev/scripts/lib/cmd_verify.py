@@ -16,14 +16,11 @@ prep
        backup or lock it left (evidence/mutants.json.backup, .lock) is put
        back with `mutate.py --restore`. The earlier pass's mutation-run.json,
        mutation-run-args.json and mutation-pass.json are deleted.
-    2. The sealed acceptance checks: on a re-check (`--pass re-check`), or a
-       first pass whose checks went in before cleanup (acceptance/INSTALLED),
-       the audit runs first and then `install-checks --recheck` puts back any
-       check edited since; otherwise the checks are installed and then
-       audited. A path
-       where a check can't go in writes evidence/corrections.md, one entry per
-       path. The audit (`check-tests.py --base <cut> --acceptance …`) is saved
-       to evidence/integrity.txt with its exit code on the first line.
+    2. The audit of the build's test changes (`check-tests.py --base <cut>
+       --tests-commit <sha> …`, every tests commit in state.json, so a changed
+       or removed line of the committed acceptance checks is a finding), saved
+       to evidence/integrity.txt with its exit code on the first line. The
+       checks are in the worktree already: nothing is installed.
     3. The code's tree hash (`check-fresh.py --print-tree`), saved to
        evidence/tree-start.txt.
     4. The change set: untracked files are marked intent-to-add, and `git diff
@@ -41,8 +38,6 @@ prep
       PREPARED: <what ran> — then `tree:`, `integrity:`, `changes:`,
                  `acceptance:`, `evidence:` and one `unnamed:` line per check
                  MANIFEST.md lists that no line of the run's output names
-      INSTALL_CONFLICT: <n> path(s) where a check can't go in — `conflict:`
-                 lines; evidence/corrections.md names them
       MUTATION_LEFT_CHANGES: `mutate.py --restore` could not put a file back
                  — its output follows
       STILL_RUNNING: an earlier mutation run is still alive after --wait
@@ -58,8 +53,8 @@ tree
 
 Exit codes:
     0  PREPARED, or TREE
-    1  INSTALL_CONFLICT, or TREE_CHANGED
-    2  could not run (no state, no sealed checks, git or a script failing) —
+    1  TREE_CHANGED
+    2  could not run (no state, no MANIFEST.md, git or a script failing) —
        `ERROR: …`, never a pass
     3  STILL_RUNNING or RUN_AGAIN
     4  MUTATION_LEFT_CHANGES
@@ -73,7 +68,7 @@ import time
 from pathlib import Path
 
 from . import artifacts as art
-from . import cmd_checks, cmd_run, cmd_work, mutation_run, sealed
+from . import cmd_run, cmd_work, mutation_run
 from . import state as st
 from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
@@ -85,10 +80,6 @@ POLL = 5
 # gets what the wait left of BUDGET, and never less than MIN_RUN.
 BUDGET, MIN_RUN = 570, 60
 TAIL = 30
-CONFLICT_ENTRY = ("`{path}`: a held-out acceptance check goes into this file and can't "
-                  "be merged with the change to it; if the change deleted, moved or "
-                  "recreated the file, put it back, and undo any rewrite of its "
-                  "existing lines the task doesn't need")
 PREP_FILES = ("integrity.txt", "tree-start.txt", "changes.diff", "acceptance.txt")
 EXPECTED = "the tests written before the code to pass"
 
@@ -160,37 +151,13 @@ def restore(ad, wt, wait):
             time.sleep(POLL)
 
 
-def write_conflicts(ad, paths):
-    lines = ["# Required changes"]
-    for i, path in enumerate(paths, 1):
-        lines += [f"{i}. {CONFLICT_ENTRY.format(path=path)}",
-                  f"   Where: `{path}` — the file the check goes into",
-                  "   Now: the held-out check can't be put into the file as it is now",
-                  "   Test: none to add — the held-out check is the test"]
-    path = ad / "evidence" / "corrections.md"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def audit(ad, wt, cut):
-    code, out, err = script("check-tests.py", wt, "--base", cut, "--acceptance",
-                            ad / "acceptance")
+def audit(ad, wt, cut, state):
+    shas = [c["sha"] for c in state.get("tests_commits") or []]
+    args = [a for sha in shas for a in ("--tests-commit", sha)]
+    code, out, err = script("check-tests.py", wt, "--base", cut, *args)
     (ad / "evidence" / "integrity.txt").write_text(
         f"check-tests.py exit {code}\n{out}{err}", encoding="utf-8")
     return code
-
-
-def install(ad, wt, cut, recheck):
-    """(audit exit, conflicts). A re-check, or a first pass whose checks went in
-    before cleanup (acceptance/INSTALLED), audits first, so the audit records an
-    edit before `--recheck` undoes it."""
-    if recheck or (ad / "acceptance" / "INSTALLED").exists():
-        code = audit(ad, wt, cut)
-        _written, conflicts = cmd_checks.install_sealed(ad, wt, recheck=True)
-        return code, conflicts
-    _written, conflicts = cmd_checks.install_sealed(ad, wt)
-    if conflicts:
-        return None, conflicts
-    return audit(ad, wt, cut), []
 
 
 def change_set(ad, wt, cut):
@@ -237,7 +204,7 @@ def acceptance_run(ad, wt, state, budget):
     output lines, scoped)."""
     gate = state["settings"].get("gate", [])
     n, check = cmd_run.pick(gate, "test", None)
-    files = sorted(sealed.sealed_files(ad))
+    files = cmd_work.check_files(ad)
     scoped = cmd_run.PLACEHOLDER in str(check.get("files") or "")
     command = cmd_run.command_for(n, check, wt, files if scoped and files else None)
     path = ad / "evidence" / "acceptance.txt"
@@ -289,15 +256,7 @@ def prep(args):
         emit(args.json, token, message, output=lines)
         return code
     cut = cmd_work.cut_commit(str(wt), state["repo"]["base"])
-    recheck = args.pass_ == "re-check"
-    installed = (ad / "acceptance" / "INSTALLED").exists()
-    audit_code, conflicts = install(ad, wt, cut, recheck)
-    if conflicts:
-        write_conflicts(ad, conflicts)
-        emit(args.json, "INSTALL_CONFLICT",
-             f"{len(conflicts)} path(s) where a check can't go in; "
-             "evidence/corrections.md names them", conflict=conflicts)
-        return FAILED
+    audit_code = audit(ad, wt, cut, state)
     tree_hash = cmd_work.print_tree(str(wt))
     (evidence / "tree-start.txt").write_text(tree_hash + "\n", encoding="utf-8")
     diff_lines, diff_files = change_set(ad, wt, cut)
@@ -320,8 +279,7 @@ def prep(args):
                if name and (name, cid) not in named]
     how = ran(code, budget)
     emit(args.json, "PREPARED",
-         f"checks {'re-installed' if recheck or installed else 'installed'}, audit exit "
-         f"{audit_code}, acceptance run {how}",
+         f"audit exit {audit_code}, acceptance run {how}",
          tree=tree_hash, cut=cut,
          integrity=f"{evidence / 'integrity.txt'} (check-tests.py exit {audit_code})",
          changes=f"{evidence / 'changes.diff'} ({diff_lines} lines, {diff_files} files)",

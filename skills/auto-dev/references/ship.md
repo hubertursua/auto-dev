@@ -27,7 +27,7 @@ see in the Ship stage, in order:
    reviewers. Must-fix findings from either review run one correction
    (`coder`, `cleanup`, `verifier`), and the panel and the security reviewer
    review it, without the nested skills, before it is committed on top,
-   pushed and published again (steps 3–5). A finding that a held-out
+   pushed and published again (steps 3–5). A finding that an
    acceptance check is wrong goes to the `acceptance-tester` in repair mode,
    never the coder, on the same round; it repairs the check, or answers
    `STANDS` when it finds the check right, which stops the run and asks the
@@ -57,7 +57,7 @@ see in the Ship stage, in order:
 5. Jira In Review, CI watched once more (workflows that skip drafts run now,
    so green from the draft's checks doesn't count), the `triager` on human
    PR comments, the main gate, `merge-pr`. A human blocker goes to the coder;
-   a comment saying a held-out check is wrong goes to the acceptance tester's
+   a comment saying an acceptance check is wrong goes to the acceptance tester's
    repair mode (the triager writes it to `triage/human-<n>-checks.md`), and a
    `STANDS` stops the run as above. When both come back, the tester goes
    first, on one round. A comment that says the plan's conditions are wrong is a

@@ -28,9 +28,8 @@ Subcommands:
     cleanup-worktree   remove the worktree after the final report
     check-manifest     check the acceptance tester's MANIFEST.md against PLAN.md
     eval-status        turn SPEC_EVAL.md into ALL_MET, CORRECT, REPAIR or STOP
-    spec-overlap       refuse a correction brief that copies a condition's wording
-    install-checks     install the sealed acceptance checks in the worktree
-    amend-checks       drop or reseal held-out checks for a fix the user asked for
+    commit-tests       commit the acceptance checks as their own commit (Phase 3, repairs)
+    amend-checks       drop or add acceptance check rows for a fix the user asked for
     security-reviewer  name the security reviewer to spawn for this PLAN.md
     votes              plan the code-review re-votes, or apply them
     gate-summary       check a gate's preconditions; print its summary and question
@@ -71,6 +70,7 @@ from lib import (
     cmd_run,
     cmd_ship,
     cmd_state,
+    cmd_tests,
     cmd_verify,
     cmd_work,
     overrides,
@@ -97,8 +97,7 @@ COMMANDS = {
     "cleanup-worktree": (cmd_ship, cmd_ship.cleanup_worktree),
     "check-manifest": (cmd_checks, cmd_checks.check_manifest),
     "eval-status": (cmd_checks, cmd_checks.eval_status),
-    "spec-overlap": (cmd_checks, cmd_checks.spec_overlap),
-    "install-checks": (cmd_checks, cmd_checks.install_checks),
+    "commit-tests": (cmd_tests, cmd_tests.main),
     "amend-checks": (cmd_amend, cmd_amend.main),
     "security-reviewer": (cmd_checks, cmd_checks.security_reviewer),
     "votes": (cmd_review, cmd_review.votes),

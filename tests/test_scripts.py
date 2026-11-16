@@ -367,34 +367,137 @@ class CheckTestsTest(GitRepoCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("NO_ASSERTIONS", r.stdout)
 
-    def test_tampered_acceptance_check(self):
-        acceptance = self.tmp / "acceptance"
-        sealed = acceptance / "files/tests/test_accept.py.sealed"
-        sealed.parent.mkdir(parents=True)
-        sealed.write_text("def test_accept():\n    assert True\n")
-        self.write("tests/test_accept.py", "def test_accept():\n    assert 1\n")
-        r = self.audit("--acceptance", acceptance)
+    # The acceptance checks are committed as their own commit before the
+    # build; check-tests guards every line a tests commit added.
+    def make_tests_commit(self, files):
+        for rel, text in files.items():
+            self.write(rel, text)
+        self.git("add", *files)
+        self.git("commit", "-q", "-m", "test: acceptance checks")
+        return self.git("rev-parse", "HEAD").strip()
+
+    def guarded(self, *shas, base=None):
+        args = [a for sha in shas for a in ("--tests-commit", sha)]
+        return run("check-tests.py", self.repo, "--base", base or self.cut, *args)
+
+    def committed_check(self):
+        self.cut = self.git("rev-parse", "HEAD").strip()
+        return self.make_tests_commit(
+            {"tests/test_accept.py": "def test_accept():\n    assert add(1, 2) == 3\n"})
+
+    def test_a_committed_check_left_alone_is_clean(self):
+        sha = self.committed_check()
+        self.write("src/app.py", "def add(a, b):\n    return b + a\n")
+        r = self.guarded(sha)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_changed_line_of_a_committed_check_is_modified(self):
+        sha = self.committed_check()
+        self.write("tests/test_accept.py", "def test_accept():\n    assert True\n")
+        r = self.guarded(sha)
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
-        self.assertIn("ACCEPTANCE_MODIFIED", r.stdout)
+        self.assertIn("ACCEPTANCE_MODIFIED\ttests/test_accept.py:2", r.stdout)
 
+    def test_a_deleted_check_file_is_missing(self):
+        sha = self.committed_check()
+        (self.repo / "tests/test_accept.py").unlink()
+        r = self.guarded(sha)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("ACCEPTANCE_MISSING\ttests/test_accept.py", r.stdout)
 
-    def test_acceptance_tests_added_to_an_existing_file(self):
-        # The check added a test to tests/test_app.py; the coder added another.
-        acceptance = self.tmp / "acceptance"
-        files = acceptance / "files/tests"
-        files.mkdir(parents=True)
+    def test_lines_added_around_the_checks_are_fine(self):
+        # The check added a test to tests/test_app.py; the coder adds another
+        # above and below it.
+        self.cut = self.git("rev-parse", "HEAD").strip()
         base = (self.repo / "tests/test_app.py").read_text()
         added = "\n\ndef test_add_negative():\n    assert add(-1, -2) == -3\n"
-        (files / "test_app.py.base").write_text(base)
-        (files / "test_app.py.sealed").write_text(base + added)
+        sha = self.make_tests_commit({"tests/test_app.py": base + added})
         coder = "\n\ndef test_add_zero():\n    assert add(0, 0) == 0\n"
-        self.write("tests/test_app.py", base + added + coder)
-        r = self.audit("--acceptance", acceptance)
+        self.write("tests/test_app.py", base + coder + added + coder.replace("zero", "two"))
+        r = self.guarded(sha)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.write("tests/test_app.py", base + added.replace("-3", "-4") + coder)
-        r = self.audit("--acceptance", acceptance)
+        r = self.guarded(sha)
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
-        self.assertIn("ACCEPTANCE_MODIFIED\ttests/test_app.py", r.stdout)
+        self.assertIn("ACCEPTANCE_MODIFIED\ttests/test_app.py:", r.stdout)
+        # A line the repo had before is not the checks': changing it is the
+        # ordinary audit's business, not a tampered check.
+        self.write("tests/test_app.py", base.replace("== 3", "== 3  # sum") + added)
+        self.assertNotEqual(self.guarded(sha).returncode, 3)
+
+    def test_a_later_tests_commit_is_guarded_and_a_repair_is_judged_against_itself(self):
+        first = self.committed_check()
+        repair = self.make_tests_commit(
+            {"tests/test_accept.py": "def test_accept():\n    assert add(1, 2) == 3\n"
+                                     "\n\ndef test_accept_more():\n    assert add(2, 2) == 4\n"})
+        self.assertEqual(self.guarded(first, repair).returncode, 0)
+        self.write("tests/test_accept.py", "def test_accept():\n    assert add(1, 2) == 3\n"
+                   "\n\ndef test_accept_more():\n    assert add(2, 2) == 5\n")
+        r = self.guarded(first, repair)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("ACCEPTANCE_MODIFIED\ttests/test_accept.py:6", r.stdout)
+        # A repair that changed a line: the repaired line is the one guarded.
+        fixed = self.make_tests_commit(
+            {"tests/test_accept.py": "def test_accept():\n    assert add(1, 2) == 3\n"
+                                     "\n\ndef test_accept_more():\n    assert add(2, 3) == 5\n"})
+        self.assertEqual(self.guarded(first, repair, fixed).returncode, 0)
+
+    def test_appending_after_a_last_line_with_no_newline_is_fine(self):
+        self.cut = self.git("rev-parse", "HEAD").strip()
+        sha = self.make_tests_commit({"tests/test_accept.py":
+                                      "def test_accept():\n    assert add(1, 2) == 3"})
+        self.write("tests/test_accept.py", "def test_accept():\n    assert add(1, 2) == 3\n"
+                   "\n\ndef test_mine():\n    assert add(0, 0) == 0\n")
+        r = self.guarded(sha)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_blame_ignore_list_in_the_config_does_not_hide_a_line(self):
+        # A tests commit that changed a line the repo had: a configured ignore
+        # list naming it would hand the line back to the old commit.
+        self.cut = self.git("rev-parse", "HEAD").strip()
+        old = (self.repo / "tests/test_app.py").read_text()
+        sha = self.make_tests_commit(
+            {"tests/test_app.py": old.replace("== 3", "== 3  # checked")})
+        (self.repo / ".git-blame-ignore").write_text(sha + "\n")
+        self.git("config", "blame.ignoreRevsFile", ".git-blame-ignore")
+        self.write("tests/test_app.py", old)
+        r = self.guarded(sha)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+
+    def test_a_sha256_repo_is_guarded(self):
+        repo = self.tmp / "sha256"
+        made = subprocess.run(["git", "init", "-q", "--object-format=sha256", str(repo)],
+                              capture_output=True, env=GIT_ENV, check=False)
+        if made.returncode != 0:
+            self.skipTest("this git can't create a SHA-256 repository")
+        self.repo = repo
+        self.write("src/app.py", "x = 1\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "init")
+        sha = self.committed_check()
+        self.assertEqual(len(sha), 64)
+        self.write("tests/test_accept.py", "def test_accept():\n    assert True\n")
+        r = self.guarded(sha)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("ACCEPTANCE_MODIFIED\ttests/test_accept.py:2", r.stdout)
+
+    def test_a_new_file_the_coder_edits_later_is_audited_again(self):
+        # Untouched, a tests commit's new file is left out of the rest of the
+        # audit; once the coder edits it, it is audited like any test file.
+        sha = self.committed_check()
+        self.assertEqual(self.guarded(sha).returncode, 0)
+        self.write("tests/test_accept.py", "import pytest\n\n\ndef test_accept():\n"
+                   "    assert add(1, 2) == 3\n\n\n@pytest.mark.skip\ndef test_x():\n"
+                   "    assert 1\n")
+        r = self.guarded(sha)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)  # lines added around it
+        self.assertIn("ADDED_SKIP\ttests/test_accept.py:8", r.stdout)
+
+    def test_an_unknown_tests_commit_cannot_run(self):
+        self.cut = self.git("rev-parse", "HEAD").strip()
+        r = self.guarded("0" * 40)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ERROR", r.stderr)
 
 
 class MutateTest(GitRepoCase):

@@ -438,19 +438,6 @@ class RecordTest(WorkCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("PLAN.md", r.stdout)
 
-    def test_corrections_that_copy_the_spec_are_refused(self):
-        (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
-            tree="0" * 40, v1="unmet", v2="met", e2="x", judgment="Justified",
-            defective="None."))
-        (self.dir / "evidence").mkdir(exist_ok=True)
-        corrections = self.dir / "evidence" / "corrections.md"
-        corrections.write_text("# Required changes\n1. Make sure the list sorts todos "
-                               "by due date with the earliest first\n")
-        self.returned("verifier", 1, next="CORRECT", tree="x", corrections="1")
-        r = self.cmd("record", "verifier", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("corrections.md copies PLAN.md's wording", r.stdout)
-
     def test_a_review_report_must_follow_its_template(self):
         state = self.state()
         state["phase6"] = {"review_pass": 1}
@@ -636,17 +623,6 @@ class RecordTest(WorkCase):
         r = self.cmd("record", "verifier", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_install_conflict_needs_its_corrections(self):
-        self.returned("verifier", 1, next="INSTALL_CONFLICT", tree="none", corrections="0")
-        r = self.cmd("record", "verifier", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("INSTALL_CONFLICT", r.stdout)
-        self.write("evidence/corrections.md", "# Required changes\n1. Move "
-                   "`src/due.acceptance.test.ts`; an acceptance check installs there\n")
-        self.returned("verifier", 1, next="INSTALL_CONFLICT", tree="none", corrections="1")
-        r = self.cmd("record", "verifier", "1")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
     def judge(self, nxt, must_fix_open, revote, review=CODE_REVIEW):
         self.write("CODE_REVIEW.md", review.format(tree="0" * 40))
         self.returned("review-judge", 1, next=nxt, must_fix_open=must_fix_open,
@@ -669,19 +645,6 @@ class RecordTest(WorkCase):
         r = self.judge("REVOTE", "1", "1")
         self.assertIn("revote is 1", r.stdout)
 
-    def test_judge_corrections_must_not_copy_the_spec(self):
-        no_pending = "\n".join(ln for ln in CODE_REVIEW.splitlines()
-                               if not ln.startswith(("| C4", "| C6")))
-        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: the list "
-                   "sorts todos by due date with the earliest first\n")
-        r = self.judge("MUST_FIX", "1", "0", no_pending)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("copies PLAN.md's wording", r.stdout)
-        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: guard "
-                   "the null due date in `src/sort.ts:4` before comparing\n")
-        r = self.judge("MUST_FIX", "1", "0", no_pending)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
     def test_triager_check_comments_go_to_the_checks_file(self):
         triage = self.dir / "triage" / "human-1.md"
         checks = self.dir / "triage" / "human-1-checks.md"
@@ -699,322 +662,199 @@ class RecordTest(WorkCase):
                       triage_file=str(triage), checks_file=str(checks))
         self.assertEqual(self.cmd("record", "triager", "1").returncode, 1)
 
-    def test_a_quoted_test_name_is_not_a_copy_of_the_spec(self):
-        quoted = ("# Required changes\n1. C1: put todos with a due date before undated ones\n"
-                  "   Where: `src/sort.ts:4` — the comparator\n"
-                  "   Now: `src/sort.acceptance.test.ts` :: \"the list sorts todos by due "
-                  "date with the earliest first\" fails\n")
-        path = self.write("evidence/corrections.md", quoted)
-        r = self.cmd("spec-overlap", path)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.cmd("check-artifact", path).returncode, 0)
-        path.write_text(quoted.replace('"the list', "the list").replace('first" fails',
-                                                                         "first fails"))
-        self.assertEqual(self.cmd("spec-overlap", path).returncode, 1)
-        r = self.cmd("check-artifact", path)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("copies PLAN.md's wording", r.stdout)
-        # Any other file is checked quoted text and all.
-        notes = self.write("notes.md", "Test: \"the list sorts todos by due date "
-                           "with the earliest first\"\n")
-        self.assertEqual(self.cmd("spec-overlap", notes).returncode, 1)
+    def checks(self, *paths):
+        for rel in paths:
+            path = self.worktree / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"test in {rel}\n")
 
-    def test_install_checks_installs_refuses_a_conflict_and_rechecks(self):
-        # The verifier installs the sealed checks with one command, not a
-        # shell loop a permission check refuses.
-        self.write("acceptance/files/src/due.acceptance.test.ts.sealed", "due\n")
-        self.write("acceptance/files/src/sort.acceptance.test.ts.sealed", "sort\n")
-        due = self.worktree / "src" / "due.acceptance.test.ts"
-        due.parent.mkdir(parents=True, exist_ok=True)
-        due.write_text("the coder's own file\n")
-        r = self.cmd("install-checks")
+    def test_the_tester_leaves_its_checks_in_the_worktree(self):
+        self.job("acceptance-tester", "write", scope="ALL CONDITIONS")
+        self.checks("src/due.acceptance.test.ts")
+        self.returned("acceptance-tester", 1, next="WRITTEN", checks="4", ambiguous="none")
+        r = self.cmd("record", "acceptance-tester", "1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("conflict: src/due.acceptance.test.ts", r.stdout)
-        self.assertFalse((self.worktree / "src" / "sort.acceptance.test.ts").exists())
-        due.unlink()
-        r = self.cmd("install-checks")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("INSTALLED: 2 check(s)", r.stdout)
-        self.assertEqual(due.read_text(), "due\n")
-        r = self.cmd("install-checks")  # a resumed pass: nothing to write
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotIn("installed:", r.stdout)
-        due.write_text("edited\n")
-        self.assertEqual(self.cmd("install-checks").returncode, 1)
-        r = self.cmd("install-checks", "--recheck")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(due.read_text(), "due\n")
-
-    SHARED_BASE = ('import { one } from "./one";\n\ndescribe("todos", () => {\n'
-                   '  it("adds", () => {\n    expect(one).toBe(1);\n  });\n});\n')
-    SHARED_SEALED = ('import { one } from "./one";\nimport { due } from "./due";\n\n'
-                     'describe("todos", () => {\n  it("adds", () => {\n'
-                     '    expect(one).toBe(1);\n  });\n  it("shows the due date", () => {\n'
-                     '    expect(due()).toBe("2026-01-01");\n  });\n});\n')
-
-    def shared_check(self):
-        """A sealed check that adds a test to src/todos.test.ts, which the coder
-        has also edited: a changed import and a test of its own."""
-        self.write("acceptance/files/src/todos.test.ts.sealed", self.SHARED_SEALED)
-        self.write("acceptance/files/src/todos.test.ts.base", self.SHARED_BASE)
-        target = self.worktree / "src" / "todos.test.ts"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(self.SHARED_BASE.replace("{ one }", "{ one, two }").replace(
-            "  });\n});", '  });\n  it("adds two", () => {\n    expect(two).toBe(2);\n'
-            "  });\n});"))
-        return target
-
-    def test_install_checks_adds_a_check_among_the_coders_lines(self):
-        target = self.shared_check()
-        r = self.cmd("install-checks")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("installed: src/todos.test.ts", r.stdout)
-        self.assertEqual(target.read_text(), (
-            'import { one, two } from "./one";\nimport { due } from "./due";\n\n'
-            'describe("todos", () => {\n  it("adds", () => {\n    expect(one).toBe(1);\n'
-            '  });\n  it("shows the due date", () => {\n'
-            '    expect(due()).toBe("2026-01-01");\n  });\n  it("adds two", () => {\n'
-            "    expect(two).toBe(2);\n  });\n});\n"))
-        r = self.cmd("install-checks")  # in already: nothing to write
-        self.assertNotIn("installed:", r.stdout)
-
-    def test_install_checks_conflicts_when_the_lines_around_a_check_changed(self):
-        target = self.shared_check()
-        target.write_text(target.read_text().replace(
-            'import { one, two } from "./one";\n\ndescribe', 'describe'))
-        r = self.cmd("install-checks")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("conflict: src/todos.test.ts", r.stdout)
-        self.assertNotIn("due()", target.read_text())
-
-    def test_recheck_undoes_only_the_edits_that_touched_a_shared_check(self):
-        target = self.shared_check()
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        good = target.read_text()
-        target.write_text("// the coder's comment\n" + good.replace(
-            '"2026-01-01"', '"anything"'))
-        r = self.cmd("install-checks", "--recheck")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(target.read_text(), "// the coder's comment\n" + good)
-
-    def test_recheck_without_a_snapshot_is_a_conflict(self):
-        target = self.shared_check()
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        (self.dir / "acceptance/files/src/todos.test.ts.installed").unlink()
-        target.write_text(target.read_text().replace('"2026-01-01"', '"anything"'))
-        r = self.cmd("install-checks", "--recheck")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("conflict: src/todos.test.ts", r.stdout)
-
-    def installed_shared_check(self):
-        """The shared check of shared_check(), listed in MANIFEST.md and installed."""
-        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
-            '`src/due.acceptance.test.ts` :: "shows the due date"',
-            '`src/todos.test.ts` :: "shows the due date"'))
-        target = self.shared_check()
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        return target
-
-    def test_a_brief_lists_the_lines_a_check_adds_besides_its_tests(self):
-        # The check's own import line is sealed too: a coder told only the
-        # test's name edited it for its own test, and every re-check put it back.
-        self.installed_shared_check()
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('src/todos.test.ts (tests: "shows the due date"; and the lines they '
-                      'add besides the tests, each run (joined by +) kept whole: '
-                      '`import { due } from "./due";`)', paths)
-
-    def test_a_coder_that_edits_a_check_s_import_line_is_refused(self):
-        target = self.installed_shared_check()
-        good = target.read_text()
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        target.write_text(good.replace('import { due } from "./due";',
-                                       'import { due, type Due } from "./due";'))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("you changed lines of the held-out acceptance checks in "
-                      "src/todos.test.ts (whitespace and blank lines count): the line "
-                      '`import { due } from "./due";`, of which these are changed or gone',
+        self.assertIn("src/sort.acceptance.test.ts is in MANIFEST.md but not in the worktree",
                       r.stdout)
-        self.assertIn("add your own import line above the first line of a run of theirs, "
-                      "or below its last line", r.stdout)
-        # A retry is held to the same checks.
-        r = self.cmd("brief", "coder", "--mode", "correction", "--retry", str(n), "--set",
-                     f"corrections_file={self.dir}/evidence/corrections.md")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.returned("coder", n + 1, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", str(n + 1))
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('the line `import { due } from "./due";`', r.stdout)
-        target.write_text(good.replace('import { due } from "./due";',
-                                       'import { due } from "./due";\n'
-                                       'import type { Due } from "./due";'))
-        r = self.cmd("record", "coder", n)  # its own line beside theirs is fine
+        self.assertFalse((self.dir / "acceptance" / "files").exists())
+        self.checks("src/sort.acceptance.test.ts")
+        r = self.cmd("record", "acceptance-tester", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_a_cleanup_that_edits_a_check_line_is_told_to_say_so(self):
-        target = self.installed_shared_check()
-        self.job("cleanup", scope="phase5")
-        target.write_text(target.read_text().replace("    expect(due())", "  expect(due())"))
-        self.returned("cleanup", 1, next="GREEN")
-        r = self.cmd("record", "cleanup", "1")
+    def test_the_tester_only_adds_to_a_file_the_repo_had(self):
+        shared = self.worktree / "src" / "due.acceptance.test.ts"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_text("the repo's own test\n")
+        self.sh("git", "add", "src/due.acceptance.test.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "the repo's test", cwd=self.worktree)
+        n = self.job("acceptance-tester", "write", scope="ALL CONDITIONS")
+        self.checks("src/sort.acceptance.test.ts")
+        shared.write_text("the repo's own test, rewritten\nthe new check\n")
+        self.returned("acceptance-tester", n, next="WRITTEN", checks="4", ambiguous="none")
+        r = self.cmd("record", "acceptance-tester", str(n))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        # The indentation shows: the line the formatter re-indented is still
-        # in the file, without it.
-        self.assertIn('`    expect(due()).toBe("2026-01-01");`', r.stdout)
-        self.assertIn("return ACCEPTANCE_CHECK_FAILS_GATE", r.stdout)
-
-    def test_a_line_added_inside_a_check_names_the_run_it_broke(self):
-        target = self.installed_shared_check()
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        target.write_text(target.read_text().replace(
-            '    expect(due()).toBe("2026-01-01");\n',
-            '    expect(due()).toBe("2026-01-01");\n    expect(1).toBe(1);\n'))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('the run of lines from `  it("shows the due date", () => {` to `  });`',
+        self.assertIn("src/due.acceptance.test.ts: you changed or removed line(s) 1",
                       r.stdout)
-        target.unlink()
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("src/todos.test.ts was removed or moved: put it back", r.stdout)
-
-    def test_a_check_named_by_its_whole_path_lists_only_the_lines_besides_it(self):
-        # The runner names the test `todos > shows the due date`; the source
-        # holds only the last part, so the test's body is not listed.
-        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
-            '`src/due.acceptance.test.ts` :: "shows the due date"',
-            '`src/todos.test.ts` :: "todos > shows the due date"'))
-        self.shared_check()
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('kept whole: `import { due } from "./due";`)', paths)
-        self.assertNotIn("expect(due())", paths)
-
-    GROUP_BASE = ('import { one } from "./one";\n\ndescribe("todos", () => {\n'
-                  '  it("adds", () => {});\n});\n')
-    GROUP_SEALED = ('import { one } from "./one";\n\nimport { due } from "./due";\n\n'
-                    'describe("todos", () => {\n  it("adds", () => {});\n'
-                    '  it("shows the due date", () => {});\n});\n')
-
-    def grouped_check(self, rel="src/todos.test.ts", base=GROUP_BASE, sealed=GROUP_SEALED):
-        """A check whose import starts a group of its own, with its blank line."""
-        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
-            '`src/due.acceptance.test.ts` :: "shows the due date"',
-            f'`{rel}` :: "shows the due date"'))
-        self.write(f"acceptance/files/{rel}.sealed", sealed)
-        if base is not None:
-            self.write(f"acceptance/files/{rel}.base", base)
-        target = self.worktree / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if base is not None:
-            target.write_text(base)
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        return target, n
-
-    def test_a_run_s_blank_line_is_listed_and_named_when_split(self):
-        # "Below the last line" means after the blank line the run ends with.
-        target, n = self.grouped_check()
-        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('kept whole: `import { due } from "./due";` + (blank line))', paths)
-        target.write_text(target.read_text().replace(
-            'import { due } from "./due";\n',
-            'import { due } from "./due";\nimport type { Due } from "./due";\n'))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('the line `import { due } from "./due";`: a line was added inside it, '
-                      'or a blank line in it added or removed; it reads '
-                      '`import { due } from "./due";` + (blank line)', r.stdout)
-        target.write_text(target.read_text().replace(
-            'import type { Due } from "./due";\n', "").replace(
-            'import { due } from "./due";\n\n', 'import { due } from "./due";\n\n'
-            'import type { Due } from "./due";\n'))
-        self.assertEqual(self.cmd("record", "coder", n).returncode, 0)
-
-    def test_a_run_that_goes_on_into_its_tests_says_so(self):
-        # A new check file is one run: nothing may go below its imports.
-        _target, n = self.grouped_check(
-            rel="src/due.check.test.ts", base=None,
-            sealed='import { due } from "./due";\n\ndescribe("due", () => {\n'
-                   '  it("shows the due date", () => {});\n});\n')
-        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('kept whole: `import { due } from "./due";` + (blank line) + '
-                      '`describe("due", () => {` + its tests)', paths)
-
-    def test_a_blank_line_a_check_adds_is_named_by_the_line_before_it(self):
-        target, n = self.grouped_check(
-            base='import { one } from "./one";\ndescribe("todos", () => {\n'
-                 '  it("adds", () => {});\n});\n',
-            sealed='import { one } from "./one";\n\ndescribe("todos", () => {\n'
-                   '  it("adds", () => {});\n  it("shows the due date", () => {});\n});\n')
-        target.write_text(target.read_text().replace(
-            'import { one } from "./one";\n\n', 'import { one } from "./one";\n'))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('the 1 blank line(s) they add after `import { one } from "./one";` '
-                      "are gone or changed", r.stdout)
-
-    def test_a_check_not_whole_when_the_worker_was_briefed_is_not_its_doing(self):
-        # Before the install, the checks are not in the worktree: the coder's
-        # result is not held to them.
-        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
-            '`src/due.acceptance.test.ts` :: "shows the due date"',
-            '`src/todos.test.ts` :: "shows the due date"'))
-        self.shared_check()
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
+        shared.write_text("the repo's own test\nthe new check\n")
+        r = self.cmd("record", "acceptance-tester", str(n))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_a_check_is_not_anchored_on_punctuation_alone(self):
-        # The coder rewrote everything around the check but a closing line:
-        # splicing it in there would land inside the coder's code.
-        self.write("acceptance/files/src/x.test.ts.base", "a();\n});\nb();\n")
-        self.write("acceptance/files/src/x.test.ts.sealed", "a();\n});\ncheck();\nb();\n")
-        target = self.worktree / "src" / "x.test.ts"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("c();\n});\nd();\n")
-        r = self.cmd("install-checks")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("conflict: src/x.test.ts", r.stdout)
+    def test_the_tester_changes_only_its_check_files(self):
+        for mode, nxt in (("write", "WRITTEN"), ("repair", "REPAIRED")):
+            with self.subTest(mode=mode):
+                extra = {"report": "x"} if mode == "repair" else {}
+                n = self.job("acceptance-tester", mode, scope="ALL CONDITIONS", **extra)
+                self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+                (self.worktree / "src" / "fix.ts").write_text("the tester's fix to the code\n")
+                self.returned("acceptance-tester", n, next=nxt, checks="1",
+                              ambiguous="none")
+                r = self.cmd("record", "acceptance-tester", str(n))
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("you changed src/fix.ts, which MANIFEST.md names as no "
+                              "check file", r.stdout)
+                (self.worktree / "src" / "fix.ts").unlink()
+                r = self.cmd("record", "acceptance-tester", str(n))
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_after_the_build_a_check_cant_claim_a_file_that_holds_none(self):
-        state = self.state()
-        state["phases"]["4"]["status"] = "done"
+    def tests_commit(self):
+        self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
+
+    def test_commit_tests_commits_the_checks_alone_once(self):
+        (self.worktree / "app.ts").write_text("the coder's work, not yet\n")
+        r = self.tests_commit()
+        self.assertTrue(r.stdout.startswith("COMMITTED: "), r.stdout)
+        sha = r.stdout.split()[1]
+        self.assertEqual(self.state()["tests_commits"][0]["sha"], sha)
+        self.assertEqual(self.state()["tests_commits"][0]["paths"],
+                         ["src/due.acceptance.test.ts", "src/sort.acceptance.test.ts"])
+        shown = self.sh("git", "show", "--name-only", "--format=%s", "HEAD",
+                        cwd=self.worktree).split()
+        self.assertEqual(" ".join(shown[:5]), "test: acceptance checks for Add")
+        self.assertEqual(sorted(shown[-2:]),
+                         ["src/due.acceptance.test.ts", "src/sort.acceptance.test.ts"])
+        self.assertIn("app.ts", self.sh("git", "status", "--porcelain",
+                                        cwd=self.worktree))  # left uncommitted
+        r = self.cmd("commit-tests")  # nothing changed since
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("UNCHANGED"), r.stdout)
+        self.assertEqual(len(self.state()["tests_commits"]), 1)
+
+    def test_commit_tests_after_a_repair_appends_a_commit(self):
+        self.tests_commit()
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, repaired\n")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        commits = self.state()["tests_commits"]
+        self.assertEqual(len(commits), 2)
+        self.assertEqual(commits[1]["paths"], ["src/due.acceptance.test.ts"])
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip(),
+                         commits[1]["sha"])
+
+    def test_a_tests_commit_state_json_missed_is_adopted(self):
+        self.tests_commit()
+        sha = self.state()["tests_commits"][0]["sha"]
+        state = self.state()  # as if the run stopped between the commit and the save
+        del state["tests_commits"]
         self.write_state(state)
-        self.write("acceptance/files/app.ts.sealed", "export const one = 1;\ncheck\n")
-        self.returned("acceptance-tester", 1, next="REPAIRED", checks="1", ambiguous="none")
-        r = self.cmd("record", "acceptance-tester", 1)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("holds no check yet", r.stdout)
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("UNCHANGED"), r.stdout)
+        self.assertEqual([c["sha"] for c in self.state()["tests_commits"]], [sha])
+        # A commit of the same subject that touches anything else is not adopted.
+        state = self.state()
+        del state["tests_commits"]
+        self.write_state(state)
+        (self.worktree / "app.ts").write_text("x\n")
+        self.sh("git", "add", "app.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "test: acceptance checks, and more",
+                cwd=self.worktree)
+        self.cmd("commit-tests")
+        self.assertEqual([c["sha"] for c in self.state()["tests_commits"]], [sha])
 
-    def test_record_gives_a_sealed_copy_its_base_and_refuses_a_changed_line(self):
-        self.write("acceptance/files/app.ts.sealed",
-                   "export const one = 1;\nexport const two = 2;\n")
-        self.write("acceptance/files/src/new.test.ts.sealed", "a new file\n")
-        self.returned("acceptance-tester", 1, next="SEALED", checks="2", ambiguous="none")
-        self.assertEqual(self.cmd("record", "acceptance-tester", 1).returncode, 0)
-        base = self.dir / "acceptance" / "files" / "app.ts.base"
-        self.assertEqual(base.read_text(), "export const one = 1;\n")  # app.ts at HEAD
-        self.assertFalse((self.dir / "acceptance/files/src/new.test.ts.base").exists())
-        self.write("acceptance/files/app.ts.sealed", "export const one = 2;\n")
-        self.returned("acceptance-tester", 2, next="SEALED", checks="2", ambiguous="none")
-        r = self.cmd("record", "acceptance-tester", 2)
+    def test_a_hook_that_rejects_the_tests_commit_leaves_nothing_staged(self):
+        hooks = self.tmp / "hooks"
+        hooks.mkdir()
+        (hooks / "pre-commit").write_text("#!/bin/sh\necho 'lint says no' >&2\nexit 1\n")
+        (hooks / "pre-commit").chmod(0o755)
+        self.sh("git", "config", "core.hooksPath", str(hooks), cwd=self.worktree)
+        self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+        r = self.cmd("commit-tests")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("may only add lines", r.stdout)
+        self.assertIn("lint says no", r.stdout + r.stderr)
+        self.assertIn("COMMIT-FAILED", r.stdout + r.stderr)
+        self.assertEqual(self.sh("git", "diff", "--cached", "--name-only",
+                                 cwd=self.worktree), "")
+        self.assertNotIn("tests_commits", self.state())
+
+    def test_commit_tests_commits_a_dropped_check_file(self):
+        self.tests_commit()
+        (self.worktree / "src" / "sort.acceptance.test.ts").unlink()
+        manifest = self.dir / "acceptance" / "MANIFEST.md"
+        manifest.write_text("\n".join(ln for ln in manifest.read_text().splitlines()
+                                      if "sort.acceptance" not in ln) + "\n")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["tests_commits"][-1]["paths"],
+                         ["src/sort.acceptance.test.ts"])
+        self.assertNotIn("sort.acceptance", self.sh("git", "ls-files", cwd=self.worktree))
+
+    def test_the_first_commit_tests_refuses_a_file_with_no_change(self):
+        self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+        self.sh("git", "add", "src/sort.acceptance.test.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "someone committed it already",
+                cwd=self.worktree)
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no change from HEAD in src/sort.acceptance.test.ts",
+                      r.stdout + r.stderr)
+        self.assertNotIn("tests_commits", self.state())
+        (self.worktree / "src" / "sort.acceptance.test.ts").unlink()
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not in the worktree: src/sort.acceptance.test.ts", r.stdout + r.stderr)
+
+    def test_commit_tests_path_must_be_a_check_file(self):
+        self.tests_commit()
+        r = self.cmd("commit-tests", "--path", "app.ts")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("MANIFEST.md names no check in app.ts", r.stdout + r.stderr)
+
+    def test_a_coder_that_breaks_a_committed_check_is_refused_once_it_was_whole(self):
+        self.tests_commit()
+        n = self.job("coder", "build")
+        check = self.worktree / "src" / "due.acceptance.test.ts"
+        check.write_text("test in src/due.acceptance.test.ts\nthe coder's own test\n")
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        self.assertEqual(self.cmd("record", "coder", str(n)).returncode, 0)
+        n = self.job("cleanup", scope="phase5")
+        check.write_text("weakened\n")
+        self.returned("cleanup", n, next="GREEN")
+        r = self.cmd("record", "cleanup", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("committed acceptance checks in src/due.acceptance.test.ts at line(s) 1",
+                      r.stdout)
+        self.assertIn("ACCEPTANCE_CHECK_FAILS_GATE", r.stdout)
+        # Broken before the brief: not this worker's doing.
+        n = self.job("coder", "build")
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        self.assertEqual(self.cmd("record", "coder", str(n)).returncode, 0)
+
+    def test_a_new_break_in_a_file_already_broken_at_the_brief_is_refused(self):
+        self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("one\ntwo\nthree\n")
+        self.assertEqual(self.cmd("commit-tests").returncode, 0)
+        check = self.worktree / "src" / "due.acceptance.test.ts"
+        check.write_text("ONE\ntwo\nthree\n")  # broken before the brief
+        n = self.job("coder", "build")
+        check.write_text("ONE\ntwo\nTHREE\n")  # and a new break, later in the file
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("src/due.acceptance.test.ts at line(s) 3", r.stdout)
+        self.assertNotIn("line(s) 1", r.stdout)
 
     def test_each_documented_result_block_is_accepted(self):
         agents = Path(__file__).resolve().parents[1] / "agents"
@@ -1484,80 +1324,6 @@ class CheckArtifactTest(WorkCase):
                          .returncode, 1)
         self.assertEqual(self.check("lint/TEST.md", "# TEST — pass\n\n- **Tree:** abc\n")
                          .returncode, 0)
-
-
-class ResealTest(WorkCase):
-    """sealed.reseal: a fixer's edit to an installed check file, sealed again."""
-
-    def setUp(self):
-        super().setUp()
-        sys.path.insert(0, str(SCRIPTS))
-        from lib import sealed
-        self.sealed = sealed
-        self.files = self.dir / "acceptance" / "files"
-        self.files.mkdir(parents=True, exist_ok=True)
-
-    def reseal(self, old_sealed, old_base, current, names=()):
-        rel = "src/list.test.ts"
-        (self.files / "src").mkdir(exist_ok=True)
-        (self.files / f"{rel}.sealed").write_text(old_sealed)
-        if old_base is not None:
-            (self.files / f"{rel}.base").write_text(old_base)
-        touched = self.sealed.reseal(self.dir, rel, old_sealed, old_base, current, names)
-        read = {s: (self.files / f"{rel}.{s}").read_text()
-                if (self.files / f"{rel}.{s}").exists() else None
-                for s in ("sealed", "base", "installed")}
-        return touched, read
-
-    def test_a_line_inserted_between_the_file_s_own_lines_is_its_own(self):
-        _, read = self.reseal("a\ncheck\nb\nc\n", "a\nb\nc\n", "a\ncheck\nb\nmine\nc\n")
-        self.assertEqual(read["base"], "a\nb\nmine\nc\n")
-        self.assertEqual(read["sealed"], "a\ncheck\nb\nmine\nc\n")
-        self.assertEqual(read["installed"], read["sealed"])
-
-    def test_a_line_that_names_a_check_s_test_is_a_check_s(self):
-        _, read = self.reseal("a\ncheck\nb\nc\n", "a\nb\nc\n",
-                              'a\ncheck\nb\ntest("sorts by due date")\nc\n',
-                              ["sorts by due date"])
-        self.assertEqual(read["base"], "a\nb\nc\n")
-
-    def test_a_line_next_to_a_check_is_a_check_s(self):
-        _, read = self.reseal("a\ncheck\nb\n", "a\nb\n", "a\ncheck\nmore\nb\n")
-        self.assertEqual(read["base"], "a\nb\n")
-
-    def test_lines_rewritten_in_place_keep_their_kind(self):
-        _, read = self.reseal("a\nmine\ncheck\nb\n", "a\nmine\nb\n",
-                              "a\nmine v2\ncheck v2\nb\n")
-        self.assertEqual(read["base"], "a\nmine v2\nb\n")
-
-    def test_a_run_with_a_check_line_rewritten_unevenly_stays_a_check(self):
-        # One own line deleted and the check rewritten: one uneven run. The
-        # check is held out still, never let go.
-        _, read = self.reseal("a\nmine\ncheck\nb\n", "a\nmine\nb\n", "a\ncheck v2\nb\n")
-        self.assertEqual(read["base"], "a\nb\n")
-        self.assertEqual(read["sealed"], "a\ncheck v2\nb\n")
-
-    def test_a_file_with_no_check_left_or_gone_is_no_longer_sealed(self):
-        touched, read = self.reseal("a\ncheck\nb\n", "a\nb\n", "a\nb\n")
-        self.assertEqual(read, {"sealed": None, "base": None, "installed": None})
-        self.assertEqual(touched, ["src/list.test.ts.sealed", "src/list.test.ts.base"])
-        _, read = self.reseal("check\n", None, None)
-        self.assertIsNone(read["sealed"])
-
-    def test_an_unchanged_file_keeps_its_seal_as_it_was(self):
-        rel = "src/list.test.ts"
-        (self.files / "src").mkdir(exist_ok=True)
-        (self.files / f"{rel}.sealed").write_text("hand edited\n")
-        (self.files / f"{rel}.base").write_text("hand edited\n")
-        touched = self.sealed.reseal(self.dir, rel, "a\ncheck\n", "a\n", "a\ncheck\n")
-        self.assertEqual(touched, [])
-        self.assertEqual((self.files / f"{rel}.sealed").read_text(), "a\ncheck\n")
-        self.assertEqual((self.files / f"{rel}.base").read_text(), "a\n")
-        self.assertEqual((self.files / f"{rel}.installed").read_text(), "a\ncheck\n")
-
-    def test_a_new_check_file_is_sealed_whole(self):
-        _, read = self.reseal("check\n", None, "check v2\n")
-        self.assertEqual((read["sealed"], read["base"]), ("check v2\n", None))
 
 
 class AmendManifestTest(WorkCase):

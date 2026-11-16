@@ -37,6 +37,10 @@
       "sets": {
         "scope": "ALL CONDITIONS"
       },
+      "tester_tree": {
+        "files": {},
+        "head": "<head-at-brief>"
+      },
       "worker": "acceptance-tester"
     }
   ],
@@ -46,14 +50,14 @@
     "total": 4
   },
   "created": "2026-10-20T02:04:32+00:00",
-  "events": 12,
+  "events": 13,
   "gates": [
     {
       "at": "2026-10-20T02:04:34+00:00",
       "choice": "proceed",
       "gate": "post-plan",
       "reason": "",
-      "seq": 10
+      "seq": 11
     }
   ],
   "high_risk": true,
@@ -99,13 +103,13 @@
       "data": {
         "ambiguous": "none",
         "checks": "4",
-        "next": "SEALED",
+        "next": "WRITTEN",
         "status": "ok",
         "worker": "acceptance-tester"
       },
       "mode": "write",
       "n": 1,
-      "next": "SEALED",
+      "next": "WRITTEN",
       "seq": 9,
       "sets": {
         "scope": "ALL CONDITIONS"
@@ -129,7 +133,11 @@
     },
     {
       "at": "2026-10-20T02:04:34+00:00",
-      "text": "acceptance-tester #1 returned ok SEALED"
+      "text": "acceptance-tester #1 returned ok WRITTEN"
+    },
+    {
+      "at": "2026-10-20T02:04:34+00:00",
+      "text": "committed the acceptance checks as <tests-commit> (src/due.acceptance.test.ts, src/sort.acceptance.test.ts)"
     },
     {
       "at": "2026-10-20T02:04:34+00:00",
@@ -203,6 +211,19 @@
     "ticket": "none",
     "ticket_url": ""
   },
+  "tests_commits": [
+    {
+      "at": "2026-10-20T02:04:34+00:00",
+      "paths": [
+        "src/due.acceptance.test.ts",
+        "src/sort.acceptance.test.ts"
+      ],
+      "sha": "<tests-commit>"
+    }
+  ],
+  "tests_synced": [
+    "acceptance-tester-1"
+  ],
   "updated": "2026-10-20T02:04:34+00:00",
   "worktree": "<abs-path-to-worktree>"
 }

@@ -250,8 +250,6 @@ def digests(ad):
         files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else (
             [path] if path.is_file() else [])
         for f in files:
-            if f.name.endswith(".installed"):
-                continue  # the pipeline's own snapshot of a shared check file
             out[f.relative_to(ad).as_posix()] = hashlib.sha256(f.read_bytes()).hexdigest()
     return out
 

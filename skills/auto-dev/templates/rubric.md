@@ -9,7 +9,7 @@
   case or error path.
 - **Tests:** a changed behavior with no test, a test that cannot fail, or a test
   that misses the case the change is about.
-- **Acceptance check** (`acceptance-check`): a held-out acceptance check asserts
+- **Acceptance check** (`acceptance-check`): an acceptance check asserts
   the wrong thing, or can't fail when its condition is unmet. It goes to the
   acceptance tester's repair mode, never the coder.
 

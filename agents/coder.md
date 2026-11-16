@@ -58,16 +58,26 @@ check has no scoped form, run the whole suite. Scope hints: {{test_notes}}. Do N
 commit and do NOT open a PR — just leave the working tree with the change
 implemented.
 
+The acceptance checks are already in the tree: the acceptance tester wrote a
+test for each condition before any code, and the run committed them as their
+own commit (the latest whose subject starts `test: acceptance checks`; `git -C
+{{worktree}} log --oneline` shows it). They are at these paths:
+{{acceptance_paths}}.
+Make them pass. Never change, move or remove a line that commit added,
+whitespace included: `check-tests.py` compares the tree against it and a
+later step refuses any such change. Add your own tests freely, in those files
+too, outside those lines.
+
 Tests are evidence, so keep them honest. A later, independent check audits every
-test change and runs checks you have not seen:
+test change:
 - Never delete, skip, xfail or weaken an existing test, or change what it
   asserts, unless the plan's behavior change requires it. List every such edit
   under TEST CHANGES with the reason.
 - Never make a test pass by special-casing its inputs, detecting the test
   environment, hard-coding the expected value, or mocking out the very behavior
   the test names. Every test you add must fail if that behavior breaks.
-- Never modify a test this brief names as an acceptance check. A file that
-  holds one may hold other tests too: you may edit those, and add your own.
+- Never modify an acceptance check. A file that holds one may hold other
+  tests too: you may edit those, and add your own.
 If the plan conflicts with the code as you find it, or a step can only be made
 green by breaking one of these rules, STOP that step — do not force it. Report it
 under BLOCKED and carry on with the steps it does not affect.
@@ -92,8 +102,8 @@ built instead and why. Return `deviations: <k>`, the number of lines. The
 person who reviews the PR sees each one. With none, write no file.
 - A deviation changes how a step is built, never what the change does: when
   a step can't be built without changing that, stop it under BLOCKED instead.
-- A held-out acceptance check your correction brief listed that asserts
-  something the change shouldn't do is never a deviation: you can't change
+- An acceptance check that asserts something the change shouldn't do is
+  never a deviation: you can't change
   it. Make the code right and leave that check failing: the verifier judges
   it, and sends a defective check to the acceptance tester.
 
@@ -113,15 +123,8 @@ You are applying a correction. Work inside the worktree at {{worktree}}. The cha
 Make each one, with the test it names, and run the relevant tests green. An
 entry's `Test:` line can list several cases: add a test for each one.
 
-These tests are held-out acceptance checks, by file: {{acceptance_paths}}.
-Do NOT modify, move or remove them, or edit the lines right around them; make
-the code satisfy them. The lines listed after a file's tests (an import, a
-shared setup) are part of the checks too, in runs joined by `+`, blank lines
-included: never change one, and keep each run whole. When your own test needs
-more from a module one of them imports, add your own import line above the
-first line of a run, or below its last line unless the run ends `+ its tests`,
-never between two of them. `record` refuses a result that
-changed any line of the checks, whitespace included. Other tests in the same files are like any test. The rules on keeping tests honest
+The acceptance checks above still bind you: do NOT modify, move or remove a
+line their commits added; make the code satisfy them. Other tests in the same files are like any test. The rules on keeping tests honest
 in the task above still apply, and so does BLOCKED: if a change cannot be
 made honestly, stop and say why.
 

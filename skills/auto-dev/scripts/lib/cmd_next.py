@@ -16,8 +16,9 @@ it is. Run `next` only once every agent of the last spawn returned.
 
 It does the mechanical steps itself rather than asking you to: it writes the
 brief of the worker to spawn, spends a round of the budget before a plan
-revision or a correction, installs the sealed acceptance checks before Phase
-5's cleanup, checks the acceptance tester's manifest, re-checks the risk tier
+revision or a correction, checks the acceptance tester's manifest and commits
+its checks as their own commit (again after a repair, or a fix that edited a
+check file), re-checks the risk tier
 from the verified build's diff, reads the verifier's verdicts, plans and applies the code-review
 re-votes, takes the review snapshot, and generates the PR body.
 
@@ -128,10 +129,10 @@ from . import (
     briefs,
     cmd_checks,
     cmd_review,
+    cmd_tests,
     cmd_work,
     judgment,
     overrides,
-    sealed,
     tree_guard,
 )
 from . import state as st
@@ -343,8 +344,6 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
             n = c.peek(worker)
             path = c.ad / "briefs" / f"{worker}-{n}.md"
         else:
-            if worker == "acceptance-tester" and mode == "repair":
-                rebase_installed(c)
             path, _ = cmd_work.write_brief(c.state, c.ad, worker, mode, dict(sets))
             c.dirty = True
             n = int(path.stem.rsplit("-", 1)[1])
@@ -353,19 +352,6 @@ def spawn_many(c, jobs, rule, budget=None, agent=None):
         prompts.append(cmd_work.prompt_for(path))
         efforts.append(effort_for(c, worker))
     return spawn_lines(agents, briefs_, prompts, rule, budget, efforts)
-
-
-def rebase_installed(c):
-    """Before a repair in place, make each shared test file's own lines (the file
-    without the checks in it) its base and the file its sealed copy, so the
-    coder's edits to that file since the checks went in aren't read as the
-    tester's, whether or not the repair touches it."""
-    if not cmd_checks.installed(c.ad):
-        return
-    wt = Path(c.state["worktree"])
-    for rel in sealed.sealed_files(c.ad):
-        if sealed.base_of(c.ad, rel) is not None:
-            sealed.rebase(c.ad, rel, sealed.read(wt / rel))
 
 
 def spawn_lines(agents, briefs_, prompts, rule, budget=None, efforts=None):
@@ -606,7 +592,6 @@ def fixer_spawn(c, fix):
     stop_ = fix["stop"]
     c.would("spawn the fixer with the user's instruction",
             "the user said how to fix the stop")
-    rebase_installed(c)  # each whole check file is its sealed copy: `record` reseals an edit
     result = spawn(c, "fixer", sets={
         "instruction": fix["text"],
         "stopped": "\n".join([f"Why the run stopped: {stop_.get('rule')}"]
@@ -650,11 +635,6 @@ def undo_fix(c, brief, n):
         paths = overrides.changed_artifacts(c.ad, brief["artifacts"])
         overrides.put_back_artifacts(c.ad, brief.get("artifacts_n", n), paths)
         undone += [f"{scratch(c)}/{p}" for p in paths]
-        for p in paths:  # `record` may have resealed it: its snapshot goes back too
-            rel = p[len("acceptance/files/"):-len(".sealed")]
-            if p.startswith("acceptance/files/") and p.endswith(".sealed") and \
-                    sealed.base_of(c.ad, rel) is not None:
-                sealed.snapshot(c.ad, rel, sealed.read(c.ad / p))
     if brief.get("settings") is not None and c.state.get("settings") != brief["settings"]:
         c.state["settings"] = copy.deepcopy(brief["settings"])  # a gate check's command
         undone.append(f"{scratch(c)}/state.json")
@@ -810,6 +790,10 @@ def phases(c):
         stage = st.STAGES[number]
         if stage != c.state.get("stage", "plan"):
             return runbook(c, stage)
+        if number >= 4:  # a repair or a fix since: its checks are committed first
+            tests = tests_step(c)
+            if tests:
+                return tests
         result = PHASES[number](c)
         if result is not None:
             return result
@@ -1102,6 +1086,9 @@ def phase3(c):
     tester = acceptance_step(c, start)
     if tester:
         return tester
+    tests = tests_step(c)
+    if tests:
+        return tests
     if c.state["settings"].get("post_plan_gate"):
         gate = post_plan_gate(c, start)
         if gate:
@@ -1148,6 +1135,66 @@ def acceptance_step(c, after):
             rule="check-manifest found gaps in the tester's return (a round)",
             budget=budget)
     return None
+
+
+def tests_step(c):
+    """Commit the acceptance checks as their own commit after each tester
+    result that wrote or repaired them, and after a fix that edited a check
+    file: once each (state's tests_synced). The tests commits are what
+    check-tests.py guards the checks' lines against."""
+    synced = set(c.state.get("tests_synced") or [])
+    pending = []
+    for rec in c.recs(("acceptance-tester", "fixer")):
+        job = f"{rec['worker']}-{rec['n']}"
+        if job in synced:
+            continue
+        if rec["worker"] == "acceptance-tester" and rec["next"] in ("WRITTEN", "REPAIRED"):
+            pending.append((job, None))
+        elif rec["worker"] == "fixer" and rec["next"] == "FIXED":
+            pending.append((job, fixer_check_files(c, rec)))
+    if not pending:
+        return None
+    only = None
+    if all(paths is not None for _, paths in pending):  # fixes only: the files they edited
+        only = sorted({p for _, paths in pending for p in paths})
+    if only == [] and c.readonly:
+        return None  # nothing to commit: only the bookkeeping, which --explain skips
+    if only != []:
+        c.would("commit the acceptance checks as their own commit",
+                "the tester wrote or repaired them, or a fix edited them")
+        before = {}
+        for job, _ in pending:  # the earliest brief's copy of each file
+            worker, _, n = job.rpartition("-")
+            brief = next((b for b in c.state.get("briefs", [])
+                          if b["worker"] == worker and b["n"] == int(n)), {})
+            for path, blob in (brief.get("check_blobs") or {}).items():
+                before.setdefault(path, blob)
+        try:
+            token, _sha, _paths = cmd_tests.commit_tests(c.state, c.ad, only, before)
+        except Fail as exc:
+            if exc.code == CANNOT_RUN:
+                raise
+            return stop([f"The acceptance checks could not be committed: {exc}",
+                         "Tell the user; nothing was committed."],
+                        "commit-tests refused", retry={},
+                        no_signoff="the build needs its checks committed first")
+        if token == "COMMITTED":
+            # The commit is in git now: state.json says so at once, whatever
+            # this `next` does after (the event is counted when it ends).
+            st.save(c.dir, c.state, count_event=False)
+    c.state["tests_synced"] = sorted(synced | {job for job, _ in pending})
+    c.dirty = True
+    return None
+
+
+def fixer_check_files(c, rec):
+    """The acceptance check files fixer `rec` edited in the worktree: ones
+    MANIFEST.md names, and ones an earlier tests commit holds (a dropped check)."""
+    brief = next((b for b in c.state.get("briefs", [])
+                  if b["worker"] == "fixer" and b["n"] == rec["n"]), {})
+    checks = set(cmd_work.check_files(c.ad)) | {
+        p for commit in c.state.get("tests_commits") or [] for p in commit["paths"]}
+    return sorted(p for p in fix_changes(c, brief) if p in checks)
 
 
 def manifest_gaps(c):
@@ -1357,8 +1404,6 @@ def loop_step(c, start, scope, first, files=None, after_change="a correction"):
         coder = c.last("coder", after=start, before=latest["seq"])
         return blocked_step(c, coder)
     if worker == "acceptance-tester":
-        if latest.get("mode") == "fold" and first is not None:
-            return first()  # install the rest, then cleanup
         trigger = next((r for r in reversed(recs[:-1])
                         if r["worker"] != "acceptance-tester"), None)
         if trigger and trigger["worker"] == "planner":
@@ -1386,8 +1431,7 @@ def loop_step(c, start, scope, first, files=None, after_change="a correction"):
             who = "a PR comment" if (corr or {}).get("entry") == "human" else "the code review"
             return disputed_stop(c, latest, who, str(((corr or {}).get("checks") or {})
                                                      .get("report") or c.ad))
-        if trigger and trigger["worker"] == "verifier" and trigger["next"] in (
-                "CORRECT", "INSTALL_CONFLICT"):
+        if trigger and trigger["worker"] == "verifier" and trigger["next"] == "CORRECT":
             return coder_correction(c, f"{c.ad}/evidence/corrections.md", None,
                                     "the checks are repaired; now the code's correction "
                                     "(the round is already spent)")
@@ -1457,8 +1501,7 @@ def loop_step(c, start, scope, first, files=None, after_change="a correction"):
             return DONE_MARK
         return cleanup_spawn(c, scope, files, "every condition is met: the cleanup agent "
                              "simplifies and runs the quality gate (no round)")
-    _token, fields = cmd_checks.eval_decision(
-        c.ad, install_conflict=nxt == "INSTALL_CONFLICT")
+    _token, fields = cmd_checks.eval_decision(c.ad)
     budget = c.spend(f"verifier-{n}", "correction after verification")
     if budget is None:
         return exhausted_loop(c, fields)
@@ -1710,67 +1753,14 @@ def verifier_first(c, rule):
     return spawn(c, "verifier", sets={"mode": "first pass"}, rule=rule)
 
 
-def fold_spawn(c, conflicts):
-    """The coder's file is where a sealed check goes, and the lines can't be
-    merged mechanically (the coder made the same new test file, or rewrote the
-    lines around an added test). The tester adds its tests to the coder's file:
-    that file, as it is now, becomes the check's base."""
-    c.would("make the coder's files the base of the checks that go into them",
-            "the tester folds its tests into the coder's version of those files")
-    wt = Path(c.state["worktree"])
-    again = any(b["worker"] == "acceptance-tester" and b.get("mode") == "fold"
-                for b in c.state.get("briefs", []))
-    for rel in conflicts if not again else ():  # a re-spawn: the file may hold its tests
-        current = sealed.read(wt / rel)
-        sealed.write(sealed.base_path(c.ad, rel), sealed.lines(current or ""), current)
-    return spawn(c, "acceptance-tester", "fold", {
-        "files": ", ".join(conflicts),
-        "scope": "ONLY the checks in the files the fold names; no condition is rewritten"},
-                 rule="a sealed check can't be merged into the coder's file: the tester "
-                      "adds its tests to that file (no round)")
-
-
-def install_checks(c):
-    """Install every sealed acceptance check at its path in the worktree, so the
-    cleanup agent's quality gate runs on them before the verifier's first pass.
-
-    Returns the paths where a check can't go in (lib/sealed.py): then nothing
-    is installed, and the tester folds its tests into those files once; if one
-    still can't go in, the verifier goes first, as before 4.1, to report it.
-    Writes acceptance/INSTALLED (the paths, one per line), which tells the
-    verifier the checks went in before cleanup."""
-    marker = c.ad / "acceptance" / "INSTALLED"
-    if marker.exists():  # installed already: a change since is an edit the audit records
-        return []
-    wt = c.state["worktree"]
-    pairs = cmd_checks.sealed_pairs(c.ad, wt)
-    _none, conflicts = cmd_checks.install_sealed(c.ad, wt, dry=True)
-    if conflicts:
-        return conflicts
-    c.would("install the sealed acceptance checks in the worktree",
-            "the code is built: the checks go in before the cleanup agent's gate")
-    _written, conflicts = cmd_checks.install_sealed(c.ad, wt)
-    if conflicts:  # a file appeared since the check above
-        return conflicts
-    marker.write_text("".join(f"{t.relative_to(wt)}\n" for _, t in pairs), encoding="utf-8")
-    return []
-
-
 def phase5_first(c):
     """Phase 5 runs cleanup before the verifier's first pass, so the happy path
-    verifies once, on the code that ships."""
-    conflicts = install_checks(c)
-    if conflicts:
-        folded = [r for r in c.recs("acceptance-tester", after=c.start(5), mode="fold")
-                  if r.get("status") == "ok"]
-        if not folded:
-            return fold_spawn(c, conflicts)
-        return verifier_first(c, "a sealed check still can't go in after the tester "
-                              "folded it: the verifier's first pass goes first and "
-                              "reports it")
-    return cleanup_spawn(c, "phase5", None, "the code is built and the sealed checks are "
-                         "installed: the cleanup agent simplifies it and runs the quality "
-                         "gate before the verifier's first pass (no round)")
+    verifies once, on the code that ships. The acceptance checks are in the
+    tree already: they were committed before the build."""
+    return cleanup_spawn(c, "phase5", None, "the code is built: the cleanup agent "
+                         "simplifies it and runs the quality gate, the committed "
+                         "acceptance checks included, before the verifier's first pass "
+                         "(no round)")
 
 
 def phase5(c):
@@ -1872,6 +1862,28 @@ def open_correction(c):
                           "panel reviews what they changed", since=corr["since"])
     if not corr["after_commit"]:
         return None  # before the first commit: the first pass reviews the whole change
+    sha = c.p6.get("verified_sha")
+    if tests_only_since(c, sha):
+        # A repair or a fix was committed as a tests commit on top of the
+        # verified one: a working-tree pass would see nothing of it, and with a
+        # clean tree `commit` would find nothing to commit. `commit` verifies
+        # HEAD instead, and the panel reviews everything since `sha`.
+        add, remove = changed_paths(c.wt)
+        head = git(c.wt, "rev-parse", "HEAD").strip()
+        if not add and not remove and c.p6.get("unverified_commit") != head:
+            c.would("have `commit` verify the tests commit on top of the verified one",
+                    "the correction was committed as a tests commit")
+            c.p6["unverified_commit"] = head
+            c.dirty = True
+        if not reviewed_whole(c):
+            return None
+        if not c.readonly:
+            cmd_checks.git_add_intent(c.wt)
+        files = [f for f in git(c.wt, "diff", "--name-only", sha).splitlines()
+                 if f and not f.startswith(".auto-dev/")]
+        return start_pass(c, "outside", files, "the correction's tests commit is on top "
+                          "of the verified commit: the panel reviews everything since it",
+                          since=sha)
     if unchanged(c):  # nothing to review or commit: the verified commit stands
         corr["unchanged"] = True
         mark_committed(c, "the correction changed nothing")
@@ -1916,6 +1928,15 @@ def unchanged(c):
         return False
     add, remove = changed_paths(c.wt)
     return not add and not remove and git(c.wt, "rev-parse", "HEAD").strip() == sha
+
+
+def tests_only_since(c, sha):
+    """Whether HEAD is past `sha` by recorded tests commits alone."""
+    if not sha:
+        return False
+    code, out, _ = git(c.wt, "rev-list", f"{sha}..HEAD", check=False)
+    revs = out.split() if code == 0 else []
+    return bool(revs) and set(revs) <= set(cmd_work.tests_shas(c.state))
 
 
 def mark_committed(c, why):

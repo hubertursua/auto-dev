@@ -29,7 +29,7 @@ The pipeline:
 ```
 Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (Plan)
 Phase 2  Plan    → PLAN.md (conditions, size, risk, steps), checked by a critic  (Plan)
-Phase 3  Tests   → sealed acceptance checks, then the post-plan gate if it's on  (Plan)
+Phase 3  Tests   → acceptance checks, committed first; then the post-plan gate if it's on  (Plan)
 Phase 4  Build   → the coder builds from the plan                               (Build)
 Phase 5  Verify  → cleanup and the quality gate, then the verifier runs checks (Build)
 Phase 6  Ship    → draft PR, reviews alongside CI, ready gate, main gate, merge  (Ship)
