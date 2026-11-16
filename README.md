@@ -235,15 +235,14 @@ weakening them. Verification is built around that:
 The verifier's and tester's full rules are in `agents/verifier.md` and
 `agents/acceptance-tester.md`.
 
-## Three sessions, not one
+## One session, with checkpoints
 
-The pipeline is split into three sessions: **Plan** (phases 1–3), **Build**
-(4–5) and **Ship** (6). At the end of each it writes `.auto-dev/HANDOFF.md`, a
-short brief for the next one, and stops. Start a fresh session and say
-`auto-dev continue` to pick up. Started inside a run's worktree, it continues
-that run; elsewhere, it asks when several runs are open. Each session follows a short runbook
-(`skills/auto-dev/references/S1-plan.md`, `S2-build.md`, `S3-ship.md`) and is
-never asked to judge, so any model can run it.
+The run goes straight through in one session, in three stages: **Plan**
+(phases 1–3), **Build** (4–5) and **Ship** (6). When the next phase belongs to
+a new stage, `next` tells the orchestrator to read that stage's runbook
+(`skills/auto-dev/references/plan.md`, `build.md`, `ship.md`) and carries on.
+Each runbook is short and never asks the orchestrator to judge, so any model
+can run it.
 
 The orchestrator's context is the real cost: every added turn makes every later
 turn more expensive. So it delegates reads to workers, and each worker's reply
@@ -252,9 +251,12 @@ only when it stopped, or has something the user must be told). `next` records
 each result itself before it decides, checking it against the worker's files,
 so a worker costs no extra orchestrator turn; a refused one goes back to the same
 worker, which fixes the listed issues in what it wrote rather than redoing the
-job. `next` also ends a long
+job. `next` ends a long
 session at a **checkpoint** after 80 recorded events (about 35 workers;
-`checkpoint_events` in `.auto-dev.yml` changes it). Nothing crosses a session
+`checkpoint_events` in `.auto-dev.yml` changes it). There it writes
+`.auto-dev/HANDOFF.md` and stops; start a fresh session and say `auto-dev
+continue` to pick up. Started inside a run's worktree, it continues that run;
+elsewhere, it asks when several runs are open. Nothing crosses a session
 boundary except `.auto-dev/` and the git tree, which also makes an interrupted
 run resumable: `autodev.py resume` finds it, and `next` picks up where it
 stopped.
@@ -702,7 +704,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
 | `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output |
-| `HANDOFF.md` | each session's end, and each checkpoint | the brief for the next session |
+| `HANDOFF.md` | a checkpoint, or the user asking to stop | the brief for the next session |
 | `SPEC.md` | Phase 2 | the testable contract |
 | `IMPLEMENTATION.md` | Phase 3 | the technical plan |
 | `fixes/` | Phases 2–3 | the Define and plan reviewers' FIX blocks |
@@ -765,7 +767,7 @@ up stays until you add rounds.
 agents/                 one agent type per worker: tools, model, effort, and its whole brief
 skills/auto-dev/
   SKILL.md              the orchestrator's spine: the rules and the `next` loop
-  references/           one runbook per session (S1-plan, S2-build, S3-ship), the
+  references/           one runbook per stage (plan, build, ship), the
                         shared tables, the profile schema and the Jira steps
   templates/            the artifact templates and the review rubric workers read by path
   scripts/              the Python helpers listed under Dependencies

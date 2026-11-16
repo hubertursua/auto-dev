@@ -180,7 +180,7 @@
     "should_trigger": true
   },
   {
-    "query": "new session like you said. continue the auto-dev run for PROJ-4821, the plan session already wrote .auto-dev/HANDOFF.md so the build is next",
+    "query": "new session like you said. continue the auto-dev run for PROJ-4821, it hit a checkpoint and wrote .auto-dev/HANDOFF.md, the build is next",
     "should_trigger": true
   },
   {

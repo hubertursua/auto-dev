@@ -26,4 +26,4 @@
 - 2026-10-20T02:04:34+00:00 planner #1 returned ok WRITTEN
 - 2026-10-20T02:04:34+00:00 plan-reviewer #1 returned ok CLEAN
 - 2026-10-20T02:04:34+00:00 acceptance-tester #1 returned ok SEALED
-- 2026-10-20T02:04:34+00:00 handoff written for S2 Build (next session)
+- 2026-10-20T02:04:34+00:00 handoff written for the Build stage (session ended)

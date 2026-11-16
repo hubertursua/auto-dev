@@ -5,10 +5,10 @@ Run: python3 -m unittest discover -s tests -v   (from the repo root)
 A fixture is only useful if the version under test accepts it. These tests
 check that every fixture evals.json names exists and is used, that each
 state.json fixture's WORK_LOG.md is the one autodev.py generates from it, that
-the resume-s2 fixtures are what a replayed S1 leaves, and that `resume` (and,
-for resume-s2, `next`) act on the fixtures the way their evals expect.
+the resume-build fixtures are what a replayed Plan stage leaves, and that `resume` (and,
+for resume-build, `next`) act on the fixtures the way their evals expect.
 
-When the state's shape or the handoff changes, regenerate the resume-s2
+When the state's shape or the handoff changes, regenerate the resume-build
 fixtures from the replay instead of editing them:
 
     AUTODEV_WRITE_FIXTURES=1 python3 -m unittest tests.test_eval_fixtures
@@ -75,7 +75,7 @@ def placeholders(state, worktree, main):
 
     clock(state)
     for brief in state.get("briefs", []):
-        if "tree" in brief:  # read only when its own job is recorded, all done in S1
+        if "tree" in brief:  # read only when its own job is recorded, all done in the Plan stage
             brief["tree"]["head"] = "<head-at-brief>"
     state["init"]["setup_pid"] = SETUP_PID
     state["repo"]["name"] = "<repo-name>"
@@ -97,10 +97,10 @@ class FixtureFilesTest(unittest.TestCase):
 
     def test_the_eval_suite_has_the_cases_where_the_user_decides(self):
         sessions = [e.get("session", "") for e in EVALS["evals"]]
-        for label in ("S2 (spec problem: the run stops)",
-                      "S2 (spec problem: fixed at the user's instruction)",
-                      "S3 (spec problem: a PR comment)", "S2 (a deviation from the plan)",
-                      "S2 (a check the tester rules right)"):
+        for label in ("Build (spec problem: the run stops)",
+                      "Build (spec problem: fixed at the user's instruction)",
+                      "Ship (spec problem: a PR comment)", "Build (a deviation from the plan)",
+                      "Build (a check the tester rules right)"):
             self.assertTrue(any(s.startswith(label) for s in sessions), label)
 
     def test_each_state_fixture_has_its_generated_work_log(self):
@@ -113,8 +113,8 @@ class FixtureFilesTest(unittest.TestCase):
                              "state.json")
 
 
-class ResumeS2ReplayTest(NextCase):
-    """Eval 6's fixtures are what S1 leaves: replay S1 with the fixture's task
+class ResumeBuildReplayTest(NextCase):
+    """Eval 6's fixtures are what the Plan stage leaves: replay it with the fixture's task
     and compare what it writes, placeholders put back, with each fixture."""
 
     maxDiff = None
@@ -126,8 +126,8 @@ class ResumeS2ReplayTest(NextCase):
                             "--task", task, "--ask", ASK, "--profile", self.profile,
                             "--max-wait", "30", *extra)
 
-    def test_the_resume_s2_fixtures_are_what_s1_writes(self):
-        # S1 straight through, each worker spawned once (NextCase.plan_session
+    def test_the_resume_build_fixtures_are_what_the_plan_stage_writes(self):
+        # The Plan stage straight through, each worker spawned once (NextCase.plan_session
         # also re-issues the planner, which a fixture shouldn't show).
         self.expect("define", "FITS", high_risk="yes", reading="none")
         self.expect("define-reviewer", "CLEAN", blockers="0", fix_file="none")
@@ -136,7 +136,11 @@ class ResumeS2ReplayTest(NextCase):
         self.expect("plan-reviewer", "CLEAN", blockers="0", fix_file="none")
         self.expect("acceptance-tester", "SEALED", checks="4", ambiguous="none")
         self.after(self.next(5), "Approve & build")  # high risk: the post-plan gate
-        self.after(self.next(6))
+        self.assertIn("read references/build.md", self.next(0)["ACTION"])
+        # The session ends here, as the Build stage starts (the user stops it, or
+        # a checkpoint): the eval's fresh session resumes the run there.
+        r = self.autodev("handoff", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = placeholders(self.state(), self.worktree, self.repo)
         replayed = {
             "state.json": json.dumps(state, indent=2, sort_keys=True) + "\n",
@@ -144,13 +148,14 @@ class ResumeS2ReplayTest(NextCase):
             "HANDOFF.md": unfill((self.dir / "HANDOFF.md").read_text(encoding="utf-8"),
                                  self.worktree, self.repo),
         }
-        fixture = FILES / "resume-s2"
+        fixture = FILES / "resume-build"
         if os.environ.get("AUTODEV_WRITE_FIXTURES"):
             for name, text in replayed.items():
                 (fixture / name).write_text(text, encoding="utf-8")
         for name, text in replayed.items():
             self.assertEqual((fixture / name).read_text(encoding="utf-8"), text,
-                             f"resume-s2/{name} is not what S1 writes now: regenerate it "
+                             f"resume-build/{name} is not what the Plan stage writes now: "
+                             "regenerate it "
                              "(see this file's docstring)")
 
 
@@ -168,14 +173,14 @@ class FixtureRunCase(RunCase):
         return r.stdout
 
 
-class ResumeS2FixtureTest(FixtureRunCase):
-    """Eval 6: the state S1 leaves, resumed in a fresh session."""
+class ResumeBuildFixtureTest(FixtureRunCase):
+    """Eval 6: the state the Plan stage leaves, resumed in a fresh session."""
 
-    def test_resumes_in_s2_and_spawns_the_coder(self):
+    def test_resumes_in_the_build_stage_and_spawns_the_coder(self):
         r = self.autodev("init", "--repo", self.repo, "--slug", "allowed-set-guard",
                          "--task", "x", "--profile", self.profile, "--max-wait", "30")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        fixture = FILES / "resume-s2"
+        fixture = FILES / "resume-build"
         state = json.loads(fill((fixture / "state.json").read_text(encoding="utf-8"),
                                 self.worktree, self.repo))
         self.write_state(state)
@@ -183,7 +188,8 @@ class ResumeS2FixtureTest(FixtureRunCase):
             (fixture / "HANDOFF.md").read_text(encoding="utf-8"), self.worktree, self.repo))
         out = self.resume()
         self.assertIn(f"RESUME: {self.worktree}", out)
-        self.assertIn("session: S2", out)
+        self.assertIn("stage: Build", out)
+        self.assertIn("runbook: references/build.md", out)
         r = self.autodev("next", "--dir", self.dir, "--json")
         out = json.loads(r.stdout)
         self.assertEqual(out["exit"], 0, r.stdout + r.stderr)

@@ -378,7 +378,8 @@ class ResumeTest(RunCase):
             r = self.resume(*extra)
             self.assertTrue(r.stdout.startswith(f"RESUME: {self.worktree}"), r.stdout)
             self.assertIn("phase: 2 — Define", r.stdout)
-            self.assertIn("session: S1 — Plan", r.stdout)
+            self.assertIn("stage: Plan", r.stdout)
+        self.assertIn("runbook: references/plan.md", r.stdout)
 
     def two_runs(self):
         self.assertEqual(self.init().returncode, 0)
@@ -723,7 +724,7 @@ class StateCommandsTest(RunCase):
         self.assertIn("Task: Add due dates to todos", text)
         self.assertIn("Pick up at: say `auto-dev continue`; `next` decides the step", text)
         self.assertNotIn("start of Phase", text)
-        # S2's orchestrator reads HANDOFF.md and nothing else in .auto-dev/ but the profile
+        # a resumed Build stage reads HANDOFF.md and nothing else in .auto-dev/ but the profile
         opened = text.split("## Files you may open\n", 1)[1].split("\n\n", 1)[0]
         self.assertEqual(opened, f"- {self.dir / 'profile.md'}")
 
@@ -738,6 +739,15 @@ class StateCommandsTest(RunCase):
             r = self.cmd("show")
             self.assertEqual(r.returncode, 2, text + r.stdout + r.stderr)
             self.assertIn("not a 4.x state object", r.stderr)
+
+    def test_show_prints_the_ask_on_one_line_only_when_there_is_one(self):
+        state = self.state()
+        state["task"]["ask"] = ""
+        self.write_state(state)
+        self.assertNotIn("ask:", self.cmd("show").stdout)
+        state["task"]["ask"] = "Add due dates\n  to todos"
+        self.write_state(state)
+        self.assertIn("  ask: Add due dates to todos\n", self.cmd("show").stdout)
 
     def test_json_output(self):
         r = self.cmd("show", "--json")

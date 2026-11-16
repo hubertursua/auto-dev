@@ -84,16 +84,15 @@ Exit codes:
        command; a typed answer is the fixer's instruction), then `next`;
        otherwise do nothing more
     5  ask the user: show SUMMARY, ask QUESTION, run the AFTER line for the answer
-    6  session boundary, or a checkpoint: run the AFTER command, give the user its
-       message, stop
+    6  a checkpoint: run the AFTER command, give the user its message, stop
 `next` never exits 1: a step it could not take is a stop (4) that says why.
 
 Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
 (80, or `checkpoint_events` in .auto-dev.yml), `next` ends the session at the
 next clean point with exit 6 and `handoff --checkpoint`, so no session's context
 grows without bound. A clean point is one where the step would be an action
-(exit 0) and no brief is in flight: a stop, a question or a session boundary the
-step would print comes first. A stop that only a write would reveal (one found
+(exit 0) and no brief is in flight: a stop or a question the step would print
+comes first. A stop that only a write would reveal (one found
 after applying FIX blocks or starting a review pass) comes in the next session
 instead. A new session says `auto-dev continue` and picks up where this one
 stopped; resuming after a checkpoint lifts no stop, since nothing was fixed in
@@ -807,9 +806,9 @@ def phases(c):
     for number in (2, 3, 4, 5, 6):
         if st.phase(c.state, number)["status"] in st.COMPLETE:
             continue
-        session = st.SESSIONS[number]
-        if session != c.state.get("session", "S1"):
-            return boundary(c, session)
+        stage = st.STAGES[number]
+        if stage != c.state.get("stage", "plan"):
+            return runbook(c, stage)
         result = PHASES[number](c)
         if result is not None:
             return result
@@ -949,13 +948,19 @@ def setup(c):
                 "Phase 1 is not done")
 
 
-def boundary(c, session):
-    return {"code": NEXT_BOUNDARY,
-            "ACTION": "end this session: run AFTER, give the user its message, stop",
-            "REPORT": [(f"{st.SESSION_NAMES[c.state.get('session', 'S1')]} is done; "
-                       f"{st.SESSION_NAMES[session]} runs in a fresh session.")],
-            "AFTER": [c.cmd("handoff")],
-            "RULE": f"the next phase belongs to {session}"}
+def runbook(c, stage):
+    """The run enters a new stage, in the same session: the orchestrator reads
+    that stage's runbook, then goes on."""
+    c.would(f"move on to the {st.STAGE_NAMES[stage]} stage", "the next phase is in it")
+    c.state["stage"] = stage
+    c.dirty = True
+    # A HANDOFF.md from an earlier session describes an earlier stage: a
+    # session resumed later must not pick up there.
+    (Path(c.dir) / "HANDOFF.md").unlink(missing_ok=True)
+    return action(f"the run goes on to the {st.STAGE_NAMES[stage]} stage in this session: "
+                  f"read references/{stage}.md, then run `next`",
+                  f"the next phase belongs to the {st.STAGE_NAMES[stage]} stage",
+                  AFTER=[c.cmd("next")])
 
 
 def checkpoint_due(c):
@@ -967,11 +972,10 @@ def checkpoint_due(c):
 
 
 def checkpoint(c):
-    name = st.SESSION_NAMES[c.state.get("session", "S1")]
     return {"code": NEXT_BOUNDARY,
             "ACTION": "checkpoint: run AFTER, give the user its message, stop",
-            "REPORT": [(f"{name} has run long enough that a fresh session is cheaper; "
-                        "it continues from here.")],
+            "REPORT": [("This session has run long enough that a fresh one is cheaper; "
+                        "the run continues from here.")],
             "AFTER": [c.cmd("handoff", "--checkpoint")],
             "RULE": "this session reached its checkpoint event count"}
 
@@ -1713,7 +1717,7 @@ def phase5(c):
 # top of a commit: it runs, its review pass reviews the uncommitted
 # correction, and it is committed and pushed in turn. The one change before
 # the first commit is the re-check of code changed outside the pipeline since
-# S2. The open-the-PR gate (`gates.open_pr`, off by default) asks before the
+# the Build stage. The open-the-PR gate (`gates.open_pr`, off by default) asks before the
 # first push, for repos that must not push unreviewed code.
 
 def phase6(c):
@@ -1730,7 +1734,7 @@ def phase6(c):
         stale = check_fresh(c, "--phase", "5")
         if stale and not any(k["entry"] == "outside" for k in p6["corrections"]):
             return start_correction(c, "outside", None, None,
-                                    "the code changed outside the pipeline since S2: "
+                                    "the code changed outside the pipeline since the Build stage: "
                                     "re-run the quality gate and the verifier first")
     if p6["passes"]:
         review = review_step(c, p6["passes"][-1])
@@ -2469,7 +2473,7 @@ def write_body(c, body, rule, refused=None):
               "(don't read that file: pr publish puts them in)" if slots.exists() else
               f"the PR body {body['path']}")
     return action(f"fill in {target}: "
-                  "replace every `<!-- WRITE: ... -->` line (references/S3-ship.md, "
+                  "replace every `<!-- WRITE: ... -->` line (references/ship.md, "
                   "_The PR body_), in plain words for a "
                   "developer who has never heard of auto-dev; change nothing else. Then "
                   "run AFTER" + (". `pr publish` refused the last one: " + "; ".join(refused)
@@ -2631,7 +2635,7 @@ def main_step(c, sha):
                       "the main gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("main-ci"):
         return action(f"check CI on {c.state['repo']['base']} for the merge of PR "
-                      f"#{p6.get('pr')} (references/S3-ship.md, CI after the merge; its "
+                      f"#{p6.get('pr')} (references/ship.md, CI after the merge; its "
                       f"merge commit: `gh pr view {q(p6.get('pr'))} --json mergeCommit -q "
                       ".mergeCommit.oid`); a failure there is reported, never fixed by "
                       "re-pushing", "the PR is merged",
@@ -2642,7 +2646,7 @@ def main_step(c, sha):
         return jira
     if not c.mark("final-report"):
         failed = (p6.get("inline") or {}).get("error")
-        return action("write the final report for the user (references/S3-ship.md, "
+        return action("write the final report for the user (references/ship.md, "
                       "_The final report_): what shipped, the PR, the checks for a "
                       "person, the budget used, anything left open"
                       + (f"; and that the review findings could not all be posted on "

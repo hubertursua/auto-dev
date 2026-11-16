@@ -12,9 +12,8 @@ description: >-
   feature-development help for hands-off work. Unless asked to auto-dev it, do
   NOT use for one slice of the work: fixing one test/lint/type error, critiquing
   a plan, explaining code, or answering a question (about auto-dev too). Also
-  use to RESUME a run in flight — "auto-dev continue", "pick up where the plan
-  session left off" — since the pipeline stops between its plan, build and ship
-  sessions.
+  use to RESUME a run in flight — "auto-dev continue", "pick up where the last
+  session left off" — since a long run checkpoints into a fresh session.
 ---
 
 # auto-dev
@@ -28,18 +27,22 @@ comes next yourself.
 The pipeline:
 
 ```
-Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (S1 Plan)
-Phase 2  Define  → SPEC.md, the testable contract, and the size check          (S1 Plan)
-Phase 3  Plan    → IMPLEMENTATION.md, then sealed acceptance checks             (S1 Plan)
-Phase 4  Build   → the coder builds from the plan                               (S2 Build)
-Phase 5  Verify  → cleanup and the quality gate, then the verifier runs checks (S2 Build)
-Phase 6  Ship    → draft PR, reviews alongside CI, ready gate, main gate, merge  (S3 Ship)
+Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (Plan)
+Phase 2  Define  → SPEC.md, the testable contract, and the size check          (Plan)
+Phase 3  Plan    → IMPLEMENTATION.md, then sealed acceptance checks             (Plan)
+Phase 4  Build   → the coder builds from the plan                               (Build)
+Phase 5  Verify  → cleanup and the quality gate, then the verifier runs checks (Build)
+Phase 6  Ship    → draft PR, reviews alongside CI, ready gate, main gate, merge  (Ship)
 ```
 
-It runs in three sessions: **S1 Plan**, **S2 Build**, **S3 Ship**. Each ends
-by writing `.auto-dev/HANDOFF.md` and stopping; the user starts a fresh session
-and says `auto-dev continue`. Every session runs on whatever model the user
-picked. Never ask them to switch.
+It runs straight through in one session, in three stages: **Plan**, **Build**,
+**Ship**. As the run enters a stage, `next` tells you to read that stage's
+runbook (`references/<stage>.md`). A session ends only at a checkpoint: once it
+has done enough work that a fresh session is cheaper, `next` writes
+`.auto-dev/HANDOFF.md` (exit 6), and the user starts a fresh session and says
+`auto-dev continue`. If the user asks to stop mid-run, run `autodev.py handoff`
+and give them its message. Every session runs on whatever model the user picked.
+Never ask them to switch.
 
 ## Paths
 
@@ -75,9 +78,9 @@ repo. Below, `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 | Prints | Do |
 |---|---|
-| `FRESH` | a new run: follow `references/S1-plan.md` from step 1 |
-| `RESUME <tree>` | read the runbook for the session it names (`S1-plan.md`, `S2-build.md` or `S3-ship.md`). IF it also printed an `action:` line (setup is not done), run that `init --continue` command first, as `S1-plan.md` says. Then go to **The loop** |
-| `ASK` | show the user the `candidates` lines and ask which run is theirs, or whether to start fresh. Then run `resume` again with `--task` set to the chosen run's task, or follow `S1-plan.md` for a fresh one |
+| `FRESH` | a new run: follow `references/plan.md` from step 1 |
+| `RESUME <tree>` | read the runbook its `runbook:` line names (`references/plan.md`, `build.md` or `ship.md`). IF it also printed an `action:` line (setup is not done), run that `init --continue` command first, as `plan.md` says. Then go to **The loop** |
+| `ASK` | show the user the `candidates` lines and ask which run is theirs, or whether to start fresh. Then run `resume` again with `--task` set to the chosen run's task, or follow `plan.md` for a fresh one |
 | `FINISHED <tree>` | tell the user that run already finished or was stopped; ask whether to start a fresh one |
 | `OLD-VERSION <tree>` | tell the user: "This run was started on auto-dev 3.x. Finish it on auto-dev 3.9, or remove its worktree (`git worktree remove <tree>`) and start again." Then stop |
 
@@ -104,7 +107,7 @@ Its exit code says what kind of step it is:
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed. With a `QUESTION`, the user decides how to go on (_A stop_, below); without one, stop. Do nothing more (one exception: more rounds after a budget stop, below) |
 | 5 | ask the user | Show the `SUMMARY` lines, then call AskUserQuestion with the `QUESTION` JSON as given, unless `ACTION` says to read the ticket first: then follow it, and ask only when it says to. Run the `AFTER` line whose label matches the answer, filling in any `<…>` with what the user said |
-| 6 | end of session, or a checkpoint | Run the `AFTER` command, give the user the message it prints, and stop. Do not start the next phase |
+| 6 | a checkpoint | Run the `AFTER` command, give the user the message it prints, and stop |
 
 `next` never exits 1: a step it can't take is a stop (4) that says why.
 
@@ -144,8 +147,8 @@ the stop, or as `auto-dev continue with <n> more rounds`), run the `budget
 raise` command its `REPORT` names with their number, then `next`. Never add
 rounds they didn't ask for.
 
-**Never skip a step or run one `next` didn't print**, except the ones in your
-session's runbook.
+**Never skip a step or run one `next` didn't print**, except the ones in the
+runbook of the stage you are in.
 
 ## Spawning a worker
 
@@ -193,9 +196,9 @@ for the rest of the session.
 
 | File | Read when |
 |---|---|
-| `references/S1-plan.md` | a fresh run, or a resumed run in S1 |
-| `references/S2-build.md` | a run resumed in S2 |
-| `references/S3-ship.md` | a run resumed in S3 |
+| `references/plan.md` | a fresh run, or a run resumed in the Plan stage |
+| `references/build.md` | when `next` says the run enters the Build stage, or a run resumed in it |
+| `references/ship.md` | when `next` says the run enters the Ship stage, or a run resumed in it |
 | `references/tables.md` | to explain a stop or how to override one, a gate option, the budget or a stale report; to ask a lookup |
 | `references/gates-and-jira.md` | when `next` says to move a Jira ticket |
 | `references/profiles.md` | Phase 1, when resolving the profile |

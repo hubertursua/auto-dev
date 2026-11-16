@@ -111,7 +111,7 @@ follow-up.>
 <only when the repo has a default PR template: each of its sections this body
 lacks, under its own heading — a testing section points at the checks above, a
 checklist is copied with its items unchanged and a box ticked only when SPEC.md,
-HANDOFF.md or this description shows it is true, and any other section is
+the task (`autodev.py show`) or this description shows it is true, and any other section is
 answered in plain words from SPEC.md, or N/A>
 
 ## Assumptions

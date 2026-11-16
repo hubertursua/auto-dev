@@ -453,8 +453,9 @@ def template_sections(path):
             out.append("See _Acceptance conditions_ and _Quality gate_ above.")
         elif boxes:
             out += boxes
-            out.append("<!-- WRITE: tick each box SPEC.md, HANDOFF.md or this description "
-                       "shows is true, and leave unticked any only a person can confirm. "
+            out.append("<!-- WRITE: tick each box SPEC.md, the task (`autodev.py show`) "
+                       "or this description shows is true, and leave unticked any only a "
+                       "person can confirm. "
                        "Keep every item's words as they are -->")
         else:
             hint = re.sub(r"-{2,}", "-", hint)  # it can't end the WRITE comment

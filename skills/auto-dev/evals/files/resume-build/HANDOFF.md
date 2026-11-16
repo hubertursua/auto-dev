@@ -1,4 +1,4 @@
-# Handoff — Reject record creation when the requested value isn't in the context's allowed set → S2 Build (next session)
+# Handoff — Reject record creation when the requested value isn't in the context's allowed set → Build stage (session ended)
 
 Task: Reject record creation when the requested value isn't in the context's allowed set
 Ask: Creating a record with a value outside its context's allowed set returns a typed, handled error instead of throwing.
@@ -12,7 +12,7 @@ Iteration budget remaining: 4/4
 - Phase 3 Plan: done
 
 ## Next
-Phase 4 — Build. Say `auto-dev continue`.
+Phase 4 — Build, in the Build stage (runbook: references/build.md). Say `auto-dev continue`.
 Pick up at: say `auto-dev continue`; `next` decides the step
 
 ## Files you may open

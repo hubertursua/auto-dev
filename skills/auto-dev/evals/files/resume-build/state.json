@@ -193,7 +193,7 @@
     },
     {
       "at": "2026-10-20T02:04:34+00:00",
-      "text": "handoff written for S2 Build (next session)"
+      "text": "handoff written for the Build stage (session ended)"
     }
   ],
   "phase6": {},
@@ -232,7 +232,6 @@
     "prefix": "feat"
   },
   "schema": 4,
-  "session": "S1",
   "settings": {
     "checkpoint_events": null,
     "ci": "none",
@@ -257,6 +256,7 @@
     "test_notes": ""
   },
   "size": "FITS",
+  "stage": "build",
   "task": {
     "ask": "Creating a record with a value outside its context's allowed set returns a typed, handled error instead of throwing.",
     "text": "Reject record creation when the requested value isn't in the context's allowed set",

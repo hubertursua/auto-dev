@@ -1,18 +1,20 @@
-# S3 — Ship (Phase 6)
+# Ship stage (Phase 6)
 
-`autodev.py next` drives S3 too, but here it hands you a few steps to do with
+`autodev.py next` drives the Ship stage too, but here it hands you a few steps to do with
 your own tools: writing a commit subject and two PR paragraphs, pushing,
 moving Jira, watching CI after the merge, and the final report. Each is below.
 `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 ## 1. Enter the worktree
 
-`cd <worktree>` (the tree `resume` printed). Read `.auto-dev/HANDOFF.md`.
+Coming from the Build stage, you are in it already. On a run resumed in the
+Ship stage, `cd <worktree>` (the tree `resume` printed) and read
+`.auto-dev/HANDOFF.md` if there is one.
 
 ## 2. Run the loop
 
 Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
-see in S3, in order:
+see in the Ship stage, in order:
 
 1. Commit, push, the PR body and `pr publish`: steps 3–5 below. The verified
    build opens as a **draft PR before any review**, so CI starts on it while
@@ -34,7 +36,7 @@ see in S3, in order:
    or missing in SPEC.md (`spec-problems/<worker>-<n>.md`) stops the run once
    the judge has consolidated the pass and checked the security findings,
    before any correction (#21): no worker changes the
-   spec, the user decides (`references/S2-build.md`, step 4).
+   spec, the user decides (`references/build.md`, step 4).
    Once the reviews settle, `next` asks you to run `pr publish` again: the
    description gets the reviews.
 3. `ci-watch` on the draft. Whatever it exits, run its `AFTER` line (`next`):
@@ -71,7 +73,7 @@ Replace it, inside its single quotes, with a Conventional Commits subject for
 the change: `feat`, `fix`, `refactor`, `test`, `docs` or `chore`; a scope only
 if the repo's history uses them; an imperative summary under 72 characters,
 with no single quote in it (rephrase, or use ’). Take the summary from the
-`Task:` and `Ask:` lines of `HANDOFF.md`, not from the code. Run it, then `next` (it reads the
+task and its restated ask (the `STATE:` and `ask:` lines `autodev.py show` prints), not from the code. Run it, then `next` (it reads the
 result, whatever the exit code).
 
 ## 4. Push
@@ -101,9 +103,9 @@ auto-dev, and keep every `## ` heading as it is:
 - **Assumptions:** the open assumptions from `SPEC.md`'s Assumptions section a
   reviewer should check, one bullet each, or `None.`
 - **A template section:** answer what its WRITE line asks, from `SPEC.md` or
-  `HANDOFF.md`. If neither says, write `N/A`. Never read the code to answer it.
+  the task (`autodev.py show`). If neither says, write `N/A`. Never read the code to answer it.
 - **A template checklist:** tick a box (`- [x]`) when the sources, `SPEC.md`
-  or `HANDOFF.md` show it is true, and leave it unticked when they don't, or
+  or the task show it is true, and leave it unticked when they don't, or
   when only a person can confirm it (a manual test, a sign-off).
   Never read the code to decide. Add no note saying why: the code and the rest
   of the description show it. Keep every item's words, and don't add, drop or
@@ -160,8 +162,7 @@ _Moving a ticket_ says, then run its `AFTER` line.
 ## 8. The final report
 
 When `next` asks for it, write this for the user, filling every line from
-`state.json` (`autodev.py show`), `HANDOFF.md`, `profile.md` and what `next`
-printed. Then run its `AFTER` line.
+`state.json` (`autodev.py show`), `profile.md` and what `next` printed. Then run its `AFTER` line.
 
 ```markdown
 ## auto-dev — <task or ticket> — <shipped | stopped at <phase>: <reason>>
@@ -196,7 +197,7 @@ A run that started in a worktree the user made never asks: that worktree stays.
 If git refuses (exit 1), leave the tree and tell the user which files are in
 it.
 
-## Stops in S3
+## Stops in the Ship stage
 
 Every stop is exit 4 with its reason in `REPORT`
 (`references/tables.md`, _Stop conditions_), and most ask how to go on

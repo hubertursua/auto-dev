@@ -37,17 +37,17 @@ class CheckRepoTest(unittest.TestCase):
         return tool.errors
 
     def test_eval_path_in_setup_that_exists_passes(self):
-        evals = {"evals": [{"setup": "Copy evals/files/resume-s2/state.json over it.",
-                            "files": ["evals/files/resume-s2/WORK_LOG.md"]}]}
+        evals = {"evals": [{"setup": "Copy evals/files/resume-build/state.json over it.",
+                            "files": ["evals/files/resume-build/WORK_LOG.md"]}]}
         self.assertEqual(self.check_evals(evals), [])
 
     def test_missing_eval_path_fails_wherever_it_is_named(self):
         evals = {"notes": "See skills/auto-dev/evals/files/gone/notes.md.",
-                 "evals": [{"setup": "Copy evals/files/resume-s2/missing.json.",
+                 "evals": [{"setup": "Copy evals/files/resume-build/missing.json.",
                             "expectations": ["Reads evals/files/no-such-dir/."]}]}
         errors = self.check_evals(evals)
         self.assertEqual(len(errors), 3, errors)
-        for ref in ("evals/files/gone/notes.md", "evals/files/resume-s2/missing.json",
+        for ref in ("evals/files/gone/notes.md", "evals/files/resume-build/missing.json",
                     "evals/files/no-such-dir"):
             self.assertTrue(any(f"names {ref}," in e for e in errors), (ref, errors))
 

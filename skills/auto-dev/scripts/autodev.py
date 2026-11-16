@@ -19,7 +19,7 @@ Subcommands:
               add rounds after the budget ran out
     gate      record a gate decision
     mark      record a step done outside autodev.py (a Jira move, the push)
-    handoff   write HANDOFF.md and print the message that ends the session
+    handoff   write HANDOFF.md and print the restart message (a checkpoint, or the user stops)
     commit    stage by name, check, commit, and verify the commit (Phase 6)
     ci-watch  poll the PR's checks, bounded; green, red, pending or unavailable
     merge-pr  merge the PR locked to the checked commit, never --admin

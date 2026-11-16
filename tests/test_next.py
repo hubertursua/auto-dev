@@ -214,19 +214,23 @@ class NextCase(RunCase):
         self.expect("acceptance-tester", "SEALED", checks="4", ambiguous="none")
         out = self.next(5)  # HIGH_RISK turns the post-plan gate on
         self.after(out, "Approve & build")
-        out = self.next(6)
+        self.enter_stage("build")  # the same session goes on
+
+    def enter_stage(self, stage):
+        """`next` moves the run on to `stage` in the same session: the
+        orchestrator reads its runbook, then runs `next`."""
+        out = self.next(0)
+        self.assertIn(f"read references/{stage}.md", out["ACTION"], json.dumps(out))
+        self.assertEqual(self.state()["stage"], stage)
         self.after(out)
-        self.assertTrue((self.dir / "HANDOFF.md").exists())
 
     def build_session(self):
-        self.resume()
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
         (self.worktree / "due.ts").write_text("export const due = 1;\n")
-        out, jobs = self.first_pass()
+        _, jobs = self.first_pass()
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        out = self.next(6)
-        self.after(out)
+        self.enter_stage("ship")
 
     def first_pass(self):
         """Phase 5 after the build: the checks go in, cleanup goes green, then
@@ -429,7 +433,7 @@ class PlanTest(NextCase):
         self.assertEqual(self.sets(*jobs[0])["direction"], "store dates in UTC")
         self.assertNotIn("BUDGET", out)
         self.after(self.next(5), "Approve & build")
-        self.next(6)
+        self.enter_stage("build")
 
     def test_an_unrecorded_brief_is_reissued_then_stops(self):
         out, jobs = self.expect("define")
@@ -449,7 +453,7 @@ class PlanTest(NextCase):
         out = self.next(6)
         self.assertIn("--checkpoint", out["AFTER"][0])
         self.after(out)
-        self.assertIn("resume", (self.dir / "HANDOFF.md").read_text())
+        self.assertIn("(checkpoint)", (self.dir / "HANDOFF.md").read_text())
         self.resume()
         self.expect("planner")
 
@@ -651,10 +655,81 @@ class PlanTest(NextCase):
 
 
 class BuildTest(NextCase):
-    def test_build_session_ends_at_the_boundary(self):
+    def test_the_run_goes_straight_through_in_one_session(self):
+        # RELEASE-5.0, wave 2: plan, build and ship in one session. Each stage
+        # starts with its runbook; no session ends, so no HANDOFF.md is written.
+        events = self.state()["events"]
         self.plan_session()
         self.build_session()
-        self.assertEqual(self.state()["phases"]["5"]["status"], "done")
+        state = self.state()
+        self.assertEqual(state["phases"]["5"]["status"], "done")
+        self.assertEqual(state["stage"], "ship")
+        self.assertFalse((self.dir / "HANDOFF.md").exists())
+        self.assertNotIn("resumed_seq", state)
+        self.assertGreater(state["events"], events)
+        self.assertIn("commit: run", self.next(0)["ACTION"])  # Ship work, same session
+
+    def test_a_checkpoint_at_the_end_of_a_stage_resumes_into_the_next(self):
+        self.expect("define", "FITS", high_risk="yes", reading="none")
+        self.expect("define-reviewer", "CLEAN", blockers="0", fix_file="none")
+        self.expect("planner")
+        (self.dir / "IMPLEMENTATION.md").write_text(self.plan_text)
+        for w, n in self.spawned(self.next(0)):
+            self.answer(w, n, "WRITTEN", entry_points_changed="no")
+        self.expect("plan-reviewer", "CLEAN", blockers="0", fix_file="none")
+        self.expect("acceptance-tester", "SEALED", checks="4", ambiguous="none")
+        self.after(self.next(5), "Approve & build")
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # due as the Plan stage ends
+        self.write_state(state)
+        out = self.next(6)
+        self.after(out)
+        # Phase 3 is closed by the next `next`, so the handoff still names it
+        self.assertIn("Plan stage (checkpoint)", (self.dir / "HANDOFF.md").read_text())
+        self.resume()
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1000
+        self.write_state(state)
+        self.enter_stage("build")  # one step to the Build stage, then the coder
+        self.expect("coder")
+
+    def test_the_step_to_a_new_stage_deletes_an_old_handoff(self):
+        # a HANDOFF.md from an earlier stage must not brief a later session
+        self.expect("define", "FITS", high_risk="yes", reading="none")
+        self.expect("define-reviewer", "CLEAN", blockers="0", fix_file="none")
+        self.expect("planner")
+        (self.dir / "IMPLEMENTATION.md").write_text(self.plan_text)
+        for w, n in self.spawned(self.next(0)):
+            self.answer(w, n, "WRITTEN", entry_points_changed="no")
+        self.expect("plan-reviewer", "CLEAN", blockers="0", fix_file="none")
+        self.expect("acceptance-tester", "SEALED", checks="4", ambiguous="none")
+        self.after(self.next(5), "Approve & build")
+        (self.dir / "HANDOFF.md").write_text("# auto-dev handoff → Plan stage (checkpoint)\n")
+        self.enter_stage("build")
+        self.assertFalse((self.dir / "HANDOFF.md").exists())
+
+    def test_a_4x_state_resumes_in_the_stage_of_its_open_phase(self):
+        self.plan_session()
+        state = self.state()
+        del state["stage"]
+        state["session"] = "S2"  # what 4.x kept
+        self.write_state(state)
+        self.resume()
+        state = self.state()
+        self.assertEqual(state["stage"], "build")
+        self.assertNotIn("session", state)
+        self.expect("coder")
+
+    def test_explain_at_a_new_stage_writes_nothing(self):
+        self.plan_session()
+        self.build_session()
+        state = self.state()
+        state["stage"] = "build"  # as if the Ship stage's runbook was not read yet
+        self.write_state(state)
+        r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertIn("move on to the Ship stage", r.stdout)
+        self.assertEqual(self.state()["stage"], "build")
+        self.enter_stage("ship")
 
     def test_a_blocked_step_goes_to_the_planner_then_the_coder(self):
         self.plan_session()
@@ -688,7 +763,7 @@ class BuildTest(NextCase):
         self.assertEqual(self.sets(*jobs[0])["mode"], "re-check")
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        self.next(6)  # no second cleanup: it ran after the correction
+        self.enter_stage("ship")  # no second cleanup: it ran after the correction
 
     def test_phase_5_installs_the_checks_before_cleanup_and_verifies_once(self):
         self.plan_session()
@@ -706,7 +781,7 @@ class BuildTest(NextCase):
                          "src/due.acceptance.test.ts\nsrc/sort.acceptance.test.ts\n")
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        self.next(6)  # one verifier pass, no second cleanup
+        self.enter_stage("ship")  # one verifier pass, no second cleanup
         self.assertEqual([b["worker"] for b in self.state()["briefs"]
                           if b["worker"] in ("cleanup", "verifier")], ["cleanup", "verifier"])
 
@@ -768,7 +843,7 @@ class BuildTest(NextCase):
         self.assertEqual(self.sets(*jobs[0])["mode"], "re-check")
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        self.next(6)
+        self.enter_stage("ship")
 
     def test_a_repair_rebases_every_shared_file_the_coder_edited(self):
         # The coder added its own test to a file that holds a check. A repair of
@@ -1779,7 +1854,7 @@ class ShipTest(NextCase):
         _, jobs = self.first_pass()
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        self.after(self.next(6))
+        self.enter_stage("ship")
         self.resume()
         self.draft_pr(started=True)
         self.review_clean()
@@ -3484,7 +3559,7 @@ class OverrideTest(OverrideCase):
         _, jobs = self.expect("verifier")
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        self.next(6)
+        self.enter_stage("ship")
         self.assertIn("make the date sort stable", "\n".join(
             self.overrides().summary_lines(self.state())))
 

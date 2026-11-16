@@ -11,6 +11,10 @@ Usage (each takes `--dir <artifact-dir>`, default `./.auto-dev`, and `--json`):
     autodev.py gate <gate> <choice> [--reason TEXT]
     autodev.py mark <step> [--value TEXT]
 
+`show` prints the task, the restated ask (an `ask:` line, when there is one), the
+run's state, the first open phase, the size, the budget, the worktree and the
+branch.
+
 Only these commands (and init) write state.json; WORK_LOG.md is regenerated on
 every write.
 
@@ -114,7 +118,9 @@ def show(args):
     opened = st.first_open_phase(state)
     phase = (f"{opened[0]} — {st.PHASE_NAMES[opened[0]]} ({opened[1]})"
              if opened else "none")
-    emit(args.json, "STATE", state["task"].get("text", ""), run=st.run_state(state),
+    emit(args.json, "STATE", state["task"].get("text", ""),
+         ask=" ".join(str(state["task"].get("ask") or "").split()) or None,
+         run=st.run_state(state),
          phase=phase, size=state.get("size") or "—",
          budget=f"{state['budget']['remaining']} of {state['budget']['total']}",
          worktree=state["worktree"], branch=state["branch"])

@@ -151,7 +151,7 @@ against this list and edit each README section it touches:
 | a phase, its order, or which worker runs it                | *Agent hierarchy* diagram, *What it does* table |
 | how the build is verified (spec format, acceptance checks, verifier, audit, mutation) | *How the build is verified* |
 | the size check or the number of worker roles               | *Size check* |
-| session boundaries or the context budget                   | *Three sessions, not one* |
+| stages, the checkpoint or the context budget              | *One session, with checkpoints* |
 | the code review panel, security review or rubric           | *Review on the draft PR* |
 | a gate, a conditional pause, Jira, CI, or the merge method | *Human gates & integrations* |
 | profile research, saved profiles, permissions guidance, or a `.auto-dev.yml` key | *Stack profiles* |
@@ -184,10 +184,10 @@ wrong about something? If yes, fix the README.
 - **Evals.** When behavior changes, update the expectations in
   `skills/auto-dev/evals/evals.json` that describe it. A `state.json` fixture in
   `evals/files/` sits beside the `WORK_LOG.md` generated from it.
-  `tests/test_eval_fixtures.py` checks that each pair agrees, replays S1 to
-  check that the resume-s2 fixtures (with its `HANDOFF.md`) are what S1 writes
-  now, and runs `resume` on the resume-s2 and old-version fixtures (and `next`
-  on resume-s2). When the state or the handoff changes, regenerate the resume-s2
+  `tests/test_eval_fixtures.py` checks that each pair agrees, replays the Plan stage to
+  check that the resume-build fixtures (with its `HANDOFF.md`) are what the Plan stage
+  writes now, and runs `resume` on the resume-build and old-version fixtures (and `next`
+  on resume-build). When the state or the handoff changes, regenerate the resume-build
   fixtures with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
   tests.test_eval_fixtures`, never by hand.
 - **Briefs and results.** Each `{{slot}}` in an agent file is listed as AUTO,
