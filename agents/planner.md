@@ -2,7 +2,7 @@
 name: auto-dev-planner
 description: auto-dev pipeline only — Phase 2 planner. Researches the ticket against the codebase and writes PLAN.md, the whole plan: the ask, testable conditions, assumptions, the size check, the risk tier it proposes and the build steps; in revise mode, revises it once for the plan critic's blockers, the user's direction or an ambiguous condition; in blocked mode, settles a step the coder stopped. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
-effort: xhigh
+effort: high
 tools: Read, Grep, Glob, Write
 ---
 

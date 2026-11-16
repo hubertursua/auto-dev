@@ -16,7 +16,7 @@
 | 2 | Plan | done | FITS, risk: high |
 | 3 | Tests | done |  |
 | 4 | Build | pending |  |
-| 5 | Verify | pending |  |
+| 5 | Gate | pending |  |
 | 6 | Ship | pending |  |
 
 ## Decisions & assumptions

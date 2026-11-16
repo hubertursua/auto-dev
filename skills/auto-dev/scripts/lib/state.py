@@ -15,7 +15,7 @@ SCHEMA = 4
 STATE_FILE = "state.json"
 LEDGER = "WORK_LOG.md"
 
-PHASES = ((1, "Setup"), (2, "Plan"), (3, "Tests"), (4, "Build"), (5, "Verify"),
+PHASES = ((1, "Setup"), (2, "Plan"), (3, "Tests"), (4, "Build"), (5, "Gate"),
           (6, "Ship"))
 PHASE_NAMES = dict(PHASES)
 # The run goes straight through in one session. Its phases fall in three

@@ -146,16 +146,27 @@ class BriefTest(WorkCase):
         self.assertEqual(values["review_file"], "none")
         self.assertEqual(values["direction"], "use UTC")
 
+    def test_a_standard_risk_verifier_runs_no_mutation_and_no_probes(self):
+        r = self.cmd("brief", "verifier", "--set", "mode=first pass")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "verifier-1.md")
+        self.assertEqual(values["mutation_cap"], "0 (off: a standard-risk run)")
+        self.assertEqual(values["probes"], "off (a standard-risk run)")
+
     def test_verifier_brief_carries_the_last_survivors(self):
+        state = json.loads((self.dir / "state.json").read_text())
+        state["high_risk"] = True  # mutation and probes run on a high-risk run
+        (self.dir / "state.json").write_text(json.dumps(state))
         (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
             tree="0" * 40, v1="met", v2="met", e2="x", judgment="Justified",
             defective="None."))
         r = self.cmd("brief", "verifier", "--set", "mode=re-check",
-                     "--set", "what_changed=the cleanup pass")
+                     "--set", "what_changed=a correction")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         text = (self.dir / "briefs" / "verifier-1.md").read_text()
         self.assertIn("| M2 | `src/sort.ts:4` |", text)
         self.assertIn("mutation_cap: 20", text)
+        self.assertIn("probes: on", text)
         modes = [ln for ln in text.splitlines() if ln.startswith("mode:")]
         self.assertEqual(modes, ["mode: re-check"])
 
@@ -167,9 +178,9 @@ class BriefTest(WorkCase):
         (self.worktree / "late.txt").write_text("x\n")
         self.sh("git", "-C", str(self.worktree), "add", "late.txt")
         self.sh("git", "-C", str(self.worktree), "commit", "-q", "-m", "late")
-        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        r = self.cmd("brief", "verifier", "--set", "mode=first pass")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        values = self.brief_values(self.dir / "briefs" / "cleanup-1.md")
+        values = self.brief_values(self.dir / "briefs" / "verifier-1.md")
         self.assertEqual(values["cut"], cut)
         # origin/main moving on after a fetch leaves the cut where it was.
         seed = self.tmp / "seed"
@@ -179,17 +190,17 @@ class BriefTest(WorkCase):
         self.sh("git", "-C", str(seed), "commit", "-q", "-m", "upstream")
         self.sh("git", "-C", str(seed), "push", "-q", "origin", "main")
         self.sh("git", "-C", str(self.worktree), "fetch", "-q", "origin")
-        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        r = self.cmd("brief", "verifier", "--set", "mode=first pass")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        values = self.brief_values(self.dir / "briefs" / "cleanup-2.md")
+        values = self.brief_values(self.dir / "briefs" / "verifier-2.md")
         self.assertEqual(values["cut"], cut)
 
-    def test_cleanup_brief_gives_a_run_command_for_each_gate_check(self):
-        # The worker runs each check through `autodev.py run`, never by typing
+    def test_coder_brief_gives_a_run_command_for_each_gate_check(self):
+        # The coder runs each check through `autodev.py run`, never by typing
         # the profile's command (a permission check refuses `cd <wt> && …`).
-        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        r = self.cmd("brief", "coder", "--mode", "build")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        text = (self.dir / "briefs" / "cleanup-1.md").read_text()
+        text = (self.dir / "briefs" / "coder-1.md").read_text()
         runs = re.findall(r"run: `([^`]+)`", text)
         self.assertEqual(len(runs), 1, text)
         self.assertIn(" run gate 1 --dir ", runs[0])
@@ -557,18 +568,9 @@ class RecordTest(WorkCase):
     def test_a_lint_report_needs_its_tree_line(self):
         (self.dir / "lint").mkdir(exist_ok=True)
         (self.dir / "lint" / "TEST.md").write_text("# TEST — pass\n")
-        self.returned("cleanup", 1, next="GREEN")
-        r = self.cmd("record", "cleanup", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("TEST.md: no `Tree:` line", r.stdout)
-
-    def test_cleanup_green_needs_passing_reports(self):
-        (self.dir / "lint").mkdir(exist_ok=True)
-        (self.dir / "lint" / "TEST.md").write_text("# TEST — fail\n")
-        self.returned("cleanup", 1, next="GREEN")
-        self.assertEqual(self.cmd("record", "cleanup", "1").returncode, 1)
-        (self.dir / "lint" / "TEST.md").write_text("# TEST — pass\n\n- **Tree:** abc\n")
-        self.assertEqual(self.cmd("record", "cleanup", "1").returncode, 0)
+        r = self.cmd("check-artifact", str(self.dir / "lint" / "TEST.md"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no `Tree:` line", r.stdout)
 
     def test_a_malformed_return_is_refused(self):
         self.returned("coder", 1, next="DONE", blocked="0", test_changes="none")
@@ -829,14 +831,13 @@ class RecordTest(WorkCase):
         check.write_text("test in src/due.acceptance.test.ts\nthe coder's own test\n")
         self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
         self.assertEqual(self.cmd("record", "coder", str(n)).returncode, 0)
-        n = self.job("cleanup", scope="phase5")
+        n = self.job("coder", "correction", corrections_file="the gate's reports")
         check.write_text("weakened\n")
-        self.returned("cleanup", n, next="GREEN")
-        r = self.cmd("record", "cleanup", str(n))
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", str(n))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("committed acceptance checks in src/due.acceptance.test.ts at line(s) 1",
                       r.stdout)
-        self.assertIn("ACCEPTANCE_CHECK_FAILS_GATE", r.stdout)
         # Broken before the brief: not this worker's doing.
         n = self.job("coder", "build")
         self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")

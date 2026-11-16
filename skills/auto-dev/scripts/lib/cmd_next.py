@@ -18,15 +18,23 @@ It does the mechanical steps itself rather than asking you to: it writes the
 brief of the worker to spawn, spends a round of the budget before a plan
 revision or a correction, checks the acceptance tester's manifest and commits
 its checks as their own commit (again after a repair, or a fix that edited a
-check file), re-checks the risk tier
-from the verified build's diff, reads the verifier's verdicts, plans and applies the code-review
-re-votes, takes the review snapshot, and generates the PR body.
+check file), has the orchestrator run the quality gate as a script (no
+worker) before anything is pushed, re-checks the risk tier from the diff, reads
+the verifier's verdicts, plans and applies the code-review re-votes, takes the
+review snapshot, and generates the PR body.
+
+Once the build's quality gate is green, the change is committed, pushed and
+opened as a draft PR; the verifier and the review then run together, alongside
+CI. On a standard-risk run the review is one reviewer (code and security); a
+high-risk run adds the panel of three with the judge, the separate security
+reviewer, mutation and the verifier's own probes. One correction, one round,
+takes what a pass left open and red CI on the pushed commit together.
 
 Workers never negotiate the contract between themselves. A coder that finds
 a plan step wrong builds it the way that works and lists the deviation
 (deviations/coder-<n>.md); the ready-for-review gate summary names each one. A later worker
-that finds a PLAN.md criterion wrong or missing (the verifier, the review
-judge, a security reviewer, the triager from a PR comment) lists it in
+that finds a PLAN.md criterion wrong or missing (the verifier, the reviewer,
+the review judge, a security reviewer, the triager from a PR comment) lists it in
 spec-problems/<worker>-<n>.md, and `next` stops and asks the user before it
 acts on that result. A check the verifier, the code review or a PR comment
 questions goes to the acceptance tester's repair mode; if it rules the check
@@ -35,8 +43,8 @@ at either stop is told to every later worker that judges it.
 
 One iteration budget of rounds covers the run: the planner's one revision for
 the plan critic's blockers, a tester re-spawn for gaps, a re-dispatched
-BLOCKED step, and each correction (after verification, a review pass, a PR
-comment or red CI) spend one. With
+BLOCKED step, a red quality gate's correction, and each correction (after a
+review pass, a PR comment or red CI) spend one. With
 none left, `next` stops, except a correction in Phase 6 before the PR is marked
 ready: what is open goes to the ready-for-review gate instead.
 
@@ -128,6 +136,7 @@ from . import artifacts as art
 from . import (
     briefs,
     cmd_checks,
+    cmd_gate,
     cmd_review,
     cmd_tests,
     cmd_work,
@@ -158,12 +167,11 @@ CHECKPOINT_EVENTS = 80  # about 35 workers; tune on the fixture repo
 SLOTS = ("R1", "R2", "R3")
 SECURITY = ("security-reviewer", "security-reviewer-sensitive")
 JIRA_DEFAULTS = {"in_progress": "In Progress", "in_review": "In Review", "done": "Done"}
-# Workers whose results drive the build-verify loop (Phases 4-6).
-LOOP = ("verifier", "coder", "cleanup", "acceptance-tester", "planner")
+# Workers whose results make a change (Phases 4-6); the quality gate follows.
+LOOP = ("coder", "acceptance-tester", "planner")
 NONE = ("none", "", None)
 ONLY_RE = re.compile(r"ONLY conditions ([^:]+):")
 ENTRY_POINT_SCOPE = "ALL CONDITIONS whose checks call an entry point the revised plan changed"
-GATE_SCOPE = "ONLY the conditions whose checks fail the quality gate"
 HUMAN_SCOPE = "ONLY the conditions whose checks the PR comments in the report question"
 FILL = ("replace each '<...>' placeholder, inside its single quotes, with text that "
         "holds no single quote (rephrase, or use the typographic apostrophe U+2019)")
@@ -576,8 +584,8 @@ def fix_step(c):
         c.p6.setdefault("passes", [])
         return start_correction(c, "fix", None, None,
                                 "the fixer changed the code or its contract at a stop: "
-                                "the quality gate, the verifier and (once committed) a "
-                                "review of what it changed run again (no round)")
+                                "the quality gate, then (once committed) a review pass "
+                                "on what it changed, run again (no round)")
     return None
 
 
@@ -895,11 +903,11 @@ def not_ok(c):
 
     Only results since the last `resume` count: once the user has fixed the
     cause and resumed, the step spawns the worker again."""
-    # The code reviewers run in parallel with each other and with the security
-    # reviewer: review_step re-spawns a failed slot, and their results would hide
-    # the security reviewer's.
+    # A pass's workers run in parallel (the verifier with the reviewer, or with
+    # the panel and the security reviewer): review_step re-spawns a failed one,
+    # and their results would hide the security reviewer's.
     log = [e for e in c.log if e.get("seq", 0) > c.resumed()
-           and e["worker"] not in ("code-reviewer", "fixer")]
+           and e["worker"] not in ("code-reviewer", "fixer", "verifier", "reviewer")]
     if not log:
         return None
     latest = log[-1]
@@ -1281,16 +1289,16 @@ def phase4(c):
     start = c.start(4)
     coder = c.last("coder", after=start)
     if coder is None:
-        return spawn(c, "coder", "build", rule="Phase 4: the coder builds from the plan")
-    result = loop_step(c, start, "phase5", first=None)
+        return spawn(c, "coder", "build", rule="Phase 4: the coder builds from the plan "
+                     "and runs the quality gate to green")
+    result = change_step(c, start, first=None)
     if result is DONE_MARK:
         c.finish(4)
         return None
     return result
 
-
-# The risk tier is re-checked from the diff once the build is verified (the
-# end of Phase 5), on the code that ships: a path that names a sensitive area,
+# The risk tier is re-checked from the diff once the quality gate is green
+# (the end of Phase 5), before anything is pushed or reviewed: a path that names a sensitive area,
 # or a large change, makes the run high-risk. The tier never goes down. A path
 # is split into whole words, at non-alphanumerics and camelCase humps
 # (`UserAuth.ts` is user, auth, ts; `author.ts` is author, ts), and each word
@@ -1372,202 +1380,136 @@ def build_diff(c):
     return paths, lines
 
 
-# ---------------------------------------------------------------- Phases 5 and 6:
-# the build-verify loop
+# ---------------------------------------------------------------- the change loop
+#
+# A change (the build, a correction, a fix at a stop, code changed outside the
+# pipeline) runs its workers (the acceptance tester first when a check is
+# questioned, then the coder; the planner when the coder stops a step), then
+# the quality gate, which `next` has the orchestrator run as a script
+# (`autodev.py quality-gate`), never a worker. A red gate gets one coder
+# correction (a round); red again after it, the run stops and the user decides.
 
 DONE_MARK = object()
 
 
-def loop_step(c, start, scope, first, files=None, after_change="a correction"):
-    """One step of the coder / cleanup / verifier loop after `start`.
-
-    Returns an action, or DONE_MARK once the verifier finds everything met after
-    the cleanup agent has run on the latest code. In Phase 4 (scope `phase5`,
-    `first` None) it ends as soon as the coder has built without a block.
-    """
+def change_step(c, start, first):
+    """One step of a change's workers after `start`: an action, or DONE_MARK
+    once the change is made (the gate follows). `first` starts the change
+    (None in Phase 4, where the coder's build is the change)."""
     recs = c.recs(LOOP, after=start)
     if not recs:
-        return first()
+        return first() if first else DONE_MARK
     latest = recs[-1]
-    worker, nxt, n = latest["worker"], latest["next"], latest["n"]
-    in_phase4 = first is None
+    worker, nxt = latest["worker"], latest["next"]
     if worker == "coder":
-        if nxt == "BLOCKED":
-            return blocked_step(c, latest)
-        if in_phase4:
-            return DONE_MARK
-        if scope != "phase5" or c.recs("cleanup", after=start):
-            return cleanup_spawn(c, scope, files, "the code changed: the cleanup agent "
-                                 "simplifies it and runs the quality gate (no round)")
-        return recheck(c, start, after_change)
+        return blocked_step(c, latest) if nxt == "BLOCKED" else DONE_MARK
     if worker == "planner":
         coder = c.last("coder", after=start, before=latest["seq"])
         return blocked_step(c, coder)
-    if worker == "acceptance-tester":
-        trigger = next((r for r in reversed(recs[:-1])
-                        if r["worker"] != "acceptance-tester"), None)
-        if trigger and trigger["worker"] == "planner":
-            coder = c.last("coder", after=start, before=trigger["seq"])
-            return blocked_step(c, coder)
-        if trigger and trigger["worker"] == "cleanup":
-            if nxt == "STANDS":
-                return stop([("The quality gate fails on an acceptance check, and the "
-                             "acceptance tester ruled the check right as written, so "
-                             "neither can fix it. Tell the user both sides: the cleanup "
-                             f"agent's reports in {c.ad}/lint/ and the tester's reply.")],
-                            "the tester ruled a check that fails the quality gate stands",
-                            retry={"aside": [job_of(latest), job_of(trigger)]},
-                            signoff={"aside": [job_of(latest)],
-                                     "rewrite": [trigger["worker"], trigger["n"], "GREEN"],
-                                     "reports": failing_reports(c)},
-                            kind="red-gate")
-            return cleanup_spawn(c, scope, files, "the repaired check passes the gate now? "
-                                 "Run the cleanup agent again (no round)")
-        if nxt == "STANDS" and questioned(latest) and not latest.get("signed_off"):
-            if trigger and trigger["worker"] == "verifier":
-                return disputed_stop(c, latest, "the verifier",
-                                     f"{c.ad}/SPEC_EVAL.md (Defective acceptance checks)")
-            corr = (c.p6.get("corrections") or [None])[-1]
-            who = "a PR comment" if (corr or {}).get("entry") == "human" else "the code review"
-            return disputed_stop(c, latest, who, str(((corr or {}).get("checks") or {})
-                                                     .get("report") or c.ad))
-        if trigger and trigger["worker"] == "verifier" and trigger["next"] == "CORRECT":
-            return coder_correction(c, f"{c.ad}/evidence/corrections.md", None,
-                                    "the checks are repaired; now the code's correction "
-                                    "(the round is already spent)")
-        if in_phase4:
-            return DONE_MARK if c.last("coder", after=start)["next"] == "BUILT" else None
-        if nxt == "STANDS":
-            return recheck(c, start, "the user kept the questioned acceptance checks as "
-                           "written (judge them as written)")
-        if scope == "phase5" and c.recs("cleanup", after=start):
-            # The repaired check is a changed file: the gate runs on it before the
-            # re-check, so Phase 5 never ends on stale lint reports.
-            return cleanup_spawn(c, scope, files, "an acceptance check was repaired: the "
-                                 "cleanup agent runs the quality gate on it (no round)")
-        return recheck(c, start, "an acceptance-check repair")
-    if worker == "cleanup":
-        if nxt != "GREEN" and gate_signed(c):
-            nxt = "GREEN"  # only checks the user signed off still fail
-        if nxt == "GREEN":
-            if scope == "phase5" and not c.recs("verifier", after=start):
-                return verifier_first(c, "the quality gate is green: the verifier's first "
-                                      "pass checks the code that ships")
-            return recheck(c, start, "the cleanup pass" if scope == "phase5" else
-                           after_change)
-        if nxt == "RED":
-            return stop([("The quality gate can't be made green; never ship a red build. "
-                         f"Tell the user which checks fail: {c.ad}/lint/.")],
-                        "the cleanup agent returned RED",
-                        retry={"aside": [job_of(latest)]},
-                        signoff={"rewrite": [worker, n, "GREEN"],
-                                 "reports": failing_reports(c)}, kind="red-gate")
-        budget = c.spend(f"cleanup-{n}", "acceptance-check repair")
-        if budget is None:
-            return exhausted(c, "no round left for an acceptance-check repair",
-                             f"The quality gate fails on an acceptance check: {c.ad}/lint/.")
-        return spawn(c, "acceptance-tester", "repair", {
-            "scope": GATE_SCOPE,
-            "report": f"the quality gate fails on an acceptance check's lines: see the "
-                      f"cleanup agent's reports in {c.ad}/lint/"},
-            rule="an acceptance check fails the quality gate: the tester repairs it",
-            budget=budget)
-    # the verifier
-    if nxt == "MUTATION_LEFT_CHANGES":
-        return stop([("The mutation step may have left changes in the source; the tree "
-                     "may not be the code that was built. Tell the user the paths the "
-                     "verifier named; build nothing more on it.")],
-                    "the verifier returned MUTATION_LEFT_CHANGES",
-                    retry={"aside": [job_of(latest)]},
-                    no_signoff="the tree may hold a planted change; check it, then retry")
-    spec = spec_stop(c, [latest], "while verifying the build")
-    if spec is not None:
-        return spec
-    if nxt == "ALL_MET":
-        coder = c.last("coder", after=start)
-        changed = coder
-        # A repaired check changed the tree too. The tester's branch above already
-        # sends it to cleanup; this covers a re-check briefed before 4.1.
-        if scope == "phase5":
-            repaired = c.last("acceptance-tester", after=start, mode="repair")
-            if repaired and repaired["next"] != "STANDS" and (
-                    not changed or repaired["seq"] > changed["seq"]):
-                changed = repaired
-        fixed = last_fix(c, after=max(start, changed["seq"] if changed else 0))
-        cleaned = c.recs("cleanup", after=(fixed["done_seq"] if fixed else
-                                           changed["seq"] if changed else start))
-        if (cleaned and (cleaned[-1]["next"] == "GREEN" or gate_signed(c))) or (
-                coder is None and fixed is None and scope != "phase5"):
-            return DONE_MARK
-        return cleanup_spawn(c, scope, files, "every condition is met: the cleanup agent "
-                             "simplifies and runs the quality gate (no round)")
-    _token, fields = cmd_checks.eval_decision(c.ad)
-    budget = c.spend(f"verifier-{n}", "correction after verification")
-    if budget is None:
-        return exhausted_loop(c, fields)
-    ids = [x.strip() for x in fields.get("repair", "").split(",") if x.strip()]
-    if ids and c.last("acceptance-tester", after=latest["seq"]) is None:
-        return spawn(c, "acceptance-tester", "repair", {
-            "scope": f"ONLY conditions {', '.join(ids)}: the verifier judged their checks "
-                     "defective",
-            "report": f"{c.ad}/SPEC_EVAL.md, section Defective acceptance checks"},
-            rule="defective checks are repaired first (the same round)", budget=budget)
-    return coder_correction(c, f"{c.ad}/evidence/corrections.md", budget,
-                            "the verifier found open items (a round)")
+    # the acceptance tester
+    trigger = next((r for r in reversed(recs[:-1])
+                    if r["worker"] != "acceptance-tester"), None)
+    if trigger and trigger["worker"] == "planner":
+        coder = c.last("coder", after=start, before=trigger["seq"])
+        return blocked_step(c, coder)
+    if nxt == "STANDS" and questioned(latest) and not latest.get("signed_off"):
+        corr = (c.p6.get("corrections") or [None])[-1]
+        who = ("a PR comment" if (corr or {}).get("entry") == "human" else
+               "the verifier or the code review")
+        return disputed_stop(c, latest, who, str(((corr or {}).get("checks") or {})
+                                                 .get("report") or c.ad))
+    return DONE_MARK
 
 
-def failing_reports(c):
-    """The quality-gate reports that fail now."""
-    return [g.get("report", "") for g in c.state["settings"].get("gate", [])
-            if not cmd_work.lint_passes(c.ad / "lint" / g.get("report", ""))]
+def gate_runs(c, after):
+    """The quality-gate runs since seq `after` that no retry set aside."""
+    return [g for g in c.state.get("gate_runs") or []
+            if g.get("seq", 0) >= after and not g.get("aside")]
 
 
-def gate_signed(c):
-    """Whether the gate fails only on checks the user signed off."""
-    failing = failing_reports(c)
-    return bool(failing) and set(failing) <= overrides.signed_reports(c.state)
-
-
-def last_fix(c, after):
-    """The last fix at a stop, after seq `after`, that changed the code or a
-    check: the quality gate runs on it before the loop ends."""
-    found = [f for f in overrides.fixes(c.state) if f.get("status") == "fixed"
-             and f.get("code_changed") and f.get("done_seq", 0) > after]
-    return found[-1] if found else None
-
-
-def exhausted_loop(c, fields):
-    """No round left for a correction: in Phase 6 before the PR is marked ready,
-    the loop goes on to the ready-for-review gate, which names what is open;
-    anywhere else the run stops."""
-    if st.phase(c.state, 6)["status"] == "in-progress" and not marked_ready(c):
-        c.p6["exhausted"] = {"seq": c.seq(), "open": fields.get("correct", [])}
-        c.dirty = True
+def gate_step(c, start):
+    """The quality gate on the code as it is now, after the change that began
+    at `start`: DONE_MARK once it is green (or fails only on checks the user
+    signed off)."""
+    now = cmd_review.print_tree(c.wt)
+    key = cmd_gate.gate_key(c.state)
+    signed = overrides.signed_reports(c.state)
+    last = (gate_runs(c, 0) or [None])[-1]
+    if last and last["tree"] == now and last.get("gate") == key and (
+            last["result"] == "GREEN" or set(last.get("failing") or ["?"]) <= signed):
+        return DONE_MARK  # the code and the gate are what a green run checked
+    runs = gate_runs(c, start)
+    if not runs or runs[-1]["tree"] != now or runs[-1].get("gate") != key or \
+            c.last(LOOP, after=runs[-1]["seq"]) is not None:
+        return ask_gate(c, now)
+    latest = runs[-1]
+    failing = latest.get("failing") or []
+    if latest["result"] == "GREEN" or (failing and set(failing) <= signed):
         return DONE_MARK
-    return exhausted(c, "no round left for a correction",
-                     "Tell the user each unmet condition by name and what was tried: "
-                     + "; ".join(fields.get("correct", [])))
+    reports = ", ".join(f"{c.ad}/lint/{r}" for r in failing)
+    earlier = [g for g in runs[:-1] if g["result"] == "RED"]
+    if earlier and c.last("coder", after=earlier[-1]["seq"]) is not None:
+        return stop([("The quality gate is still red after the coder's correction for "
+                     f"it; never ship a red build. Tell the user which checks fail: "
+                     f"{reports}.")], "the quality gate is red after its correction",
+                    retry={"gate": True},
+                    signoff={"reports": failing}, kind="red-gate")
+    budget = c.spend(f"gate-{latest['seq']}", "quality-gate correction")
+    if budget is None:
+        return exhausted(c, "no round left for a quality-gate correction",
+                         f"The quality gate fails: {reports}.")
+    return coder_correction(c, f"the failing quality-gate checks: {reports} (each "
+                            "report's output tail says what fails; the whole output is "
+                            f"under {c.ad}/tmp/run/)", budget,
+                            "the quality gate is red: the coder makes it green (a round)")
+
+
+GATE_ASKS = 3  # the gate asked for this many times on one tree, with no run recorded
+
+
+def ask_gate(c, tree):
+    """Ask the orchestrator to run the quality gate; a stop once it was asked
+    GATE_ASKS times on this tree and no run was recorded (it never finishes)."""
+    asked = c.state.setdefault("gate_asked", {})
+    if asked.get(tree, 0) >= GATE_ASKS:
+        return stop([(f"The quality gate was asked for {GATE_ASKS} times on this code and "
+                     "no run was recorded: it never finished (the whole gate may take "
+                     "longer than a command may run). Tell the user; a check's own "
+                     f"output is under {c.ad}/tmp/run/. Once it can finish (run it in "
+                     "the background, or the profile's slow check made faster), "
+                     "`auto-dev continue` asks for it again.")],
+                    "the quality gate never finished", retry={"gate": True},
+                    no_signoff="nothing says the gate is green")
+    if not c.readonly:
+        asked[tree] = asked.get(tree, 0) + 1
+        c.dirty = True
+    return action(f"run the quality gate: `{c.cmd('quality-gate')}`. It runs every check "
+                  "of the profile's gate and writes their reports. Run it with the Bash "
+                  "tool's timeout at 600000 ms; if the gate can take longer than that, "
+                  "run it in the background and wait for it to finish. Then run AFTER "
+                  "whatever it exits", "the code changed since the quality gate last "
+                  "ran: `next` confirms it before anything is pushed (no worker)",
+                  AFTER=[c.cmd("next")])
+
+
+def settle_change(c, start, first):
+    """The change's workers, then the quality gate: DONE_MARK when both are done."""
+    result = change_step(c, start, first)
+    if result is not DONE_MARK:
+        return result
+    return gate_step(c, start)
 
 
 def questioned(tester):
     """Whether a tester repair answered a worker that questioned its checks
-    (not the entry-point repair after a plan revision, nor a gate repair)."""
+    (not the entry-point repair after a plan revision)."""
     scope = tester.get("sets", {}).get("scope", "")
-    return tester.get("mode") == "repair" and scope not in (ENTRY_POINT_SCOPE, GATE_SCOPE)
+    return tester.get("mode") == "repair" and scope != ENTRY_POINT_SCOPE
 
 
 def coder_correction(c, corrections_file, budget, rule):
     return spawn(c, "coder", "correction", {"corrections_file": corrections_file},
                  rule=rule, budget=budget)
-
-
-def cleanup_spawn(c, scope, files, rule):
-    return spawn(c, "cleanup", sets={"scope": scope}, rule=rule)
-
-
-def verifier_spawn(c, what_changed):
-    return spawn(c, "verifier", sets={"mode": "re-check", "what_changed": what_changed},
-                 rule=f"re-check after {what_changed} (a check, no round)")
 
 
 def blocked_step(c, coder):
@@ -1614,6 +1556,7 @@ def blocked_step(c, coder):
 # The workers told what the user kept, by the slot each is told it in.
 KEPT_SLOTS = {"verifier": ("spec_kept", "checks_kept"),
               "review-judge": ("spec_kept", "checks_kept"),
+              "reviewer": ("spec_kept",),
               "code-reviewer": ("spec_kept",),
               "security-reviewer": ("spec_kept",),
               "security-reviewer-sensitive": ("spec_kept",),
@@ -1729,52 +1672,15 @@ def kept_texts(c):
     return out
 
 
-def recheck(c, start, what_changed):
-    """The verifier after a change: a first pass when a fix at a stop changed
-    PLAN.md or the plan since the loop began and no verifier ran since, since
-    the contract changed."""
-    # A fix that changed PLAN.md or the plan, or a retry at a spec-problem stop
-    # (the user may have changed PLAN.md themselves).
-    changed = [f.get("done_seq") for f in overrides.fixes(c.state) if f.get("spec_changed")]
-    changed += [o["seq"] for o in c.state.get("overrides") or []
-                if o["choice"] == "retry" and o["stop"].get("kind") == "spec-problem"]
-    for done in changed:
-        if done is not None and done >= start and \
-                not any(e["worker"] == "verifier" and e.get("seq", 0) >= done
-                        for e in c.state.get("briefs", [])):
-            return verifier_first(c, "the spec changed: the verifier's first pass judges "
-                                  "every condition again")
-    return verifier_spawn(c, what_changed)
-
-
 # ---------------------------------------------------------------- Phase 5
 
-def verifier_first(c, rule):
-    return spawn(c, "verifier", sets={"mode": "first pass"}, rule=rule)
-
-
-def phase5_first(c):
-    """Phase 5 runs cleanup before the verifier's first pass, so the happy path
-    verifies once, on the code that ships. The acceptance checks are in the
-    tree already: they were committed before the build."""
-    return cleanup_spawn(c, "phase5", None, "the code is built: the cleanup agent "
-                         "simplifies it and runs the quality gate, the committed "
-                         "acceptance checks included, before the verifier's first pass "
-                         "(no round)")
-
-
 def phase5(c):
+    """The quality gate, run by `next` (no worker) on the built code, then the
+    risk tier re-checked from the diff. A red gate goes back to the coder."""
     start = c.start(5)
-    result = loop_step(c, start, "phase5", first=lambda: phase5_first(c))
+    result = settle_change(c, start, first=lambda: DONE_MARK)
     if result is not DONE_MARK:
         return result
-    stale = check_fresh(c, "--phase", "5")  # could not run: exit 2, never "stale"
-    if stale:
-        return stop([("A Phase 5 report is stale right after its own re-run: something "
-                     "rewrites the code on every run. Tell the user the files below."),
-                     stale], "check-fresh --phase 5 found a stale report",
-                    retry={"aside": [job_of(r) for r in c.recs("cleanup", after=start)[-1:]]},
-                    no_signoff="a stale report says nothing about the code that ships")
     risk_recheck(c)
     c.finish(5)
     return None
@@ -1807,7 +1713,7 @@ def phase6(c):
         if stale and not any(k["entry"] == "outside" for k in p6["corrections"]):
             return start_correction(c, "outside", None, None,
                                     "the code changed outside the pipeline since the Build stage: "
-                                    "re-run the quality gate and the verifier first")
+                                    "the quality gate runs on it first")
     if p6["passes"]:
         review = review_step(c, p6["passes"][-1])
         if review is not None:
@@ -1816,8 +1722,8 @@ def phase6(c):
     if head is not None:
         return head
     if not reviewed_whole(c):
-        return start_pass(c, "first", None, "the draft PR is open: the code review panel "
-                          "reviews the whole change while CI runs")
+        return start_pass(c, "first", None, "the draft PR is open: the verifier and the "
+                          "review check the whole change while CI runs")
     if (p6.get("body") or {}).get("reviewed") != p6["passes"][-1]["n"]:
         # The description reports an earlier pass, or (the draft's) none yet.
         body = body_step(c, p6["verified_sha"])
@@ -1834,7 +1740,6 @@ def open_correction(c):
     passes = c.p6["passes"]
     if corr.get("closed") or (passes and passes[-1]["seq"] > corr["seq"]):
         return None
-    scope = "after-commit" if corr["after_commit"] else "outside"
     if corr.get("checks") and corr.get("file"):
         # The tester went first; the coder's part runs in the same round.
         tester = c.last("acceptance-tester", after=corr["seq"])
@@ -1842,8 +1747,7 @@ def open_correction(c):
         if settled and c.last("coder", after=corr["seq"]) is None:
             return coder_correction(c, corr["file"], None, "the checks are settled; now "
                                     "the code's part of the correction (the same round)")
-    result = loop_step(c, corr["seq"], scope, first=lambda: first_of(c, corr),
-                       after_change="a Phase 6 correction")
+    result = settle_change(c, corr["seq"], first=lambda: first_of(c, corr))
     if result is not DONE_MARK:
         return result
     corr["closed"] = True
@@ -1853,13 +1757,13 @@ def open_correction(c):
     if corr.get("since"):
         # Committed outside changes: a working-tree pass would see nothing. The
         # working tree against `since` holds the commits and any edit the
-        # correction made on top (cleanup, the coder), new files included.
+        # correction made on top (the coder's), new files included.
         if not c.readonly:
             cmd_checks.git_add_intent(c.wt)
         files = [f for f in git(c.wt, "diff", "--name-only", corr["since"]).splitlines()
                  if f and not f.startswith(".auto-dev/")]
         return start_pass(c, "outside", files, "the outside commits are re-checked: the "
-                          "panel reviews what they changed", since=corr["since"])
+                          "verifier and the review check what they changed", since=corr["since"])
     if not corr["after_commit"]:
         return None  # before the first commit: the first pass reviews the whole change
     sha = c.p6.get("verified_sha")
@@ -1867,7 +1771,7 @@ def open_correction(c):
         # A repair or a fix was committed as a tests commit on top of the
         # verified one: a working-tree pass would see nothing of it, and with a
         # clean tree `commit` would find nothing to commit. `commit` verifies
-        # HEAD instead, and the panel reviews everything since `sha`.
+        # HEAD instead, and the pass reviews everything since `sha`.
         add, remove = changed_paths(c.wt)
         head = git(c.wt, "rev-parse", "HEAD").strip()
         if not add and not remove and c.p6.get("unverified_commit") != head:
@@ -1882,7 +1786,7 @@ def open_correction(c):
         files = [f for f in git(c.wt, "diff", "--name-only", sha).splitlines()
                  if f and not f.startswith(".auto-dev/")]
         return start_pass(c, "outside", files, "the correction's tests commit is on top "
-                          "of the verified commit: the panel reviews everything since it",
+                          "of the verified commit: the pass checks everything since it",
                           since=sha)
     if unchanged(c):  # nothing to review or commit: the verified commit stands
         corr["unchanged"] = True
@@ -1892,33 +1796,31 @@ def open_correction(c):
         # A fix at a stop before the first review pass: it is committed on top,
         # and the first pass then reviews the whole change, the fix with it.
         return None
-    return start_pass(c, "after-commit", None, "the correction is verified: the panel "
-                      "reviews it before it is committed on top")
+    return start_pass(c, "after-commit", None, "the correction is made and the gate is "
+                      "green: the verifier and the review check it before it is "
+                      "committed on top")
 
 
 def first_of(c, corr):
-    if corr["entry"] == "outside":
-        return spawn(c, "cleanup", sets={"scope": "outside"},
-                     rule="the code changed outside the pipeline: the quality gate runs "
-                          "again (no round)")
+    """The first step of correction `corr`: the tester for questioned checks,
+    else the coder; DONE_MARK when there is nothing for a worker (code changed
+    outside the pipeline, or by the fixer at a stop): the gate runs on it."""
     if corr.get("checks"):  # acceptance checks first: the tester's repair mode
         checks = corr["checks"]
         rule = ("a finding questions an acceptance check: the tester decides first"
                 + (", then the coder" if corr.get("file") else ""))
         return spawn(c, "acceptance-tester", "repair", dict(checks), rule=rule,
                      budget=corr.get("budget"))
-    if not corr.get("file"):  # a fix at a stop: nothing for the coder
-        return cleanup_spawn(c, "after-commit" if corr["after_commit"] else "phase5", None,
-                             "the fixer changed the code at a stop: the cleanup agent runs "
-                             "the quality gate (no round)")
+    if corr["entry"] == "outside" or not corr.get("file"):
+        return DONE_MARK
     return coder_correction(c, corr["file"], corr.get("budget"), corr["rule"])
 
 
 def closed_correction(c, spend_id):
     """The closed correction paid for as `spend_id`, or None."""
     return next((k for k in c.p6.get("corrections", [])
-                 if k.get("spend_id") == spend_id and k.get("closed")
-                 and not k.get("aside")), None)
+                 if (k.get("spend_id") == spend_id or spend_id in (k.get("also") or []))
+                 and k.get("closed") and not k.get("aside")), None)
 
 
 def unchanged(c):
@@ -1955,7 +1857,8 @@ def marked_ready(c):
     return c.mark("pr-ready")
 
 
-def start_correction(c, entry, file, spend_id, rule, checks=None, why="", since=None):
+def start_correction(c, entry, file, spend_id, rule, checks=None, why="", since=None,
+                     also=None):
     """A Phase 6 correction: the coder gets `file` (when given); `checks` (scope,
     report) sends acceptance checks to the tester's repair mode first. `why`
     goes into the report when no round is left (the red checks, for CI).
@@ -1986,9 +1889,11 @@ def start_correction(c, entry, file, spend_id, rule, checks=None, why="", since=
             "spend_id": spend_id}
     if since:
         corr["since"] = since
+    if also:  # red CI folded in: its own correction id is settled by this one
+        corr["also"] = also
     c.p6["corrections"].append(corr)
     c.dirty = True
-    return first_of(c, corr)
+    return open_correction(c)  # its first step: a worker, or the gate
 
 
 def check_fresh(c, *extra):
@@ -2000,9 +1905,14 @@ def check_fresh(c, *extra):
 
 
 def start_pass(c, scope, files, rule, since=None):
+    """A review pass: the verifier and the code review, spawned together, on
+    the draft PR while CI runs. On a standard-risk run the review is one
+    reviewer (code and security); on a high-risk one, the panel of three and
+    the security reviewer, then the judge."""
     n = c.p6.get("review_pass", 0) + 1
-    c.would(f"start code-review pass {n} ({scope}) and spawn the panel and the "
-            "security reviewer", rule)
+    high = bool(c.state.get("high_risk"))
+    c.would(f"start review pass {n} ({scope}) and spawn the verifier and "
+            + ("the panel and the security reviewer" if high else "the reviewer"), rule)
     c.p6["review_pass"] = n
     (c.ad / "review" / f"pass-{n}").mkdir(parents=True, exist_ok=True)
     cmd_checks.git_add_intent(c.wt)
@@ -2011,15 +1921,52 @@ def start_pass(c, scope, files, rule, since=None):
         files = first_pass_files(c)
     effort = plan_effort(c)
     p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq(),
-         "effort": effort}
+         "effort": effort, "lane": "high" if high else "standard"}
     if since:
         p["since"] = since
     c.p6["passes"].append(p)
-    st.add_note(c.state, f"code-review pass {n}: the reviewers run at effort {effort}")
+    st.add_note(c.state, f"review pass {n}: " + (
+        f"the panel runs at effort {effort}, with the security reviewer" if high else
+        "one reviewer (code and security)") + ", alongside the verifier")
     c.dirty = True
-    jobs = [("code-reviewer", "review", reviewer_sets(c, p, slot)) for slot in SLOTS]
-    return spawn_security(c, jobs, panel_leads(c), rule + "; the security review runs "
-                          "alongside the panel, on the same tree", focus=focus_text(p))
+    jobs = [verifier_job(c, p)]
+    if not high:
+        judgment.snapshot_before(c.ad, n)  # the report as it stood, for review-build
+        jobs.append(("reviewer", None, solo_sets(c, p)))
+        return spawn_many(c, jobs, rule + "; the verifier and the reviewer run together")
+    # The verifier's mutation run plants code in the worktree: the panel and
+    # the security reviewer follow it, so they never read a planted mutant.
+    return spawn_many(c, jobs, rule + "; on a high-risk run the verifier goes first (its "
+                      "mutants are planted in the tree), then the panel and the security "
+                      "reviewer")
+
+
+def verifier_job(c, p):
+    """The pass's verifier: a first pass on the whole change, a re-check on a
+    correction (a first pass again when the spec changed since it last ran)."""
+    if p["scope"] == "after-commit" and not spec_changed(c):
+        return ("verifier", None, {"mode": "re-check",
+                                   "what_changed": "a correction (the uncommitted working "
+                                                   "tree against HEAD)"})
+    return ("verifier", None, {"mode": "first pass"})
+
+
+def spec_changed(c):
+    """Whether a fix changed PLAN.md, or a retry at a spec-problem stop, came
+    after the last verifier was briefed: it judges every condition again."""
+    changed = [f.get("done_seq") for f in overrides.fixes(c.state) if f.get("spec_changed")]
+    changed += [o["seq"] for o in c.state.get("overrides") or []
+                if o["choice"] == "retry" and o["stop"].get("kind") == "spec-problem"]
+    last = max([e.get("seq", 0) for e in c.state.get("briefs", [])
+                if e["worker"] == "verifier"] + [0])
+    return any(done is not None and done >= last for done in changed)
+
+
+def solo_sets(c, p):
+    """The one reviewer's brief: as a panelist's, plus the tree it reviews."""
+    sets = {k: v for k, v in reviewer_sets(c, p, "R1").items() if k != "reviewer"}
+    sets["tree"] = p["tree"]
+    return sets
 
 
 def focus_text(p):
@@ -2062,9 +2009,20 @@ def reviewer_sets(c, p, slot):
 
 
 def review_step(c, p):
-    """Pass p: the panel and the security review (spawned together), the judge
-    (with its check of the security findings), the re-votes, then one correction
-    for whatever both left open, or a security run on leads it has not seen."""
+    """Pass p: the verifier and the review (spawned together), then one
+    correction for whatever they left open. On a high-risk run the review is
+    the panel and the security review, the judge (with its check of the
+    security findings), the re-votes, or a security run on leads it has not
+    seen."""
+    vjobs, vrec, vstop = verifier_part(c, p)
+    if vstop is not None:
+        return vstop
+    if p.get("lane") == "standard":
+        return solo_step(c, p, vjobs, vrec)
+    if vjobs:  # the panel waits for the verifier (mutation plants code in the tree)
+        return spawn_many(c, vjobs, "the verifier goes first on a high-risk run: it gets "
+                          "one re-spawn" if c.recs("verifier", after=p["seq"], ok=False)
+                          else "the verifier goes first on a high-risk run")
     reviews = c.recs("code-reviewer", after=p["seq"], mode="review", ok=False)
     respawn, usable = [], []
     for slot in SLOTS:
@@ -2081,9 +2039,12 @@ def review_step(c, p):
         # run when it fails twice running.
         last = secs[-1].get("sets", {}) if secs else {}
         leads = last.get("leads") if secs else panel_leads(c)
+        first = not secs and not reviews
         return spawn_security(c, jobs, leads or "none",
-                              "a code reviewer or the security reviewer failed: it gets "
-                              "one re-spawn" if secs or jobs else
+                              "the verifier is done: the panel and the security reviewer "
+                              "review the same tree" if first else
+                              "a worker of the pass failed: it gets one re-spawn"
+                              if secs or jobs else
                               "the security review covers the whole change",
                               focus=last.get("focus") or focus_text(p))
     if jobs:
@@ -2120,19 +2081,16 @@ def review_step(c, p):
     # that gate. After it, that covers only the passes the user marked the PR
     # ready with: once they add rounds, a later pass's findings get their
     # correction.
-    ready = marked_ready(c)
-    spent_out = bool(c.p6.get("exhausted")) and (
-        ready is None or p["seq"] < ready.get("seq", 0))
+    spent_out = spent_before(c, p)
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(verify) and bool(confirmed_security(c))
-    spec = spec_stop(c, [judge] + c.recs(SECURITY, after=p["seq"]),
-                     f"in code-review pass {p['n']}", review_pass=p["n"])
+    spec = spec_stop(c, [vrec, judge] + c.recs(SECURITY, after=p["seq"]),
+                     f"in review pass {p['n']}", review_pass=p["n"])
     if spec is not None:
         return spec
-    if rows or security_open:  # with no round left, they go to the ready gate
-        if not spent_out:
-            return review_correction(c, p, rows, sec if security_open else None)
-        return None
+    settled = settle_pass(c, p, vrec, rows, sec if security_open else None, spent_out)
+    if settled is not DONE_MARK:
+        return settled
     leads = unreviewed_leads(c, p)
     if leads:
         return spawn_security(c, [], leads, "the panel passed the security review leads "
@@ -2140,19 +2098,147 @@ def review_step(c, p):
     return None
 
 
-def review_carry(c, p, rows, sec):
-    """What pass p's correction hands out: `files` for the coder (the pass's
+def spent_before(c, p):
+    """Whether no round was left for pass p's correction before the
+    ready-for-review gate: its open findings go to that gate. After it, that
+    covers only the passes the user marked the PR ready with: once they add
+    rounds, a later pass's findings get their correction."""
+    ready = marked_ready(c)
+    return bool(c.p6.get("exhausted")) and (ready is None or p["seq"] < ready.get("seq", 0))
+
+
+def verifier_part(c, p):
+    """([the verifier's job to re-spawn], its ok result or None, a stop or None)."""
+    recs = c.recs("verifier", after=p["seq"], ok=False)
+    if recs and recs[-1]["status"] == "ok":
+        rec = recs[-1]
+        if rec["next"] == "MUTATION_LEFT_CHANGES":
+            return [], rec, stop([("The mutation step may have left changes in the "
+                                  "source; the tree may not be the code that was built. "
+                                  "Tell the user the paths the verifier named; build "
+                                  "nothing more on it.")],
+                                 "the verifier returned MUTATION_LEFT_CHANGES",
+                                 retry={"aside": [job_of(rec)]},
+                                 no_signoff="the tree may hold a planted change; check "
+                                            "it, then retry")
+        return [], rec, None
+    twice = failed_twice(c, recs, "verifier")
+    if twice is not None:
+        return [], None, twice
+    return [verifier_job(c, p)], None, None
+
+
+def failed_twice(c, recs, who):
+    """The stop for a pass's worker that did not return ok twice since the last
+    resume, or None (it gets one re-spawn). The pass's workers run in parallel,
+    so not_ok, which reads only the latest result, leaves them to the pass."""
+    tries = [r for r in recs if r.get("seq", 0) > c.resumed()]
+    if len(tries) < 2 or tries[-1]["status"] == "ok" or tries[-2]["status"] == "ok":
+        return None
+    last = tries[-1]
+    return stop([(f"{who} #{last['n']} did not return ok twice running. Tell the user "
+                 "what it said above its result block, and that the run is paused here: "
+                 "once the cause is fixed, `auto-dev continue` spawns it again."),
+                 f"State and artifacts: {c.ad}"],
+                f"the pass's {who} returned status {last['status']} twice",
+                retry={"lift": True})
+
+
+def solo_step(c, p, vjobs, vrec):
+    """A standard-risk pass: the verifier and the one reviewer, then the
+    correction for what they left open."""
+    recs = c.recs("reviewer", after=p["seq"], ok=False)
+    rec = recs[-1] if recs and recs[-1]["status"] == "ok" else None
+    rjobs = []
+    if rec is None:
+        twice = failed_twice(c, recs, "reviewer")
+        if twice is not None:
+            return twice
+        rjobs = [("reviewer", None, solo_sets(c, p))]
+    if vjobs or rjobs:
+        return spawn_many(c, vjobs + rjobs, "a worker of the pass failed: it gets one "
+                          "re-spawn")
+    rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
+    security_open = bool(confirmed_security(c))
+    spec = spec_stop(c, [vrec, rec], f"in review pass {p['n']}")
+    if spec is not None:
+        return spec
+    settled = settle_pass(c, p, vrec, rows, rec if security_open else None,
+                          spent_before(c, p))
+    return None if settled is DONE_MARK else settled
+
+
+def settle_pass(c, p, vrec, rows, sec, spent_out):
+    """One correction for what pass p left open (the verifier's open items, the
+    review's must-fix rows, a confirmed security finding when `sec` is its
+    reviewer's result), with red CI on the pushed commit folded in; DONE_MARK
+    when nothing is open, or no round is left before the ready-for-review gate
+    (the gate names what is open)."""
+    verifier_open = vrec["next"] in ("CORRECT", "REPAIR")
+    if not (rows or sec or verifier_open):
+        return DONE_MARK
+    if spent_out:
+        return None
+    ci, triage = ci_fold(c)
+    if ci is not None:
+        return ci
+    return review_correction(c, p, rows, sec, vrec if verifier_open else None, triage)
+
+
+def ci_fold(c):
+    """(an action or stop to take first, or None; the CI triage to fold into
+    the correction, or None). Before a pass's correction, CI settles on the
+    pushed commit, so one correction takes red CI too."""
+    if c.state["settings"].get("ci", "none") == "none":
+        return None, None
+    sha = c.p6.get("verified_sha")
+    ci = c.p6.get("ci") or {}
+    if ci.get("sha") != sha or ci.get("status") == "pending":
+        return ci_watch(c, "findings are open: CI settles on the pushed commit first, so "
+                        "one correction takes red CI too"), None
+    if ci.get("status") != "red":
+        return None, None
+    triage = c.last("triager", after=ci["seq"], mode="ci")
+    if triage is None or triage["next"] != "CODE":
+        return ci_step(c, sha), None  # the triager, or its stop
+    if closed_correction(c, f"ci-{triage['n']}"):
+        return None, None
+    return None, triage
+
+
+def review_carry(c, p, rows, sec, vrec=None):
+    """What pass p's correction hands out: `files` for the coder (the
+    verifier's required changes when it found the code wrong, the pass's
     corrections.md when a must-fix row other than a check's is open, and the
     security corrections), and `checks` (scope, report) for the tester's repair
-    mode."""
+    mode: the checks the verifier judged defective and the review's
+    acceptance-check findings."""
     checks = [r for r in rows if _category(r) == "acceptance-check"]
-    spec = None
+    ids, reports, who = [], [], []
+    if vrec is not None:
+        _token, fields = cmd_checks.eval_decision(c.ad)
+        repair = [x.strip() for x in fields.get("repair", "").split(",") if x.strip()]
+        if repair:
+            ids += repair
+            reports.append(f"{c.ad}/SPEC_EVAL.md, section Defective acceptance checks")
+            who.append("the verifier")
     if checks:  # a finding about a check goes to the tester, never the coder
-        ids = ", ".join(r["ID"].strip() for r in checks)
-        spec = {"scope": check_scope(c, checks),
-                "report": (f"{c.ad}/CODE_REVIEW.md, must-fix finding(s) {ids}: each "
-                           "one's `### <id>` block says what is wrong with the check")}
+        found = check_ids(c, checks)
+        ids += [x for x in found if x not in ids]
+        names = ", ".join(r["ID"].strip() for r in checks)
+        reports.append(f"{c.ad}/CODE_REVIEW.md, must-fix finding(s) {names}: each "
+                       "one's `### <id>` block says what is wrong with the check")
+        who.append("the code review")
+    spec = None
+    if reports:
+        scope = (f"ONLY conditions {', '.join(sorted(ids, key=cmd_checks.sort_key))}: "
+                 f"{' and '.join(who)} found their checks wrong" if ids and (
+                     not checks or check_ids(c, checks)) else
+                 "ONLY the conditions whose checks the findings in the report name")
+        spec = {"scope": scope, "report": " and ".join(reports)}
     files = []
+    if vrec is not None and vrec["next"] == "CORRECT":
+        files.append(f"{c.ad}/evidence/corrections.md")
     if len(checks) < len(rows):
         files.append(f"{c.ad}/review/pass-{p['n']}/corrections.md")
     if sec:
@@ -2160,19 +2246,27 @@ def review_carry(c, p, rows, sec):
     return {"files": files, "checks": spec}
 
 
-def review_correction(c, p, rows, sec):
-    """One correction for pass p's open must-fix rows and, when `sec` is given,
-    the security review's confirmed must-fix findings: one round for both."""
-    carry = review_carry(c, p, rows, sec)
+def review_correction(c, p, rows, sec, vrec=None, triage=None):
+    """One correction, one round, for what pass p left open: the verifier's
+    items, the open must-fix rows, the security review's confirmed must-fix
+    findings (when `sec` is given), and red CI the triager put on the code
+    (when `triage` is given)."""
+    carry = review_carry(c, p, rows, sec, vrec)
     files, why = carry["files"], []
+    if triage is not None:
+        files.append(triage_file(c, triage))
     spec = carry["checks"]
+    if vrec is not None:
+        why.append("the verifier found open items")
     if rows:
         why.append(f"pass {p['n']} left {len(rows)} must-fix finding(s) open")
     if sec:
         why.append("the security review found a confirmed must-fix finding")
-    tag = f"pass-{p['n']}" if rows else f"security-{sec['n']}"
-    return must_fix(c, " and ".join(files) or f"{c.ad}/CODE_REVIEW.md", tag,
-                    " and ".join(why), checks=spec, coder=bool(files), security=bool(sec))
+    if triage is not None:
+        why.append("CI is red because of the code")
+    return must_fix(c, " and ".join(files) or f"{c.ad}/CODE_REVIEW.md", f"pass-{p['n']}",
+                    " and ".join(why), checks=spec, coder=bool(files), security=bool(sec),
+                    also=[f"ci-{triage['n']}"] if triage is not None else None)
 
 
 def panel_leads(c):
@@ -2291,11 +2385,14 @@ def confirmed_security(c):
                and r.get("Verified", "").strip().lower() != "refuted")
 
 
-def must_fix(c, file, tag, rule, checks=None, coder=True, security=False):
+def must_fix(c, file, tag, rule, checks=None, coder=True, security=False, also=None):
     spend_id = tag
     if overrides.signed_off(c.state, spend_id):
         return None  # the user signed the open findings off: the gate names them
-    if closed_correction(c, spend_id):
+    closed = closed_correction(c, spend_id)
+    if closed and kept_checks(c, closed):
+        return None  # the user kept the questioned checks: the gate names the rest
+    if closed:
         # It ran and changed nothing (a change starts a new pass): never again,
         # unless the user retries it.
         return stop([(f"The correction for {tag}'s open finding(s) changed nothing, so "
@@ -2306,7 +2403,17 @@ def must_fix(c, file, tag, rule, checks=None, coder=True, security=False):
                     no_signoff="a confirmed security finding is open" if security else None,
                     kind="open-findings")
     return start_correction(c, "review", file if coder else None, spend_id,
-                            rule, checks=checks)
+                            rule, checks=checks, also=also)
+
+
+def kept_checks(c, corr):
+    """Whether correction `corr` was the tester's alone (no code part) and the
+    user kept the checks it questioned, at the stop the tester's STANDS made:
+    nothing was left for it to change."""
+    if corr.get("file") or not corr.get("checks"):
+        return False
+    tester = c.last("acceptance-tester", after=corr["seq"])
+    return bool(tester and tester["next"] == "STANDS" and tester.get("signed_off"))
 
 
 def open_must_fix(text):
@@ -2333,16 +2440,6 @@ def check_ids(c, rows):
         ids |= {m["#"].strip() for m in manifest
                 if art.check_path(m["Check (path :: test name)"]) == where}
     return sorted(ids, key=cmd_checks.sort_key)
-
-
-def check_scope(c, rows):
-    """The tester's scope for findings about checks: their conditions, by the
-    check files the findings' Locations name."""
-    ids = check_ids(c, rows)
-    if ids:
-        return (f"ONLY conditions {', '.join(ids)}: the code review found their checks "
-                "wrong")
-    return "ONLY the conditions whose checks the code-review findings in the report name"
 
 
 def scope_text(p):

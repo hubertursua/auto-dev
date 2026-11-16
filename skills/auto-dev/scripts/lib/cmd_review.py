@@ -31,7 +31,7 @@ votes --apply
     ways, an `**Overall confidence` line without `reviewers finished: <n>/3`
     and `coverage:`); nothing is written.
 
-review-build
+review-build [--solo]
     The review judge runs it once it has written review/pass-<n>/JUDGMENT.md
     (templates/JUDGMENT.md) for the panel's pass <n>, from the merged
     findings `next` wrote to review/pass-<n>/findings.md (lib/judgment.py).
@@ -53,6 +53,11 @@ review-build
     Exit: 0 built; 1 JUDGMENT.md can't be used (`MALFORMED`, a `problem:`
     line each; nothing is written); 2 no findings.md, judgment or judge brief,
     or CODE_REVIEW.md already holds this pass with no snapshot from before it.
+    --solo: a standard-risk pass's one reviewer runs it on the JUDGMENT.md it
+    wrote for its own findings (no findings.md, no `From:` lines, no security
+    leads): each that holds in a must-fix category is must-fix (Medium, 1/1)
+    and the overall confidence is Medium at best; the scope and tree come from
+    the reviewer's brief, and nothing is ever pending a re-vote.
 
 gate-summary <post-plan|pr|ready|main> [--pr N]
     Checks the gate's preconditions, then prints the summary and the
@@ -112,6 +117,8 @@ TRIAGE = list(TRIAGE_VALUES)
 def add_arguments(parser, name):
     parser.add_argument("--dir", default=".auto-dev", help="the run's .auto-dev/")
     if name == "review-build":
+        parser.add_argument("--solo", action="store_true",
+                            help="the one reviewer's own judgment (a standard-risk pass)")
         parser.add_argument("--pass", dest="pass_n", type=int,
                             help="the pass (default: the run's current pass)")
     if name == "votes":
@@ -488,8 +495,9 @@ def acceptance_block(ad):
     unjustified = [f for f in ev["integrity"]
                    if f.get("Judgment", "").strip().lower() == "unjustified"]
     if unjustified:
-        raise Fail("SPEC_EVAL.md has an Unjustified integrity finding still open: Phase 5 "
-                   "did not settle; do not ask the gate", FAILED, "PRECONDITION")
+        raise Fail("SPEC_EVAL.md has an Unjustified integrity finding still open: the "
+                   "review pass did not settle; do not ask the gate", FAILED,
+                   "PRECONDITION")
     justified = [f"{f.get('Location', '')} {f.get('Finding', '')} ({f.get('Reason', '')})"
                  for f in ev["integrity"]
                  if f.get("Judgment", "").strip().lower() == "justified"]
@@ -580,7 +588,7 @@ def submodule_edits(wt):
 def open_pr_summary(state, ad, args):
     """The opt-in gate before the first push: the checked build, no review yet."""
     lines, _ = pr_summary(state, ad, args, reviewed=False)
-    return lines + [("Not reviewed yet: the code review and the security review run on "
+    return lines + [("Not verified or reviewed yet: the verifier and the review run on "
                      "the draft PR, alongside CI, once it is open")], []
 
 
@@ -639,7 +647,8 @@ def pr_summary(state, ad, args, reviewed=True):
                  f"{c.get('report', '')} " + ("failing, signed off by the user"
                                               if c.get("report", "") in missing else "pass")
                  for c in state["settings"].get("gate", []))]
-    lines += acceptance_block(ad)
+    if reviewed:
+        lines += acceptance_block(ad)
     questions = []
     if reviewed:
         review_lines, questions = review_block(ad)
@@ -727,6 +736,15 @@ def main_summary(state, ad, args):
 
 # ---------------------------------------------------------------- review-build
 
+# A solo reviewer's scope, as CODE_REVIEW.md says it (the judge's brief holds
+# the same text, which `next` writes for a panel's pass).
+SOLO_SCOPES = {
+    "first": "the whole change, as committed on the branch: {files}",
+    "after-commit": "the uncommitted correction (the working tree against HEAD)",
+    "outside": ("the commits pushed to the PR branch outside the pipeline "
+                "(`git diff {since}`): {files}"),
+}
+
 @wrap
 def review_build(args):
     from . import judgment
@@ -734,13 +752,16 @@ def review_build(args):
     state = st.load(ad)
     n = args.pass_n or (state.get("phase6") or {}).get("review_pass") or 1
     folder = ad / "review" / f"pass-{n}"
+    solo = bool(getattr(args, "solo", False))
     brief = next((b for b in reversed(state.get("briefs") or [])
-                  if b.get("worker") == "review-judge" and b.get("mode") == "consolidate"),
+                  if (b.get("worker") == "reviewer" if solo else
+                      b.get("worker") == "review-judge" and b.get("mode") == "consolidate")),
                  None)
     if brief is None:
-        raise Fail("no review-judge consolidate brief in state.json", CANNOT_RUN, "ERROR")
+        raise Fail("no reviewer brief in state.json" if solo else
+                   "no review-judge consolidate brief in state.json", CANNOT_RUN, "ERROR")
     sets = brief.get("sets") or {}
-    findings = art.read(folder / "findings.md")
+    findings = "" if solo else art.read(folder / "findings.md")
     judgment_md = art.read(folder / "JUDGMENT.md")
     report = ad / "CODE_REVIEW.md"
     earlier = judgment.snapshot_before(ad, n)
@@ -752,11 +773,15 @@ def review_build(args):
     panel_tree = str(sets.get("tree") or "").strip()
     tree = panel_tree if panel_tree and print_tree(state["worktree"]) == panel_tree \
         else "changed during the run"
+    scope = sets.get("scope") or ""
+    if solo:  # the reviewer's brief holds the scope's name: the report says what it is
+        scope = SOLO_SCOPES.get(scope, scope).format(
+            files=sets.get("files") or "none", since=sets.get("since") or "HEAD")
     try:
         text, result = judgment.build(
-            branch=state.get("branch", ""), pass_n=n, scope=sets.get("scope") or "",
+            branch=state.get("branch", ""), pass_n=n, scope=scope,
             tree=tree, findings_md=findings, judgment_md=judgment_md,
-            earlier_md=earlier)
+            earlier_md=earlier, solo=solo)
     except judgment.JudgmentError as exc:
         emit(args.json, "MALFORMED", f"{folder / 'JUDGMENT.md'} can't be used; fix it and "
              "run review-build again", problem=str(exc).splitlines())

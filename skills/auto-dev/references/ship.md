@@ -16,36 +16,52 @@ Ship stage, `cd <worktree>` (the tree `resume` printed) and read
 Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
 see in the Ship stage, in order:
 
-1. Commit, push, the PR body and `pr publish`: steps 3–5 below. The verified
-   build opens as a **draft PR before any review**, so CI starts on it while
+1. Commit, push, the PR body and `pr publish`: steps 3–5 below. The build,
+   its quality gate green, opens as a **draft PR before any review**, so CI starts on it while
    the reviews run; its description says it is not reviewed yet. With
    `gates.open_pr: true` in `.auto-dev.yml`, the open-the-PR gate asks first
    (exit 5): `Open PR`, `Hold (don't push yet)` or `Stop`.
-2. Three `code-reviewer`s and a security reviewer in one message, on the
-   draft's commit, then the `review-judge` (twice in one message when the
-   security review found something to verify), maybe re-votes by the
-   reviewers. Must-fix findings from either review run one correction
-   (`coder`, `cleanup`, `verifier`), and the panel and the security reviewer
-   review it, without the nested skills, before it is committed on top,
-   pushed and published again (steps 3–5). A finding that an
-   acceptance check is wrong goes to the `acceptance-tester` in repair mode,
-   never the coder, on the same round; it repairs the check, or answers
-   `STANDS` when it finds the check right, which stops the run and asks the
-   user (#21).
-   A criterion the judge (for the panel) or the security reviewer finds wrong
-   or missing in PLAN.md (`spec-problems/<worker>-<n>.md`) stops the run once
-   the judge has consolidated the pass and checked the security findings,
-   before any correction (#20): no worker changes the
-   spec, the user decides (`references/build.md`, step 4).
-   Once the reviews settle, `next` asks you to run `pr publish` again: the
-   description gets the reviews.
+2. The first review pass, on the draft's commit: the
+   `verifier` (it runs the acceptance checks against the plan's conditions and
+   audits the test changes; `check-tests.py` refuses any change to a line a
+   tests commit added) and the review. On a standard-risk run the review is one
+   `reviewer`, for code and security both; it judges its own findings and
+   builds `CODE_REVIEW.md` with `review-build --solo`. On a high-risk run it is
+   three `code-reviewer`s and a security reviewer, spawned once the verifier
+   returns (its mutants are planted in the worktree while it runs), then the
+   `review-judge`
+   (twice in one message when the security review found something to verify),
+   maybe re-votes; the verifier also runs mutation and a probe of its own per
+   condition. Both the verifier and the review look for code that passes a
+   test without doing what the condition asks.
+   What the pass leaves open (the verifier's items, must-fix findings, a
+   confirmed security finding) runs **one correction, one round**. First,
+   with CI configured, `next` has CI settle on the pushed commit (`ci-watch`):
+   red CI the `triager` puts on the code joins the same correction. The
+   correction is the `coder` (a finding that an acceptance check is wrong goes
+   to the `acceptance-tester` in repair mode first, on the same round; it
+   repairs the check, or answers `STANDS`, which stops the run and asks the
+   user, #21), then the quality gate you run (`autodev.py quality-gate`, as in
+   the Build stage), then a new pass on the uncommitted correction (the
+   verifier re-checks; the review skips its nested skills), before it is
+   committed on top, pushed and published again (steps 3–5).
+   A criterion the verifier, the reviewer, the judge or a security reviewer
+   finds wrong or missing in PLAN.md (`spec-problems/<worker>-<n>.md`) stops
+   the run once the pass has settled, before any correction (#20): no worker
+   changes the spec. The user says how to change it (the fixer edits PLAN.md,
+   and the checks when they say so; then the verifier's first pass runs
+   again), retries, or signs off, which keeps PLAN.md as written; later
+   workers are told what the user kept (`spec_kept`, `checks_kept`).
+   With no round left before the ready-for-review gate, what is open goes to
+   that gate instead of a correction. Once the pass settles, `next` asks you to
+   run `pr publish` again: the description gets the results.
 3. `ci-watch` on the draft. Whatever it exits, run its `AFTER` line (`next`):
    `next` asks for `ci-watch` again only while CI is `PENDING`. A draft with no
    check after the grace period (some workflows skip drafts) is `UNAVAILABLE`:
    the run goes on, and CI is watched again once the PR is marked ready; CI
    that never ran is shown as not monitored, never as green. A red check
-   sends the `triager`. A code failure runs a correction, a review and a new
-   commit. Any other class (`INFRA`, `FLAKY`, `UNKNOWN`, `SECRET`) is not the
+   sends the `triager`. A code failure runs a correction, a pass and a new
+   commit (when findings are open too, it joined their correction in step 2). Any other class (`INFRA`, `FLAKY`, `UNKNOWN`, `SECRET`) is not the
    code's to fix: `next` stops and reports it (exit 4). Once the cause is
    fixed and CI re-run, _I fixed it myself_ (or `auto-dev continue`) watches
    it again.
@@ -204,6 +220,12 @@ Every stop is exit 4 with its reason in `REPORT`
 (`SKILL.md`, _A stop_). The ones that need care:
 
 - **CI red at the main gate (#17):** never merge over it; name each red check.
+- **The mutation step may have left a change in the source (#10, high risk
+  only):** tell the user not to build on the tree until they've checked the
+  paths named.
+- **A worker found a criterion wrong or missing (#20), or the acceptance
+  tester ruled a check right that the verifier or the review called wrong
+  (#21):** tell the user each item the `REPORT` names, and ask how to go on.
 - **The budget ran out after the commit (#11):** tell the user each open
   finding or red check the `REPORT` names, and that they can go on with more
   rounds if they say how many (`references/tables.md`, _The iteration

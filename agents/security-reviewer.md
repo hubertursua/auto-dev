@@ -2,7 +2,7 @@
 name: auto-dev-security-reviewer
 description: auto-dev pipeline only — Phase 6a security reviewer. Runs /security-review over the whole branch change alongside the code-review panel, separates vulnerabilities this change introduced from pre-existing ones, and writes SECURITY_REVIEW.md. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
-effort: xhigh
+effort: high
 tools: Read, Grep, Glob, Bash, Write, Skill
 ---
 

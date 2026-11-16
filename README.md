@@ -81,9 +81,9 @@ orchestrator runs:
 | 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch (or the worktree you started in), `.auto-dev/` |
 | 2 Plan | planner + plan critic | `PLAN.md` — the ask, testable conditions, assumptions, security criteria, the **size check** (too big for one PR → back to you), the **risk tier** and the build steps; a fresh critic checks it against the ticket and the code, and the planner revises once |
 | 3 Tests | acceptance tester | `acceptance/` — a check per condition, proven to fail on the old code and **committed before the build**; then the post-plan gate when it is on (high risk, blockers left open, or the config) |
-| 4 Build | coder | code + tests from the plan, making the committed checks pass |
-| 5 Verify | cleanup agent, then verifier | `/simplify` + the profile's quality gate run to green, then the verifier runs the acceptance checks and audits the tests against the plan's conditions → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
-| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | commit + **draft PR** first (CI starts there), then the code review panel and security review on it alongside CI (each correction is committed on top), then the ready-for-review gate, the PR marked ready, merge to main + Jira Done, pausing at each gate |
+| 4 Build | coder | code + tests from the plan, making the committed checks pass, and the profile's quality gate run to green |
+| 5 Gate | orchestrator (a script, no worker) | `autodev.py quality-gate` confirms the quality gate → `lint/` (red: one coder correction, then you decide); the risk tier re-checked from the diff |
+| 6 Ship | orchestrator, verifier + reviewer (high risk: 3 code reviewers + judge, security reviewer), triager | commit + **draft PR** first (CI starts there), then the verifier and the review on it alongside CI → `SPEC_EVAL.md`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md`; one correction takes what they left open and red CI (each committed on top), then the ready-for-review gate, the PR marked ready, merge to main + Jira Done, pausing at each gate |
 
 Workers never negotiate the contract between themselves. A coder that finds
 a plan step wrong builds it the way that works and records the deviation for
@@ -119,9 +119,10 @@ Orchestrator (main agent) ── runs the `next` loop and the human gates; never
 ├─ Phase 2  Planner ....... PLAN.md — conditions, SIZE CHECK, risk tier, steps
 │           Plan critic ..... checks it against the ticket and the code (one revision, one re-check)
 ├─ Phase 3  Acceptance tester  checks from the conditions, proven to fail, committed first [optional gate]
-├─ Phase 4  Coder ......... code + tests, from PLAN.md, against the committed checks
-├─ Phase 5  Cleanup + verifier  /simplify → quality gate → RUN the checks vs. the conditions
-└─ Phase 6  orch + reviewers  draft PR → code review panel ∥ security review ∥ CI → [GATE] ready → [GATE] main
+├─ Phase 4  Coder ......... code + tests, from PLAN.md, against the committed checks; quality gate green
+├─ Phase 5  (script) ...... `quality-gate` confirms the gate; risk tier re-checked from the diff
+└─ Phase 6  orch + workers  draft PR → verifier ∥ reviewer ∥ CI → [GATE] ready → [GATE] main
+            (high risk: verifier ∥ 3-reviewer panel + judge ∥ security reviewer ∥ CI)
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
             Planner ......... settles a step the coder stopped (Phases 4–6)
             Acceptance tester  repairs a questioned check, or says why it is right (Phases 4–6)
@@ -178,8 +179,14 @@ weakening them. Verification is built around that:
   a file written after the worker returned, a commit, anything while another
   worker was out, or while setup ran
   (`skills/auto-dev/scripts/lib/tree_guard.py`).
-- **An independent verifier that runs things.** After cleanup, a fresh
-  verifier **runs** the checks, judging against PLAN.md's conditions, not its
+- **The quality gate, confirmed before the push.** The coder runs the
+  profile's quality gate to green itself; then `autodev.py quality-gate` runs
+  every check again, as a script with no worker, and writes its reports. A red
+  gate goes back to the coder once (a round); red again, the run stops and
+  asks you.
+- **An independent verifier that runs things.** Once the build is pushed as a
+  draft PR, a fresh verifier, spawned with the review while CI runs,
+  **runs** the checks, judging against PLAN.md's conditions, not its
   steps or the coder's report.
   Each condition gets a verdict and an evidence tier:
   - **Strong:** the checks pass, cover the example and edge case at the level
@@ -195,12 +202,18 @@ weakening them. Verification is built around that:
   to you at the ready-for-review gate as a manual check. The routine steps of each pass are
   one script call (`autodev.py verify prep`), so the verifier spends its turns
   on the judging (`agents/verifier.md`).
+- **Code that passes a test without doing the work.** The coder can read the
+  acceptance checks, so it could special-case them. The verifier and the
+  reviewer both look for that: a branch on a value only the tests use, a check
+  for a test environment, a constant where the condition asks for a
+  computation. On a high-risk run the verifier also runs a **probe** of its own
+  for each condition, with inputs the committed checks don't use.
 - **A test-integrity audit.** `skills/auto-dev/scripts/check-tests.py` flags
   deleted, skipped or focused tests, removed assertions, new tests that assert
   nothing, changes to the test runner's config, and any change to a line a
   tests commit added, even in a file shared with the coder's tests. Each finding must be
   justified by the conditions or it goes back to the coder.
-- **Targeted mutation testing.** The verifier plants small bugs in the
+- **Targeted mutation testing (high risk).** On a high-risk run, the verifier plants small bugs in the
   changed lines with `skills/auto-dev/scripts/mutate.py`, which restores every
   file afterwards. A planted bug no test catches, on a line a condition
   depends on, is a test gap and goes back to the coder. The bugs are chosen
@@ -219,15 +232,15 @@ weakening them. Verification is built around that:
   shows you every one. A check another worker calls wrong goes to the
   acceptance tester, which repairs it; if the tester finds the check right,
   the run stops and asks you. A criterion a later worker finds wrong or
-  missing (the verifier, the review judge, a security reviewer, or the
-  triager from a PR comment) is listed in `spec-problems/<worker>-<n>.md`,
+  missing (the verifier, the reviewer, the review judge, a security reviewer,
+  or the triager from a PR comment) is listed in `spec-problems/<worker>-<n>.md`,
   and the run stops and asks you before it acts on that result: no worker
   changes the conditions in `PLAN.md`. You say how to change it (the fixer does that, then the
   verifier checks again), or sign off to keep it as written; every later
   worker that judges it is told what you kept.
-- **Re-checked after every change.** Cleanup (`/simplify` and the quality gate)
-  runs before the verifier, so the verifier checks the code that ships, and
-  both run again after every fix.
+- **Re-checked after every change.** After every correction or fix, the
+  quality gate runs again, then a pass (the verifier and the review) checks
+  the change before it is committed on top.
 - **Every result names the code it checked.** Each verdict, quality-gate report
   and review report carries the git tree hash of the code it checked.
   `skills/auto-dev/scripts/check-fresh.py` compares those stamps with the
@@ -273,8 +286,14 @@ stopped.
 
 The planner says whether the task fits one PR:
 
-- **FITS** — the pipeline runs every step, the same way for every task: **9
-  worker roles** (roles, not spawns). The profiler runs only when the repo has
+- **FITS** — the pipeline runs every step: on a standard-risk task **6
+  worker roles** (planner, plan critic, acceptance tester, coder, verifier,
+  reviewer), and on a high-risk one the code review panel, the review judge
+  and a security reviewer in the reviewer's place (roles, not spawns). A test
+  holds the standard-risk happy path to its **spawn budget**: at most 5 worker
+  spawns to the first push and 7 to ready-for-review. Today it takes 4 and 6;
+  one plan revision makes it 6 and 8, since the critic's re-check is a spawn
+  too. The profiler runs only when the repo has
   no saved profile, the triager only when CI fails or a person comments,
   `lookup` when the orchestrator needs a fact from the code, and the fixer
   only when you tell a stopped run how to fix it. When `PLAN.md`
@@ -290,64 +309,79 @@ The planner says whether the task fits one PR:
 
 The planner also proposes a **risk tier**: high for security criteria, auth,
 payments, access control, secrets, a data migration or backward
-compatibility, else standard. The plan critic can raise it, and once the build
-is verified (the end of Phase 5) `next` re-checks it from the diff of the code
-that ships: a path with a whole word that names a sensitive area (auth,
+compatibility, else standard. The plan critic can raise it, and once the
+quality gate is green (the end of Phase 5), before anything is pushed, `next`
+re-checks it from the diff: a path with a whole word that names a sensitive area (auth,
 session, token, permission, payment, migration and the like, camelCase split)
 or a large change (over 25 files or 800 lines, lock files left out) makes it
 high. It never goes down. A high tier before the build turns on the post-plan
-gate; one raised after the build is shown at the ready-for-review gate.
+gate; one raised after the build is shown at the ready-for-review gate. The
+tier decides how much review the draft gets: a high tier adds the review
+panel with its judge, the separate security reviewer, mutation testing and
+the verifier's probes.
 
 ## Review on the draft PR
 
-The verified build is committed and pushed as a **draft PR before any
-review**, so CI runs while it is reviewed; its description says it is not
-reviewed yet. (A repo that must not push unreviewed code sets `gates.open_pr:
-true` in `.auto-dev.yml`: the run then asks before the first push.) The draft
-is reviewed twice, at the same time:
+The build, its quality gate green, is committed and pushed as a **draft PR
+before any review**, so CI runs while it is checked; its description says it
+is not verified or reviewed yet. (A repo that must not push unreviewed code
+sets `gates.open_pr: true` in `.auto-dev.yml`: the run then asks before the
+first push.) Each pass runs the verifier (above) and the review: together
+on a standard-risk run; on a high-risk run the verifier goes first, since its
+mutants are planted in the worktree, and the review follows on the same tree.
 
-1. **Code review panel.** Three reviewers run `/code-review` on the changed
-   files independently, at the effort the plan sets for the review (see
-   [*Models and effort*](#models-and-effort)). `next` merges their reports into
-   one list, and a judge decides which findings are one, checks each one's
-   trigger path in the code and writes the fix for each must-fix finding, in a
-   short `JUDGMENT.md`. `autodev.py review-build` then applies the rubric's
-   vote table and writes `CODE_REVIEW.md` with its counts, history and
-   overall confidence, so the judge never retypes the report. A finding that
-   could be must-fix but only one reviewer raised goes to the other two for a
-   re-vote.
-2. **Security review.** A security reviewer runs `/security-review` over the
-   whole change, and the judge double-checks every High or Medium finding.
-   When `PLAN.md` has security criteria (a change on a sensitive path), a
-   reviewer that weights those paths hardest does it.
+- **Standard risk: one reviewer**, for code and security both. It runs
+  `/code-review` on the changed files at the effort the plan sets (see
+  [*Models and effort*](#models-and-effort)) and `/security-review`, traces
+  each finding's trigger path itself, and writes its calls in a short
+  `JUDGMENT.md`; `autodev.py review-build --solo` builds `CODE_REVIEW.md` from
+  them, every finding that holds in a must-fix category being must-fix. It
+  writes `SECURITY_REVIEW.md` itself (`agents/reviewer.md`).
+- **High risk: the panel and the security review.**
+  1. **Code review panel.** Three reviewers run `/code-review` on the changed
+     files independently. `next` merges their reports into one list, and a
+     judge decides which findings are one, checks each one's trigger path in
+     the code and writes the fix for each must-fix finding, in a short
+     `JUDGMENT.md`. `autodev.py review-build` then applies the rubric's vote
+     table and writes `CODE_REVIEW.md` with its counts, history and overall
+     confidence. A finding that could be must-fix but only one reviewer raised
+     goes to the other two for a re-vote.
+  2. **Security review.** A security reviewer runs `/security-review` over
+     the whole change, and the judge double-checks every High or Medium
+     finding. When `PLAN.md` has security criteria (a change on a sensitive
+     path), a reviewer that weights those paths hardest does it.
 
-One correction fixes every must-fix finding from both, for one round of the
-iteration budget; it is reviewed before it is committed on top and pushed.
-With no round left before the PR is marked ready, the run goes on to the
-ready-for-review gate, which names every must-fix finding still open; after
-that (a red CI fix, a PR comment), a must-fix finding with no round left stops
-the run. A finding about an acceptance check goes to the acceptance
-tester, never the coder; if the tester finds the check right, the run stops
-and shows you both sides. A problem that lies in `PLAN.md`'s conditions rather than the code
-goes in a reviewer's report; the judge confirms it for the panel, and once the
-pass has settled the run stops and asks you.
-After the correction, the full panel reviews it again. Once the reviews
-settle, the PR's description is published again with them, and you decide at
-the ready-for-review gate whether the PR leaves draft. A re-review of a correction skips the nested `/code-review` and `/security-review` skills: the
-reviewers follow the correction and everything downstream of it themselves.
-When the judge passes a security lead from the panel on, a security run that
-skips `/security-review` checks just those leads.
+**One fix loop.** What a pass leaves open (the verifier's items, every
+must-fix finding, a confirmed security finding) is fixed by one correction,
+for one round of the iteration budget. With CI configured, CI settles on the
+pushed commit first, and red CI the triager puts on the code joins the same
+correction. The quality gate runs on the correction, and a new pass checks it
+before it is committed on top and pushed. With no round left before the PR is
+marked ready, the run goes on to the ready-for-review gate, which names
+everything still open; after that (a red CI fix, a PR comment), a must-fix
+finding with no round left stops the run. A finding about an acceptance check
+goes to the acceptance tester, never the coder; if the tester finds the check
+right, the run stops and shows you both sides. A problem that lies in
+`PLAN.md`'s conditions rather than the code stops the run once the pass has
+settled, and asks you. Once a pass settles, the PR's description is published
+again with its results, and you decide at the ready-for-review gate whether
+the PR leaves draft. A pass on a correction skips the nested `/code-review`
+and `/security-review` skills: the reviewers follow the correction and
+everything downstream of it themselves. When the judge passes a security lead
+from the panel on, a security run that skips `/security-review` checks just
+those leads.
 
 A **rubric** (`skills/auto-dev/templates/rubric.md`) decides what must be fixed:
 
 - **Code findings.** Only correctness bugs, missing or weak tests, and a broken
-  acceptance check can be must-fix, and each needs a concrete trigger path and 2
-  of the 3 reviewers' votes. Scope, performance and design findings are
+  acceptance check can be must-fix, and each needs a concrete trigger path and,
+  on the panel, 2 of the 3 reviewers' votes. Scope, performance and design findings are
   advisory. Problems the change didn't introduce are dropped.
 - **Test gaps, whole.** A test-gap finding lists every reachable case no test
   covers, so the coder closes the whole gap in one round.
 - **Security findings.** One this change introduced, rated High or Medium with
-  a traced path the judge confirms, is must-fix; a Low one is advisory. A High
+  a traced path the judge (the reviewer itself, on a standard-risk run)
+  confirms, is must-fix; a Low one is advisory. A High
   or Medium one that was already there is shown to you at the ready-for-review gate, to note
   as a follow-up or ignore; this PR never fixes it.
 - **Confidence.** Every finding and every report carries a confidence level. A
@@ -363,7 +397,7 @@ the acceptance tester). A red CI run the code can't fix (a missing secret,
 infrastructure, a flaky test, an unknown cause) stops the run before Jira
 moves; once the cause is fixed and CI re-run, `auto-dev continue` watches it
 again. The reviewers'
-instructions are in `agents/code-reviewer.md`, `agents/review-judge.md`,
+instructions are in `agents/reviewer.md`, `agents/code-reviewer.md`, `agents/review-judge.md`,
 `agents/security-reviewer.md`, `agents/security-reviewer-sensitive.md` and
 `agents/triager.md`.
 
@@ -413,7 +447,9 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
 - **CI** is watched with a time limit on the draft PR, again once it is marked
   ready (some workflows skip drafts), and after the merge. A draft with no
   check after a grace period doesn't hold the run up. CI that timed out, never
-  ran or couldn't be watched is shown as not monitored, never as green.
+  ran or couldn't be watched is shown as not monitored, never as green. When
+  a review pass leaves findings open, CI settles first, and red CI that the
+  code caused is fixed in the same correction, on the same round.
 - **Deviations from the plan** the coder recorded are listed in the
   ready-for-review and main gate summaries and the final report, each with its
   reason.
@@ -585,8 +621,8 @@ lists them. Optional: `Bash(gh run list *)`, `Bash(gh run view *)`,
 `Bash(gh pr view *)` and `Bash(gh repo view *)` for the CI and PR lookups
 (`gh api` can also write, so allow it only if you accept that), the Jira tools
 if you use a ticket (`mcp__<server>__getJiraIssue` and the transition tools),
-and `Skill(simplify)`, `Skill(code-review)` and `Skill(security-review)` for
-the cleanup and review workers. At the profile confirmation the orchestrator
+and `Skill(code-review)` and `Skill(security-review)` for the review
+workers. At the profile confirmation the orchestrator
 prints these snippets filled in with your real paths and commands. It never
 edits your settings itself.
 
@@ -616,7 +652,7 @@ mistyped key is reported rather than silently ignored.
 ## Dependencies
 
 - **Claude Code's built-in tools** only, no other plugins. The `Skill` tool runs
-  `/simplify`, `/code-review` and `/security-review`.
+  `/code-review` and `/security-review`.
 - **git**, for the run's worktree and branch.
 - **`gh`** on your `PATH` and authenticated. It opens and merges the PR and
   watches CI: any CI that reports checks to GitHub, such as GitHub Actions or
@@ -633,7 +669,7 @@ library, except where they read YAML:
 
 | Script | What it does |
 | ------ | ------------ |
-| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action. `autodev.py --help` lists every subcommand |
+| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action. `autodev.py quality-gate` runs the profile's whole quality gate before the push. `autodev.py --help` lists every subcommand |
 | `validate-config.py` | checks `.auto-dev.yml`, or a saved profile with `--profile` |
 | `profile-path.py` | prints the saved profile's path for a repo and whether it exists |
 | `exclude-artifacts.py` | makes `.auto-dev/` ignore itself and checks it with git |
@@ -651,16 +687,16 @@ so a new release is picked up without editing the plugin.
 | Worker                                   | Agent type                       | Model · effort    |
 | ---------------------------------------- | -------------------------------- | ----------------- |
 | Profiler (first run on a repo)           | `auto-dev:profiler`              | `sonnet` · high   |
-| Planner                                  | `auto-dev:planner`               | `opus` · xhigh    |
+| Planner                                  | `auto-dev:planner`               | `opus` · high     |
 | Plan critic                              | `auto-dev:plan-critic`           | `opus` · high     |
 | Acceptance tester                        | `auto-dev:acceptance-tester`     | `opus` · high     |
 | Coder (the build, all corrections)       | `auto-dev:coder`                 | `opus` · high     |
 | Verifier                                 | `auto-dev:verifier`              | `opus` · high     |
-| Cleanup agent                            | `auto-dev:cleanup`               | `sonnet` · high   |
-| Code reviewer (×3 panel, and re-votes)   | `auto-dev:code-reviewer`         | `opus` · high     |
-| Review judge                             | `auto-dev:review-judge`          | `opus` · xhigh    |
-| Security reviewer                        | `auto-dev:security-reviewer`     | `opus` · xhigh    |
-| Security reviewer (`PLAN.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
+| Reviewer (standard risk: code and security) | `auto-dev:reviewer`           | `opus` · high     |
+| Code reviewer (high risk: ×3 panel, and re-votes) | `auto-dev:code-reviewer` | `opus` · high     |
+| Review judge (high risk)                 | `auto-dev:review-judge`          | `opus` · high     |
+| Security reviewer (high risk)            | `auto-dev:security-reviewer`     | `opus` · high     |
+| Security reviewer (`PLAN.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `opus` · high |
 | Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
 | Orchestrator lookups                     | `auto-dev:lookup`                | `haiku` · medium  |
 | Fixer (your instruction at a stop)       | `auto-dev:fixer`                 | `opus` · high     |
@@ -677,13 +713,14 @@ bugs, where each found as much as the stronger setting it replaced:
 - **`sonnet` workers run at `high`, Sonnet's default.** At `medium`, Sonnet 5.5
   scores 7 to 15 points lower on Anthropic's coding benchmarks
   ([optimizing for cost and intelligence](https://platform.claude.com/docs/en/about-claude/models/optimizing-for-cost-and-intelligence)).
-- **`opus` workers run above Opus's default (`medium`).** A worker's miss
-  costs a correction round. `xhigh` is kept for the plan, the judge and the
-  security reviews, which the rest of the run builds on or ships.
+- **`opus` workers run at `high`, above Opus's default (`medium`).** A
+  worker's miss costs a correction round. 5.0 lowered the planner, the judge
+  and the security reviews from `xhigh` to `high`: the plan critic now checks
+  the plan, and the run's time to its first push matters more.
 - **The code reviewers run at `high`.** In the scenarios, `high` found every
   planted bug that `xhigh` did, in a little over half the time; the plan
   still asks for `xhigh` on a large change.
-- **The sensitive-path security review runs on `opus` · `xhigh`, not `fable`.**
+- **The sensitive-path security review runs on `opus`, not `fable`.**
   Both found every planted hole, and `fable` costs about 2.5 times as much per
   token.
 - **Lookups run on `haiku`.** Haiku answered as accurately as Sonnet, for a
@@ -697,9 +734,9 @@ and the tables in `SKILL.md` and this README.
 The code reviewers' effort is set per run. The planner writes a
 `Review effort:` line in `PLAN.md`: `high` by default, `xhigh` for
 a large change (many files, or logic across several modules). The
-orchestrator passes it to each code reviewer, overriding the agent file's
-`high`. On a first review, each
-reviewer runs its nested `/code-review` at that effort too; a correction's
+orchestrator passes it to each code reviewer of the panel, overriding the
+agent file's `high`. On a first review, each reviewer (the panel's, or the
+standard-risk reviewer) runs its nested `/code-review` at that effort too; a correction's
 re-review skips it.
 
 ## The `.auto-dev/` scratch directory
@@ -713,7 +750,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | Path | Written by | Holds |
 | ---- | ---------- | ----- |
 | `profile.md` | Phase 1 | the resolved stack, where the profile came from, commands, branches, CI and Jira settings |
-| `state.json` | `autodev.py` only | the run's state: phases, size check, gates, budget and every round spent |
+| `state.json` | `autodev.py` only | the run's state: phases, size check, gates, budget and every round spent, and each quality-gate run (`gate_runs`) |
 | `WORK_LOG.md` | generated from `state.json` | the same, for people to read |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
@@ -723,13 +760,13 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `plan-review/` | Phase 2 | the plan critic's review (`<n>.md`): verdict, risk tier, blockers with evidence |
 | `acceptance/` | Phase 3 (the tester; its repairs in Phases 4–6) | the checks' `MANIFEST.md` (the checks themselves are ordinary test files in the worktree, committed before the build), their runs on the old code (`base-run/`), and `AMBIGUOUS.md`, a condition the tester found reads two ways |
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
-| `lint/` | Phase 5 | one report per quality-gate check |
-| `SPEC_EVAL.md`, `evidence/` | Phase 5 | the verifier's verdicts and what it ran: `verify prep`'s audit, change set, acceptance run and starting tree (`evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`) and one evidence file per condition (`evidence/C<n>.txt`); its required changes (`evidence/corrections.md`); the mutants it chose (`evidence/mutation-set.json`) and runs this pass (`mutants.json`); and the files `autodev.py mutants` writes and keeps across passes (`mutation-*`, `mutate.*`) |
-| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports and their merged list (`review/pass-<n>/findings.md`), the re-votes (`VOTES-R<k>.md`), the judge's calls (`JUDGMENT.md`), the code review built from them (with the report as it stood before the pass, `CODE_REVIEW.before.md`), the security review, and the review's required changes for the coder (`review/pass-<n>/corrections.md`, `review/security-corrections.md`) |
+| `lint/` | `autodev.py quality-gate` (Phases 5–6) | one report per quality-gate check |
+| `SPEC_EVAL.md`, `evidence/` | Phase 6, the verifier | the verifier's verdicts and what it ran: `verify prep`'s audit, change set, acceptance run and starting tree (`evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`) and one evidence file per condition (`evidence/C<n>.txt`); its required changes (`evidence/corrections.md`); the mutants it chose (`evidence/mutation-set.json`) and runs this pass (`mutants.json`); and the files `autodev.py mutants` writes and keeps across passes (`mutation-*`, `mutate.*`) |
+| `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports and their merged list (`review/pass-<n>/findings.md`), the re-votes (`VOTES-R<k>.md`), the judge's calls, or the standard-risk reviewer's own (`JUDGMENT.md`), the code review built from them (with the report as it stood before the pass, `CODE_REVIEW.before.md`), the security review, and the review's required changes for the coder (`review/pass-<n>/corrections.md`, `review/security-corrections.md`) |
 | `pr-body.md`, `pr-write.md`, `pr-output-comment.md` | Phase 6 | the generated PR description; the sections of it the orchestrator writes (the Summary, the Assumptions, a template section), with the text they draw on, which `pr publish` puts into the description; and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments, and the comments about an acceptance check, for the tester (`human-<n>-checks.md`) |
 | `deviations/` | Phases 4–6, coder | each plan step the coder built differently, and why (`coder-<n>.md`), for the ready-for-review gate |
-| `spec-problems/` | Phases 5–6 | a condition a later worker found wrong or missing in `PLAN.md` (`<worker>-<n>.md`), for you to decide |
+| `spec-problems/` | Phase 6 | a condition a later worker found wrong or missing in `PLAN.md` (`<worker>-<n>.md`), for you to decide |
 | `lookups/` | any phase | lookup answers |
 | `tree/` | `autodev.py record` | a repo file a worker that never changes the repo changed anyway, as the worker left it, before `record` put it back (`tree/<worker>-<n>/<path>`) |
 | `override/` | at a stop, the fixer and `autodev.py next` | the fixer's report (`fixer-<n>.md`); the run's `PLAN.md` and checks as they were before it ran (`fixer-<n>.before/`), and, when it ended without fixing, the repo files it changed, as it left them, before they were put back (`fixer-<n>.after/`) |
@@ -739,7 +776,8 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 Autonomous but bounded:
 
 - **One iteration budget per task** (default 4 revise rounds) covers every
-  correction, the planner's one revision for the critic, every tester re-spawn for gaps
+  correction (a review pass's open findings and red CI share one), the
+  planner's one revision for the critic, every tester re-spawn for gaps
   and every re-dispatched `BLOCKED` step, one round each. When the budget
   runs out the run stops and names what is still open, except for review
   findings before the PR is marked ready: those go to the ready-for-review gate, which names each one,

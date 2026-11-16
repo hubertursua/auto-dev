@@ -10,6 +10,11 @@ lead's disposition) and writes review/pass-<n>/JUDGMENT.md. `autodev.py
 review-build` then applies the rubric's fixed table and writes CODE_REVIEW.md
 (templates/CODE_REVIEW.md, the shape every reader of it already parses) and
 the pass's corrections.md.
+
+On a standard-risk run one reviewer reviews and judges its own findings: it
+writes JUDGMENT.md with no findings.md and no `From:` lines, and
+`review-build --solo` builds the report with every finding as its one vote of
+one (`build(solo=True)`).
 """
 
 import re
@@ -23,6 +28,7 @@ CATEGORIES = MUST_FIX_CATEGORIES + ADVISORY_CATEGORIES
 DETAIL_KEYS = ("Trigger path", "Judge", "Where", "Test", "Required change",
                "In plain words")
 PANEL = 3
+SOLO = "reviewer"  # the one reviewer of a standard-risk pass, as its rows name it
 LEVEL, COUNTS = "\0level\0", "\0counts\0"  # filled in once the rows are known
 
 FINDING_RE = re.compile(r"^\s*(\d+)\.\s+\*\*(.+?)\*\*\s+[—–-]+\s+`([^`]+)`\s+[—–-]+\s+"
@@ -234,9 +240,11 @@ def parse_findings(text):
 
 # ---------------------------------------------------------------- the judgment
 
-def parse_judgment(text, findings, earlier_open, finding_leads=()):
+def parse_judgment(text, findings, earlier_open, finding_leads=(), solo=False):
     """JUDGMENT.md: ([judged finding], {earlier id: fixed|open}, [lead lines]),
-    or JudgmentError listing every problem."""
+    or JudgmentError listing every problem. `solo`: the one reviewer's own
+    judgment, with no findings.md (no `From:` lines) and no security leads
+    (it reviewed security itself)."""
     problems, judged, seen = [], [], {}
     blocks = re.split(r"^## ", text, flags=re.MULTILINE)[1:]
     earlier, leads = {}, None
@@ -264,7 +272,9 @@ def parse_judgment(text, findings, earlier_open, finding_leads=()):
                 problems.append(f"{head}: keep each line on one line (`{line.strip()[:60]}`)")
         item = {"label": head, **fields}
         sources = [s.strip() for s in fields.get("From", "").split(",") if s.strip()]
-        if not sources:
+        if solo:
+            sources = []
+        elif not sources:
             problems.append(f"{head}: no `From:` line naming the F findings it judges")
         for s in sources:
             if s not in findings:
@@ -305,6 +315,8 @@ def parse_judgment(text, findings, earlier_open, finding_leads=()):
         if fid not in earlier_open:
             problems.append(f"Earlier must-fix: {fid} is not an open must-fix finding of an "
                             "earlier pass")
+    if leads is None and solo:
+        leads = []
     if leads is None:
         problems.append("no `## Security leads` section (write `none` under it when there "
                         "are none)")
@@ -376,22 +388,28 @@ def raisers(item, findings):
     return sorted({findings[s]["raised_by"] for s in item["sources"]})
 
 
-def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
+def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md,
+          solo=False):
     """(CODE_REVIEW.md text, {next, must_fix_open, revote, new_must_fix: [ids],
-    open_ids: [ids]}), or JudgmentError."""
-    findings, names, coverage, pre, finding_leads = parse_findings(findings_md)
-    finished = len(names)
+    open_ids: [ids]}), or JudgmentError. `solo`: one reviewer judged its own
+    findings (no findings.md): each that holds in a must-fix category is
+    must-fix on its one vote of one."""
+    if solo:
+        findings, names, coverage, pre, finding_leads = {}, [SOLO], "full", 0, ()
+    else:
+        findings, names, coverage, pre, finding_leads = parse_findings(findings_md)
+    finished, panel = len(names), (1 if solo else PANEL)
     earlier = earlier_report(earlier_md)
     earlier_open = [r["ID"].strip() for r in (earlier or {}).get("must_fix", [])
                     if r.get("Status", "").strip().startswith("open")]
     judged, statuses, new_leads = parse_judgment(judgment_md, findings, earlier_open,
-                                                 finding_leads)
+                                                 finding_leads, solo=solo)
     used = [int(m.group(1)) for m in (re.match(r"C(\d+)", i) for i in ids_in(earlier)) if m]
     next_id = max(used, default=0) + 1
     must, pending, advisory, noise, dropped = [], [], [], [], 0
     decided = list((earlier or {}).get("decided", []))
     for item in judged:
-        votes = raisers(item, findings)
+        votes = [SOLO] if solo else raisers(item, findings)
         if item["holds"] == "pre-existing":
             dropped += 1
             continue
@@ -403,7 +421,7 @@ def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
             noise.append(item)
         elif category in ADVISORY_CATEGORIES:
             advisory.append(item)
-        elif len(votes) >= 2:
+        elif solo or len(votes) >= 2:
             must.append(item)
             if len(votes) == 2 and finished == PANEL:  # the third reviewer didn't raise it
                 decided.append(item["id"])
@@ -415,7 +433,7 @@ def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
     lines = [f"# Code review — {branch}", ""]
     level = "provisional (re-votes pending)" if pending else LEVEL
     full = "full" if coverage == "full" else "partial"
-    lines += [(f"**Overall confidence: {level}** — reviewers finished: {finished}/{PANEL}; "
+    lines += [(f"**Overall confidence: {level}** — reviewers finished: {finished}/{panel}; "
               f"coverage: {full}; must-fix decided 2–1: {', '.join(decided) or 'none'}"),
               f"Latest pass: {pass_n} — scope: {scope}",
               f"Tree: {tree}",
@@ -436,7 +454,7 @@ def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
     for item in must:
         n = len(item["raisers"])
         lines.append(row(item["id"], item["Finding"], fmt_loc(item["Location"]),
-                         item["Category"], f"{n}/{PANEL}", "High" if n >= 3 else "Medium",
+                         item["Category"], f"{n}/{panel}", "High" if n >= 3 else "Medium",
                          "open"))
         blocks.append(detail(item))
     lines.append("")
@@ -464,7 +482,7 @@ def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
                if item["Category"] in ADVISORY_CATEGORIES
                else "one vote of three, and no reviewer left to re-vote")
         lines.append(row(item["id"], item["Finding"], fmt_loc(item["Location"]),
-                         item["Category"], f"{len(item['raisers'])}/{PANEL}", "Low", why))
+                         item["Category"], f"{len(item['raisers'])}/{panel}", "Low", why))
     lines += ["", "## Noise", "| ID | Finding | Raised by | Why dismissed |",
               "|----|---------|-----------|---------------|"]
     for r in (earlier or {}).get("noise", []):
@@ -484,7 +502,7 @@ def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
             lines.append(row(r.get("Pass", ""), r.get("Scope", ""),
                              r.get("Reviewers finished", ""), r.get("Must-fix found", ""),
                              r.get("Re-votes", "")))
-    lines.append(row(pass_n, scope, f"{finished}/{PANEL}", len(must), len(pending)))
+    lines.append(row(pass_n, scope, f"{finished}/{panel}", len(must), len(pending)))
     text = "\n".join(lines) + "\n"
     open_ids = [r["ID"].strip() for r in (earlier or {}).get("must_fix", [])
                 if r.get("Status", "").strip().startswith("open")
@@ -499,7 +517,9 @@ def build(*, branch, pass_n, scope, tree, findings_md, judgment_md, earlier_md):
               f"{max((earlier or {}).get('dropped', 0), pre + dropped)}")
     text = text.replace(COUNTS, f"Must-fix: {counts}", 1)
     if not pending:
-        if finished < 2:
+        if solo:
+            lvl = "Medium"  # one reviewer: never High
+        elif finished < 2:
             lvl = "Low"
         elif finished == PANEL and full == "full" and not decided:
             lvl = "High"

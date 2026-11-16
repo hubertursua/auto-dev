@@ -55,26 +55,25 @@ record <worker> <n>
     ok return, it re-derives the same decision from the artifacts the worker
     wrote: the verifier's `next` against `eval-status`, and its required
     changes (one entry at least for CORRECT); the judge's
-    `next`, must-fix and re-vote counts against CODE_REVIEW.md; the cleanup
-    agent's GREEN against the lint reports; the triager's class and counts
+    `next`, must-fix and re-vote counts against CODE_REVIEW.md; the
+    reviewer's (a standard-risk pass) against CODE_REVIEW.md and
+    SECURITY_REVIEW.md; the triager's class and counts
     against its triage files (blockers in `triage_file`, acceptance check
     comments in `checks_file`); the lookup's answer at lookups/<n>.md; for
     the acceptance tester, that each file MANIFEST.md names is in the
-    worktree (it leaves its checks there; `next` commits them). A coder's or
-    cleanup's return is refused when it changed or removed a line of the
-    committed acceptance checks (lib/protected.py) that was whole at its brief.
+    worktree (it leaves its checks there; `next` commits them). A coder's
+    return is refused when it changed or removed a line of the committed
+    acceptance checks (lib/protected.py) that was whole at its brief.
     A required-changes file that reaches the coder unedited (the verifier's,
     the judge's, the triager's) must follow its template.
     The planner's result must agree with PLAN.md (its size check and its
     `Risk:` tier, which is high when it has Security/Compliance criteria), and
     the plan critic's with its review file (plan-review/<n>.md: the verdict,
     the blocker count, the tier). Every other file the return says the
-    worker wrote must pass check-artifact: SPEC_EVAL.md,
-    the lint reports, a code reviewer's report or votes, CODE_REVIEW.md and
-    SECURITY_REVIEW.md. Each must exist, except a lint report, which only
-    cleanup's GREEN requires (every report passing).
+    worker wrote must pass check-artifact: SPEC_EVAL.md, a code reviewer's
+    report or votes, CODE_REVIEW.md and SECURITY_REVIEW.md. Each must exist.
     Spec problems (spec-problems/<worker>-<n>.md, counted by the result's
-    `spec_problems` key): only the verifier, the review judge in consolidate
+    `spec_problems` key): only the verifier, the reviewer, the review judge in consolidate
     mode, the security reviewers and the triager in human mode may report one;
     the count must match the file's `- condition <id>: <why>` and `- missing:
     <why>` lines, and each id must be a condition or criterion PLAN.md has.
@@ -150,7 +149,7 @@ STEP_HEADINGS = ("## Files", "## Design", "## Build sequence", "## Test plan",
 VERDICTS = {"met", "partial", "unmet", "manual"}
 # The workers that judge against PLAN.md and may report a criterion wrong or
 # missing (spec-problems/<worker>-<n>.md); they never edit PLAN.md.
-SPEC_JUDGES = ("verifier", "review-judge", "security-reviewer",
+SPEC_JUDGES = ("verifier", "reviewer", "review-judge", "security-reviewer",
                "security-reviewer-sensitive", "triager")
 SPEC_PROBLEM_RE = re.compile(r"^\s*[-*]\s*(?:condition\s+(S?\d+)|missing)\s*:\s*(.*)$",
                              re.IGNORECASE)
@@ -365,7 +364,12 @@ def auto_values(worker, n, state, ad, mode):
         "ticket": st.ticket_line(state["task"]).split(" — ")[0],
         "binding_rules": BINDING_RULES.format(artifact_dir=ad),
         "test_command": test or "none", "test_notes": s.get("test_notes") or "none",
-        "mutation_cap": str(s.get("mutation_max", 20)) if s.get("mutation_max", 20) else "0 (off)",
+        # Mutation and the verifier's own probes run on a high-risk run only.
+        "mutation_cap": (str(s.get("mutation_max", 20))
+                         if state.get("high_risk") and s.get("mutation_max", 20) else
+                         "0 (off)" if state.get("high_risk") else
+                         "0 (off: a standard-risk run)"),
+        "probes": "on" if state.get("high_risk") else "off (a standard-risk run)",
         "gate_commands": gate or "none",
         "result_file": str(ad / "returns" / f"{worker}-{n}.json"),
         "pr": str(phase6.get("pr") or "none"),
@@ -543,7 +547,7 @@ def write_brief(state, where, worker, mode, given, retry=None):
         entry = {"worker": worker, "n": n, "mode": mode, "sets": given, "at": st.now(),
                  "retry": retry, "seq": st.seq(state)}
         watch_spec(state, ad, worker, retry, entry)
-        if retry is None and worker in ("coder", "cleanup"):
+        if retry is None and worker == "coder":
             # A check line broken already is not this worker's doing.
             entry["broken"] = guard_locations(state)
         if worker in tree_guard.GUARDED:
@@ -702,13 +706,13 @@ def derive(worker, data, ad, state, n):
     issues += spec_problem_issues(worker, issued.get("mode"), data, ad, n)
     if worker == "coder":
         issues += deviation_issues(data, ad, n)
-    if worker in ("coder", "cleanup"):
-        issues += edited_check_issues(worker, state, issued.get("broken", []))
+    if worker == "coder":
+        issues += edited_check_issues(state, issued.get("broken", []))
     return issues
 
 
-def edited_check_issues(worker, state, broken):
-    """The committed acceptance checks' lines the coder or cleanup changed or
+def edited_check_issues(state, broken):
+    """The committed acceptance checks' lines the coder changed or
     removed (those `broken` already at its brief aside), one issue per file."""
     new = [loc for loc in guard_locations(state) if loc not in set(broken)]
     by_file = {}
@@ -724,9 +728,7 @@ def edited_check_issues(worker, state, broken):
             f"{what}. The acceptance checks are committed and never yours to edit: "
             "put each line back exactly as the tests commit has it (`git diff "
             "<tests commit> -- <path>` shows what changed), and make your code fit "
-            "them; add your own tests and imports around them"
-            + (". If the quality gate then fails on one of their lines as it is, "
-               "return ACCEPTANCE_CHECK_FAILS_GATE" if worker == "cleanup" else ""))
+            "them; add your own tests and imports around them")
     return issues
 
 
@@ -820,9 +822,6 @@ def written_files(worker, data, ad, state, n):
         files.append((ad / "plan-review" / f"{n}.md", True))
     elif worker == "verifier" and nxt != "MUTATION_LEFT_CHANGES":
         files.append((ad / "SPEC_EVAL.md", True))
-    elif worker == "cleanup":
-        files += [(ad / "lint" / c["report"], False)
-                  for c in state["settings"].get("gate", []) if c.get("report")]
     elif worker == "code-reviewer" and sets.get("reviewer"):
         name = "VOTES-" if mode == "re-vote" else ""
         files.append((review / f"{name}{sets['reviewer']}.md", True))
@@ -831,6 +830,8 @@ def written_files(worker, data, ad, state, n):
                       True))
     elif worker in ("security-reviewer", "security-reviewer-sensitive"):
         files.append((ad / "SECURITY_REVIEW.md", True))
+    elif worker == "reviewer":
+        files += [(ad / "CODE_REVIEW.md", True), (ad / "SECURITY_REVIEW.md", True)]
     return files
 
 
@@ -871,14 +872,8 @@ def result_issues(worker, data, ad, state, n):
             issues.append(f"next is BLOCKED but {listed} does not exist")
     elif worker == "verifier":
         issues += derive_verifier(nxt, ad)
-    elif worker == "cleanup":
-        failing = [c.get("report", "") for c in state["settings"].get("gate", [])
-                   if not lint_passes(ad / "lint" / c.get("report", ""))]
-        if failing and set(failing) <= overrides.signed_reports(state):
-            pass  # only checks the user signed off fail: any verdict reads as green
-        elif (nxt == "GREEN") != (not failing):
-            issues.append(f"next is {nxt} but these lint reports don't pass: "
-                          f"{', '.join(failing) or 'none'}")
+    elif worker == "reviewer":
+        issues += derive_reviewer(data, ad, state)
     elif worker == "review-judge":
         issues += derive_judge(data, ad, state)
     elif worker == "triager":
@@ -1154,6 +1149,45 @@ def derive_judge(data, ad, state):
         issues += coder_bound(ad / "review" / f"pass-{n}" / "corrections.md", ad,
                               f"review/pass-{n}/corrections.md")
     return issues
+
+
+def derive_reviewer(data, ad, state):
+    """A standard-risk pass's one reviewer: its counts and `next` against the
+    CODE_REVIEW.md that `review-build --solo` wrote and its SECURITY_REVIEW.md."""
+    nxt = data.get("next")
+    n = state.get("phase6", {}).get("review_pass") or 1
+    folder = ad / "review" / f"pass-{n}"
+    issues = []
+    if not (folder / "JUDGMENT.md").exists():
+        issues.append(f"no {folder / 'JUDGMENT.md'}: write your calls there and run "
+                      "`autodev.py review-build --solo`, which writes CODE_REVIEW.md")
+    open_rows = count_open(art.read(ad / "CODE_REVIEW.md"))
+    if as_int(data, "must_fix_open") != open_rows:
+        issues.append(f"must_fix_open is {data.get('must_fix_open')} but CODE_REVIEW.md "
+                      f"has {open_rows} open must-fix rows")
+    security = security_open(art.read(ad / "SECURITY_REVIEW.md"))
+    if as_int(data, "must_fix") != security:
+        issues.append(f"must_fix is {data.get('must_fix')} but SECURITY_REVIEW.md has "
+                      f"{security} open must-fix findings")
+    want = "MUST_FIX" if open_rows or security else "CLEAN"
+    if nxt != want:
+        issues.append(f"next is {nxt} but the reports hold {open_rows} open must-fix "
+                      f"code finding(s) and {security} security one(s), which is {want}")
+    if open_rows:
+        issues += coder_bound(folder / "corrections.md", ad,
+                              f"review/pass-{n}/corrections.md")
+    if security:
+        issues += coder_bound(ad / "review" / "security-corrections.md", ad,
+                              "review/security-corrections.md")
+    return issues
+
+
+def security_open(text):
+    """SECURITY_REVIEW.md's open must-fix findings."""
+    _, rows = art.first_table(art.find_section(text, "Findings") or "",
+                              ("ID", "Verdict", "Status"), "SECURITY_REVIEW.md")
+    return sum(1 for r in rows if r["Verdict"].strip().lower() == "must-fix"
+               and r["Status"].strip().lower().startswith("open"))
 
 
 def derive_triager(data, ad, n):

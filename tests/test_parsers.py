@@ -572,8 +572,8 @@ class ReviewAndGateTest(RunCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
         summary = "\n".join(out["summary"])
-        self.assertIn("Acceptance — 3 met", summary)
-        self.assertIn("Not reviewed yet", summary)
+        self.assertNotIn("Acceptance —", summary)  # the verifier runs on the draft
+        self.assertIn("Not verified or reviewed yet", summary)
         self.assertEqual([q["header"] for q in out["questions"]], ["Gate"])
         self.assertEqual(out["questions"][0]["options"][0]["label"], "Open PR")
 

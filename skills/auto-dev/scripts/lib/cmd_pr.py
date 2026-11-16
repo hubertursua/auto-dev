@@ -80,7 +80,7 @@ WRITE_HEAD = ("<!-- The parts of the PR description you write. The quoted source
 STRICT = ("Acceptance conditions", "Quality gate", "Review")
 NOT_REVIEWED = [("Not reviewed yet. This draft opened as soon as the build passed its "
                  "checks, so CI runs"),
-                ("while the code review and the security review run; this section is "
+                ("while the verifier and the review run; this section is "
                  "updated when they finish.")]
 COMMENT_HEAD = "Command output for commit"
 ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
@@ -162,8 +162,10 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     wt = state["worktree"]
     url = repo_url(wt)
     conditions = art.spec_conditions(ad / "PLAN.md")
-    ev = art.spec_eval(ad / "SPEC_EVAL.md")
-    verdicts = {r["#"].strip(): r for r in ev["rows"]}
+    # The draft opens before the verifier runs: its acceptance section says so.
+    ev = art.spec_eval(ad / "SPEC_EVAL.md") if reviewed or \
+        (ad / "SPEC_EVAL.md").exists() else None
+    verdicts = {r["#"].strip(): r for r in (ev or {}).get("rows", [])}
     rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
     cut = cut_sha(ad, wt)
     old = old_sha(ad, cut)
@@ -177,54 +179,11 @@ def generate(state, ad, sha, reviewed=True, ready=True):
         body.text(ticket)
     body.text("")
     body.text("## Acceptance conditions")
-    checked = [r for r in rows if r["#"].strip() in verdicts]
-    files = sorted({p for r in checked if (p := art.check_path(
-        r["Check (path :: test name)"]))})
-    if files:
-        body.text("**How this was checked.** Before any code was written, a test was "
-                  "written from")
-        body.text("the requirements alone for each requirement below that a test could "
-                  "check, and")
-        body.text(f"run on the old code (`{state['repo']['base']}` at {old}), where the "
-                  "tests for new behavior")
-        body.text("failed. The code was first written without those tests in view; then "
-                  "they were")
-        body.text("added back, and any later fix had to make them pass without changing "
-                  "them.")
-        body.text(f"Checked at commit {sha}: every result below was produced on this code.")
-        body.text("")
-        body.text("**Start review with** the tests written before the code. They state "
-                  "what this")
-        body.text("change must do: " + ", ".join(
-            f"[`{p}`]({link(url, sha, p)})" for p in files))
+    if ev is None:
+        not_verified(body, conditions, rows, url, sha, wt)
     else:
-        body.text("No requirement here could be checked by an automated test, so each "
-                  "one")
-        body.text(f"is under _Checks for a person_. Checked at commit {sha}.")
-    body.text("")
-    manual = []
-    for cond in conditions:
-        row = verdicts.get(cond["id"])
-        verdict = row["Verdict"].strip().lower() if row else "unmet"
-        if verdict == "manual":
-            manual.append((cond, row))
-            continue
-        condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha)
-    body.text("")
-    body.text("### Checks for a person")
-    person = person_checks(manual, na_rows, ev, conditions)
-    if person:
-        for line in person:
-            body.text(line)
-    else:
-        body.text("None: every requirement was checked automatically.")
-    body.text("")
-    body.text("### Changes to tests")
-    quoted_lines(body, test_changes(ev, url, sha, cut, wt))
-    body.text("")
-    body.text("### Test strength")
-    quoted_lines(body, test_strength(ev, state))
-    body.text("")
+        verified(body, state, ad, wt, url, sha, conditions, verdicts, rows, na_rows, ev,
+                 old, cut)
     body.text("## Quality gate")
     body.text(f"The repo's own checks, run on commit {sha[:12]}:")
     quality_gate(body, ad, state)
@@ -541,6 +500,86 @@ def clean(text, worktree):
     if home and home != "/":
         text = text.replace(home, "~")
     return "\n".join(ln for ln in text.split("\n") if not SECRET_RE.search(ln))
+
+
+def verified(body, state, ad, wt, url, sha, conditions, verdicts, rows, na_rows, ev, old,
+             cut):
+    """The acceptance section once the verifier has run: each condition's
+    verdict, the checks written before the code, and the tests' changes."""
+    checked = [r for r in rows if r["#"].strip() in verdicts]
+    files = sorted({p for r in checked if (p := art.check_path(
+        r["Check (path :: test name)"]))})
+    if files:
+        body.text("**How this was checked.** Before any code was written, a test was "
+                  "written from")
+        body.text("the requirements alone for each requirement below that a test could "
+                  "check, and")
+        body.text(f"run on the old code (`{state['repo']['base']}` at {old}), where the "
+                  "tests for new behavior")
+        body.text("failed. They were committed on their own before the code, and no "
+                  "later change")
+        body.text("could alter them: the code had to make them pass as written.")
+        body.text(f"Checked at commit {sha}: every result below was produced on this code.")
+        body.text("")
+        body.text("**Start review with** the tests written before the code. They state "
+                  "what this")
+        body.text("change must do: " + ", ".join(
+            f"[`{p}`]({link(url, sha, p)})" for p in files))
+    else:
+        body.text("No requirement here could be checked by an automated test, so each "
+                  "one")
+        body.text(f"is under _Checks for a person_. Checked at commit {sha}.")
+    body.text("")
+    manual = []
+    for cond in conditions:
+        row = verdicts.get(cond["id"])
+        verdict = row["Verdict"].strip().lower() if row else "unmet"
+        if verdict == "manual":
+            manual.append((cond, row))
+            continue
+        condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha)
+    body.text("")
+    body.text("### Checks for a person")
+    person = person_checks(manual, na_rows, ev, conditions)
+    if person:
+        for line in person:
+            body.text(line)
+    else:
+        body.text("None: every requirement was checked automatically.")
+    body.text("")
+    body.text("### Changes to tests")
+    quoted_lines(body, test_changes(ev, url, sha, cut, wt))
+    body.text("")
+    body.text("### Test strength")
+    quoted_lines(body, test_strength(ev, state))
+    body.text("")
+
+
+def not_verified(body, conditions, rows, url, sha, wt):
+    """The draft's acceptance section: the verifier runs on the draft, so each
+    condition is listed unchecked, with the tests committed for it."""
+    body.text("Not verified yet. The tests for these requirements were written and "
+              "committed before")
+    body.text("the code; the verifier runs them on this draft while CI runs, and this "
+              "section is")
+    body.text(f"updated with its results. Checked at commit {sha}: the quality gate "
+              "below ran on this code.")
+    body.text("")
+    for cond in conditions:
+        body.text(f"- [ ] **{cond['text']}**")
+        start = body.quote()
+        for check in [r for r in rows if r["#"].strip() == cond["id"]]:
+            cell = check["Check (path :: test name)"]
+            path = art.check_path(cell) or ""
+            name = cell.split("::", 1)[-1].strip().strip('"')
+            body.text(f"  Test written before the code: [`{path}` › {name}]"
+                      f"({link(url, sha, path, test_line(wt, path, name))})")
+        body.unquote(start)
+    body.text("")
+    for heading in ("### Checks for a person", "### Changes to tests", "### Test strength"):
+        body.text(heading)
+        body.text("Not checked yet: the verifier's results fill this in.")
+        body.text("")
 
 
 def condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha):

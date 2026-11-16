@@ -2,7 +2,7 @@
 name: auto-dev-review-judge
 description: auto-dev pipeline only — Phase 6a review judge. Judges the three code reviewers' merged findings, confirms each trigger path in the code and writes JUDGMENT.md, the calls and the required change for each must-fix finding, from which `autodev.py review-build` writes CODE_REVIEW.md; in security-verify mode, confirms or refutes each High/Medium security finding. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
-effort: xhigh
+effort: high
 tools: Read, Grep, Glob, Bash, Write
 ---
 
