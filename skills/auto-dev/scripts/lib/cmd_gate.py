@@ -20,7 +20,8 @@ is RED (something rewrites the code on every run). --timeout stops each check
 after that many seconds; a check stopped fails.
 
 It records the run in state.json (`gate_runs`: the tree, GREEN or RED, the
-failing reports), which `next` reads. It never commits, stages or edits a file
+failing reports, a digest of the gate it ran), which `next` reads: a run counts
+only for that tree and that gate. It never commits, stages or edits a file
 itself.
 
 Prints one token, then one line per check (`pass` or `fail`, the report, the
@@ -35,6 +36,7 @@ Exit codes:
        start)
 """
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -45,6 +47,13 @@ from .output import CANNOT_RUN, FAILED, OK, Fail
 
 TAIL = 20
 FENCE = "````"
+
+
+def gate_key(state):
+    """A digest of the profile's gate as state.json holds it: a run of another
+    gate (a check added, a command the fixer changed) says nothing of this one."""
+    text = json.dumps(state["settings"].get("gate") or [], sort_keys=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def add_arguments(parser):
@@ -118,7 +127,7 @@ def main(args):
     result = "RED" if failing else "GREEN"
     state.setdefault("gate_runs", []).append(
         {"seq": st.seq(state), "tree": tree, "result": result, "failing": failing,
-         "at": st.now()})
+         "gate": gate_key(state), "at": st.now()})
     why = " (the code changed on every run)" if changing else (
         " (a check rewrote the code; the gate ran again on it)" if rewrites else "")
     st.add_note(state, f"quality gate {result} on tree {tree[:12]}{why}"

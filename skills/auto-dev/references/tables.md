@@ -61,7 +61,7 @@ reports, except #11, #19 and a merge whose outcome is unknown, comes with a
 | 6 | a worker did not return ok twice running: it stopped on purpose, failed, or one of each (lifted by `auto-dev continue`) | `next` records a second result that is not ok |
 | 7 | a worker was spawned three times and never left a result `next` accepts (lifted by `auto-dev continue`) | `next` |
 | 8 | the planner judged the conditions impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
-| 9 | the quality gate is still red after the coder's correction for it, or a check rewrites the code on every run. _I fixed it myself_ runs the gate again; a sign-off counts the failing checks green for the rest of the run | `autodev.py quality-gate` exit 1, then `next` |
+| 9 | the quality gate is still red after the coder's correction for it, or a check rewrites the code on every run, or `next` asked for the gate 3 times on the same code and no run was recorded (it never finished: run it in the background). _I fixed it myself_ runs the gate again; a sign-off (not for a gate that never finished) counts the failing checks green for the rest of the run | `autodev.py quality-gate` exit 1, then `next` |
 | 10 | the mutation step (high risk only) may have left a planted change in the source | verifier returns `MUTATION_LEFT_CHANGES` |
 | 11 | the budget ran out (a review pass's correction before the PR is marked ready goes to the ready-for-review gate instead). Lifted when the user adds rounds (`budget raise`, above) | `next` |
 | 12 | a report is stale again right after its own re-run (lifted by `auto-dev continue`) | `check-fresh`, inside `next` |

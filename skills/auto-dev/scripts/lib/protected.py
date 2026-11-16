@@ -9,7 +9,7 @@ for each file, the last tests commit that touched it is its reference, and
 working tree may add lines around them but never change or remove one.
 
 Shared by `check-tests.py --tests-commit` and `autodev.py record` (which
-refuses a coder or cleanup return that broke one). Language-blind: it reads
+refuses a coder return that broke one). Language-blind: it reads
 plain line diffs.
 """
 

@@ -32,7 +32,7 @@ Phase 2  Plan    → PLAN.md (conditions, size, risk, steps), checked by a criti
 Phase 3  Tests   → acceptance checks, committed first; then the post-plan gate if it's on  (Plan)
 Phase 4  Build   → the coder builds from the plan and runs the quality gate     (Build)
 Phase 5  Gate    → you run `autodev.py quality-gate` (no worker); risk re-check  (Build)
-Phase 6  Ship    → draft PR; the verifier and the review together, alongside CI;
+Phase 6  Ship    → draft PR; the verifier and the review, alongside CI;
                    one correction for what is open and red CI; ready gate,
                    main gate, merge                                             (Ship)
 ```

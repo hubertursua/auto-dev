@@ -185,6 +185,7 @@ def apply_retry(state, retry, seq):
     if retry.get("gate"):  # the quality gate runs again, whatever it found before
         for run in state.get("gate_runs") or []:
             run.setdefault("aside", seq)
+        state.pop("gate_asked", None)
     if retry.get("oversized"):
         reopen_plan(state)
 

@@ -21,13 +21,15 @@ see in the Ship stage, in order:
    the reviews run; its description says it is not reviewed yet. With
    `gates.open_pr: true` in `.auto-dev.yml`, the open-the-PR gate asks first
    (exit 5): `Open PR`, `Hold (don't push yet)` or `Stop`.
-2. The first review pass, on the draft's commit, in one message: the
+2. The first review pass, on the draft's commit: the
    `verifier` (it runs the acceptance checks against the plan's conditions and
    audits the test changes; `check-tests.py` refuses any change to a line a
    tests commit added) and the review. On a standard-risk run the review is one
    `reviewer`, for code and security both; it judges its own findings and
    builds `CODE_REVIEW.md` with `review-build --solo`. On a high-risk run it is
-   three `code-reviewer`s and a security reviewer, then the `review-judge`
+   three `code-reviewer`s and a security reviewer, spawned once the verifier
+   returns (its mutants are planted in the worktree while it runs), then the
+   `review-judge`
    (twice in one message when the security review found something to verify),
    maybe re-votes; the verifier also runs mutation and a probe of its own per
    condition. Both the verifier and the review look for code that passes a

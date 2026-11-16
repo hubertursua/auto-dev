@@ -136,6 +136,7 @@ from . import artifacts as art
 from . import (
     briefs,
     cmd_checks,
+    cmd_gate,
     cmd_review,
     cmd_tests,
     cmd_work,
@@ -583,8 +584,8 @@ def fix_step(c):
         c.p6.setdefault("passes", [])
         return start_correction(c, "fix", None, None,
                                 "the fixer changed the code or its contract at a stop: "
-                                "the quality gate, the verifier and (once committed) a "
-                                "review of what it changed run again (no round)")
+                                "the quality gate, then (once committed) a review pass "
+                                "on what it changed, run again (no round)")
     return None
 
 
@@ -1431,19 +1432,16 @@ def gate_step(c, start):
     at `start`: DONE_MARK once it is green (or fails only on checks the user
     signed off)."""
     now = cmd_review.print_tree(c.wt)
+    key = cmd_gate.gate_key(c.state)
     signed = overrides.signed_reports(c.state)
     last = (gate_runs(c, 0) or [None])[-1]
-    if last and last["tree"] == now and (
+    if last and last["tree"] == now and last.get("gate") == key and (
             last["result"] == "GREEN" or set(last.get("failing") or ["?"]) <= signed):
-        return DONE_MARK  # the code is what a green gate checked: nothing changed
+        return DONE_MARK  # the code and the gate are what a green run checked
     runs = gate_runs(c, start)
-    if not runs or runs[-1]["tree"] != now or \
+    if not runs or runs[-1]["tree"] != now or runs[-1].get("gate") != key or \
             c.last(LOOP, after=runs[-1]["seq"]) is not None:
-        return action(f"run the quality gate: `{c.cmd('quality-gate')}` (with the Bash "
-                      "tool's timeout at 600000 ms; it runs every check of the profile's "
-                      "gate and writes their reports), then run AFTER whatever it exits",
-                      "the code changed since the quality gate last ran: `next` confirms "
-                      "it before anything is pushed (no worker)", AFTER=[c.cmd("next")])
+        return ask_gate(c, now)
     latest = runs[-1]
     failing = latest.get("failing") or []
     if latest["result"] == "GREEN" or (failing and set(failing) <= signed):
@@ -1464,6 +1462,34 @@ def gate_step(c, start):
                             "report's output tail says what fails; the whole output is "
                             f"under {c.ad}/tmp/run/)", budget,
                             "the quality gate is red: the coder makes it green (a round)")
+
+
+GATE_ASKS = 3  # the gate asked for this many times on one tree, with no run recorded
+
+
+def ask_gate(c, tree):
+    """Ask the orchestrator to run the quality gate; a stop once it was asked
+    GATE_ASKS times on this tree and no run was recorded (it never finishes)."""
+    asked = c.state.setdefault("gate_asked", {})
+    if asked.get(tree, 0) >= GATE_ASKS:
+        return stop([(f"The quality gate was asked for {GATE_ASKS} times on this code and "
+                     "no run was recorded: it never finished (the whole gate may take "
+                     "longer than a command may run). Tell the user; a check's own "
+                     f"output is under {c.ad}/tmp/run/. Once it can finish (run it in "
+                     "the background, or the profile's slow check made faster), "
+                     "`auto-dev continue` asks for it again.")],
+                    "the quality gate never finished", retry={"gate": True},
+                    no_signoff="nothing says the gate is green")
+    if not c.readonly:
+        asked[tree] = asked.get(tree, 0) + 1
+        c.dirty = True
+    return action(f"run the quality gate: `{c.cmd('quality-gate')}`. It runs every check "
+                  "of the profile's gate and writes their reports. Run it with the Bash "
+                  "tool's timeout at 600000 ms; if the gate can take longer than that, "
+                  "run it in the background and wait for it to finish. Then run AFTER "
+                  "whatever it exits", "the code changed since the quality gate last "
+                  "ran: `next` confirms it before anything is pushed (no worker)",
+                  AFTER=[c.cmd("next")])
 
 
 def settle_change(c, start, first):
@@ -1687,7 +1713,7 @@ def phase6(c):
         if stale and not any(k["entry"] == "outside" for k in p6["corrections"]):
             return start_correction(c, "outside", None, None,
                                     "the code changed outside the pipeline since the Build stage: "
-                                    "re-run the quality gate and the verifier first")
+                                    "the quality gate runs on it first")
     if p6["passes"]:
         review = review_step(c, p6["passes"][-1])
         if review is not None:
@@ -1908,10 +1934,11 @@ def start_pass(c, scope, files, rule, since=None):
         judgment.snapshot_before(c.ad, n)  # the report as it stood, for review-build
         jobs.append(("reviewer", None, solo_sets(c, p)))
         return spawn_many(c, jobs, rule + "; the verifier and the reviewer run together")
-    jobs += [("code-reviewer", "review", reviewer_sets(c, p, slot)) for slot in SLOTS]
-    return spawn_security(c, jobs, panel_leads(c), rule + "; the verifier, the panel and "
-                          "the security reviewer run together, on the same tree",
-                          focus=focus_text(p))
+    # The verifier's mutation run plants code in the worktree: the panel and
+    # the security reviewer follow it, so they never read a planted mutant.
+    return spawn_many(c, jobs, rule + "; on a high-risk run the verifier goes first (its "
+                      "mutants are planted in the tree), then the panel and the security "
+                      "reviewer")
 
 
 def verifier_job(c, p):
@@ -1992,6 +2019,10 @@ def review_step(c, p):
         return vstop
     if p.get("lane") == "standard":
         return solo_step(c, p, vjobs, vrec)
+    if vjobs:  # the panel waits for the verifier (mutation plants code in the tree)
+        return spawn_many(c, vjobs, "the verifier goes first on a high-risk run: it gets "
+                          "one re-spawn" if c.recs("verifier", after=p["seq"], ok=False)
+                          else "the verifier goes first on a high-risk run")
     reviews = c.recs("code-reviewer", after=p["seq"], mode="review", ok=False)
     respawn, usable = [], []
     for slot in SLOTS:
@@ -2008,14 +2039,16 @@ def review_step(c, p):
         # run when it fails twice running.
         last = secs[-1].get("sets", {}) if secs else {}
         leads = last.get("leads") if secs else panel_leads(c)
-        return spawn_security(c, jobs + vjobs, leads or "none",
+        first = not secs and not reviews
+        return spawn_security(c, jobs, leads or "none",
+                              "the verifier is done: the panel and the security reviewer "
+                              "review the same tree" if first else
                               "a worker of the pass failed: it gets one re-spawn"
-                              if secs or jobs or vjobs else
+                              if secs or jobs else
                               "the security review covers the whole change",
                               focus=last.get("focus") or focus_text(p))
-    if jobs or vjobs:
-        return spawn_many(c, jobs + vjobs, "a worker of the pass failed: it gets one "
-                          "re-spawn")
+    if jobs:
+        return spawn_many(c, jobs, "a code reviewer failed: it gets one re-spawn")
     sec = secs[-1]
     data = sec["data"]
     verify = _int(data.get("must_fix")) or _int(data.get("pre_existing"))

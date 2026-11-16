@@ -736,6 +736,15 @@ def main_summary(state, ad, args):
 
 # ---------------------------------------------------------------- review-build
 
+# A solo reviewer's scope, as CODE_REVIEW.md says it (the judge's brief holds
+# the same text, which `next` writes for a panel's pass).
+SOLO_SCOPES = {
+    "first": "the whole change, as committed on the branch: {files}",
+    "after-commit": "the uncommitted correction (the working tree against HEAD)",
+    "outside": ("the commits pushed to the PR branch outside the pipeline "
+                "(`git diff {since}`): {files}"),
+}
+
 @wrap
 def review_build(args):
     from . import judgment
@@ -764,9 +773,13 @@ def review_build(args):
     panel_tree = str(sets.get("tree") or "").strip()
     tree = panel_tree if panel_tree and print_tree(state["worktree"]) == panel_tree \
         else "changed during the run"
+    scope = sets.get("scope") or ""
+    if solo:  # the reviewer's brief holds the scope's name: the report says what it is
+        scope = SOLO_SCOPES.get(scope, scope).format(
+            files=sets.get("files") or "none", since=sets.get("since") or "HEAD")
     try:
         text, result = judgment.build(
-            branch=state.get("branch", ""), pass_n=n, scope=sets.get("scope") or "",
+            branch=state.get("branch", ""), pass_n=n, scope=scope,
             tree=tree, findings_md=findings, judgment_md=judgment_md,
             earlier_md=earlier, solo=solo)
     except judgment.JudgmentError as exc:

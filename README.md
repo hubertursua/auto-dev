@@ -326,7 +326,9 @@ The build, its quality gate green, is committed and pushed as a **draft PR
 before any review**, so CI runs while it is checked; its description says it
 is not verified or reviewed yet. (A repo that must not push unreviewed code
 sets `gates.open_pr: true` in `.auto-dev.yml`: the run then asks before the
-first push.) Each pass spawns the verifier (above) and the review together:
+first push.) Each pass runs the verifier (above) and the review: together
+on a standard-risk run; on a high-risk run the verifier goes first, since its
+mutants are planted in the worktree, and the review follows on the same tree.
 
 - **Standard risk: one reviewer**, for code and security both. It runs
   `/code-review` on the changed files at the effort the plan sets (see

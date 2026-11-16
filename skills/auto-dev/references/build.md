@@ -27,7 +27,10 @@ see in the Build stage, in order:
    - Before it returns, the coder runs the quality gate to green itself.
 2. The quality gate, which `next` asks **you** to run as a script, with no
    worker: `autodev.py quality-gate --dir <artifact-dir>`, with the Bash tool's
-   timeout at 600000 ms. It runs every check of the profile's gate, in order,
+   timeout at 600000 ms (when the whole gate can take longer, run it in the
+   background and wait for it; asked 3 times on the same code with no run
+   recorded, `next` stops, #9). A run counts only for the code and the gate
+   commands it ran on: a changed command runs it again. It runs every check of the profile's gate, in order,
    and writes one `lint/<REPORT>.md` per check (the acceptance checks are in
    the tree already, committed before the build). Whatever it exits, run its
    `AFTER` line (`next`). `GREEN` ends the stage. `RED` sends the `coder` in

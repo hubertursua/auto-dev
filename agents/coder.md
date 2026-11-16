@@ -71,10 +71,11 @@ run must come after your last edit. Make at most 3 fix attempts per failing
 check; one still failing after that, or one that fails only on an acceptance
 check's lines (which you never touch), stays failing: say which and why in one
 line above the result block. A warning you must suppress, suppress as narrowly
-as possible. A check that fails only on files under {{artifact_dir}}/ (the
-pipeline's own scratch, which git ignores and nothing ships) passes: never
-edit those files, add them to an ignore file or change the command to hide
-them. You write no gate reports: once you return, the run confirms the gate
+as possible. Never edit a file under {{artifact_dir}}/ (the pipeline's own
+scratch, which git ignores and nothing ships), add it to an ignore file or
+change a command to hide it: when a check fails only on those files, it
+still fails, so say so in one line above the result block; the run's own
+gate stops there and the user decides. You write no gate reports: once you return, the run confirms the gate
 itself (`autodev.py quality-gate`) before anything is pushed.
 
 The acceptance checks are already in the tree: the acceptance tester wrote a

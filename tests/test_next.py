@@ -272,9 +272,11 @@ class NextCase(RunCase):
             self.write_state(state)
         r = self.autodev("quality-gate", "--dir", self.dir)
         self.assertEqual(r.returncode, 1 if red else 0, r.stdout + r.stderr)
-        if red:
+        if red:  # the profile's command back, and the run counted as its run
             state = self.state()
             state["settings"]["gate"][0]["command"] = "true"
+            sys.path.insert(0, str(SCRIPTS))
+            state["gate_runs"][-1]["gate"] = import_module("lib.cmd_gate").gate_key(state)
             self.write_state(state)
         self.assertEqual(out["AFTER"], [self.next_cmd()])  # AFTER is `next` itself
         return out
@@ -282,6 +284,14 @@ class NextCase(RunCase):
     def next_cmd(self):
         return " ".join(shlex.quote(str(w)) for w in (
             "python3", SCRIPTS / "autodev.py", "next", "--dir", self.dir))
+
+    def verifier_first(self, nxt="ALL_MET"):
+        """A high-risk pass starts with the verifier alone: answer it `nxt`."""
+        out = self.next(0)
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["verifier"], json.dumps(out, indent=2))
+        self.verifier_answer(jobs[0], nxt)
+        return jobs[0]
 
     def verifier_answer(self, job, nxt="ALL_MET", **kw):
         """Answer the pass's verifier: SPEC_EVAL.md on the tree as it is."""
@@ -298,23 +308,28 @@ class NextCase(RunCase):
         self.answer(*job, nxt, **data)
 
     def reviewers(self, security=None, count=3, problems=None, verifier="ALL_MET"):
-        """The verifier, the panel (`count` code reviewers) and the security
-        reviewer, spawned in one message: answer the verifier with `verifier`
-        (None: leave it unanswered, in self.verifier_job), the security reviewer
-        with `security` (text, next, must_fix, pre_existing; clean by default),
-        reporting `problems` (a spec-problems file's text) when given, and
-        return the panel's jobs."""
+        """A high-risk pass: the verifier first (its mutants are planted in the
+        tree), answered `verifier`; then the panel (`count` code reviewers) and
+        the security reviewer, spawned in one message. Answer the security
+        reviewer with `security` (text, next, must_fix, pre_existing; clean by
+        default), reporting `problems` (a spec-problems file's text) when
+        given, and return the panel's jobs. With `count` 0 (a security run on
+        leads), no verifier runs."""
         out = self.next(0)
         jobs = self.spawned(out)
+        self.verifier_job = None
+        if count:
+            self.assertEqual([w for w, _ in jobs], ["verifier"], json.dumps(out))
+            self.verifier_job = jobs[0]
+            self.verifier_answer(jobs[0], verifier)
+            if verifier == "MUTATION_LEFT_CHANGES":
+                return out, []
+            out = self.next(0)
+            jobs = self.spawned(out)
         sec = [j for j in jobs if j[0].startswith("security-reviewer")]
         panel = [j for j in jobs if j[0] == "code-reviewer"]
-        ver = [j for j in jobs if j[0] == "verifier"]
-        self.assertEqual((len(panel), len(sec), len(ver), len(jobs)),
-                         (count, 1, 1 if count else 0, count + 1 + (1 if count else 0)),
+        self.assertEqual((len(panel), len(sec), len(jobs)), (count, 1, count + 1),
                          json.dumps(out))
-        self.verifier_job = ver[0] if ver else None
-        if ver and verifier is not None:
-            self.verifier_answer(ver[0], verifier)
         self.security_job = sec[0]
         text, nxt, must_fix, pre = security or (SECURITY_REVIEW, "CLEAN", "0", "0")
         (self.dir / "SECURITY_REVIEW.md").write_text(text.format(tree=self.tree()))
@@ -1037,6 +1052,38 @@ class BuildTest(NextCase):
         self.quality_gate()  # a retry runs the gate again
         self.enter_stage("ship")
 
+    def test_a_gate_that_never_finishes_stops_after_three_asks(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        for _ in range(3):  # the orchestrator's command was killed each time
+            self.assertIn("quality-gate", self.next(0)["ACTION"])
+        out = self.next(4)
+        self.assertIn("no run was recorded", " ".join(out["REPORT"]))
+        r = self.autodev("override", "retry", "--text", "run it in the background",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.quality_gate()
+        self.enter_stage("ship")
+
+    def test_a_changed_gate_runs_again_on_the_same_code(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        self.quality_gate()
+        self.enter_stage("ship")
+        state = self.state()  # a fix at a stop changed a gate command, say
+        state["settings"]["gate"][0]["command"] = "true --strict"
+        self.write_state(state)
+        state = self.state()
+        state["phase6"].setdefault("corrections", []).append(
+            {"entry": "fix", "file": None, "checks": None, "seq": state["events"] + 1,
+             "after_commit": False, "rule": "a fix", "budget": None, "spend_id": None})
+        self.write_state(state)
+        self.assertIn("quality-gate", self.next(0)["ACTION"])
+
     def test_a_red_gate_signed_off_goes_on(self):
         self.plan_session()
         self.resume()
@@ -1195,16 +1242,13 @@ class ShipTest(NextCase):
 
     def test_next_records_the_panel_s_parallel_results_in_spawn_order(self):
         self.draft_pr()
+        self.verifier_first()
         out = self.next(0)
         jobs = self.spawned(out)
-        self.assertEqual(len(jobs), 5, out)
+        self.assertEqual(len(jobs), 4, out)
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
-        self.spec_eval()
         for w, n in jobs:  # every result written, none recorded by hand
-            if w == "verifier":
-                self.write_return(w, n, {"next": "ALL_MET", "tree": "x",
-                                         "corrections": "0"})
-            elif w == "code-reviewer":
+            if w == "code-reviewer":
                 (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
                  ).write_text(r_report("none"))
                 self.write_return(w, n, {"next": "REVIEWED", "findings": "0",
@@ -1221,7 +1265,7 @@ class ShipTest(NextCase):
         self.assertIn("Reviewers finished: R1, R2, R3 (3/3)", findings)
         self.assertIn("No findings:", findings)
         state = self.state()
-        seqs = [e["seq"] for e in state["log"][-5:]]
+        seqs = [e["seq"] for e in state["log"][-4:]]
         self.assertEqual(seqs, sorted(set(seqs)))  # each its own event
         judge = state["briefs"][-1]
         self.assertGreater(judge["seq"], seqs[-1])
@@ -1324,6 +1368,7 @@ class ShipTest(NextCase):
         text = body.read_text()
         self.assertIn(f"Checked at commit {sha}", text)
         self.assertIn("Not reviewed yet", text)  # the draft opens before any review
+        self.assertIn("Not verified yet", text)  # and before the verifier
         self.assertIn(f"{url}/blob/{sha}/src/due.acceptance.test.ts", text)
         self.assertNotIn(str(self.worktree), text)
         return sha, url, out, body
@@ -1653,6 +1698,21 @@ class ShipTest(NextCase):
         self.assertNotIn("cleanup", [g["gate"] for g in self.state()["gates"]])
         self.assertEqual(self.state()["phases"]["6"]["status"], "done")
 
+    def test_a_high_risk_pass_runs_the_panel_after_the_verifier(self):
+        # The verifier's mutants are planted in the worktree: no reviewer may
+        # read the tree while they are.
+        self.draft_pr()
+        out = self.next(0)
+        self.assertEqual([w for w, _ in self.spawned(out)], ["verifier"])
+        self.assertEqual(self.spawned(self.next(0)), self.spawned(out))  # not returned yet
+        self.answer(*self.spawned(out)[0], None, status="failed")
+        again = self.spawned(self.next(0))
+        self.assertEqual([w for w, _ in again], ["verifier"])  # still alone
+        self.verifier_answer(again[0])
+        out = self.next(0)
+        self.assertEqual(sorted({w for w, _ in self.spawned(out)}),
+                         ["code-reviewer", "security-reviewer-sensitive"])
+
     def test_a_security_must_fix_is_verified_then_corrected(self):
         self.draft_pr()
         jobs = self.panel(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
@@ -1830,13 +1890,12 @@ class ShipTest(NextCase):
 
     def test_a_security_reviewer_that_fails_beside_the_panel_is_respawned_once(self):
         self.draft_pr()
+        self.verifier_first()
         out = self.next(0)
         jobs = self.spawned(out)
         sec = next(j for j in jobs if j[0].startswith("security-reviewer"))
         self.answer(*sec, "", status="failed")
         for w, n in jobs:  # the panel's results come after the failure
-            if w == "verifier":
-                self.verifier_answer((w, n))
             if w == "code-reviewer":
                 (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
                  ).write_text(r_report("none"))
@@ -1849,12 +1908,11 @@ class ShipTest(NextCase):
 
     def test_a_security_reviewer_blocked_beside_the_panel_is_told_why(self):
         self.draft_pr()
+        self.verifier_first()
         jobs = self.spawned(self.next(0))
         sec = next(j for j in jobs if j[0].startswith("security-reviewer"))
         self.answer(*sec, "", status="blocked")
         for w, n in jobs:
-            if w == "verifier":
-                self.verifier_answer((w, n))
             if w == "code-reviewer":
                 (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
                  ).write_text(r_report("none"))
@@ -2419,6 +2477,8 @@ class LeanTest(NextCase):
         self.assertEqual(self.state()["phase6"]["passes"][0]["lane"], "standard")
         report = (self.dir / "CODE_REVIEW.md").read_text()
         self.assertIn("reviewers finished: 1/1", report)
+        self.assertIn("Latest pass: 1 — scope: the whole change, as committed on the "
+                      "branch: ", report)
 
     def test_a_solo_finding_and_the_verifier_s_items_share_one_correction(self):
         self.draft_pr()
@@ -2576,6 +2636,68 @@ class LeanTest(NextCase):
         self.assertEqual(self.sets(*jobs[0])["corrections_file"],
                          f"{self.dir}/review/security-corrections.md")
         self.assertIn("spent `pass-1`", out["BUDGET"])
+
+    def test_a_reviewer_whose_counts_disagree_with_its_reports_is_refused(self):
+        self.draft_pr()
+        out = self.next(0)
+        ver, rev = sorted(self.spawned(out), key=lambda j: j[0] != "verifier")
+        self.verifier_answer(ver)
+        self.reviewer_answer(rev, finding=True)
+        path = self.dir / "returns" / f"reviewer-{rev[1]}.json"
+        data = json.loads(path.read_text())
+        path.write_text(json.dumps({**data, "next": "CLEAN", "must_fix_open": "0"}))
+        out = self.next(0, refused_ok=True)
+        self.assertIn(f"reviewer-{rev[1]}: refused (MISMATCH)", out["RECORDED"])
+        issues = " ".join(self.state()["refused"][f"reviewer-{rev[1]}"])
+        self.assertIn("must_fix_open is 0 but CODE_REVIEW.md has 1", issues)
+        self.assertIn("next is CLEAN", issues)
+
+    def test_a_reviewer_that_fails_twice_stops(self):
+        self.draft_pr()
+        _, rev = self.solo(verifier="ALL_MET")
+        state = self.state()  # the reviewer's result: failed, not the one solo wrote
+        state["log"] = [e for e in state["log"] if (e["worker"], e["n"]) != rev]
+        self.write_state(state)
+        self.answer(*rev, None, status="failed")
+        _, jobs = self.expect("reviewer")  # the verifier's result stands
+        self.answer(*jobs[0], None, status="failed")
+        out = self.next(4)
+        self.assertIn("reviewer #", " ".join(out["REPORT"]))
+        self.assertIn("did not return ok twice running", " ".join(out["REPORT"]))
+
+    def ci_on(self, checks=None):
+        state = self.state()
+        state["settings"]["ci"] = "github"
+        self.write_state(state)
+        return [{"args": ["pr", "checks"], "stdout": json.dumps(checks or [])}]
+
+    def test_ci_that_never_settles_does_not_hold_the_correction(self):
+        self.draft_pr(extra=self.ci_on())
+        self.solo(finding=True)
+        state = self.state()  # CI watched to its end: unavailable (no checks reported)
+        state["phase6"]["ci"] = {"sha": state["phase6"]["verified_sha"],
+                                 "status": "unavailable", "seq": state["events"]}
+        self.write_state(state)
+        _, jobs = self.expect("coder")
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/review/pass-1/corrections.md")
+        self.assertNotIn("also", self.state()["phase6"]["corrections"][-1])
+
+    def test_red_ci_the_code_can_t_fix_stops_before_the_correction(self):
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.draft_pr(extra=self.ci_on(checks))
+        self.solo(finding=True)
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        (self.dir / "triage" / "ci-1.md").write_text("# Triage\nThe runner ran out of disk.\n")
+        self.answer(*jobs[0], "INFRA", blockers="0", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
+        out = self.next(4)
+        self.assertIn("classed it INFRA", " ".join(out["REPORT"]))
+        self.assertEqual(self.state()["phase6"]["corrections"], [])  # no round spent
 
     def test_red_ci_on_the_draft_joins_the_review_s_correction(self):
         state = self.state()
@@ -3891,7 +4013,7 @@ class ReviewEffortTest(NextCase):
     def test_the_plan_s_xhigh_effort_reaches_every_code_reviewer_spawn(self):
         self.to_panel()
         out, jobs = self.reviewers()  # the security reviewer spawns at its own effort
-        self.assertEqual(out["EFFORT"], [""] + ["xhigh"] * 3 + [""])
+        self.assertEqual(out["EFFORT"], ["xhigh"] * 3 + [""])
         self.assertIn("passing its EFFORT as the Agent tool's `effort`", out["ACTION"])
         self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "xhigh")
         self.assertIn("review pass 1: the panel runs at effort xhigh",
@@ -3949,7 +4071,7 @@ class ReviewEffortTest(NextCase):
         self.plan_text = PLAN
         self.to_panel()
         out, jobs = self.reviewers()
-        self.assertEqual(out["EFFORT"], [""] + ["high"] * 3 + [""])
+        self.assertEqual(out["EFFORT"], ["high"] * 3 + [""])
         self.assertEqual(self.state()["phase6"]["passes"][0]["effort"], "high")
         self.assertEqual({self.sets(*j)["review_effort"] for j in jobs}, {"high"})
 
@@ -4200,7 +4322,10 @@ class OverrideTest(OverrideCase):
         _, command = self.change_settings()  # not the fixer's change
         self.report(n, changed="none")
         self.answer("fixer", n, "FIXED", fix_report="x", changed="0")
-        out = self.next(4)  # no fix open: back at the stop
+        # No fix open: back at the step that stopped, the gate, which runs
+        # again since its command changed (the red run was another gate's).
+        out = self.next(0)
+        self.assertIn("quality-gate", out["ACTION"])
         self.assertEqual(out["RECORDED"], [f"fixer-{n}: ok FIXED"])
         self.assertEqual(self.state()["settings"]["gate"][0]["command"], command)
 

@@ -23,7 +23,7 @@ from .output import CANNOT_RUN, Fail
 
 # Workers that run alone and never change a repo file. The code reviewers and
 # the security reviewers run side by side, so a change could not be pinned on
-# one; the verifier and cleanup run the repo's tests and tools.
+# one; the coder, the quality gate and the verifier run the repo's tests and tools.
 # Lookups are left out: the orchestrator sends one to answer the user at a gate,
 # while the user may be editing the code.
 GUARDED = ("planner", "plan-critic", "review-judge", "triager")
