@@ -5,7 +5,7 @@ nothing.
 
 Run by the Phase 5 verifier on every pass (agents/verifier.md). Read-only: it
 never stages, edits or restores anything. Each
-finding is a claim for the verifier to judge against SPEC.md — a deleted test
+finding is a claim for the verifier to judge against PLAN.md — a deleted test
 can be right when the spec removes that behavior — except ACCEPTANCE_*, which
 is never justified.
 
@@ -58,7 +58,7 @@ Output:
 
 Exit codes:
     0  clean — no findings
-    1  findings — each needs a justification tied to SPEC.md, or a correction
+    1  findings — each needs a justification tied to PLAN.md, or a correction
     2  usage error, not a git worktree, the base ref does not resolve, or no
        `files/` directory under --acceptance (an empty one is fine: every
        condition was not automatable)

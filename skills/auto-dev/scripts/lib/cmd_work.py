@@ -17,12 +17,12 @@ brief lookup --out <dir> --set worktree=<repo> --set question='<question>'
     (none when it wrote no result file) (--set
     overrides), and job N is marked replaced, so `next` never re-spawns it
     too. Without --retry it is `none`. It refuses when a slot the worker needs has no value.
-    A brief for a worker that judges against SPEC.md and may report it wrong
+    A brief for a worker that judges against PLAN.md and may report it wrong
     (the verifier, the review judge, the security reviewers, the triager)
-    keeps SPEC.md's digest on its state entry (a --retry keeps the first
-    brief's): `record` refuses a return that changed SPEC.md.
-    A brief for a worker that never changes the repo (define, the define and
-    plan reviewers, the planner, the review judge, the triager)
+    keeps PLAN.md's digest on its state entry (a --retry keeps the first
+    brief's): `record` refuses a return that changed PLAN.md.
+    A brief for a worker that never changes the repo (the planner, the plan
+    critic, the review judge, the triager)
     keeps the worktree's HEAD and the content of every file `git status` lists
     outside the artifact dir on its state entry, for `record`. A retry takes
     its own, and so does a brief `next` sends out again.
@@ -63,12 +63,13 @@ record <worker> <n>
     adds lines to it (before the build is installed, a sealed copy with no
     files/<path>.base gets one first: the file at HEAD, when it is there). A
     required-changes file that reaches the coder unedited (the verifier's, the
-    judge's, the triager's) must not copy SPEC.md's wording (`spec-overlap`),
-    nor may the planner's IMPLEMENTATION.md, the coder's other brief from a
-    SPEC.md reader, nor the new text of the plan reviewer's FIX blocks, which
-    `next` applies to IMPLEMENTATION.md. Every other file the return says the
-    worker wrote must pass check-artifact: SPEC.md after Define, a reviewer's
-    fix file, SPEC_EVAL.md,
+    judge's, the triager's) must not copy the wording of PLAN.md's conditions
+    (`spec-overlap`), nor may the coder's other brief from a PLAN.md reader.
+    The planner's result must agree with PLAN.md (its size check and its
+    `Risk:` tier, which is high when it has Security/Compliance criteria), and
+    the plan critic's with its review file (plan-review/<n>.md: the verdict,
+    the blocker count, the tier). Every other file the return says the
+    worker wrote must pass check-artifact: SPEC_EVAL.md,
     the lint reports, a code reviewer's report or votes, CODE_REVIEW.md and
     SECURITY_REVIEW.md. Each must exist, except a lint report, which only
     cleanup's GREEN requires (every report passing).
@@ -76,18 +77,18 @@ record <worker> <n>
     `spec_problems` key): only the verifier, the review judge in consolidate
     mode, the security reviewers and the triager in human mode may report one;
     the count must match the file's `- condition <id>: <why>` and `- missing:
-    <why>` lines, and each id must be a condition or criterion SPEC.md has.
-    Such a worker's return is refused, whatever its status, when SPEC.md
+    <why>` lines, and each id must be a condition or criterion PLAN.md has.
+    Such a worker's return is refused, whatever its status, when PLAN.md
     changed since its brief. The coder's deviations from the plan
     (deviations/coder-<n>.md, counted by `deviations`): the count must match
     the file's list lines.
     A fixer's return is refused when its status is not ok but its `next` is
     FIXED; for FIXED, its report names every path it changed, the run's
     settings in state.json as `.auto-dev/state.json`.
-    On a match it updates state.json (for an ok return of the Define agent, the
-    size check; after Define or its reviewer, a Security/Compliance criterion in
-    SPEC.md turns a run that FITS high-risk with the post-plan gate on; a note
-    of what came back, and the result in the log `autodev.py next` reads) and
+    On a match it updates state.json (for the planner's write-mode return, the
+    size check; a `risk: high` from the planner or the plan critic turns a run
+    that FITS high-risk with the post-plan gate on, and nothing turns it off; a
+    note of what came back, and the result in the log `autodev.py next` reads) and
     prints `RECORDED` with the `next` token.
     Exit: 0 recorded; 1 the return is missing or malformed (`MISSING`,
     `MALFORMED`) or disagrees with the artifacts (`MISMATCH`, both sides
@@ -99,14 +100,16 @@ record <worker> <n>
 
 check-artifact <file>
     Checks one artifact against its template before a worker returns it:
-    SPEC.md, IMPLEMENTATION.md (also refused when it copies the run's SPEC.md,
-    as `spec-overlap` checks, or its `Review effort:` line, when it has one, is
-    not high or xhigh), acceptance/MANIFEST.md, SPEC_EVAL.md,
+    PLAN.md (its headings in order, each condition's Example, Edge and Verify
+    by lines, a `Risk:` line of standard or high, and a `Review effort:` line
+    of high or xhigh; an OVERSIZED plan may stop at its size check), a plan
+    review (plan-review/<n>.md: its verdict, tier and blockers, each with
+    Evidence and Change lines, at most 7), acceptance/MANIFEST.md, SPEC_EVAL.md,
     CODE_REVIEW.md, SECURITY_REVIEW.md, review/pass-<n>/R<k>.md and
     VOTES-R<k>.md, lint/<CHECK>.md, a required-changes file (corrections.md,
-    triage/*.md; also refused when it copies the run's SPEC.md, as
-    `spec-overlap` checks), a FIX file (fixes/*.md), a spec-problems file
-    (spec-problems/<worker>-<n>.md, held to the run's SPEC.md), the coder's
+    triage/*.md; also refused when it copies the run's PLAN.md, as
+    `spec-overlap` checks), a spec-problems file
+    (spec-problems/<worker>-<n>.md, held to the run's PLAN.md), the coder's
     deviations (deviations/coder-<n>.md), or a returns/*.json file.
     Exit: 0 it follows the template; 1 problems (each printed).
 
@@ -133,7 +136,7 @@ from . import (
     tree_guard,
 )
 from . import state as st
-from .cmd_checks import FIX_RE, overlaps, rederive_risk
+from .cmd_checks import overlaps
 from .cmd_review import pending_rows
 from .output import CANNOT_RUN, FAILED, Fail, emit
 
@@ -142,12 +145,13 @@ SKILL_DIR = SCRIPTS.parent
 BINDING_RULES = ("the repo's CLAUDE.md or AGENTS.md, CONTRIBUTING and coding-guideline "
                  "docs, and the security directives named in {artifact_dir}/profile.md; "
                  "they override finishing the task")
-IMPLEMENTATION_HEADINGS = ("## Files", "## Design", "## Data flow", "## Build sequence",
-                           "## Test plan", "## Migrations / config")
+# PLAN.md's headings, in order. An OVERSIZED plan stops at its size check.
+PLAN_HEADINGS = ("## Context", "## Conditions", "## Assumptions", "## Size check")
+STEP_HEADINGS = ("## Files", "## Design", "## Build sequence", "## Test plan",
+                 "## Migrations / config")
 VERDICTS = {"met", "partial", "unmet", "manual"}
-FIX_PREFIX = {"define-reviewer": "define", "plan-reviewer": "plan"}
-# The workers that judge against SPEC.md and may report a criterion wrong or
-# missing (spec-problems/<worker>-<n>.md); they never edit SPEC.md.
+# The workers that judge against PLAN.md and may report a criterion wrong or
+# missing (spec-problems/<worker>-<n>.md); they never edit PLAN.md.
 SPEC_JUDGES = ("verifier", "review-judge", "security-reviewer",
                "security-reviewer-sensitive", "triager")
 SPEC_PROBLEM_RE = re.compile(r"^\s*[-*]\s*(?:condition\s+(S?\d+)|missing)\s*:\s*(.*)$",
@@ -360,7 +364,7 @@ def auto_values(worker, n, state, ad, mode):
         "checks_file": str(ad / "triage" / f"{mode or 'triage'}-{n}-checks.md"),
         "answer_file": str(ad / "lookups" / f"{n}.md"),
         "blocked_file": str(ad / "blocked" / f"coder-{n}.md"),
-        "fix_file": str(ad / "fixes" / f"{FIX_PREFIX.get(worker, 'plan')}-{n}.md"),
+        "review_file": str(ad / "plan-review" / f"{n}.md"),
         "deviations_file": str(ad / "deviations" / f"coder-{n}.md"),
         "spec_problem_file": str(ad / "spec-problems" / f"{worker}-{n}.md"),
         "fix_report": str(ad / overrides.FIX_DIR / f"fixer-{n}.md"),
@@ -519,7 +523,7 @@ def write_brief(state, where, worker, mode, given, retry=None):
                    f"{', '.join(unknown)}", FAILED, "REFUSED")
     directory.mkdir(parents=True, exist_ok=True)
     if ad is not None:
-        for sub in ("returns", "fixes", "triage", "lookups", "blocked", "deviations",
+        for sub in ("returns", "plan-review", "triage", "lookups", "blocked", "deviations",
                     "spec-problems", overrides.FIX_DIR):
             (ad / sub).mkdir(exist_ok=True)
     path = directory / f"{worker}-{n}.md"
@@ -546,8 +550,8 @@ def write_brief(state, where, worker, mode, given, retry=None):
 
 
 def watch_spec(state, ad, worker, retry, entry):
-    """A worker that judges against SPEC.md is held to it as it was when it was
-    briefed: keep SPEC.md's digest on its brief entry. A retry keeps the first
+    """A worker that judges against PLAN.md is held to it as it was when it was
+    briefed: keep PLAN.md's digest on its brief entry. A retry keeps the first
     brief's copies, so the base never moves."""
     if retry is not None:
         old = next((b for b in state.get("briefs", [])
@@ -557,7 +561,7 @@ def watch_spec(state, ad, worker, retry, entry):
                 entry[key] = old[key]
         return
     if worker in SPEC_JUDGES:
-        entry["spec"] = digest(ad / "SPEC.md")
+        entry["spec"] = digest(ad / "PLAN.md")
 
 
 def digest(path):
@@ -569,21 +573,21 @@ def digest(path):
 
 def fresh_tree(state, issued):
     """A brief `next` sends out again (no result came back) is held to the tree
-    and SPEC.md as they are now: what changed while no worker was out is not
+    and PLAN.md as they are now: what changed while no worker was out is not
     this spawn's."""
     if issued.get("tree"):
         issued["tree"] = tree_guard.snapshot(state["worktree"], state["artifact_dir"])
     if issued.get("spec"):
-        issued["spec"] = digest(Path(state["artifact_dir"]) / "SPEC.md")
+        issued["spec"] = digest(Path(state["artifact_dir"]) / "PLAN.md")
 
 
 def refresh_spec(state, ad):
-    """After a fix at a stop changed SPEC.md: every brief not yet recorded is
-    held to SPEC.md as it is now, not as it was before the fix."""
+    """After a fix at a stop changed PLAN.md: every brief not yet recorded is
+    held to PLAN.md as it is now, not as it was before the fix."""
     done = {(e["worker"], e["n"]) for e in state.get("log") or []}
     for b in state.get("briefs") or []:
         if b.get("spec") and (b["worker"], b["n"]) not in done:
-            b["spec"] = digest(Path(ad) / "SPEC.md")
+            b["spec"] = digest(Path(ad) / "PLAN.md")
 
 
 # ---------------------------------------------------------------- record
@@ -643,10 +647,6 @@ def as_int(data, key):
                       [f"`{key}` is {data.get(key)!r}, not a number (write 0 for none)"]) from None
 
 
-def is_yes(value):
-    return str(value).strip().lower() in ("yes", "true")
-
-
 def run_autodev(*args):
     out = subprocess.run([sys.executable, str(SCRIPTS / "autodev.py"), *args],
                          capture_output=True, text=True, check=False)
@@ -664,9 +664,9 @@ def derive(worker, data, ad, state, n):
                    if b["worker"] == worker and b["n"] == n), {})
     issues = []
     if worker in SPEC_JUDGES and issued.get("spec") and \
-            digest(ad / "SPEC.md") != issued["spec"]:
-        # Whatever the status: only the user changes SPEC.md (a fix at a stop).
-        issues.append("SPEC.md changed since your brief: never edit it. Put it back as "
+            digest(ad / "PLAN.md") != issued["spec"]:
+        # Whatever the status: only the user changes PLAN.md (a fix at a stop).
+        issues.append("PLAN.md changed since your brief: never edit it. Put it back as "
                       "it was, and report a criterion you find wrong or missing in "
                       "spec_problems instead")
     if worker == "fixer":
@@ -781,7 +781,7 @@ def spec_problem_items(path):
 
 def spec_problem_lines(path, spec):
     """Problems with a spec-problems file: no item, an item with no why, or a
-    condition the run's SPEC.md does not have."""
+    condition the run's PLAN.md does not have."""
     items = spec_problem_items(path)
     if not items:
         return ["no `- condition <id>: <why>` or `- missing: <why>` line"]
@@ -794,7 +794,7 @@ def spec_problem_lines(path, spec):
         if not why:
             out.append(f"{cid}: say what is wrong and what shows it")
         elif ids is not None and cid != "missing" and cid not in ids:
-            out.append(f"condition {cid} is not in SPEC.md (an added criterion is "
+            out.append(f"condition {cid} is not in PLAN.md (an added criterion is "
                        "`- missing: <why>`)")
     return out
 
@@ -811,7 +811,7 @@ def spec_problem_issues(worker, mode, data, ad, n):
     path = ad / "spec-problems" / f"{worker}-{n}.md"
     if not path.is_file():
         return [f"spec_problems is {count} but {path} does not exist"]
-    issues = [f"{path.name}: {p}" for p in spec_problem_lines(path, ad / "SPEC.md")]
+    issues = [f"{path.name}: {p}" for p in spec_problem_lines(path, ad / "PLAN.md")]
     found = len(spec_problem_items(path))
     if found and found != count:
         issues.append(f"spec_problems is {count} but {path.name} lists {found}")
@@ -850,12 +850,8 @@ def written_files(worker, data, ad, state, n):
     mode, sets = issued.get("mode"), issued.get("sets", {})
     review = ad / "review" / f"pass-{state.get('phase6', {}).get('review_pass') or 1}"
     files = []
-    if worker == "define":  # it has no shell to run check-artifact itself
-        files.append((ad / "SPEC.md", True))
-    elif worker in ("define-reviewer", "plan-reviewer"):
-        fix = str(data.get("fix_file", "none")).strip()
-        if fix not in ("none", ""):
-            files.append((Path(fix), False))  # result_issues reports a missing one
+    if worker == "plan-critic":  # it has no shell to run check-artifact itself
+        files.append((ad / "plan-review" / f"{n}.md", True))
     elif worker == "verifier" and nxt not in ("INSTALL_CONFLICT", "MUTATION_LEFT_CHANGES"):
         files.append((ad / "SPEC_EVAL.md", True))
     elif worker == "cleanup":
@@ -873,9 +869,7 @@ def written_files(worker, data, ad, state, n):
 
 
 def artifact_issues(worker, data, ad, state, n):
-    """Each file the worker wrote must follow its template; the plan reviewer's
-    FIX text, which goes into the plan the coder is briefed with, must not copy
-    SPEC.md's wording (the planner's own plan is checked by check_file)."""
+    """Each file the worker wrote must follow its template."""
     issues = []
     for path, required in written_files(worker, data, ad, state, n):
         if not path.exists():
@@ -883,41 +877,21 @@ def artifact_issues(worker, data, ad, state, n):
                 issues.append(f"{path} does not exist")
             continue
         issues += [f"{path.name}: {p}" for p in check_file(path)]
-    fix = str(data.get("fix_file", "none")).strip()
-    if worker == "plan-reviewer" and fix not in ("none", "") and Path(fix).exists():
-        # `next` applies these blocks to IMPLEMENTATION.md with no planner in
-        # between, so their new text is held to the plan's rule. Old text was
-        # copied from the plan, which already passed.
-        try:
-            new = "\n".join(b[2] for b in FIX_RE.findall(art.read(Path(fix))))
-            issues += [f"{Path(fix).name}'s new text copies SPEC.md's wording ({hit}): "
-                       "the coder never sees SPEC.md, so say what the code must do in "
-                       "the plan's own words"
-                       for hit in overlaps(Path(fix), ad / "SPEC.md", text=new)]
-        except art.ArtifactError as exc:
-            issues.append(f"{Path(fix).name}: {exc}")
     return issues
 
 
 def result_issues(worker, data, ad, state, n):
     nxt = data.get("next")
     issues = []
-    if worker == "define":
-        if nxt in ("FITS", "OVERSIZED"):
-            conds = art.spec_conditions(ad / "SPEC.md")
-            has_security = any(c["id"].startswith("S") for c in conds)
-            if has_security and not is_yes(data.get("high_risk")):
-                issues.append("SPEC.md has Security/Compliance criteria but high_risk is not yes")
-    elif worker in ("define-reviewer", "plan-reviewer"):
-        blockers = as_int(data, "blockers")
-        if (nxt == "CLEAN") != (blockers == 0):
-            issues.append(f"next is {nxt} but blockers is {blockers}")
-        fix = str(data.get("fix_file", "none")).strip()
-        if fix not in ("none", "") and not Path(fix).exists():
-            issues.append(f"fix_file {fix} does not exist")
-    elif worker == "planner" and nxt in ("WRITTEN", "REVISED", "PLAN_REVISED",
-                                         "UPDATE_OLD_TEST"):
-        issues += [f"IMPLEMENTATION.md: {p}" for p in check_file(ad / "IMPLEMENTATION.md")]
+    if worker == "planner" and nxt in ("FITS", "OVERSIZED", "REVISED", "PLAN_REVISED",
+                                       "UPDATE_OLD_TEST"):
+        problems = check_file(ad / "PLAN.md")
+        issues += [f"PLAN.md: {p}" for p in problems]
+        if not problems:
+            issues += plan_result_issues(data, ad / "PLAN.md", nxt)
+    elif worker == "plan-critic":
+        issues += critic_result_issues(data, ad / "plan-review" / f"{n}.md", ad / "PLAN.md",
+                                       state)
     elif worker == "acceptance-tester" and nxt in ("SEALED", "REPAIRED", "FOLDED"):
         # Gaps are not a disagreement: `next` re-spawns the tester for them.
         art.manifest(ad / "acceptance" / "MANIFEST.md")
@@ -949,6 +923,62 @@ def result_issues(worker, data, ad, state, n):
     return issues
 
 
+def plan_result_issues(data, plan, nxt):
+    """The planner's result agrees with PLAN.md: its size check, its tier."""
+    text = art.read(plan)
+    issues = []
+    tier = art.risk(text)
+    if str(data.get("risk", "")).strip().lower() != tier:
+        issues.append(f"risk is {data.get('risk')} but PLAN.md's `Risk:` line says {tier}")
+    said = plan_size(text)
+    if nxt in ("FITS", "OVERSIZED"):
+        if said != nxt:
+            issues.append(f"next is {nxt} but PLAN.md's size check says {said or 'nothing'}")
+    elif said == "OVERSIZED":
+        issues.append("a revision keeps the plan FITS: its size check says OVERSIZED. Set "
+                      "it back to FITS and put the size concern in Assumptions")
+    if tier != "high" and any(c["id"].startswith("S") for c in art.spec_conditions(plan)):
+        issues.append("PLAN.md has Security/Compliance criteria but its `Risk:` is not high")
+    return issues
+
+
+def critic_result_issues(data, path, plan, state):
+    """The critic's result agrees with its review file, and doesn't lower the
+    tier: the plan's or the run's high risk stays high."""
+    if not path.exists():
+        return []  # written_files reports it
+    review = art.plan_review(path)
+    issues = []
+    if data.get("next") != review["verdict"]:
+        issues.append(f"next is {data.get('next')} but the review's verdict is "
+                      f"{review['verdict'] or 'missing'}")
+    if as_int(data, "blockers") != len(review["blockers"]):
+        issues.append(f"blockers is {data.get('blockers')} but the review lists "
+                      f"{len(review['blockers'])}")
+    if str(data.get("risk", "")).strip().lower() != review["risk"]:
+        issues.append(f"risk is {data.get('risk')} but the review's `Risk:` says "
+                      f"{review['risk']}")
+    try:
+        planned = art.risk(art.read(plan))
+    except art.ArtifactError:
+        planned = None
+    if review["risk"] == "standard" and (planned == "high" or state.get("high_risk")):
+        issues.append("the review's `Risk:` is standard but the run is high-risk: the "
+                      "critic can't lower the tier; write `Risk: high`")
+    return issues
+
+
+def raise_risk(state, why):
+    """Turn high risk and the post-plan gate on; never off. Notes why when it
+    changes anything."""
+    settings = state.setdefault("settings", {})
+    if state.get("high_risk") and settings.get("post_plan_gate"):
+        return
+    state["high_risk"] = True
+    settings["post_plan_gate"] = True
+    st.add_note(state, f"high risk, post-plan gate on: {why}")
+
+
 def settings_changed(state, issued):
     """Whether the fixer of brief `issued` changed the run's settings in
     state.json since its brief, while its fix is still open (a new answer
@@ -967,7 +997,7 @@ FIX_SECTIONS = {"FIXED": "Changed", "NEEDS_CONSENT": "Proposal", "CANNOT_FIX": "
 
 def fixer_issues(nxt, ad, state, n):
     """A fixer's report must say what it did: for FIXED, name every path it
-    changed (repo files, and the run's SPEC.md, plan or checks as
+    changed (repo files, and the run's PLAN.md, plan or checks as
     `.auto-dev/<path>`; an installed check file it edited is resealed here and
     its seal files need no naming); for NEEDS_CONSENT its proposal, for
     CANNOT_FIX why. Whatever a fixer changed without fixing is put back by
@@ -1032,7 +1062,7 @@ def fixer_issues(nxt, ad, state, n):
 def amended_issues(state, ad, issued, on):
     """After `amend-checks`: each test the fixer dropped is gone from its
     file, and no condition that had a check before the fix is left with none
-    and no Not automatable row while SPEC.md still has it."""
+    and no Not automatable row while PLAN.md still has it."""
     issues = []
     fix = next((o for o in overrides.fixes(state) if o.get("status") == "open"), {})
     before = overrides.backup_dir(ad, issued.get("artifacts_n", issued["n"])) / \
@@ -1041,7 +1071,7 @@ def amended_issues(state, ad, issued, on):
         return issues
     try:
         rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
-        ids = {c["id"] for c in art.spec_conditions(ad / "SPEC.md")}
+        ids = {c["id"] for c in art.spec_conditions(ad / "PLAN.md")}
         had = {row_id(r["#"]) for r in art.manifest(before)[0]} if before.is_file() else set()
     except art.ArtifactError as exc:
         return [str(exc)]
@@ -1060,7 +1090,7 @@ def amended_issues(state, ad, issued, on):
     covered = {row_id(r["#"]) for r in rows} | {row_id(r.get("#", "")) for r in na_rows}
     for cid in sorted((had & ids) - covered):
         issues.append(f"condition {cid} has no check left and no Not automatable row: "
-                      "remove it from SPEC.md if the instruction says so, add a row with "
+                      "remove it from PLAN.md if the instruction says so, add a row with "
                       "`amend-checks --not-automatable`, or return NEEDS_CONSENT")
     return issues
 
@@ -1164,9 +1194,9 @@ def coder_bound(path, ad, what):
     if not path.exists():
         return [f"{what}: {path} does not exist"]
     problems = [f"{what}: {p}" for p in check_corrections(art.read(path))]
-    problems += [f"{what} copies SPEC.md's wording ({hit}): say what the code must do "
+    problems += [f"{what} copies PLAN.md's wording ({hit}): say what the code must do "
                  "and where, in your own words"
-                 for hit in overlaps(path, ad / "SPEC.md", quoted=False)]
+                 for hit in overlaps(path, ad / "PLAN.md", quoted=False)]
     return problems
 
 
@@ -1384,22 +1414,20 @@ def record_ok(state, ad, worker, n, data):
     """Log an accepted return, and what it settles in state."""
     state.get("refused", {}).pop(job(worker, n), None)
     ok = data.get("status") == "ok"
-    if ok and worker == "define" and data.get("next") in ("FITS", "OVERSIZED"):
+    if ok and worker == "planner" and data.get("next") in ("FITS", "OVERSIZED"):
         state["size"] = data["next"]
-        state["high_risk"] = is_yes(data.get("high_risk"))
+        if state.get("high_risk") is None:
+            state["high_risk"] = False
         if data["next"] == "OVERSIZED":
             st.set_phase(state, 2, "stopped", "OVERSIZED")
             for number in (3, 4, 5, 6):
                 st.set_phase(state, number, "n/a", "")
-        elif state["high_risk"]:
-            state["settings"]["post_plan_gate"] = True
-    if ok and worker in ("define", "define-reviewer"):
-        try:
-            if rederive_risk(state, ad / "SPEC.md"):
-                st.add_note(state, "SPEC.md has a Security/Compliance criterion: "
-                            "high risk, post-plan gate on")
-        except art.ArtifactError:
-            pass  # the reviewer's verdict stands; SPEC.md is checked when it is used
+    # The tier only goes up: the planner proposes it, the critic confirms or
+    # raises it, and `next` re-checks it from the diff after the build.
+    if ok and worker in ("planner", "plan-critic") and state.get("size") == "FITS" and \
+            str(data.get("risk", "")).strip().lower() == "high":
+        raise_risk(state, f"the {'plan critic' if worker == 'plan-critic' else 'plan'} "
+                   "says the risk is high")
     issued = next((b for b in state.get("briefs", [])
                    if b["worker"] == worker and b["n"] == n), {})
     log = state.setdefault("log", [])
@@ -1433,28 +1461,10 @@ def check_file(path):
         if parent == "deviations":
             return [] if deviation_lines(path) else [
                 "no `- step <n>: <what you built instead, and why>` line"]
-        if name == "SPEC.md":
-            return check_spec(path)
-        if name == "IMPLEMENTATION.md":
-            heads = [ln.strip() for ln in text.splitlines() if ln.startswith("## ")]
-            want = list(IMPLEMENTATION_HEADINGS)
-            problems = [] if [h for h in heads if h in want] == want else [
-                f"headings must be, in order: {', '.join(want)} (found: {', '.join(heads)})"]
-            effort = art.review_effort(text)  # no line (a plan before 4.3): high
-            if effort is not None and effort not in art.REVIEW_EFFORTS:
-                problems.append(f"`Review effort:` must be {' or '.join(art.REVIEW_EFFORTS)}"
-                                f" (found: {effort or 'nothing'})")
-            # The coder never sees SPEC.md: a plan that echoes it lets a test name
-            # echo it too. In a run (state.json beside it), a missing SPEC.md is
-            # reported, not skipped.
-            spec = run_spec(path)
-            if spec is None and (path.parent / "state.json").is_file():
-                spec = path.parent / "SPEC.md"
-            if spec is not None:
-                problems += [f"copies SPEC.md's wording ({hit}): the coder never sees "
-                             "SPEC.md, so say what the code must do in your own words"
-                             for hit in overlaps(path, spec)]
-            return problems
+        if name == "PLAN.md":
+            return check_plan(path, text)
+        if parent == "plan-review":
+            return art.plan_review(path)["problems"]
         if name == "MANIFEST.md":
             rows, _ = art.manifest(path)
             return [f"row {r['#']}: Kind `{r['Kind']}` is not fail-to-pass/pass-to-pass"
@@ -1490,17 +1500,10 @@ def check_file(path):
             problems = check_corrections(text)
             spec = run_spec(path)
             if spec is not None:
-                problems += [f"copies SPEC.md's wording ({hit}): say what the code must "
+                problems += [f"copies PLAN.md's wording ({hit}): say what the code must "
                              "do and where, in your own words"
                              for hit in overlaps(path, spec, quoted=False)]
             return problems
-        if parent == "fixes":
-            blocks = FIX_RE.findall(text)
-            declared = len(re.findall(r"^FIX\s+\S+", text, re.MULTILINE))
-            if not blocks:
-                return ["no FIX block"]
-            return [] if declared == len(blocks) else [
-                f"{declared} FIX headers but only {len(blocks)} well-formed blocks"]
         if parent == "returns" and name.endswith(".json"):
             data = json.loads(text)
             return return_problems(data.get("worker", ""), data)
@@ -1512,14 +1515,44 @@ def check_file(path):
 
 
 def run_spec(path):
-    """The run's SPEC.md for a file under .auto-dev/ (up to two levels down)."""
+    """The run's PLAN.md for a file under .auto-dev/ (up to two levels down)."""
     for parent in list(Path(path).resolve().parents)[:3]:
-        if (parent / "SPEC.md").is_file():
-            return parent / "SPEC.md"
+        if (parent / "PLAN.md").is_file():
+            return parent / "PLAN.md"
     return None
 
 
-def check_spec(path):
+def plan_size(text):
+    """The first word of PLAN.md's Size check, uppercased (FITS, OVERSIZED), or ""."""
+    size = (art.find_section(text, "Size check") or "").split()
+    return size[0].strip("*_`.,:;—-").upper() if size else ""
+
+
+def plan_has_steps(text):
+    """Whether PLAN.md has every step heading (an OVERSIZED plan may have none)."""
+    heads = {ln.strip() for ln in text.splitlines() if ln.startswith("## ")}
+    return all(h in heads for h in STEP_HEADINGS)
+
+
+def check_plan(path, text):
+    """PLAN.md: its headings in order (an OVERSIZED plan may stop at its size
+    check), each condition's lines, its `Risk:` and `Review effort:` lines."""
+    heads = [ln.strip() for ln in text.splitlines() if ln.startswith("## ")]
+    oversized = plan_size(text) == "OVERSIZED"
+    want = list(PLAN_HEADINGS) + ([] if oversized else list(STEP_HEADINGS))
+    problems = [] if [h for h in heads if h in want] == want else [
+        f"headings must be, in order: {', '.join(want)} (found: {', '.join(heads)})"]
+    tier = art.risk(text)
+    if tier not in art.RISKS:
+        problems.append(f"`Risk:` must be {' or '.join(art.RISKS)} (found: {tier or 'nothing'})")
+    effort = art.review_effort(text)
+    if not oversized and effort not in art.REVIEW_EFFORTS:
+        problems.append(f"`Review effort:` must be {' or '.join(art.REVIEW_EFFORTS)}"
+                        f" (found: {effort or 'nothing'})")
+    return problems + check_conditions(path)
+
+
+def check_conditions(path):
     problems = []
     for c in art.spec_conditions(path):
         needed = ("example", "verify") if c["id"].startswith("S") else ("example", "edge", "verify")

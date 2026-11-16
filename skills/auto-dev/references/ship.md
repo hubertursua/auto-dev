@@ -31,11 +31,11 @@ see in the Ship stage, in order:
    acceptance check is wrong goes to the `acceptance-tester` in repair mode,
    never the coder, on the same round; it repairs the check, or answers
    `STANDS` when it finds the check right, which stops the run and asks the
-   user (#22).
+   user (#21).
    A criterion the judge (for the panel) or the security reviewer finds wrong
-   or missing in SPEC.md (`spec-problems/<worker>-<n>.md`) stops the run once
+   or missing in PLAN.md (`spec-problems/<worker>-<n>.md`) stops the run once
    the judge has consolidated the pass and checked the security findings,
-   before any correction (#21): no worker changes the
+   before any correction (#20): no worker changes the
    spec, the user decides (`references/build.md`, step 4).
    Once the reviews settle, `next` asks you to run `pr publish` again: the
    description gets the reviews.
@@ -60,10 +60,10 @@ see in the Ship stage, in order:
    a comment saying a held-out check is wrong goes to the acceptance tester's
    repair mode (the triager writes it to `triage/human-<n>-checks.md`), and a
    `STANDS` stops the run as above. When both come back, the tester goes
-   first, on one round. A comment that says the spec itself is wrong is a
+   first, on one round. A comment that says the plan's conditions are wrong is a
    claim: the triager lists it, in its own words and naming the comment's id,
    in `spec-problems/triager-<n>.md`, and the run stops for the user before
-   any correction (#21). CI mode never reports one.
+   any correction (#20). CI mode never reports one.
 6. CI on the base branch, Jira Done, the final report, the worktree question.
 
 ## 3. Commit
@@ -85,7 +85,7 @@ If the push is rejected, tell the user what git printed and stop; don't run the
 ## 5. The PR body
 
 `next` names `pr-write.md`: the sections of the generated `pr-body.md` that
-are yours to write, after the sources they draw on, quoted: `SPEC.md`'s
+are yours to write, after the sources they draw on, quoted: `PLAN.md`'s
 Context and Assumptions, the task, and the description's checked requirements,
 Quality gate and Review. Edit `pr-write.md` below its line `<!-- auto-dev: the
 sections you write start here; keep this line -->`, never `pr-body.md`, and
@@ -99,12 +99,12 @@ own PR template the script couldn't fill, or whose checklist is yours to tick.
 Replace each with plain sentences for a developer who has never heard of
 auto-dev, and keep every `## ` heading as it is:
 
-- **Summary:** what changed and why, 2–4 sentences, from `SPEC.md`'s Context.
-- **Assumptions:** the open assumptions from `SPEC.md`'s Assumptions section a
+- **Summary:** what changed and why, 2–4 sentences, from `PLAN.md`'s Context.
+- **Assumptions:** the open assumptions from `PLAN.md`'s Assumptions section a
   reviewer should check, one bullet each, or `None.`
-- **A template section:** answer what its WRITE line asks, from `SPEC.md` or
+- **A template section:** answer what its WRITE line asks, from `PLAN.md` or
   the task (`autodev.py show`). If neither says, write `N/A`. Never read the code to answer it.
-- **A template checklist:** tick a box (`- [x]`) when the sources, `SPEC.md`
+- **A template checklist:** tick a box (`- [x]`) when the sources, `PLAN.md`
   or the task show it is true, and leave it unticked when they don't, or
   when only a person can confirm it (a manual test, a sign-off).
   Never read the code to decide. Add no note saying why: the code and the rest
@@ -203,16 +203,16 @@ Every stop is exit 4 with its reason in `REPORT`
 (`references/tables.md`, _Stop conditions_), and most ask how to go on
 (`SKILL.md`, _A stop_). The ones that need care:
 
-- **CI red at the main gate (#18):** never merge over it; name each red check.
-- **The budget ran out after the commit (#12):** tell the user each open
+- **CI red at the main gate (#17):** never merge over it; name each red check.
+- **The budget ran out after the commit (#11):** tell the user each open
   finding or red check the `REPORT` names, and that they can go on with more
   rounds if they say how many (`references/tables.md`, _The iteration
   budget_).
-- **Someone pushed to the PR branch (#17):** tell the user what the `REPORT`
+- **Someone pushed to the PR branch (#16):** tell the user what the `REPORT`
   says: to ship those commits, they bring them into the worktree with the
   `git merge --ff-only` command it names and say `auto-dev continue`. `next`
   then re-checks them (quality gate, verifier, a review pass on what they
   changed), `commit` verifies the new head, or commits the re-check's edits on
   top, and the main gate is asked again.
-- **GitHub refused or queued the merge (#19):** say what blocks it; Jira stays
+- **GitHub refused or queued the merge (#18):** say what blocks it; Jira stays
   where it is.

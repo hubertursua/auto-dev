@@ -54,7 +54,7 @@ CHOICES = ("fix", "approve", "retry", "signoff", "talk", "leave")
 # The artifacts a fixer may change with the user's consent, besides repo
 # files: compared before and after it runs, and put back when it changes
 # nothing on purpose (NEEDS_CONSENT, CANNOT_FIX) or fails.
-WATCHED = ("SPEC.md", "IMPLEMENTATION.md", "acceptance")
+WATCHED = ("PLAN.md", "acceptance")
 FIX_DIR = "override"
 
 
@@ -183,7 +183,7 @@ def apply_retry(state, retry, seq):
     if retry.get("lift"):
         lift(state, seq)
     if retry.get("oversized"):
-        reopen_define(state)
+        reopen_plan(state)
 
 
 def lift(state, seq):
@@ -194,9 +194,9 @@ def lift(state, seq):
     state["lifted_seq"] = seq
 
 
-def reopen_define(state):
-    """An OVERSIZED run goes back to Phase 2: Define runs again (retry), or the
-    run goes on as FITS (sign-off, or a fix that narrowed SPEC.md)."""
+def reopen_plan(state):
+    """An OVERSIZED run goes back to Phase 2: the planner runs again (retry), or
+    the run goes on as FITS (sign-off, or a fix that narrowed PLAN.md)."""
     st.set_phase(state, 2, "in-progress", "")
     for number in (3, 4, 5, 6):
         st.set_phase(state, number, "pending", "")
@@ -218,9 +218,12 @@ def apply_signoff(state, signoff, seq):
     if signoff.get("drop"):
         state.setdefault("phase6", {}).setdefault("signed_off", []).append(signoff["drop"])
     if signoff.get("fits"):
-        reopen_define(state)
+        reopen_plan(state)
         state["size"] = "FITS"
-        if state.get("high_risk"):
+        plan = log_entry(state, signoff["rewrite"][:2]) if signoff.get("rewrite") else None
+        if state.get("high_risk") or (plan and str(
+                plan.get("data", {}).get("risk", "")).strip().lower() == "high"):
+            state["high_risk"] = True  # the plan's own tier: an OVERSIZED plan set none
             state["settings"]["post_plan_gate"] = True
 
 

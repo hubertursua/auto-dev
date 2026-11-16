@@ -15,7 +15,7 @@ SCHEMA = 4
 STATE_FILE = "state.json"
 LEDGER = "WORK_LOG.md"
 
-PHASES = ((1, "Setup"), (2, "Define"), (3, "Plan"), (4, "Build"), (5, "Verify"),
+PHASES = ((1, "Setup"), (2, "Plan"), (3, "Tests"), (4, "Build"), (5, "Verify"),
           (6, "Ship"))
 PHASE_NAMES = dict(PHASES)
 # The run goes straight through in one session. Its phases fall in three
@@ -51,8 +51,8 @@ def new_state(task, repo, worktree, branch, settings, budget_total):
         "worktree": str(worktree),
         "branch": branch,
         "artifact_dir": str(Path(worktree) / ".auto-dev"),
-        "size": None,          # FITS | OVERSIZED, from the Define agent
-        "high_risk": None,     # True | False, from the Define agent
+        "size": None,          # FITS | OVERSIZED, from the planner
+        "high_risk": None,     # True | False: the planner's tier, raised by the critic or the diff
         "phases": {str(n): {"status": "pending", "notes": ""} for n, _ in PHASES},
         "gates": [],           # {gate, choice, reason, at}
         "notes": [],           # decisions and assumptions, {text, at}

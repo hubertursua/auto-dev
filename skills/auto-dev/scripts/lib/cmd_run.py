@@ -68,7 +68,7 @@ from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 TIMED_OUT = 3
 PLACEHOLDER = "<files>"
 TAIL = 40
-# Where --out may write, under the artifact dir: never state.json, SPEC.md or a
+# Where --out may write, under the artifact dir: never state.json, PLAN.md or a
 # sealed check.
 OUT_DIRS = ("evidence", "acceptance/base-run", "tmp")
 

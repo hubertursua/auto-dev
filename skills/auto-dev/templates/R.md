@@ -13,7 +13,7 @@ Scope: <the scope as briefed>
 - `path:line` — <one line, unchased>
 
 ## Spec problems
-<a SPEC.md condition the change can only be right by breaking, or a requirement it lacks, with the finding that shows it — or `none`>
+<a PLAN.md condition the change can only be right by breaking, or a requirement it lacks, with the finding that shows it — or `none`>
 
 ## Pre-existing
 <n> problems seen in code this change did not introduce (count only).

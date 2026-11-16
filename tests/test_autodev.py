@@ -377,7 +377,7 @@ class ResumeTest(RunCase):
         for extra in ((), ("--task", "Add due dates to todos")):
             r = self.resume(*extra)
             self.assertTrue(r.stdout.startswith(f"RESUME: {self.worktree}"), r.stdout)
-            self.assertIn("phase: 2 — Define", r.stdout)
+            self.assertIn("phase: 2 — Plan", r.stdout)
             self.assertIn("stage: Plan", r.stdout)
         self.assertIn("runbook: references/plan.md", r.stdout)
 
@@ -709,6 +709,12 @@ class StateCommandsTest(RunCase):
     def test_high_risk_turns_on_the_post_plan_gate(self):
         self.cmd("size", "FITS", "--high-risk", "yes")
         self.assertTrue(self.state()["settings"]["post_plan_gate"])
+
+    def test_size_never_lowers_a_high_risk(self):
+        self.cmd("size", "FITS", "--high-risk", "yes")
+        r = self.cmd("size", "FITS", "--high-risk", "no")
+        self.assertIn("high risk: yes", r.stdout)
+        self.assertTrue(self.state()["high_risk"])
 
     def test_handoff_names_the_next_session(self):
         for n in (2, 3):
@@ -1146,7 +1152,7 @@ class ShipTest(RunCase):
         (self.dir / "CODE_REVIEW.md").write_text(
             "# Code review\n\n| # | Finding |\n|---|---|\n| C2 | an empty list |\n")
         body.write_text(GOOD_BODY.format(sha="b" * 40).replace("### Test strength", "")
-                        + f"See C2 in .auto-dev/SPEC.md, from {self.worktree}.\n"
+                        + f"See C2 in .auto-dev/PLAN.md, from {self.worktree}.\n"
                         + "token = ghp_" + "x" * 30 + "\n")
         r = self.cmd("pr-body", "--check", body)
         self.assertEqual(r.returncode, 1)
@@ -2271,7 +2277,7 @@ class RunCommandTest(unittest.TestCase):
         sealed.parent.mkdir(parents=True)
         sealed.write_text("sealed\n")
         for target in (self.ad / "state.json", sealed, self.ad / "evidence",
-                       self.ad / "SPEC.md"):
+                       self.ad / "PLAN.md"):
             r = self.run_("test", "--out", str(target))
             self.assertEqual(r.returncode, 2, (target, r.stdout, r.stderr))
             self.assertIn("is not under", r.stderr)
@@ -2464,7 +2470,7 @@ class VerifyPrepTest(unittest.TestCase):
         self.git("commit", "-q", "-m", "init")
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
         self.write(".auto-dev/.gitignore", "*\n")
-        self.write(".auto-dev/SPEC.md", VERIFY_SPEC)
+        self.write(".auto-dev/PLAN.md", VERIFY_SPEC)
         self.write(".auto-dev/acceptance/MANIFEST.md", VERIFY_MANIFEST)
         self.write(".auto-dev/acceptance/files/tests/due.test.ts.sealed",
                    "test: an old test\ntest: keeps the due date\n")

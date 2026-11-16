@@ -1,6 +1,6 @@
 <!-- auto-dev template: pr-body.md (required sections strict, prose flexible). Copy everything below this comment, filling in every <...>. -->
 ## Summary
-<what changed and why, 2–4 sentences — drawn from SPEC.md's Context>
+<what changed and why, 2–4 sentences — drawn from PLAN.md's Context>
 
 <only when the run has a ticket: Ticket: [<KEY>](<link>)>
 
@@ -19,7 +19,7 @@ change must do: [`<path>`](<link>), [`<path>`](<link>)
 with: "No requirement here could be checked by an automated test, so each one
 is under _Checks for a person_. Checked at commit <sha>.">
 
-- [x] **<condition, in the spec's own words>** <!-- auto-dev:quoted -->
+- [x] **<condition, in the plan's own words>** <!-- auto-dev:quoted -->
   Test written before the code: [`<path>` › <test name>](<link to its line>) —
   old code: <failed: <the one-line reason> | passed: it guards behavior that must not change> · now: passes
   <details><summary>Command and output</summary>
@@ -56,7 +56,7 @@ are left out below.>
 ### Checks for a person
 <"None: every requirement was checked automatically." — or, per requirement or
 edge case no automated check could observe:>
-- [ ] **<condition, or the edge case, in the spec's own words>** <!-- auto-dev:quoted -->
+- [ ] **<condition, or the edge case, in the plan's own words>** <!-- auto-dev:quoted -->
   1. <what to do>
   2. <what you should see>
 
@@ -110,12 +110,12 @@ follow-up.>
 
 <only when the repo has a default PR template: each of its sections this body
 lacks, under its own heading — a testing section points at the checks above, a
-checklist is copied with its items unchanged and a box ticked only when SPEC.md,
+checklist is copied with its items unchanged and a box ticked only when PLAN.md,
 the task (`autodev.py show`) or this description shows it is true, and any other section is
-answered in plain words from SPEC.md, or N/A>
+answered in plain words from PLAN.md, or N/A>
 
 ## Assumptions
-<the unresolved assumptions from SPEC.md a reviewer should sanity-check>
+<the unresolved assumptions from PLAN.md a reviewer should sanity-check>
 
 Generated with [Claude Code](https://claude.com/claude-code)
 <!-- auto-dev -->

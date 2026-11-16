@@ -26,8 +26,9 @@ to step 7.
   4. Write the issue's summary and description, exactly as `getJiraIssue`
      returned them, to a new file under `$TMPDIR` (`<ticket-text>`): the
      summary on the first line, a blank line, then the description. Don't
-     shorten, reword or translate them. Define has no Jira access; `init`
-     stores this file's text and gives it to Define verbatim as the task.
+     shorten, reword or translate them. The planner and the plan critic have
+     no Jira access; `init` stores this file's text and gives it to them
+     verbatim as the task.
 - ELSE the task is the user's words.
 
 Write a one- or two-sentence restatement of the ask (`--ask` below).
@@ -133,8 +134,8 @@ autodev.py init --repo <repo> --slug <slug> --task "<task, one line>" \
 | 2 | could not run: tell the user the error |
 | 3 | setup is still running: run `autodev.py init --continue <worktree>` until it exits 0 or 1 |
 
-Pass `--ticket-text-file` whenever step 1 wrote one: without it, Define
-works from your restated ask alone. When `<repo>` is a worktree the user made
+Pass `--ticket-text-file` whenever step 1 wrote one: without it, the planner
+and the critic work from your restated ask alone. When `<repo>` is a worktree the user made
 (a linked worktree on a branch other than the base and the default branch),
 `init` runs the task in it instead of making a new one, and prints `adopted:
 yes`; it stops if the worktree has uncommitted changes. IF it also prints
@@ -149,37 +150,40 @@ of the PR.
 `cd <worktree>` (the path `INIT:` printed; the one you are in when `init`
 used yours). Every later step runs there.
 
-## Phases 2–3 — the loop
+## Phases 2–3 — Plan and Tests, the loop
 
 ### 7. Run the loop
 
 Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
 see in the Plan stage, in order:
 
-1. `define` writes `SPEC.md` and the size check, from the ticket text `init`
-   stored (else your `--ask`). `OVERSIZED` → exit 4: tell
-   the user Define's reasons, the subsystems it found and its suggested split
-   lines, all in the `REPORT` (copied from SPEC.md's Size check), then ask its
-   `QUESTION` (`SKILL.md`, _A stop_): the user may sign it off, or tell the
-   fixer how to narrow it. Nothing else.
+1. `planner` writes `PLAN.md`: the ask, the testable conditions, the
+   assumptions, the size check, the risk tier it proposes and the build steps,
+   from the ticket text `init` stored (else your `--ask`). `OVERSIZED` → exit 4:
+   tell the user the planner's reasons, the subsystems it found and its
+   suggested split lines, all in the `REPORT` (copied from PLAN.md's Size
+   check), then ask its `QUESTION` (`SKILL.md`, _A stop_): the user may sign it
+   off, or tell the fixer how to narrow it. Nothing else.
 2. With a ticket: the Jira question (exit 5). Read the ticket's status first
    (`references/gates-and-jira.md`, _Asking first_): if it is in progress
    already, don't ask, and run the `Already …` line. On `Move it`, a later exit 0
    says to move the ticket: do it as `references/gates-and-jira.md`,
    _Moving a ticket_ says, then run its `AFTER` line.
-3. `define-reviewer`, maybe several rounds. A FIX block that doesn't apply
-   sends `define` back in revise mode. You do nothing but spawn.
-4. `planner`, then `plan-reviewer` the same way.
-5. `acceptance-tester`. It may be spawned again for listed conditions, or send
-   `define` a question about a condition that reads two ways.
+3. `plan-critic`, a fresh reader with the ticket, PLAN.md and the repo. With
+   blockers, the `planner` revises once (a round), and the critic re-checks
+   only the revision. A blocker still open after that goes to the user at
+   the post-plan gate; the workers don't loop. The critic can raise the risk tier,
+   never lower it. You do nothing but spawn.
+4. `acceptance-tester`. It may be spawned again for listed conditions, or send
+   the `planner` a question about a condition that reads two ways.
    A worker whose result `next` refuses (a `RECORDED: … refused` line) is
    briefed again by that `next`, with the refused issues.
-6. The post-plan gate (exit 5) when the task is high-risk or the repo turns it
-   on.
-7. Once the plan is done, `next` says the run goes on to the Build stage in this
-   session: read `references/build.md`, as its `ACTION` says, then run `next`.
+5. The post-plan gate (exit 5) when the task is high-risk, the critic left
+   blockers open (the gate lists them), or the repo turns it on.
+6. Once the tests are written, `next` says the run goes on to the Build stage in
+   this session: read `references/build.md`, as its `ACTION` says, then run `next`.
    Don't stop or hand off.
-8. Exit 6, a checkpoint: run its `AFTER` command exactly as printed (`handoff
+7. Exit 6, a checkpoint: run its `AFTER` command exactly as printed (`handoff
    --checkpoint`), give the user its message, stop. A fresh session picks the
    run up where it is.
 
@@ -188,5 +192,5 @@ see in the Plan stage, in order:
 Every stop is exit 4 with its reason in `REPORT`, and most ask how to go on
 (`SKILL.md`, _A stop_). The full list is
 `references/tables.md`, _Stop conditions_. The usual ones here: OVERSIZED,
-budget used up on a review (the user can add rounds: `SKILL.md`, _The loop_),
-a worker that didn't return ok twice.
+no round left for the plan's revision (the user can add rounds: `SKILL.md`,
+_The loop_), a worker that didn't return ok twice.

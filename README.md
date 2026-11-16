@@ -79,15 +79,15 @@ orchestrator runs:
 | Phase | Worker | Output |
 |-------|--------|--------|
 | 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch (or the worktree you started in), `.auto-dev/` |
-| 2 Define | Define agent + reviewer | `SPEC.md` — context, testable conditions, assumptions, security criteria; plus the **size check** (too big for one PR → back to you) |
-| 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
+| 2 Plan | planner + plan critic | `PLAN.md` — the ask, testable conditions, assumptions, security criteria, the **size check** (too big for one PR → back to you), the **risk tier** and the build steps; a fresh critic checks it against the ticket and the code, and the planner revises once |
+| 3 Tests | acceptance tester | `acceptance/` — held-out checks sealed from the coder; then the post-plan gate when it is on (high risk, blockers left open, or the config) |
 | 4 Build | coder | code + tests given **only** the plan |
-| 5 Verify | cleanup agent, then verifier | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests against the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
+| 5 Verify | cleanup agent, then verifier | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests against the plan's conditions → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
 | 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | commit + **draft PR** first (CI starts there), then the code review panel and security review on it alongside CI (each correction is committed on top), then the ready-for-review gate, the PR marked ready, merge to main + Jira Done, pausing at each gate |
 
 Workers never negotiate the contract between themselves. A coder that finds
 a plan step wrong builds it the way that works and records the deviation for
-you to see. A later step that finds the spec wrong, or a check the acceptance
+you to see. A later step that finds the conditions wrong, or a check the acceptance
 tester and another worker disagree on, stops the run and asks you (see
 [*How the build is verified*](#how-the-build-is-verified)).
 
@@ -107,7 +107,7 @@ judge the build or write correction briefs; the workers that found a problem
 write those, and the orchestrator passes them on unedited. It never reads the
 code (a `lookup` worker answers its questions of fact in a line, and declines
 to say whether code is right, since the orchestrator would act on that verdict
-unchecked), and it sees the spec only as the parts `pr-write.md` quotes for the
+unchecked), and it sees the plan only as the parts `pr-write.md` quotes for the
 PR description.
 The run's history lives in `.auto-dev/state.json`, which only `autodev.py`
 writes, and each judge is a fresh worker that sees only what its brief names.
@@ -116,11 +116,11 @@ writes, and each judge is a fresh worker that sees only what its brief names.
 Orchestrator (main agent) ── runs the `next` loop and the human gates; never reads code
 │
 ├─ Phase 1  Setup ......... detect repo, profile (saved, or profiler + your OK), ticket, worktree
-├─ Phase 2  Define agent .. SPEC.md — the testable contract + SIZE CHECK  (→ reviewer)
-├─ Phase 3  Planner ....... IMPLEMENTATION.md — the technical how  (→ reviewer)
-│           Acceptance tester  held-out checks from the spec, proven to fail, sealed [optional gate]
-├─ Phase 4  Coder ......... code + tests (given only the plan)
-├─ Phase 5  Cleanup + verifier  /simplify → quality gate → RUN the checks vs. the withheld spec
+├─ Phase 2  Planner ....... PLAN.md — conditions, SIZE CHECK, risk tier, steps
+│           Plan critic ..... checks it against the ticket and the code (one revision, one re-check)
+├─ Phase 3  Acceptance tester  held-out checks from the conditions, proven to fail, sealed [optional gate]
+├─ Phase 4  Coder ......... code + tests, from PLAN.md (the checks stay sealed)
+├─ Phase 5  Cleanup + verifier  /simplify → quality gate → RUN the sealed checks vs. the conditions
 └─ Phase 6  orch + reviewers  draft PR → code review panel ∥ security review ∥ CI → [GATE] ready → [GATE] main
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
             Planner ......... settles a step the coder stopped (Phases 4–6)
@@ -129,13 +129,11 @@ Orchestrator (main agent) ── runs the `next` loop and the human gates; never
             Fixer ........... at a stop, does what you said to fix it, and nothing more (any phase)
 ```
 
-Two documents describe the work. `SPEC.md` answers *did we build the right
-thing*; `IMPLEMENTATION.md` answers *did we build it the way we decided*. A plan
-executed faithfully can still miss the outcome, so the pipeline checks both.
-
-The coder builds from the plan, never the spec. The plan must cover every spec
-condition, so nothing is hidden from the coder except the spec's wording: the
-coder can't satisfy a check by echoing that wording back in a test name.
+One document describes the work. `PLAN.md` holds the conditions, which answer
+*did we build the right thing*, and the build steps, which answer *did we build
+it the way we decided*. A plan executed faithfully can still miss the outcome,
+so the pipeline checks both. The coder reads `PLAN.md` whole; what stays hidden
+from it is the acceptance checks, which are sealed until the verifier runs them.
 
 ## How the build is verified
 
@@ -143,12 +141,18 @@ Tests the coder wrote are the coder's own evidence, so they can't be the main
 proof. Agents are known to mark work done too early and to make tests pass by
 weakening them. Verification is built around that:
 
-- **A spec written to be tested.** Every condition in `SPEC.md` has a concrete
-  example (Given / When / Then), its tricky edge case, and how it should be
-  verified. The Define reviewer flags any condition that two different
-  implementations could both satisfy, and the Define agent rewrites it.
+- **A plan written to be tested, and checked before the build.** Every
+  condition in `PLAN.md` has a concrete example (Given / When / Then), its
+  tricky edge case, and how it should be verified. A fresh plan critic, which
+  sees the ticket, the plan and the repo but never the planner's reasoning,
+  checks it in order: the whole ask and no more, conditions a test can decide,
+  every file and function it names opened and confirmed, every condition
+  covered by a step and a test, risk, and size. Each blocker cites its
+  evidence (a quoted ticket line or a `path:line`), at most 7. The planner
+  revises once; the critic re-checks only the revision, and a blocker still
+  open goes to you at the post-plan gate (`agents/plan-critic.md`).
 - **Held-out checks, proven to fail first.** Before any code is written, an
-  acceptance tester writes black-box tests from the spec alone: one for each
+  acceptance tester writes black-box tests from the conditions alone: one for each
   condition's example and one for its edge case. Every check for new behavior
   must **fail on the untouched code for the right reason**, and the tester
   saves that run. Each check goes where a developer would put that test: into
@@ -163,7 +167,7 @@ weakening them. Verification is built around that:
   tester may change a check: `record` refuses a coder or cleanup result that
   edits one.
 - **Only the workers that write code change it.** The ones that write or review
-  the spec and the plan, judge the review, or triage CI and PR comments never
+  the plan, judge the review, or triage CI and PR comments never
   change a repo file. `brief` notes the tree each one starts from, and
   `record` refuses a result that changed a file outside `.auto-dev/` (one git
   ignores isn't compared) and puts the file back, keeping the worker's version
@@ -172,10 +176,11 @@ weakening them. Verification is built around that:
   worker was out, or while setup ran
   (`skills/auto-dev/scripts/lib/tree_guard.py`).
 - **An independent verifier that runs things.** After cleanup, a fresh
-  verifier **runs** the checks, without seeing the plan or the coder's report.
+  verifier **runs** the checks, judging against PLAN.md's conditions, not its
+  steps or the coder's report.
   Each condition gets a verdict and an evidence tier:
   - **Strong:** the checks pass, cover the example and edge case at the level
-    the spec asks, and their run on the old code, saved before the build,
+    the condition asks, and their run on the old code, saved before the build,
     showed what it should (a check for new behavior failing for the right
     reason).
   - **Adequate:** the checks pass, and for what they don't prove, the
@@ -191,7 +196,7 @@ weakening them. Verification is built around that:
   deleted, skipped or focused tests, removed assertions, new tests that assert
   nothing, changes to the test runner's config, and any edit to a sealed
   check, even one sharing a file with the coder's tests. Each finding must be
-  justified by the spec or it goes back to the coder.
+  justified by the conditions or it goes back to the coder.
 - **Targeted mutation testing.** The verifier plants small bugs in the
   changed lines with `skills/auto-dev/scripts/mutate.py`, which restores every
   file afterwards. A planted bug no test catches, on a line a condition
@@ -205,7 +210,7 @@ weakening them. Verification is built around that:
   timed test run
   (`skills/auto-dev/scripts/lib/cmd_mutants.py`, `lib/mutation_run.py`).
 - **The contract is yours to change.** Later work may show that a plan
-  step, a held-out check or the spec itself is wrong. A wrong plan step is
+  step, a held-out check or the plan's conditions themselves are wrong. A wrong plan step is
   the coder's to fix as it builds: it builds the step the way that works and
   lists each deviation and why in `deviations/coder-<n>.md`, and the ready-for-review gate
   shows you every one. A check another worker calls wrong goes to the
@@ -214,7 +219,7 @@ weakening them. Verification is built around that:
   missing (the verifier, the review judge, a security reviewer, or the
   triager from a PR comment) is listed in `spec-problems/<worker>-<n>.md`,
   and the run stops and asks you before it acts on that result: no worker
-  changes `SPEC.md`. You say how to change it (the fixer does that, then the
+  changes the conditions in `PLAN.md`. You say how to change it (the fixer does that, then the
   verifier checks again), or sign off to keep it as written; every later
   worker that judges it is told what you kept.
 - **Re-checked after every change.** Cleanup (`/simplify` and the quality gate)
@@ -263,13 +268,13 @@ stopped.
 
 ## Size check: one PR, or back to you
 
-The Define agent says whether the task fits one PR:
+The planner says whether the task fits one PR:
 
-- **FITS** — the pipeline runs every step, the same way for every task: **11
+- **FITS** — the pipeline runs every step, the same way for every task: **9
   worker roles** (roles, not spawns). The profiler runs only when the repo has
   no saved profile, the triager only when CI fails or a person comments,
   `lookup` when the orchestrator needs a fact from the code, and the fixer
-  only when you tell a stopped run how to fix it. When `SPEC.md`
+  only when you tell a stopped run how to fix it. When `PLAN.md`
   has security criteria, the security reviewer for sensitive paths takes the
   regular one's place.
 - **OVERSIZED** — several independent deliverables or subsystems, or a large
@@ -277,11 +282,18 @@ The Define agent says whether the task fits one PR:
   and suggested lines to split along. Jira is left alone, and the worktree and
   branch stay, with the commands to remove them. Split the task and run
   auto-dev on each part, or answer the stop: sign it off to build it as one
-  PR anyway, or tell the fixer how to narrow `SPEC.md` (a new session can
+  PR anyway, or tell the fixer how to narrow `PLAN.md` (a new session can
   answer too).
 
-Define also flags a task as **high-risk** (security criteria, auth, payments,
-access control or a data migration), which turns on the post-plan gate.
+The planner also proposes a **risk tier**: high for security criteria, auth,
+payments, access control, secrets, a data migration or backward
+compatibility, else standard. The plan critic can raise it, and once the build
+is verified (the end of Phase 5) `next` re-checks it from the diff of the code
+that ships: a path with a whole word that names a sensitive area (auth,
+session, token, permission, payment, migration and the like, camelCase split)
+or a large change (over 25 files or 800 lines, lock files left out) makes it
+high. It never goes down. A high tier before the build turns on the post-plan
+gate; one raised after the build is shown at the ready-for-review gate.
 
 ## Review on the draft PR
 
@@ -303,7 +315,7 @@ is reviewed twice, at the same time:
    re-vote.
 2. **Security review.** A security reviewer runs `/security-review` over the
    whole change, and the judge double-checks every High or Medium finding.
-   When `SPEC.md` has security criteria (a change on a sensitive path), a
+   When `PLAN.md` has security criteria (a change on a sensitive path), a
    reviewer that weights those paths hardest does it.
 
 One correction fixes every must-fix finding from both, for one round of the
@@ -313,7 +325,7 @@ ready-for-review gate, which names every must-fix finding still open; after
 that (a red CI fix, a PR comment), a must-fix finding with no round left stops
 the run. A finding about a held-out check goes to the acceptance
 tester, never the coder; if the tester finds the check right, the run stops
-and shows you both sides. A problem that lies in `SPEC.md` rather than the code
+and shows you both sides. A problem that lies in `PLAN.md`'s conditions rather than the code
 goes in a reviewer's report; the judge confirms it for the panel, and once the
 pass has settled the run stops and asks you.
 After the correction, the full panel reviews it again. Once the reviews
@@ -360,8 +372,9 @@ runs while the change is reviewed. The pipeline pauses for approval:
 - before the PR leaves draft (the **ready-for-review gate**, once the reviews
   on the draft have settled), and
 - before the **main merge**,
-- plus an optional **post-plan gate** (on for high-risk tasks, or with
-  `gates.post_plan`) and an optional **open-the-PR gate** before the first
+- plus an optional **post-plan gate** (on for high-risk tasks, when the plan
+  critic left blockers open after the planner's one revision, which it lists,
+  or with `gates.post_plan`) and an optional **open-the-PR gate** before the first
   push (with `gates.open_pr`, for repos that must not push unreviewed code).
 
 Three more pauses fire only when their situation arises: the **profile
@@ -392,7 +405,7 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   be checked. auto-dev has no staging step; the PR targets the base branch.
 - **Jira** only moves the ticket (In Progress → In Review → Done), and is
   skipped without a ticket. The ticket's text is stored at setup and given to
-  the Define agent, which has no Jira access
+  the planner and the plan critic, which have no Jira access
   (`skills/auto-dev/references/gates-and-jira.md`).
 - **CI** is watched with a time limit on the draft PR, again once it is marked
   ready (some workflows skip drafts), and after the merge. A draft with no
@@ -405,7 +418,7 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   you answer (any reply other than a pick is an instruction):
   - **Your instruction:** the fixer agent does what you said, and nothing
     more. Your words are its consent: it may change the code, or the run's
-    `SPEC.md`, plan or held-out checks when you name them. If the fix needs
+    `PLAN.md` or held-out checks when you name them. If the fix needs
     more than you said, it changes nothing and asks you to approve its
     proposal. `record` refuses its report if it leaves out a file it changed,
     the run's settings in `state.json` included; when its result is anything
@@ -635,10 +648,8 @@ so a new release is picked up without editing the plugin.
 | Worker                                   | Agent type                       | Model · effort    |
 | ---------------------------------------- | -------------------------------- | ----------------- |
 | Profiler (first run on a repo)           | `auto-dev:profiler`              | `sonnet` · high   |
-| Define agent                             | `auto-dev:define`                | `opus` · high     |
-| Define reviewer                          | `auto-dev:define-reviewer`       | `opus` · high     |
 | Planner                                  | `auto-dev:planner`               | `opus` · xhigh    |
-| Plan reviewer                            | `auto-dev:plan-reviewer`         | `opus` · high     |
+| Plan critic                              | `auto-dev:plan-critic`           | `opus` · high     |
 | Acceptance tester                        | `auto-dev:acceptance-tester`     | `opus` · high     |
 | Coder (the build, all corrections)       | `auto-dev:coder`                 | `opus` · high     |
 | Verifier                                 | `auto-dev:verifier`              | `opus` · high     |
@@ -646,7 +657,7 @@ so a new release is picked up without editing the plugin.
 | Code reviewer (×3 panel, and re-votes)   | `auto-dev:code-reviewer`         | `opus` · high     |
 | Review judge                             | `auto-dev:review-judge`          | `opus` · xhigh    |
 | Security reviewer                        | `auto-dev:security-reviewer`     | `opus` · xhigh    |
-| Security reviewer (`SPEC.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
+| Security reviewer (`PLAN.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
 | Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
 | Orchestrator lookups                     | `auto-dev:lookup`                | `haiku` · medium  |
 | Fixer (your instruction at a stop)       | `auto-dev:fixer`                 | `opus` · high     |
@@ -681,7 +692,7 @@ retune a worker, edit the `model:` / `effort:` frontmatter in `agents/<name>.md`
 and the tables in `SKILL.md` and this README.
 
 The code reviewers' effort is set per run. The planner writes a
-`Review effort:` line in `IMPLEMENTATION.md`: `high` by default, `xhigh` for
+`Review effort:` line in `PLAN.md`: `high` by default, `xhigh` for
 a large change (many files, or logic across several modules). The
 orchestrator passes it to each code reviewer, overriding the agent file's
 `high`. On a first review, each
@@ -705,9 +716,8 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
 | `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output |
 | `HANDOFF.md` | a checkpoint, or the user asking to stop | the brief for the next session |
-| `SPEC.md` | Phase 2 | the testable contract |
-| `IMPLEMENTATION.md` | Phase 3 | the technical plan |
-| `fixes/` | Phases 2–3 | the Define and plan reviewers' FIX blocks |
+| `PLAN.md` | Phase 2 | the plan: the conditions (the testable contract), size check, risk tier and build steps |
+| `plan-review/` | Phase 2 | the plan critic's review (`<n>.md`): verdict, risk tier, blockers with evidence |
 | `acceptance/` | Phase 3 (the tester; its repairs in Phases 4–6) | the sealed held-out checks (`files/<path>.sealed`, with `<path>.base`, the file a check adds to, and `<path>.installed`, that file as it was with the check whole), their `MANIFEST.md`, their runs on the old code (`base-run/`), `INSTALLED` once `next` puts the checks in, and `AMBIGUOUS.md`, a condition the tester found reads two ways |
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
 | `lint/` | Phase 5 | one report per quality-gate check |
@@ -716,31 +726,33 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `pr-body.md`, `pr-write.md`, `pr-output-comment.md` | Phase 6 | the generated PR description; the sections of it the orchestrator writes (the Summary, the Assumptions, a template section), with the text they draw on, which `pr publish` puts into the description; and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments, and the comments about a held-out check, for the tester (`human-<n>-checks.md`) |
 | `deviations/` | Phases 4–6, coder | each plan step the coder built differently, and why (`coder-<n>.md`), for the ready-for-review gate |
-| `spec-problems/` | Phases 5–6 | a criterion a later worker found wrong or missing in `SPEC.md` (`<worker>-<n>.md`), for you to decide |
+| `spec-problems/` | Phases 5–6 | a condition a later worker found wrong or missing in `PLAN.md` (`<worker>-<n>.md`), for you to decide |
 | `lookups/` | any phase | lookup answers |
 | `tree/` | `autodev.py record` | a repo file a worker that never changes the repo changed anyway, as the worker left it, before `record` put it back (`tree/<worker>-<n>/<path>`) |
-| `override/` | at a stop, the fixer and `autodev.py next` | the fixer's report (`fixer-<n>.md`); the run's `SPEC.md`, plan and checks as they were before it ran (`fixer-<n>.before/`), and, when it ended without fixing, the repo files it changed, as it left them, before they were put back (`fixer-<n>.after/`) |
+| `override/` | at a stop, the fixer and `autodev.py next` | the fixer's report (`fixer-<n>.md`); the run's `PLAN.md` and checks as they were before it ran (`fixer-<n>.before/`), and, when it ended without fixing, the repo files it changed, as it left them, before they were put back (`fixer-<n>.after/`) |
 
 ## Safety
 
 Autonomous but bounded:
 
 - **One iteration budget per task** (default 4 revise rounds) covers every
-  correction, every Define or plan re-review, every tester re-spawn for gaps
+  correction, the planner's one revision for the critic, every tester re-spawn for gaps
   and every re-dispatched `BLOCKED` step, one round each. When the budget
   runs out the run stops and names what is still open, except for review
   findings before the PR is marked ready: those go to the ready-for-review gate, which names each one,
   and you decide. To go on after a budget stop, say how many more rounds you
   want (1 to 10): the run adds them and carries on from the step that
   stopped. It never adds rounds unasked.
-- **No worker changes the contract.** The spec, the checks and the plan's
-  intent change only through you. A later worker that finds a criterion wrong
+- **No worker changes the contract.** The conditions, the checks and the
+  plan's intent change only through you, once the plan critic's one round is
+  over. A later worker that finds a criterion wrong
   or missing reports it and the run stops (PR comment wording reaches the
   report only as the triager's summary, and CI logs never do); the acceptance
   tester alone repairs a check, and a check it finds right against another
   worker's objection stops the run too. The coder may build a plan step
   differently only to make it work, and every such deviation is shown to you.
-  A worker that edits `SPEC.md` is refused by `record`, whatever it returns.
+  A worker that judges against `PLAN.md` and edits it is refused by
+  `record`, whatever it returns.
 - **It stops and reports** rather than commit a red build, weaken a security
   control, or carry on when a planted bug may be left in the tree, the build
   edited a submodule, or a commit holds code no result checked.

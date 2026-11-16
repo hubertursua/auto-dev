@@ -8,8 +8,8 @@ Iteration budget remaining: 4/4
 
 ## Done
 - Phase 1 Setup: done
-- Phase 2 Define: FITS, high risk: yes
-- Phase 3 Plan: done
+- Phase 2 Plan: FITS, risk: high
+- Phase 3 Tests: done
 
 ## Next
 Phase 4 — Build, in the Build stage (runbook: references/build.md). Say `auto-dev continue`.

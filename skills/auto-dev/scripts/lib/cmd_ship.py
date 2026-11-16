@@ -127,7 +127,7 @@ ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 ID_FORM = r"(?:CS|C|M|S)\d+"
 ID_DEF_RE = re.compile(rf"^\s*\|\s*({ID_FORM})\s*\||^#+\s*({ID_FORM})\b|"
                        rf"^\s*({ID_FORM})\.\s", re.MULTILINE)
-ID_SOURCES = ("SPEC.md", "acceptance/MANIFEST.md", "SPEC_EVAL.md", "CODE_REVIEW.md",
+ID_SOURCES = ("PLAN.md", "acceptance/MANIFEST.md", "SPEC_EVAL.md", "CODE_REVIEW.md",
               "SECURITY_REVIEW.md")
 ID_USE_RE = re.compile(rf"(?<![\w/.-])({ID_FORM})(?![\w-])")
 # A region the PR description quotes word for word (cmd_pr.QUOTE_OPEN). Its

@@ -28,8 +28,8 @@ The pipeline:
 
 ```
 Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (Plan)
-Phase 2  Define  → SPEC.md, the testable contract, and the size check          (Plan)
-Phase 3  Plan    → IMPLEMENTATION.md, then sealed acceptance checks             (Plan)
+Phase 2  Plan    → PLAN.md (conditions, size, risk, steps), checked by a critic  (Plan)
+Phase 3  Tests   → sealed acceptance checks, then the post-plan gate if it's on  (Plan)
 Phase 4  Build   → the coder builds from the plan                               (Build)
 Phase 5  Verify  → cleanup and the quality gate, then the verifier runs checks (Build)
 Phase 6  Ship    → draft PR, reviews alongside CI, ready gate, main gate, merge  (Ship)
@@ -43,6 +43,13 @@ has done enough work that a fresh session is cheaper, `next` writes
 `auto-dev continue`. If the user asks to stop mid-run, run `autodev.py handoff`
 and give them its message. Every session runs on whatever model the user picked.
 Never ask them to switch.
+
+One planner writes `PLAN.md`, and a fresh plan critic checks it against the
+ticket and the code. With blockers, the planner revises once and the critic
+re-checks only the revision; blockers still open go to the user at the
+post-plan gate. The planner proposes the risk tier, the critic can raise it,
+and `next` re-checks it from the diff once the build is verified; it never
+goes down.
 
 ## Paths
 
@@ -127,7 +134,7 @@ and the same `next` briefs that job again with the issues in its
 and never fix the worker's file yourself.
 
 **A stop** is not final. Some stops are the user's call by design: a worker
-found a SPEC.md criterion wrong or missing, or the acceptance tester ruled a
+found a PLAN.md condition wrong or missing, or the acceptance tester ruled a
 check right that another worker called wrong. Workers never settle the
 contract between themselves. When a stop prints a `QUESTION`, show the
 `SUMMARY` lines and ask it with AskUserQuestion. A typed answer (Other) is the user's
@@ -161,10 +168,8 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Worker | Agent type | Model · effort |
 | ------ | ---------- | -------------- |
 | Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high |
-| Define agent (Phase 2) | `auto-dev:define` | `opus` · high |
-| Define reviewer (Phase 2) | `auto-dev:define-reviewer` | `opus` · high |
-| Planner (Phase 3; settles a step the coder stopped) | `auto-dev:planner` | `opus` · xhigh |
-| Plan reviewer (Phase 3) | `auto-dev:plan-reviewer` | `opus` · high |
+| Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · xhigh |
+| Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high |
 | Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
 | Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
 | Verifier (Phase 5, re-spawned on every change) | `auto-dev:verifier` | `opus` · high |

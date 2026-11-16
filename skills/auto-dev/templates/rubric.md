@@ -17,9 +17,9 @@
 behavior, and it lists every case of that behavior no test exercises, not just
 the first one found: each configuration value or option the behavior reads
 that no test varies, each boundary, each error path and the message it
-produces, and each value the spec says must fail closed. For a payout cap, say:
+produces, and each value the plan says must fail closed. For a payout cap, say:
 a cap above the default, the refusal message under that cap, and each missing
-value the spec says must be refused, not one of them per finding. Only cases a
+value the plan says must be refused, not one of them per finding. Only cases a
 real caller can reach count (the trigger path rule, below), and the list holds
 the separate cases, not their combinations. The judge merges tests findings
 about the same changed behavior into one, and its `Test:` and

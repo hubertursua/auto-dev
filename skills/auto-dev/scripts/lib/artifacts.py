@@ -15,7 +15,7 @@ class ArtifactError(Exception):
 
 
 SEPARATOR_RE = re.compile(r"^\|?[\s:|-]+\|?$")
-# `1.` and `S1.` items under SPEC.md's Conditions / Security sections.
+# `1.` and `S1.` items under PLAN.md's Conditions / Security sections.
 SPEC_ITEM_RE = re.compile(r"^(S?\d+)\.\s+(.*)$")
 SUB_LINE_RE = re.compile(r"^\s+-\s+(Example|Edge|Verify by):\s*(.*)$", re.IGNORECASE)
 LEVELS = ("unit", "integration", "end-to-end")
@@ -124,7 +124,7 @@ def first_table(body, needed, where):
 
 
 def spec_conditions(path):
-    """SPEC.md's conditions and criteria: [{id, text, example, edge, verify}]."""
+    """PLAN.md's conditions and criteria: [{id, text, example, edge, verify}]."""
     text = read(path)
     items = []
     for name in ("Conditions", "Security/Compliance criteria"):
@@ -248,7 +248,7 @@ def header_line(text, prefix):
     return ""
 
 
-# IMPLEMENTATION.md's `Review effort:` line: the effort the planner recommends for
+# PLAN.md's `Review effort:` line: the effort the planner recommends for
 # the Phase 6 code reviewers. A plan without one (written before 4.3) means high.
 REVIEW_EFFORTS = ("high", "xhigh")
 DEFAULT_REVIEW_EFFORT = "high"
@@ -264,3 +264,67 @@ def review_effort(text):
         if m:
             return m.group(1).strip("*_`.,;").lower()
     return None
+
+
+# PLAN.md's and a plan review's `Risk:` line: the tier the planner proposes and
+# the critic confirms or raises.
+RISKS = ("standard", "high")
+RISK_RE = re.compile(r"^[-*_\s]*risk[*_\s]*:[*_\s]*([^\s—–]*)", re.IGNORECASE)
+VERDICT_RE = re.compile(r"^[-*_\s]*verdict[*_\s]*:[*_\s]*([^\s—–]*)", re.IGNORECASE)
+BLOCKER_RE = re.compile(r"^###\s+(B\d+)\.?\s*(.*)$")
+
+
+def first_word(text, pattern):
+    """The first word after a `Key:` line `pattern` matches, lowercased, or None."""
+    for line in text.splitlines():
+        m = pattern.match(line)
+        if m:
+            return m.group(1).strip("*_`.,;").lower()
+    return None
+
+
+def risk(text):
+    """The first word of a `Risk:` line, lowercased, or None when there is none.
+    The caller checks it is one of RISKS."""
+    return first_word(text, RISK_RE)
+
+
+def plan_review(path):
+    """A plan review: {verdict, risk, blockers: [{id, text, evidence, change}],
+    problems}. `problems` lists what doesn't follow the template."""
+    text = read(path)
+    verdict = (first_word(text, VERDICT_RE) or "").upper()
+    tier = risk(text)
+    problems = []
+    if verdict not in ("APPROVE", "REVISE"):
+        problems.append(f"`Verdict:` must be APPROVE or REVISE (found: {verdict or 'nothing'})")
+    if tier not in RISKS:
+        problems.append(f"`Risk:` must be {' or '.join(RISKS)} (found: {tier or 'nothing'})")
+    body = find_section(text, "Blockers")
+    if body is None:
+        problems.append("no `## Blockers` section")
+        body = ""
+    if find_section(text, "Notes") is None:
+        problems.append("no `## Notes` section")
+    blockers, current = [], None
+    for line in body.splitlines():
+        m = BLOCKER_RE.match(line.strip())
+        if m:
+            current = {"id": m.group(1), "text": m.group(2).strip(), "evidence": "",
+                       "change": ""}
+            blockers.append(current)
+            continue
+        sub = re.match(r"^\s*[-*]\s*(Evidence|Change)\s*:\s*(.*)$", line, re.IGNORECASE)
+        if sub and current is not None:
+            current[sub.group(1).lower()] = sub.group(2).strip()
+    for b in blockers:
+        problems += [f"blocker {b['id']} has no `{key.title()}:` line"
+                     for key in ("evidence", "change") if not b[key]]
+    if len(blockers) > 7:
+        problems.append(f"{len(blockers)} blockers: at most 7 (more means the plan should "
+                        "be redone; say so as one blocker)")
+    if verdict == "APPROVE" and blockers:
+        problems.append(f"verdict APPROVE but {len(blockers)} blocker(s) listed")
+    if verdict == "REVISE" and not blockers:
+        problems.append("verdict REVISE but no `### B<n>.` blocker listed")
+    return {"verdict": verdict, "risk": tier, "blockers": blockers, "problems": problems}

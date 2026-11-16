@@ -38,22 +38,21 @@ AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "tick
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
           "report", "blocked", "failing", "question", "corrections_file", "leads",
           "instruction", "stopped"}
-OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
+OPTIONAL = {"review_file", "ambiguous", "direction", "files", "since", "what_changed",
             "previous_issues", "earlier", "focus", "spec_kept", "checks_kept",
             "review_effort"}
-# fix_file is AUTO for the reviewers, who write it; OPTIONAL for the authors.
-AUTO_FOR = {"fix_file": {"define-reviewer", "plan-reviewer"}}
+# review_file is AUTO for the plan critic, who writes it; OPTIONAL for the
+# planner, who revises from it.
+AUTO_FOR = {"review_file": {"plan-critic"}}
 # tree is AUTO (the tree at spawn time) for the security reviewers; the judge
 # needs the tree the panel reviewed, which only the caller noted.
 CALLER_FOR = {"tree": {"review-judge"}}
 
 RESULTS = {
     "profiler": {"CONFIRM"},
-    "define": {"FITS", "OVERSIZED", "REVISED"},
-    "define-reviewer": {"CLEAN", "BLOCKERS"},
-    "planner": {"WRITTEN", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST",
+    "planner": {"FITS", "OVERSIZED", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST",
                 "SPEC_IMPOSSIBLE"},
-    "plan-reviewer": {"CLEAN", "BLOCKERS"},
+    "plan-critic": {"APPROVE", "REVISE"},
     "acceptance-tester": {"SEALED", "REPAIRED", "STANDS", "FOLDED"},
     "coder": {"BUILT", "BLOCKED"},
     "verifier": {"ALL_MET", "CORRECT", "REPAIR", "INSTALL_CONFLICT",

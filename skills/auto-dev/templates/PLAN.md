@@ -1,13 +1,16 @@
-<!-- auto-dev template: SPEC.md (strict). Copy everything below this comment, filling in every <...>. -->
-# Spec — <task>
+<!-- auto-dev template: PLAN.md (headings strict). Copy everything below this comment, filling in every <...>. -->
+# Plan — <task>
+
+Risk: <standard | high> — <one line: why>
+Review effort: <high | xhigh> — <one line: why the code reviewers need that depth>
 
 ## Context
-<the ticket restated, links, and the research findings needed to act on it: where
+<the ask restated, links, and the research findings needed to act on it: where
 this lives in the code, the modules and flows involved, similar precedents,
-constraints. Stakeholder-readable; no technical design.>
+constraints>
 
 ## Conditions
-1. <observable, testable condition in plain language — no file names, no signatures>
+1. <observable, testable condition in plain language: what must be true, not how>
    - Example: Given <starting state>, when <action>, then <observable result>.
    - Edge: <negative, boundary or error case> → <observable result>
      (or `none — <why the condition has no edge>`)
@@ -30,3 +33,22 @@ S1. <the specific control, pulled from the sources profile.md names>
 <FITS or OVERSIZED, with one line of why. For OVERSIZED, add a `- Subsystem:` line
 for each subsystem touched, with a rough file count, and a `- Split:` line for each
 suggested part of the task.>
+
+## Files
+- `<path>` — <create | modify>: <what changes there>
+
+## Design
+<modules, functions, data structures, how data moves through the change, and
+why this shape where it is not obvious>
+
+## Build sequence
+1. <small, independently verifiable unit> — conditions: <C1, …> — test: `<test file>`
+2. <…>
+
+## Test plan
+| Test | Location | Proves | Condition |
+|------|----------|--------|-----------|
+| <test name> | `<path>` | <the behavior> | <#> |
+
+## Migrations / config
+<schema migrations, config or env changes — or "none">

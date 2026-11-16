@@ -161,7 +161,7 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     ad = Path(ad)
     wt = state["worktree"]
     url = repo_url(wt)
-    conditions = art.spec_conditions(ad / "SPEC.md")
+    conditions = art.spec_conditions(ad / "PLAN.md")
     ev = art.spec_eval(ad / "SPEC_EVAL.md")
     verdicts = {r["#"].strip(): r for r in ev["rows"]}
     rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
@@ -169,7 +169,7 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     old = old_sha(ad, cut)
     body = Body()
     body.text("## Summary")
-    body.text("<!-- WRITE: what changed and why, 2–4 sentences, drawn from SPEC.md's "
+    body.text("<!-- WRITE: what changed and why, 2–4 sentences, drawn from PLAN.md's "
               "Context -->")
     ticket = ticket_link(state["task"])
     if ticket:
@@ -243,7 +243,7 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     for line in template_sections(find_template(wt)):
         body.text(line)
     body.text("## Assumptions")
-    body.text("<!-- WRITE: the unresolved assumptions from SPEC.md a reviewer should "
+    body.text("<!-- WRITE: the unresolved assumptions from PLAN.md a reviewer should "
               "sanity-check -->")
     body.text("")
     body.text(ATTRIBUTION)
@@ -253,7 +253,7 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     from .cmd_ship import quoted_digests
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
     # What generate copies word for word outside a region, as it shows it: a
-    # checkbox's title (SPEC.md's own words, kept outside so ticking it leaves
+    # checkbox's title (PLAN.md's own words, kept outside so ticking it leaves
     # the region whole) and each gate command, as clean() left it in the text.
     # The lint skips each one.
     copied = {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} | \
@@ -275,7 +275,7 @@ def generate(state, ad, sha, reviewed=True, ready=True):
 
 
 def write_slots(text, ad, task):
-    """pr-write.md: the text the WRITE lines draw on (SPEC.md's Context and
+    """pr-write.md: the text the WRITE lines draw on (PLAN.md's Context and
     Assumptions, the task, and the description's requirements, Quality gate and
     Review), each line quoted so no heading in it counts, then SLOTS_MARK and
     each section of the description that holds a WRITE line, as it stands but
@@ -291,11 +291,11 @@ def write_slots(text, ad, task):
                     *[f"> {ln}" if ln.strip() else ">" for ln in body.splitlines()], ""])
 
     try:
-        spec = art.read(ad / "SPEC.md")
+        spec = art.read(ad / "PLAN.md")
     except art.ArtifactError:
         spec = ""
     for name in ("Context", "Assumptions"):
-        source(f"SPEC.md {name}", art.find_section(spec, name) if spec else None)
+        source(f"PLAN.md {name}", art.find_section(spec, name) if spec else None)
     source("the task", task.get("text"))
     ask = (task.get("ask") or "").strip()
     if ask and ask != (task.get("text") or "").strip():
@@ -432,7 +432,7 @@ def template_sections(path):
     points at the checks; a checklist is copied with every box unticked and a
     WRITE line asking for the boxes the run shows are true to be ticked; any
     other section gets a WRITE line carrying what the template asks there (its
-    comments and plain text), so the orchestrator answers it from SPEC.md.
+    comments and plain text), so the orchestrator answers it from PLAN.md.
     """
     out = []
     for heading, lines in _sections(path):
@@ -453,7 +453,7 @@ def template_sections(path):
             out.append("See _Acceptance conditions_ and _Quality gate_ above.")
         elif boxes:
             out += boxes
-            out.append("<!-- WRITE: tick each box SPEC.md, the task (`autodev.py show`) "
+            out.append("<!-- WRITE: tick each box PLAN.md, the task (`autodev.py show`) "
                        "or this description shows is true, and leave unticked any only a "
                        "person can confirm. "
                        "Keep every item's words as they are -->")
@@ -461,7 +461,7 @@ def template_sections(path):
             hint = re.sub(r"-{2,}", "-", hint)  # it can't end the WRITE comment
             out.append("<!-- WRITE: the repo's PR template asks for this section"
                        + (f" ({hint})" if hint else "") + ". Answer it in plain words "
-                       "from SPEC.md, or write N/A -->")
+                       "from PLAN.md, or write N/A -->")
         out.append("")
     return out
 

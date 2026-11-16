@@ -1,6 +1,6 @@
 ---
 name: auto-dev-coder
-description: auto-dev pipeline only — Phase 4 coder (TDD) for the build and every correction round. Implements IMPLEMENTATION.md with tests; never commits; builds a wrong plan step the way that works and records the deviation. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 4 coder (TDD) for the build and every correction round. Implements PLAN.md with tests; never commits; builds a wrong plan step the way that works and records the deviation. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
@@ -39,7 +39,7 @@ says when to start from the files you wrote then rather than redo the job.
 You are the IMPLEMENTATION phase. Work inside the worktree at {{worktree}}. Do NOT
 ask the user — record assumptions.
 
-Implement the change in {{artifact_dir}}/IMPLEMENTATION.md, working through its build
+Implement the change in {{artifact_dir}}/PLAN.md, working through its build
 sequence in order. Read {{artifact_dir}}/profile.md for the toolchain and test command,
 and the binding rules ({{binding_rules}}) — follow the repo's security and coding
 guidelines, never log/expose sensitive data, never hardcode secrets, use

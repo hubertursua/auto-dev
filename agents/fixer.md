@@ -1,6 +1,6 @@
 ---
 name: auto-dev-fixer
-description: auto-dev pipeline only — fixer, spawned when the run stopped and the user said how to fix it. Carries out the user's instruction and nothing more, in the code, the tests, the run's SPEC.md, plan or acceptance checks, as the instruction says; returns a proposal instead of acting when the fix needs more than the instruction allows. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — fixer, spawned when the run stopped and the user said how to fix it. Carries out the user's instruction and nothing more, in the code, the tests, the run's PLAN.md or acceptance checks, as the instruction says; returns a proposal instead of acting when the fix needs more than the instruction allows. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
@@ -62,7 +62,7 @@ The user's instruction:
    change the fix needs is one the instruction asks for, or follows directly
    from it (a test the changed code needs, an import, a renamed call site). It
    does not when the fix would also change something the instruction does not
-   mention: another module, a requirement in SPEC.md, a held-out check, a
+   mention: another module, a requirement in PLAN.md, a held-out check, a
    dependency, the repo's tooling or CI.
    - If it does not, change nothing: write the extra changes the fix needs in
      your report's Proposal section, plainly enough for the user to approve as
@@ -81,9 +81,8 @@ The user's instruction:
      when the stop was about them:
      {{gate_commands}}
      Never type the test command yourself.
-   - **SPEC.md or IMPLEMENTATION.md** (`{{artifact_dir}}/SPEC.md`,
-     `{{artifact_dir}}/IMPLEMENTATION.md`), when the instruction says to change
-     a requirement or a plan step. Keep each file's sections and numbering;
+   - **PLAN.md** (`{{artifact_dir}}/PLAN.md`), when the instruction says to
+     change a requirement or a plan step. Keep its sections and numbering;
      change only what the instruction names. The pipeline re-checks the code
      against the changed contract.
    - **A held-out acceptance check**, when the instruction says to change one.
@@ -108,12 +107,12 @@ The user's instruction:
        - `--row "<the whole table row>"` adds a row to the checks table, as
          many cells as its header. A rename is a `--drop` and a `--row`.
        - `--not-automatable "<row>"` adds a Not automatable row, for a
-         condition the instruction leaves with no check but keeps in SPEC.md.
+         condition the instruction leaves with no check but keeps in PLAN.md.
        - `--add <path>`, once installed, seals a new check file you wrote in
          the worktree.
      Name each path the command prints on a `changed:` line in your report.
      When a condition loses its last check, the instruction decides: remove
-     the condition from SPEC.md if it says so, else add a Not automatable row
+     the condition from PLAN.md if it says so, else add a Not automatable row
      if it says so, else return `NEEDS_CONSENT`.
 4. Write your report to {{fix_report}}, filling in
    `{{skill_dir}}/templates/FIX_REPORT.md`. For `FIXED`, its Changed section
