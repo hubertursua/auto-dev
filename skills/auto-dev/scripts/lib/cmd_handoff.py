@@ -32,9 +32,9 @@ from . import state as st
 from .output import Fail, emit
 
 # The run files the next session's orchestrator may open, by stage. The
-# workers read the rest; the Ship stage writes the PR's Summary from SPEC.md.
+# workers read the rest; the Ship stage writes the PR's Summary from PLAN.md.
 FILES = {"plan": ["profile.md", "WORK_LOG.md"], "build": ["profile.md"],
-         "ship": ["profile.md", "SPEC.md"]}
+         "ship": ["profile.md", "PLAN.md"]}
 
 
 def add_arguments(parser):

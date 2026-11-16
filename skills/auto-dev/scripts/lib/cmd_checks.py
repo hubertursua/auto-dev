@@ -1,4 +1,4 @@
-"""autodev.py check-manifest / eval-status / apply-fix / spec-overlap /
+"""autodev.py check-manifest / eval-status / spec-overlap /
 security-reviewer / install-checks.
 
 Mechanical reads of the workers' artifacts, so the orchestrator acts on a
@@ -6,7 +6,7 @@ printed decision instead of judging the files itself. Each takes `--dir
 <artifact-dir>` (default `./.auto-dev`) and `--json`.
 
 check-manifest
-    Checks the acceptance tester's MANIFEST.md against SPEC.md: every condition
+    Checks the acceptance tester's MANIFEST.md against PLAN.md: every condition
     has a check or a Not automatable row; every condition with a real Edge has
     a check covering it or an `<n> (Edge)` row; no check's Level is below its
     condition's Verify by (unless the Level cell says why); every condition with
@@ -47,43 +47,24 @@ eval-status [--install-conflict] [--mutation-left-changes]
     Exit: 0 a decision; 1 SPEC_EVAL.md is malformed or misses a condition
     (re-spawn the verifier).
 
-apply-fix <file> <fix-file>
-    Applies a reviewer's FIX blocks to <file> (SPEC.md or IMPLEMENTATION.md).
-    A FIX block is:
-        FIX <id>
-        <<<<<<< OLD
-        <exact old text>
-        =======
-        <new text>
-        >>>>>>> NEW
-    All or nothing: each old text must occur exactly once (after the blocks
-    before it are applied), every `FIX` line must start a well-formed block,
-    and no new text may hold a marker line; otherwise nothing is written.
-    When <file> is SPEC.md and the run's size check said FITS, a Security/
-    Compliance criterion (`S<n>.`) in the result turns the run high-risk and the
-    post-plan gate on (printed as `high_risk: yes`); a fix never turns it off.
-    Exit: 0 applied; 1 no FIX block, or a block is malformed or didn't match
-    (`NO-MATCH`): spawn the file's author in revise mode with the fix file
-    instead.
-
-spec-overlap <file> [--spec SPEC.md] [--words N]
-    Refuses a correction brief or plan that copies a condition's wording from
-    SPEC.md: any run of N consecutive words (default 6, or the whole condition
+spec-overlap <file> [--spec PLAN.md] [--words N]
+    Refuses a correction brief that copies a condition's wording from
+    PLAN.md: any run of N consecutive words (default 6, or the whole condition
     when shorter) of a condition's text found in <file>. In a required-changes
     file (`*corrections.md`, `triage/*.md`) text in backticks or double quotes
     is left out: it quotes a test name, an assertion or output, not the spec.
-    `record` runs the same check on the planner's IMPLEMENTATION.md and on each
+    `record` runs the same check on the planner's PLAN.md and on each
     required-changes file the coder gets unedited.
     Exit: 0 no overlap; 1 overlap (the copied words are printed): rewrite it as
     concrete behavior.
 
 security-reviewer
     Prints the security reviewer to spawn: `auto-dev:security-reviewer-sensitive`
-    when SPEC.md's Security/Compliance criteria section lists any criterion (the
-    Define agent writes it only for a sensitive path), else
+    when PLAN.md's Security/Compliance criteria section lists any criterion (the
+    planner writes it only for a sensitive path), else
     `auto-dev:security-reviewer`.
-    Exit: 0 printed; 1 SPEC.md is malformed (no `## Conditions` section or no
-    numbered condition); 2 SPEC.md is missing or unreadable.
+    Exit: 0 printed; 1 PLAN.md is malformed (no `## Conditions` section or no
+    numbered condition); 2 PLAN.md is missing or unreadable.
 
 install-checks [--recheck]
     Installs each sealed acceptance check, acceptance/files/<path>.sealed, at
@@ -116,11 +97,6 @@ from . import sealed
 from . import state as st
 from .output import CANNOT_RUN, FAILED, Fail, emit
 
-FIX_RE = re.compile(r"^FIX[ \t]+(\S+)[ \t]*\n<<<<<<< OLD\n(.*?)\n=======\n(.*?)\n?>>>>>>> NEW",
-                    re.DOTALL | re.MULTILINE)
-FIX_HEADER_RE = re.compile(r"^FIX\s", re.MULTILINE)
-# A marker line left in a block's new text: the block was cut or run together.
-CONFLICT_RE = re.compile(r"^(<{7}(?:[ \t].*)?|={7}|>{7}(?:[ \t].*)?)[ \t]*$", re.MULTILINE)
 WORD_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -129,14 +105,11 @@ def add_arguments(parser, name):
     if name == "eval-status":
         parser.add_argument("--install-conflict", action="store_true")
         parser.add_argument("--mutation-left-changes", action="store_true")
-    elif name == "apply-fix":
-        parser.add_argument("file")
-        parser.add_argument("fix_file")
     elif name == "install-checks":
         parser.add_argument("--recheck", action="store_true")
     elif name == "spec-overlap":
         parser.add_argument("file")
-        parser.add_argument("--spec", help="default: <dir>/SPEC.md")
+        parser.add_argument("--spec", help="default: <dir>/PLAN.md")
         parser.add_argument("--words", type=int, default=6)
 
 
@@ -224,7 +197,7 @@ def edge_is_real(edge):
 @wrap
 def check_manifest(args):
     ad = Path(args.dir)
-    conditions = art.spec_conditions(ad / "SPEC.md")
+    conditions = art.spec_conditions(ad / "PLAN.md")
     rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
     worktree = worktree_of(args)
     gaps = {}
@@ -368,7 +341,7 @@ def eval_decision(ad, install_conflict=False, mutation_left_changes=False):
         # The verifier stopped before judging: SPEC_EVAL.md is absent or stale.
         return "CORRECT", {"correct": [INSTALL_CONFLICT], "repair": "", "manual": "",
                            "survivor": []}
-    conditions = art.spec_conditions(ad / "SPEC.md")
+    conditions = art.spec_conditions(ad / "PLAN.md")
     ev = art.spec_eval(ad / "SPEC_EVAL.md")
     verdicts = {r["#"].strip(): r for r in ev["rows"]}
     missing = [c["id"] for c in conditions if c["id"] not in verdicts]
@@ -437,89 +410,6 @@ def defective_conditions(ad, section):
             if (path, name) in named or (path in paths and owners[path] == {cid})}
 
 
-@wrap
-def apply_fix(args):
-    target = Path(args.file)
-    blocks, failed = apply_fix_file(target, args.fix_file)
-    if not blocks and not failed:
-        raise Fail(f"{args.fix_file} holds no FIX block", FAILED, "NO-MATCH")
-    if failed:
-        note_fix(args, "no-match")
-        emit(args.json, "NO-MATCH", f"nothing written to {target}: spawn its author in "
-             f"revise mode with {args.fix_file}", block=failed)
-        return FAILED
-    extra = {}
-    if target.name == "SPEC.md":
-        try:
-            state = st.load(args.dir)
-        except st.StateError:
-            state = None  # apply-fix outside a run: there is no gate to turn on
-        try:
-            changed = state is not None and rederive_risk(state, target)
-        except art.ArtifactError:
-            changed = False  # SPEC.md is written; it is checked when it is used
-        if changed:
-            st.add_note(state, "SPEC.md gained a Security/Compliance criterion: "
-                        "high risk, post-plan gate on")
-            st.save(args.dir, state)
-        if state is not None and state.get("high_risk"):
-            extra["high_risk"] = "yes"
-    note_fix(args, "applied")
-    emit(args.json, "APPLIED", f"{len(blocks)} FIX block(s) to {target}", **extra)
-    return 0
-
-
-def rederive_risk(state, spec):
-    """Turn high_risk and the post-plan gate on when a run that FITS has a
-    Security/Compliance criterion in SPEC.md. Never turns either off.
-    Returns whether anything changed."""
-    if state.get("size") != "FITS":
-        return False
-    if not any(c["id"].startswith("S") for c in art.spec_conditions(spec)):
-        return False
-    settings = state.setdefault("settings", {})
-    changed = not state.get("high_risk") or not settings.get("post_plan_gate")
-    state["high_risk"] = True
-    settings["post_plan_gate"] = True
-    return changed
-
-
-def apply_fix_file(target, fix_file):
-    """Apply every FIX block, or none: (blocks, [why each failed])."""
-    fixes, text = art.read(fix_file), art.read(target)
-    blocks = FIX_RE.findall(fixes)
-    headers = len(FIX_HEADER_RE.findall(fixes))
-    failed = []
-    if headers != len(blocks):
-        failed.append(f"{headers} FIX header(s) but {len(blocks)} well-formed block(s): "
-                      "each needs `<<<<<<< OLD`, `=======` and `>>>>>>> NEW` lines")
-    for fix_id, old, new in blocks:
-        if CONFLICT_RE.search(new):
-            failed.append(f"FIX {fix_id}: its new text holds a conflict marker line")
-            continue
-        count = text.count(old)
-        if count != 1:
-            failed.append(f"FIX {fix_id}: old text found {count} times")
-            continue
-        text = text.replace(old, new, 1)
-    if blocks and not failed:
-        tmp = Path(target).with_name(f".{Path(target).name}.fix")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(target)
-    return blocks, failed
-
-
-def note_fix(args, outcome):
-    """Record the outcome in state.json, when there is a run, for `next`."""
-    try:
-        state = st.load(args.dir)
-    except st.StateError:
-        return
-    state.setdefault("fixes", {})[str(Path(args.fix_file).resolve())] = {
-        "outcome": outcome, "seq": st.seq(state)}
-    st.save(args.dir, state)
-
-
 def words(text):
     return WORD_RE.findall(text.lower().replace("'", "").replace("’", ""))
 
@@ -568,10 +458,10 @@ def phrase_hits(text, sources, n=6, quoted=False):
 
 @wrap
 def spec_overlap(args):
-    spec = Path(args.spec) if args.spec else Path(args.dir) / "SPEC.md"
+    spec = Path(args.spec) if args.spec else Path(args.dir) / "PLAN.md"
     hits = overlaps(args.file, spec, args.words)
     if hits:
-        emit(args.json, "OVERLAP", f"{args.file} copies SPEC.md's wording: say what the "
+        emit(args.json, "OVERLAP", f"{args.file} copies PLAN.md's wording: say what the "
              "code must do and where, in your own words", copied=hits)
         return FAILED
     emit(args.json, "CLEAN", f"{args.file} copies no condition's wording")
@@ -579,12 +469,12 @@ def spec_overlap(args):
 
 
 def security_criteria(ad):
-    """SPEC.md's Security/Compliance criteria (`S<n>.` conditions)."""
-    return [c for c in art.spec_conditions(Path(ad) / "SPEC.md") if c["id"].startswith("S")]
+    """PLAN.md's Security/Compliance criteria (`S<n>.` conditions)."""
+    return [c for c in art.spec_conditions(Path(ad) / "PLAN.md") if c["id"].startswith("S")]
 
 
 def security_agent(ad):
-    """The security reviewer to spawn: the sensitive one when SPEC.md lists any
+    """The security reviewer to spawn: the sensitive one when PLAN.md lists any
     Security/Compliance criterion. `next` and `security-reviewer` both use it."""
     return ("auto-dev:security-reviewer-sensitive" if security_criteria(ad)
             else "auto-dev:security-reviewer")

@@ -24,7 +24,7 @@ means acceptance/INSTALLED exists: the checks are in the worktree.
     files/<path>.base), its sealed copy goes too, and, once installed, the
     file in the worktree. `record` refuses the fixer's result while a dropped
     test is still in its file, or when a condition that had a check has none
-    left and no Not automatable row (and is still in SPEC.md).
+    left and no Not automatable row (and is still in PLAN.md).
 --row "| <#> | <condition> | `<path>` :: \"<test name>\" | … |"   (repeatable)
     Adds a row to the checks table, with as many cells as its header. A
     rename is a --drop of the old name and a --row with the new one.

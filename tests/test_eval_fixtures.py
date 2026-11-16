@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_autodev import ROOT, SCRIPTS, RunCase
-from test_next import IMPLEMENTATION, NextCase
+from test_next import PLANNED, NextCase
 
 sys.path.insert(0, str(SCRIPTS))
 from lib import state as st
@@ -127,13 +127,10 @@ class ResumeBuildReplayTest(NextCase):
                             "--max-wait", "30", *extra)
 
     def test_the_resume_build_fixtures_are_what_the_plan_stage_writes(self):
-        # The Plan stage straight through, each worker spawned once (NextCase.plan_session
-        # also re-issues the planner, which a fixture shouldn't show).
-        self.expect("define", "FITS", high_risk="yes", reading="none")
-        self.expect("define-reviewer", "CLEAN", blockers="0", fix_file="none")
-        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
-        self.expect("planner", "WRITTEN", entry_points_changed="no")
-        self.expect("plan-reviewer", "CLEAN", blockers="0", fix_file="none")
+        # The Plan stage straight through, each worker spawned once: the planner,
+        # the plan critic (who approves), the acceptance tester.
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic()
         self.expect("acceptance-tester", "SEALED", checks="4", ambiguous="none")
         self.after(self.next(5), "Approve & build")  # high risk: the post-plan gate
         self.assertIn("read references/build.md", self.next(0)["ACTION"])

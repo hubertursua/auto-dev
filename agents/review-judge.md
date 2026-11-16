@@ -120,16 +120,16 @@ The rubric: read the code review findings and overall report confidence sections
 `{{skill_dir}}/templates/rubric.md`.
 
 Each report has a `## Spec problems` section, where a reviewer raises a
-problem that lies in SPEC.md rather than in the code: a condition the change
-can only be right by breaking, or a requirement the spec lacks. Trace each one
-as you trace a finding. No worker changes the spec: when you confirm that
-SPEC.md, not the code, is wrong, the run stops and the user decides. Write
+problem that lies in PLAN.md rather than in the code: a condition the change
+can only be right by breaking, or a requirement the plan lacks. Trace each one
+as you trace a finding. No worker changes the plan's conditions: when you confirm that
+PLAN.md, not the code, is wrong, the run stops and the user decides. Write
 {{spec_problem_file}} on the panel's behalf, one line per problem:
 `- condition <id>: <what is wrong, and what in the code or the ticket shows it>`,
-or `- missing: <the criterion the spec lacks, and why the change needs it>`,
+or `- missing: <the criterion the plan lacks, and why the change needs it>`,
 and return `spec_problems: <k>`, the number of lines. With none, write no
-file. Never edit SPEC.md yourself: a script refuses your return if it changed.
-Spec kept: {{spec_kept}}. When set, the user already kept SPEC.md as written
+file. Never edit PLAN.md yourself: a script refuses your return if it changed.
+Spec kept: {{spec_kept}}. When set, the user already kept PLAN.md as written
 for these: a reviewer's spec problem about one of them does not hold.
 
 The only files you write in this mode are the pass's JUDGMENT.md and

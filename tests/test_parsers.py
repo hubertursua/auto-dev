@@ -1,5 +1,5 @@
 """Tests for autodev.py's artifact parsers (check-manifest, eval-status,
-apply-fix, spec-overlap, votes, gate-summary).
+spec-overlap, votes, gate-summary).
 
 Run: python3 -m unittest discover -s tests -v   (from the repo root)
 
@@ -23,7 +23,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "parsers"
 
-SPEC = (FIXTURES / "SPEC.md").read_text()
+PLAN = (FIXTURES / "PLAN.md").read_text()
 
 MANIFEST = (FIXTURES / "MANIFEST.md").read_text()
 
@@ -57,7 +57,7 @@ class ArtifactCase(unittest.TestCase):
         self.dir = self.tmp / ".auto-dev"
         acc = self.dir / "acceptance"
         (acc / "base-run").mkdir(parents=True)
-        (self.dir / "SPEC.md").write_text(SPEC)
+        (self.dir / "PLAN.md").write_text(PLAN)
         (acc / "MANIFEST.md").write_text(MANIFEST)
         for name, text in BASE_RUNS.items():
             (acc / "base-run" / name).write_text(text)
@@ -159,7 +159,7 @@ class CheckManifestTest(ArtifactCase):
         self.assertIn("pass-to-pass but did not pass", r.stdout)
 
     def test_missing_spec_cannot_run(self):
-        (self.dir / "SPEC.md").unlink()
+        (self.dir / "PLAN.md").unlink()
         self.assertEqual(self.cmd("check-manifest").returncode, 2)
 
 
@@ -190,7 +190,7 @@ class CheckManifestTest(ArtifactCase):
     def test_the_first_level_named_in_verify_by_counts(self):
         # Example in TypeScript: the unit check satisfies "unit", although the
         # Verify by line also names the integration layer it mocks.
-        self.write("SPEC.md", SPEC.replace(
+        self.write("PLAN.md", PLAN.replace(
             "   - Verify by: unit",
             "   - Verify by: unit — the integration layer is mocked"))
         r = self.cmd("check-manifest")
@@ -276,7 +276,7 @@ class EvalStatusTest(ArtifactCase):
     def test_an_unmet_condition_with_a_defective_check_is_also_corrected(self):
         self.spec_eval(v2="unmet", e2="acceptance check failed: unsorted",
                        defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
-                                 'first" asserts an order SPEC.md does not give')
+                                 'first" asserts an order PLAN.md does not give')
         r = self.cmd("eval-status")
         self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
         self.assertIn("repair: 2", r.stdout)
@@ -319,13 +319,13 @@ class EvalStatusTest(ArtifactCase):
 
 class SecurityReviewerTest(ArtifactCase):
     def test_no_spec_cannot_run(self):
-        (self.dir / "SPEC.md").unlink()
+        (self.dir / "PLAN.md").unlink()
         r = self.cmd("security-reviewer")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("SPEC.md does not exist", r.stderr)
+        self.assertIn("PLAN.md does not exist", r.stderr)
 
     def test_a_spec_without_conditions_is_malformed(self):
-        (self.dir / "SPEC.md").write_text("# Spec\n\nNo conditions here.\n")
+        (self.dir / "PLAN.md").write_text("# Spec\n\nNo conditions here.\n")
         r = self.cmd("security-reviewer")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("MALFORMED", r.stderr)
@@ -333,53 +333,10 @@ class SecurityReviewerTest(ArtifactCase):
     def test_security_criteria_pick_the_sensitive_reviewer(self):
         r = self.cmd("security-reviewer")
         self.assertIn("AGENT: auto-dev:security-reviewer-sensitive", r.stdout)
-        spec = self.dir / "SPEC.md"
+        spec = self.dir / "PLAN.md"
         spec.write_text(spec.read_text().split("## Security/Compliance criteria")[0])
         r = self.cmd("security-reviewer")
         self.assertIn("AGENT: auto-dev:security-reviewer\n", r.stdout)
-
-
-class ApplyFixTest(ArtifactCase):
-    def fix(self, old, new, fix_id="1"):
-        return self.write("fix.md", f"FIX {fix_id}\n<<<<<<< OLD\n{old}\n=======\n{new}\n"
-                                    ">>>>>>> NEW\n")
-
-    def test_applies_an_exact_match(self):
-        self.fix("   - Edge: an invalid date is rejected → 400",
-                 "   - Edge: a due date of 2026-02-30 is rejected → 400")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("2026-02-30 is rejected", (self.dir / "SPEC.md").read_text())
-
-    def test_an_ambiguous_block_writes_nothing(self):
-        self.fix("   - Verify by: integration", "   - Verify by: end-to-end")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("found 2 times", r.stdout)
-        self.assertEqual((self.dir / "SPEC.md").read_text(), SPEC)
-
-
-    def test_a_malformed_block_writes_nothing(self):
-        # The first block lacks its `>>>>>>> NEW` line, so it runs into the second.
-        self.write("fix.md", "FIX 1\n<<<<<<< OLD\n   - Verify by: unit\n=======\n"
-                             "   - Verify by: integration\n"
-                             "FIX 2\n<<<<<<< OLD\nTodos have no due dates.\n=======\n"
-                             "Todos have no dates.\n>>>>>>> NEW\n")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("NO-MATCH", r.stdout)
-        self.assertEqual((self.dir / "SPEC.md").read_text(), SPEC)
-
-    def test_no_fix_block_is_refused(self):
-        self.write("fix.md", "The spec looks fine.\n")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("no FIX block", r.stderr)
-
-    def test_a_missing_target_cannot_run(self):
-        self.fix("a", "b")
-        r = self.cmd("apply-fix", self.dir / "NOPE.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 2)
 
 
 class SpecOverlapTest(ArtifactCase):
@@ -604,7 +561,7 @@ class ReviewAndGateTest(RunCase):
     def setUp(self):
         super().setUp()
         self.assertEqual(self.init().returncode, 0)
-        for name, text in (("SPEC.md", SPEC), ("acceptance/MANIFEST.md", MANIFEST)):
+        for name, text in (("PLAN.md", PLAN), ("acceptance/MANIFEST.md", MANIFEST)):
             path = self.dir / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)

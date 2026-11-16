@@ -13,9 +13,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_autodev import SCRIPTS, RunCase
 from test_autodev import RunCase as InitCase
-from test_parsers import CODE_REVIEW, FIXTURES, MANIFEST, SPEC, SPEC_EVAL
+from test_parsers import CODE_REVIEW, FIXTURES, MANIFEST, PLAN, SPEC_EVAL
 
-SPEC_NO_SECURITY = SPEC.split("## Security/Compliance criteria")[0]
+# The fixture plan at standard risk: no Security/Compliance criteria.
+PLAN_NO_SECURITY = PLAN.replace("Risk: high", "Risk: standard").split(
+    "## Security/Compliance criteria")[0] + "## Size check" + PLAN.split("## Size check")[1]
+PLANNED = {"risk": "high", "reading": "none", "entry_points_changed": "no"}
+
+
+def plan_review(verdict="APPROVE", risk="high", blockers=()):
+    """A plan critic's review file; `blockers` are (evidence, change) pairs."""
+    rows = "".join(f"### B{i}. the plan misses case {i}\n- Evidence: {ev}\n- Change: {ch}\n\n"
+                   for i, (ev, ch) in enumerate(blockers, 1)) or "none\n\n"
+    return (f"# Plan review — review\n\nVerdict: {verdict}\nRisk: {risk} — right\n\n"
+            f"## Blockers\n{rows}## Notes\nnone\n")
 # The result keys most tests leave at their default: nothing found.
 DEFAULT_KEYS = {"coder": {"deviations": "0"}, "verifier": {"spec_problems": "0"},
                 "review-judge": {"spec_problems": "0"},
@@ -30,7 +41,7 @@ class WorkCase(RunCase):
     def setUp(self):
         super().setUp()
         self.assertEqual(self.init().returncode, 0)
-        (self.dir / "SPEC.md").write_text(SPEC)
+        (self.dir / "PLAN.md").write_text(PLAN)
         (self.dir / "acceptance").mkdir(exist_ok=True)
         (self.dir / "acceptance" / "MANIFEST.md").write_text(MANIFEST)
 
@@ -75,20 +86,33 @@ class WorkCase(RunCase):
 
 
 class BriefTest(WorkCase):
-    def test_define_brief_fills_its_slots_from_state(self):
-        r = self.cmd("brief", "define", "--mode", "write")
+    def test_planner_brief_fills_its_slots_from_state(self):
+        r = self.cmd("brief", "planner", "--mode", "write")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("agent: auto-dev:define", r.stdout)
-        path = self.dir / "briefs" / "define-1.md"
+        self.assertIn("agent: auto-dev:planner", r.stdout)
+        path = self.dir / "briefs" / "planner-1.md"
         self.assertIn(f"prompt: Your brief is at {path}. Read it first.", r.stdout)
         values = self.brief_values(path)
         self.assertEqual(values["mode"], "write")
         self.assertEqual(values["worktree"], str(self.worktree))
         self.assertEqual(values["task"], "Add due dates to todos")
-        self.assertEqual(values["result_file"], str(self.dir / "returns" / "define-1.json"))
+        self.assertEqual(values["result_file"], str(self.dir / "returns" / "planner-1.json"))
         self.assertIn("CLAUDE.md", values["binding_rules"])
-        self.cmd("brief", "define", "--mode", "write")
-        self.assertTrue((self.dir / "briefs" / "define-2.md").exists())
+        self.cmd("brief", "planner", "--mode", "write")
+        self.assertTrue((self.dir / "briefs" / "planner-2.md").exists())
+
+    def test_the_critic_s_review_file_is_filled_and_the_planner_s_is_optional(self):
+        r = self.cmd("brief", "plan-critic", "--mode", "review")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "plan-critic-1.md")
+        self.assertEqual(values["review_file"], str(self.dir / "plan-review" / "1.md"))
+        self.assertEqual(values["task"], "Add due dates to todos")
+        r = self.cmd("brief", "plan-critic", "--mode", "recheck", "--set",
+                     f"earlier={self.dir}/plan-review/1.md")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "plan-critic-2.md")
+        self.assertEqual(values["earlier"], f"{self.dir}/plan-review/1.md")
+        self.assertEqual(values["review_file"], str(self.dir / "plan-review" / "2.md"))
 
     def test_coder_correction_brief_names_the_acceptance_paths(self):
         r = self.cmd("brief", "coder", "--mode", "correction", "--set",
@@ -119,7 +143,7 @@ class BriefTest(WorkCase):
         r = self.cmd("brief", "planner", "--mode", "revise", "--set", "direction=use UTC")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         values = self.brief_values(self.dir / "briefs" / "planner-1.md")
-        self.assertEqual(values["fix_file"], "none")
+        self.assertEqual(values["review_file"], "none")
         self.assertEqual(values["direction"], "use UTC")
 
     def test_verifier_brief_carries_the_last_survivors(self):
@@ -194,26 +218,26 @@ class BriefTest(WorkCase):
         self.assertEqual(values["tree"], "a" * 40)
 
     def test_refused_issues_reach_only_that_jobs_retry(self):
-        self.returned("define", 1, next="FITS", high_risk="no", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 1)
-        self.assertEqual(self.cmd("brief", "define", "--mode", "write", "--retry", "1")
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 1)
+        self.assertEqual(self.cmd("brief", "planner", "--mode", "write", "--retry", "1")
                          .returncode, 0)
-        text = (self.dir / "briefs" / "define-1.md").read_text()
-        self.assertIn("\n  - SPEC.md has Security/Compliance criteria", text)
+        text = (self.dir / "briefs" / "planner-1.md").read_text()
+        self.assertIn("\n  - risk is standard but PLAN.md's `Risk:` line says high", text)
         # A fix-up, not a redo: the refused return's files are kept.
         self.assertIn("previous_issues: `record` refused your last return for this job, "
                       "and the files you wrote for it are still in place.", text)
         self.assertIn("redo what your fix makes stale", text)
         self.assertIn("even where your instructions say to start clean", text)
         self.assertIn("If they are missing, partial or from an earlier pass", text)
-        self.cmd("brief", "define", "--mode", "write")
-        values = self.brief_values(self.dir / "briefs" / "define-2.md")
+        self.cmd("brief", "planner", "--mode", "write")
+        values = self.brief_values(self.dir / "briefs" / "planner-2.md")
         self.assertEqual(values["previous_issues"], "none")
-        self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        r = self.cmd("brief", "define", "--mode", "write", "--retry", "1")
+        self.returned("planner", 1, next="FITS", **PLANNED)
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+        r = self.cmd("brief", "planner", "--mode", "write", "--retry", "1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("refused no return for define-1", r.stderr)
+        self.assertIn("refused no return for planner-1", r.stderr)
 
     def test_sibling_jobs_keep_their_own_issues(self):
         # Three reviewers in parallel: R1 wrote nothing, R2 is fine, R3 left a key out.
@@ -264,41 +288,132 @@ class BriefTest(WorkCase):
 
 
 class RecordTest(WorkCase):
-    def test_define_size_is_recorded_and_checked_against_the_spec(self):
-        self.returned("define", 1, next="FITS", high_risk="no", reading="none")
-        r = self.cmd("record", "define", "1")
+    def test_the_planner_s_size_and_risk_are_recorded_and_checked_against_the_plan(self):
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("Security/Compliance criteria", r.stdout)
-        self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
-        r = self.cmd("record", "define", "1")
+        self.assertIn("risk is standard but PLAN.md's `Risk:` line says high", r.stdout)
+        self.returned("planner", 1, next="FITS", **PLANNED)
+        r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = self.state()
         self.assertEqual(state["size"], "FITS")
+        self.assertTrue(state["high_risk"])
         self.assertTrue(state["settings"]["post_plan_gate"])
 
-    def test_define_spec_is_checked_against_its_template(self):
-        # Define has no shell to run check-artifact: record does it.
-        (self.dir / "SPEC.md").write_text(SPEC.replace(
-            "   - Edge: an invalid date is rejected → 400\n", "", 1))
-        self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
-        r = self.cmd("record", "define", "1")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("SPEC.md: condition 1 has no `Edge:` line", r.stdout)
-        (self.dir / "SPEC.md").write_text(SPEC)
-        r = self.cmd("record", "define", "1")
+    def test_the_planner_s_size_must_match_the_plan_s_size_check(self):
+        self.returned("planner", 1, next="OVERSIZED", **PLANNED)
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("next is OVERSIZED but PLAN.md's size check says FITS", r.stdout)
+
+    def test_security_criteria_need_a_high_risk_plan(self):
+        self.write("PLAN.md", PLAN.replace("Risk: high", "Risk: standard"))
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Security/Compliance criteria but its `Risk:` is not high", r.stdout)
+
+    def test_a_standard_plan_is_recorded_standard(self):
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        for nxt in ("REVISED", "OVERSIZED"):  # every ok return is checked
-            (self.dir / "SPEC.md").write_text(SPEC.replace(
+        state = self.state()
+        self.assertFalse(state["high_risk"])
+        self.assertFalse(state["settings"].get("post_plan_gate"))
+
+    def test_the_plan_is_checked_against_its_template(self):
+        # The planner has no shell to run check-artifact: record does it.
+        (self.dir / "PLAN.md").write_text(PLAN.replace(
+            "   - Edge: an invalid date is rejected → 400\n", "", 1))
+        self.returned("planner", 1, next="FITS", **PLANNED)
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("PLAN.md: condition 1 has no `Edge:` line", r.stdout)
+        (self.dir / "PLAN.md").write_text(PLAN)
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for nxt in ("REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST"):  # every ok return
+            (self.dir / "PLAN.md").write_text(PLAN.replace(
                 "   - Verify by: unit\n", "", 1))
-            self.returned("define", 2, next=nxt, high_risk="yes", reading="none")
-            r = self.cmd("record", "define", "2")
+            self.returned("planner", 2, next=nxt, **PLANNED)
+            r = self.cmd("record", "planner", "2")
             self.assertEqual(r.returncode, 1, nxt + r.stdout + r.stderr)
             self.assertIn("condition 2 has no `Verify by:` line", r.stdout)
 
     def test_oversized_stops_the_run(self):
-        self.returned("define", 1, next="OVERSIZED", high_risk="yes", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        self.assertEqual(self.state()["phases"]["2"]["status"], "stopped")
+        self.write("PLAN.md", PLAN.split("## Size check")[0] + "## Size check\n"
+                   "OVERSIZED: three deliverables.\n")
+        self.returned("planner", 1, next="OVERSIZED", **PLANNED)
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+        state = self.state()
+        self.assertEqual(state["phases"]["2"]["status"], "stopped")
+        self.assertFalse(state["high_risk"])  # an OVERSIZED plan raises nothing
+
+    def test_a_revision_can_raise_the_risk_but_not_lower_it(self):
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+        self.assertFalse(self.state()["high_risk"])
+        self.write("PLAN.md", PLAN)
+        self.returned("planner", 2, next="REVISED", **PLANNED)
+        self.assertEqual(self.cmd("record", "planner", "2").returncode, 0)
+        state = self.state()
+        self.assertTrue(state["high_risk"])
+        self.assertTrue(state["settings"]["post_plan_gate"])
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.returned("planner", 3, next="REVISED", **{**PLANNED, "risk": "standard"})
+        self.assertEqual(self.cmd("record", "planner", "3").returncode, 0)
+        self.assertTrue(self.state()["high_risk"])
+
+    def test_the_critic_can_t_lower_a_high_plan(self):
+        self.state_size("FITS")  # PLAN.md is the fixture: Risk: high
+        self.write("plan-review/1.md", plan_review("REVISE", "standard",
+                                                   [("`src/due.ts:3`", "add a step")]))
+        self.returned("plan-critic", 1, next="REVISE", blockers="1", risk="standard")
+        r = self.cmd("record", "plan-critic", "1")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("the critic can't lower the tier", r.stdout)
+
+    def test_the_critic_s_result_must_match_its_review(self):
+        self.state_size("FITS")
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.write("plan-review/1.md", plan_review("REVISE", "standard",
+                                                   [("`src/due.ts:3`", "add a step")]))
+        for data, why in (
+                ({"next": "APPROVE", "blockers": "1", "risk": "standard"},
+                 "next is APPROVE but the review's verdict is REVISE"),
+                ({"next": "REVISE", "blockers": "2", "risk": "standard"},
+                 "blockers is 2 but the review lists 1"),
+                ({"next": "REVISE", "blockers": "1", "risk": "high"},
+                 "risk is high but the review's `Risk:` says standard")):
+            self.returned("plan-critic", 1, **data)
+            r = self.cmd("record", "plan-critic", "1")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn(why, r.stdout)
+        self.returned("plan-critic", 1, next="REVISE", blockers="1", risk="standard")
+        r = self.cmd("record", "plan-critic", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_the_critic_must_write_its_review(self):
+        self.returned("plan-critic", 1, next="APPROVE", blockers="0", risk="high")
+        r = self.cmd("record", "plan-critic", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("plan-review/1.md does not exist", r.stdout)
+
+    def test_a_high_risk_critic_raises_the_tier(self):
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+        self.write("plan-review/2.md", plan_review("APPROVE", "high"))
+        self.returned("plan-critic", 2, next="APPROVE", blockers="0", risk="high")
+        self.assertEqual(self.cmd("record", "plan-critic", "2").returncode, 0)
+        state = self.state()
+        self.assertTrue(state["high_risk"])
+        self.assertTrue(state["settings"]["post_plan_gate"])
+        self.assertIn("high risk, post-plan gate on: the plan critic says the risk is high",
+                      [n["text"] for n in state["notes"]])
 
     def test_verifier_next_must_match_eval_status(self):
         (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
@@ -316,42 +431,12 @@ class RecordTest(WorkCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("next: CORRECT", r.stdout)
 
-    def test_a_plan_that_copies_the_spec_is_refused(self):
-        from test_next import IMPLEMENTATION
-        copied = IMPLEMENTATION.replace(
-            "1. add the field",
-            "1. a todo can carry a due date that the list shows next to its title")
-        (self.dir / "IMPLEMENTATION.md").write_text(copied)
-        self.returned("planner", 1, next="WRITTEN", entry_points_changed="no")
+    def test_a_plan_with_no_plan_file_is_refused(self):
+        (self.dir / "PLAN.md").unlink()
+        self.returned("planner", 1, next="FITS", **PLANNED)
         r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording", r.stdout)
-        self.assertIn("condition 1", r.stdout)
-        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
-        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
-
-    def test_a_plan_without_its_spec_is_not_passed(self):
-        from test_next import IMPLEMENTATION
-        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
-        (self.dir / "SPEC.md").unlink()
-        self.returned("planner", 1, next="WRITTEN", entry_points_changed="no")
-        r = self.cmd("record", "planner", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("SPEC.md", r.stdout)
-
-    def test_a_plan_fix_that_copies_the_spec_is_refused(self):
-        fix = self.write("fixes/plan-reviewer-1.md", (
-            "FIX B1\n<<<<<<< OLD\n1. add the field\n=======\n"
-            "1. a todo can carry a due date that the list shows next to its title\n"
-            ">>>>>>> NEW\n"))
-        self.returned("plan-reviewer", 1, next="CLEAN", blockers="0", fix_file=str(fix))
-        r = self.cmd("record", "plan-reviewer", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("plan-reviewer-1.md's new text copies SPEC.md's wording", r.stdout)
-        self.assertIn("condition 1", r.stdout)
-        fix.write_text("FIX B1\n<<<<<<< OLD\na todo can carry a due date that the list "
-                       "shows next to its title\n=======\n1. add the field\n>>>>>>> NEW\n")
-        self.assertEqual(self.cmd("record", "plan-reviewer", "1").returncode, 0)
+        self.assertIn("PLAN.md", r.stdout)
 
     def test_corrections_that_copy_the_spec_are_refused(self):
         (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
@@ -364,7 +449,7 @@ class RecordTest(WorkCase):
         self.returned("verifier", 1, next="CORRECT", tree="x", corrections="1")
         r = self.cmd("record", "verifier", "1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("corrections.md copies SPEC.md's wording", r.stdout)
+        self.assertIn("corrections.md copies PLAN.md's wording", r.stdout)
 
     def test_a_review_report_must_follow_its_template(self):
         state = self.state()
@@ -490,23 +575,6 @@ class RecordTest(WorkCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("TEST.md: no `Tree:` line", r.stdout)
 
-    def test_a_reviewer_fix_file_needs_a_fix_block(self):
-        fix = self.write("fixes/define-reviewer-1.md", "just prose\n")
-        self.returned("define-reviewer", 1, next="BLOCKERS", blockers="1", fix_file=str(fix))
-        r = self.cmd("record", "define-reviewer", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("define-reviewer-1.md: no FIX block", r.stdout)
-
-    def test_a_revised_plan_that_copies_the_spec_is_refused(self):
-        from test_next import IMPLEMENTATION
-        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION.replace(
-            "1. add the field",
-            "1. a todo can carry a due date that the list shows next to its title"))
-        self.returned("planner", 1, next="REVISED", entry_points_changed="no")
-        r = self.cmd("record", "planner", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording", r.stdout)
-
     def test_cleanup_green_needs_passing_reports(self):
         (self.dir / "lint").mkdir(exist_ok=True)
         (self.dir / "lint" / "TEST.md").write_text("# TEST — fail\n")
@@ -538,52 +606,27 @@ class RecordTest(WorkCase):
         self.returned("coder", 1, next="BUILT", blocked="2", test_changes="none")
         self.assertEqual(self.cmd("record", "coder", "1").returncode, 1)
 
-    def test_a_failed_define_return_changes_nothing(self):
-        self.returned("define", 1, status="failed", next="OVERSIZED")
-        r = self.cmd("record", "define", "1")
+    def test_a_failed_planner_return_changes_nothing(self):
+        self.returned("planner", 1, status="failed", next="OVERSIZED")
+        r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = self.state()
         self.assertIsNone(state["size"])
         self.assertNotEqual(state["phases"]["2"]["status"], "stopped")
-        self.returned("define", 2, status="blocked", next="DONE")
-        r = self.cmd("record", "define", "2")
+        self.returned("planner", 2, status="blocked", next="DONE")
+        r = self.cmd("record", "planner", "2")
         self.assertEqual(r.returncode, 1)
         self.assertIn("MALFORMED", r.stdout)
 
-    def test_high_risk_accepts_true(self):
-        self.returned("define", 1, next="FITS", high_risk=True, reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
+    def test_a_risk_word_is_read_in_any_case(self):
+        self.write("PLAN.md", PLAN.replace("Risk: high", "**Risk:** High"))
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "High"})
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
         self.assertTrue(self.state()["high_risk"])
-
-    def test_a_security_criterion_added_later_turns_the_gate_on(self):
-        self.write("SPEC.md", SPEC_NO_SECURITY)
-        self.returned("define", 1, next="FITS", high_risk="no", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        self.assertFalse(self.state()["settings"]["post_plan_gate"])
-        self.write("SPEC.md", SPEC)
-        self.returned("define", 2, next="REVISED", high_risk="yes", reading="none")
-        self.assertEqual(self.cmd("record", "define", "2").returncode, 0)
-        state = self.state()
-        self.assertTrue(state["high_risk"])
-        self.assertTrue(state["settings"]["post_plan_gate"])
-
-    def test_a_fix_adding_a_security_criterion_turns_the_gate_on(self):
-        self.write("SPEC.md", SPEC_NO_SECURITY)
-        self.returned("define", 1, next="FITS", high_risk="no", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        fix = self.write("fixes/define-1.md", "FIX B1\n<<<<<<< OLD\n## Assumptions\n- none\n"
-                         "=======\n## Assumptions\n- none\n\n## Security/Compliance "
-                         "criteria\nS1. Only the owner can set a todo's due date\n"
-                         "   - Example: Given user B, when B sets it, then 404.\n"
-                         "   - Verify by: integration\n>>>>>>> NEW\n")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", fix)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("high_risk: yes", r.stdout)
-        self.assertTrue(self.state()["settings"]["post_plan_gate"])
 
     def test_verifier_unmet_with_a_defective_check_is_correct(self):
         self.spec_eval(v1="unmet", defective='- `src/due.acceptance.test.ts` :: '
-                       '"shows the due date" — asserts a format SPEC.md does not give')
+                       '"shows the due date" — asserts a format PLAN.md does not give')
         self.write("evidence/corrections.md", CORRECTION)
         self.returned("verifier", 1, next="REPAIR", tree="x", corrections="1")
         r = self.cmd("record", "verifier", "1")
@@ -633,7 +676,7 @@ class RecordTest(WorkCase):
                    "sorts todos by due date with the earliest first\n")
         r = self.judge("MUST_FIX", "1", "0", no_pending)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording", r.stdout)
+        self.assertIn("copies PLAN.md's wording", r.stdout)
         self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: guard "
                    "the null due date in `src/sort.ts:4` before comparing\n")
         r = self.judge("MUST_FIX", "1", "0", no_pending)
@@ -670,11 +713,11 @@ class RecordTest(WorkCase):
         self.assertEqual(self.cmd("spec-overlap", path).returncode, 1)
         r = self.cmd("check-artifact", path)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording", r.stdout)
-        # A plan is checked quoted text and all.
-        plan = self.write("IMPLEMENTATION.md", "Test: \"the list sorts todos by due date "
-                          "with the earliest first\"\n")
-        self.assertEqual(self.cmd("spec-overlap", plan).returncode, 1)
+        self.assertIn("copies PLAN.md's wording", r.stdout)
+        # Any other file is checked quoted text and all.
+        notes = self.write("notes.md", "Test: \"the list sorts todos by due date "
+                           "with the earliest first\"\n")
+        self.assertEqual(self.cmd("spec-overlap", notes).returncode, 1)
 
     def test_install_checks_installs_refuses_a_conflict_and_rechecks(self):
         # The verifier installs the sealed checks with one command, not a
@@ -973,14 +1016,6 @@ class RecordTest(WorkCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("may only add lines", r.stdout)
 
-    def test_apply_fix_reports_applied_when_the_new_spec_is_malformed(self):
-        self.state_size("FITS")
-        fix = self.write("fixes/define-1.md", "FIX B1\n<<<<<<< OLD\n## Conditions\n"
-                         "=======\n## Criteria\n>>>>>>> NEW\n")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", fix)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("## Criteria", (self.dir / "SPEC.md").read_text())
-
     def test_each_documented_result_block_is_accepted(self):
         agents = Path(__file__).resolve().parents[1] / "agents"
         for agent in sorted(agents.glob("*.md")):
@@ -1046,8 +1081,8 @@ class RecordTest(WorkCase):
 
 
 class TreeGuardTest(WorkCase):
-    """A worker that never changes the repo (planner, define, the spec and plan
-    reviewers, the review judge, the triager) is held to the tree it was
+    """A worker that never changes the repo (the planner, the plan critic, the
+    review judge, the triager) is held to the tree it was
     briefed on: `record` refuses a change outside .auto-dev/ and puts it back,
     but only a change the worker could have made."""
 
@@ -1055,13 +1090,13 @@ class TreeGuardTest(WorkCase):
         return self.sh("git", "-C", str(self.worktree), *args)
 
     def reviewer(self):
-        return self.job("plan-reviewer")
+        return self.job("plan-critic", "review")
 
     def answered(self, n):
-        self.returned("plan-reviewer", n, status="blocked")
+        self.returned("plan-critic", n, status="blocked")
 
     def record(self, n):
-        return self.cmd("record", "plan-reviewer", str(n))
+        return self.cmd("record", "plan-critic", str(n))
 
     def test_record_refuses_a_change_and_puts_the_files_back(self):
         wt = self.worktree
@@ -1084,11 +1119,11 @@ class TreeGuardTest(WorkCase):
         os.chmod(wt / "tool.sh", 0o644)
         (wt / "new.ts").write_text("export {};\n")
         (wt / ".gitignore").write_text("setup-ran.txt\n")
-        self.write("fixes/plan-1.md", "none\n")
+        self.write(f"plan-review/{n}.md", "none\n")
         self.answered(n)
         r = self.record(n)
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn(f"plan-reviewer-{n} changed 6 repo file(s)", r.stdout)  # with .env
+        self.assertIn(f"plan-critic-{n} changed 6 repo file(s)", r.stdout)  # with .env
         for path in (".gitignore", "app.ts", "new.ts", "notes.txt", "tool.sh"):
             self.assertIn(path, r.stdout)
         self.assertEqual((wt / "app.ts").read_text(), "export const one = 2;\n")
@@ -1097,7 +1132,7 @@ class TreeGuardTest(WorkCase):
         self.assertTrue(os.access(wt / "tool.sh", os.X_OK))
         self.assertFalse((wt / "new.ts").exists())
         self.assertEqual((wt / ".env").read_text(), env)  # ignored again, so kept
-        backup = self.dir / "tree" / f"plan-reviewer-{n}"
+        backup = self.dir / "tree" / f"plan-critic-{n}"
         self.assertEqual((backup / "app.ts").read_text(), "export const one = 3;\n")
         self.assertEqual((backup / "new.ts").read_text(), "export {};\n")
         self.assertEqual(self.git("status", "--porcelain", "--", "app.ts", "tool.sh"),
@@ -1106,8 +1141,7 @@ class TreeGuardTest(WorkCase):
         self.assertEqual(self.record(n).returncode, 0)
 
     def test_each_worker_that_never_changes_the_repo_is_checked(self):
-        guarded = [("define", "write", {}), ("define-reviewer", None, {}),
-                   ("planner", "write", {}), ("plan-reviewer", None, {}),
+        guarded = [("planner", "write", {}), ("plan-critic", "review", {}),
                    ("review-judge", "security-verify", {}),
                    ("triager", "ci", {"failing": "test"})]
         for worker, as_mode, sets in guarded:
@@ -1164,7 +1198,7 @@ class TreeGuardTest(WorkCase):
         n = self.reviewer()
         (wt / "mine.ts").write_text("// the reviewer's\n")
         self.answered(n)
-        result = self.dir / "returns" / f"plan-reviewer-{n}.json"
+        result = self.dir / "returns" / f"plan-critic-{n}.json"
         os.utime(wt / "mine.ts", (result.stat().st_mtime - 5,) * 2)
         (wt / "app.ts").write_text("// the user's, after the reviewer returned\n")
         os.utime(wt / "app.ts", (result.stat().st_mtime + 5,) * 2)
@@ -1205,7 +1239,7 @@ class TreeGuardTest(WorkCase):
         (self.worktree / "app.ts").write_text("// the reviewer's\n")
         self.answered(n)
         self.assertEqual(self.record(n).returncode, 1)
-        r = self.cmd("brief", "plan-reviewer", "--retry", str(n))
+        r = self.cmd("brief", "plan-critic", "--mode", "review", "--retry", str(n))
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.state()["briefs"][-1]["tree"]["files"], {})
         # The user edits while no worker is out; `next` sends the brief again.
@@ -1228,24 +1262,24 @@ class TreeGuardTest(WorkCase):
 
 
 class TicketTextTest(InitCase):
-    def test_define_gets_the_ticket_text_verbatim(self):
+    def test_the_planner_gets_the_ticket_text_verbatim(self):
         ticket = self.tmp / "ticket.txt"
         ticket.write_text("TODO-7 Due dates\nUsers can set a due date.\n"
                           "AC: overdue todos show in red.\n")
         r = self.init("--ticket", "TODO-7", "--ticket-text-file", ticket)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        r = self.autodev("brief", "define", "--mode", "write", "--dir", self.dir)
+        r = self.autodev("brief", "planner", "--mode", "write", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        text = (self.dir / "briefs" / "define-1.md").read_text()
+        text = (self.dir / "briefs" / "planner-1.md").read_text()
         self.assertIn("task: TODO-7 Due dates\n  Users can set a due date.\n"
                       "  AC: overdue todos show in red.\n", text)
 
-    def test_without_ticket_text_define_gets_the_restated_ask(self):
+    def test_without_ticket_text_the_planner_gets_the_restated_ask(self):
         r = self.init("--ticket", "TODO-7", "--ask", "Let users set a due date on a todo",
                       task="TODO-7")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.autodev("brief", "define", "--mode", "write", "--dir", self.dir)
-        text = (self.dir / "briefs" / "define-1.md").read_text()
+        self.autodev("brief", "planner", "--mode", "write", "--dir", self.dir)
+        text = (self.dir / "briefs" / "planner-1.md").read_text()
         self.assertIn("task: Let users set a due date on a todo\n", text)
 
     def test_an_empty_or_missing_ticket_file_stops_before_the_worktree(self):
@@ -1260,7 +1294,7 @@ class TicketTextTest(InitCase):
 
 class SpecProblemAndDeviationRecordTest(WorkCase):
     """record holds a worker's spec_problems and the coder's deviations to the
-    files they count, and a worker that judges against SPEC.md to the spec as
+    files they count, and a worker that judges against PLAN.md to the spec as
     it was at its brief."""
 
     def triage(self, problems=None, **data):
@@ -1288,7 +1322,7 @@ class SpecProblemAndDeviationRecordTest(WorkCase):
     def test_a_spec_problem_on_a_condition_the_spec_lacks_is_refused(self):
         r = self.triage("- condition 9: it asks for something else\n", spec_problems="1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("condition 9 is not in SPEC.md", r.stdout)
+        self.assertIn("condition 9 is not in PLAN.md", r.stdout)
         r = self.triage("- condition 2:\n", spec_problems="1")
         self.assertEqual(r.returncode, 1)
         self.assertIn("2: say what is wrong", r.stdout)
@@ -1307,11 +1341,11 @@ class SpecProblemAndDeviationRecordTest(WorkCase):
 
     def test_a_worker_that_edits_spec_md_is_refused_whatever_it_returns(self):
         self.assertEqual(self.cmd("brief", "triager", "--mode", "human").returncode, 0)
-        (self.dir / "SPEC.md").write_text(SPEC.replace("earliest first", "latest first"))
+        (self.dir / "PLAN.md").write_text(PLAN.replace("earliest first", "latest first"))
         self.returned("triager", 1, status="failed")
         r = self.cmd("record", "triager", "1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("SPEC.md changed since your brief", r.stdout)
+        self.assertIn("PLAN.md changed since your brief", r.stdout)
 
     def coder(self, deviations, text=None):
         self.assertEqual(self.cmd("brief", "coder", "--mode", "build").returncode, 0)
@@ -1333,13 +1367,11 @@ class SpecProblemAndDeviationRecordTest(WorkCase):
 
     def test_record_refuses_a_plan_with_a_wrong_heading(self):
         self.assertEqual(self.cmd("brief", "planner", "--mode", "write").returncode, 0)
-        self.write("IMPLEMENTATION.md", "# Plan\n\n## Files\nx\n\n## Design\nx\n\n"
-                   "## Data flow\nx\n\n## Steps\n1. x\n\n## Test plan\nx\n\n"
-                   "## Migrations / config\nnone\n")
-        self.returned("planner", 1, next="WRITTEN", entry_points_changed="no")
+        self.write("PLAN.md", PLAN.replace("## Build sequence", "## Steps"))
+        self.returned("planner", 1, next="FITS", **PLANNED)
         r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn("IMPLEMENTATION.md", r.stdout)
+        self.assertIn("PLAN.md: headings must be", r.stdout)
 
     def test_check_artifact_reads_both_files(self):
         good = self.write("spec-problems/verifier-1.md", "- condition 1: x is wrong\n")
@@ -1359,58 +1391,91 @@ class CheckArtifactTest(WorkCase):
         path.write_text(text)
         return self.cmd("check-artifact", path)
 
-    def test_spec(self):
-        self.assertEqual(self.cmd("check-artifact", self.dir / "SPEC.md").returncode, 0)
-        no_edge = SPEC.replace("   - Edge: an invalid date is rejected → 400\n", "")
-        r = self.check("SPEC.md", no_edge)
+    def test_plan_conditions(self):
+        self.assertEqual(self.cmd("check-artifact", self.dir / "PLAN.md").returncode, 0)
+        no_edge = PLAN.replace("   - Edge: an invalid date is rejected → 400\n", "")
+        r = self.check("PLAN.md", no_edge)
         self.assertEqual(r.returncode, 1)
         self.assertIn("condition 1 has no `Edge:` line", r.stdout)
 
-    def test_implementation_headings(self):
-        good = "# Implementation plan — x\n\n" + "\n\n".join(
-            f"## {h}\nx" for h in ("Files", "Design", "Data flow", "Build sequence",
-                                   "Test plan", "Migrations / config"))
-        self.assertEqual(self.check("IMPLEMENTATION.md", good).returncode, 0)
-        self.assertEqual(self.check("IMPLEMENTATION.md", good.replace("## Design", "## How"))
-                         .returncode, 1)
+    def test_plan_headings(self):
+        self.assertEqual(self.check("PLAN.md", PLAN).returncode, 0)
+        r = self.check("PLAN.md", PLAN.replace("## Design", "## How"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("headings must be, in order", r.stdout)
 
-    def test_a_plan_review_effort_is_high_or_xhigh_or_absent(self):
-        from test_next import IMPLEMENTATION
-        title = "# Plan\n"
+    def test_an_oversized_plan_may_stop_at_its_size_check(self):
+        oversized = (PLAN.split("## Size check")[0] + "## Size check\n"
+                     "OVERSIZED: three deliverables.\n")
+        oversized = oversized.replace("Review effort: high — a small change\n", "")
+        self.assertEqual(self.check("PLAN.md", oversized).returncode, 0)
+        fits = oversized.replace("OVERSIZED: three", "FITS: three")
+        r = self.check("PLAN.md", fits)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## Files", r.stdout)
+        self.assertIn("`Review effort:` must be", r.stdout)
+
+    def test_a_plan_s_risk_is_standard_or_high(self):
+        for line in ("Risk: standard — a local change", "**Risk:** `high` — auth"):
+            r = self.check("PLAN.md", PLAN.replace("Risk: high — only the owner may set a "
+                                                   "due date", line))
+            self.assertEqual(r.returncode, 0, line + "\n" + r.stdout)
+        for line, found in (("Risk: medium — some", "medium"),
+                            ("Risk: <standard | high> — <why>", "<standard")):
+            r = self.check("PLAN.md", PLAN.replace("Risk: high — only the owner may set a "
+                                                   "due date", line))
+            self.assertEqual(r.returncode, 1, line)
+            self.assertIn(f"`Risk:` must be standard or high (found: {found})", r.stdout)
+        r = self.check("PLAN.md", PLAN.replace("Risk: high — only the owner may set a "
+                                               "due date\n", ""))
+        self.assertIn("`Risk:` must be standard or high (found: nothing)", r.stdout)
+
+    def test_a_plan_review_effort_is_high_or_xhigh(self):
+        old = "Review effort: high — a small change"
         for line in ("Review effort: high — one local function",
                      "Review effort: xhigh — a state machine spans three modules",
                      "**Review effort:** `xhigh` — parsing",
                      "- Review effort: high—one rename"):
-            r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
-                title, f"{title}\n{line}\n", 1))
+            r = self.check("PLAN.md", PLAN.replace(old, line))
             self.assertEqual(r.returncode, 0, line + "\n" + r.stdout)
         for line, found in (("Review effort: max — be thorough", "max"),
                             ("- Review effort: max", "max"),
                             ("Review effort: <high | xhigh> — <reason>", "<high"),
-                            ("Review effort:", "nothing")):
-            r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
-                title, f"{title}\n{line}\n", 1))
+                            ("Review effort:", "nothing"),
+                            ("", "nothing")):
+            r = self.check("PLAN.md", PLAN.replace(old, line))
             self.assertEqual(r.returncode, 1, line)
             self.assertIn(f"`Review effort:` must be high or xhigh (found: {found})",
                           r.stdout)
 
-    def test_a_plan_that_copies_the_spec(self):
-        from test_next import IMPLEMENTATION
-        self.assertEqual(self.check("IMPLEMENTATION.md", IMPLEMENTATION).returncode, 0)
-        r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
-            "1. add the field",
-            "1. a todo can carry a due date that the list shows next to its title"))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording (condition 1", r.stdout)
+    def test_a_plan_review(self):
+        good = plan_review("REVISE", "high", [("`src/due.ts:3`", "add a step")])
+        self.assertEqual(self.check("plan-review/1.md", good).returncode, 0)
+        self.assertEqual(self.check("plan-review/2.md", plan_review()).returncode, 0)
+        for text, why in (
+                (good.replace("- Evidence: `src/due.ts:3`\n", ""),
+                 "blocker B1 has no `Evidence:` line"),
+                (good.replace("- Change: add a step\n", ""),
+                 "blocker B1 has no `Change:` line"),
+                (good.replace("Verdict: REVISE", "Verdict: APPROVE"),
+                 "verdict APPROVE but 1 blocker(s) listed"),
+                (plan_review().replace("Verdict: APPROVE", "Verdict: REVISE"),
+                 "verdict REVISE but no `### B<n>.` blocker listed"),
+                (plan_review("REVISE", "high", [("`a:1`", "x")] * 8),
+                 "8 blockers: at most 7"),
+                (good.replace("Verdict: REVISE", "Verdict: maybe"),
+                 "`Verdict:` must be APPROVE or REVISE (found: MAYBE)"),
+                (good.replace("Risk: high", "Risk: low"),
+                 "`Risk:` must be standard or high (found: low)"),
+                (good.replace("## Notes\nnone\n", ""), "no `## Notes` section")):
+            r = self.check("plan-review/3.md", text)
+            self.assertEqual(r.returncode, 1, why)
+            self.assertIn(why, r.stdout)
 
-    def test_corrections_and_fixes(self):
+    def test_corrections(self):
         self.assertEqual(self.check("evidence/corrections.md", "# Required changes\nNone.\n")
                          .returncode, 0)
         self.assertEqual(self.check("triage/ci-1.md", "Fix the build\n").returncode, 1)
-        fix = "FIX B1\n<<<<<<< OLD\nold\n=======\nnew\n>>>>>>> NEW\n"
-        self.assertEqual(self.check("fixes/define-1.md", fix).returncode, 0)
-        self.assertEqual(self.check("fixes/define-2.md", fix + "FIX B2\nbroken\n")
-                         .returncode, 1)
 
     def test_reports(self):
         review = (FIXTURES / "CODE_REVIEW.md").read_text().format(tree="0" * 40)

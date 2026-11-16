@@ -59,7 +59,7 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    yourself in step 2, following what it changed downstream: every caller
    and every use of the values it changed, however few lines it touched.
 2. Then go further yourself. Read the changed files and their tests,
-   {{artifact_dir}}/SPEC.md, {{artifact_dir}}/IMPLEMENTATION.md, and the binding rules
+   {{artifact_dir}}/PLAN.md, and the binding rules
    ({{binding_rules}}). Try to break the change:
    - Correctness: edge cases, error paths, off-by-one, nil/empty/boundary inputs,
      concurrency, data loss, wrong assumptions about callers.
@@ -73,7 +73,7 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    Do NOT review security. A security concern you notice goes under
    "Security leads", one line each, unchased. A separate security review
    follows.
-   Spec kept: {{spec_kept}}. When set, the user already kept SPEC.md as
+   Spec kept: {{spec_kept}}. When set, the user already kept PLAN.md as
    written for these at a stop: never raise them as a spec problem again.
 3. Keep only findings this change introduced: in lines it adds or modifies, or
    caused by it. Check with `git -C {{worktree}} diff` and `git -C {{worktree}} blame`. Count pre-existing
@@ -83,11 +83,11 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    failure. For a test finding, the changed behavior (file:line) and each input no
    test exercises. A finding you cannot trace, drop; a case you cannot trace,
    leave off the list.
-5. A problem that lies in SPEC.md rather than the code (a condition the change
-   can only be right by breaking, or a requirement the spec lacks) goes in the
+5. A problem that lies in PLAN.md rather than the code (a condition the change
+   can only be right by breaking, or a requirement the plan lacks) goes in the
    report's `## Spec problems` section, with the finding or trigger path that
    shows it. The judge decides whether it holds and reports it for the
-   user; you never edit SPEC.md.
+   user; you never edit PLAN.md.
 
 How your findings will be judged:
 read `{{skill_dir}}/templates/rubric.md`: its code review findings and overall report confidence sections

@@ -26,8 +26,7 @@ from .output import CANNOT_RUN, Fail
 # one; the verifier and cleanup run the repo's tests and tools.
 # Lookups are left out: the orchestrator sends one to answer the user at a gate,
 # while the user may be editing the code.
-GUARDED = ("define", "define-reviewer", "planner", "plan-reviewer", "review-judge",
-           "triager")
+GUARDED = ("planner", "plan-critic", "review-judge", "triager")
 CLEAN = "clean"  # the path matches HEAD: `git status` doesn't list it
 SUBMODULE = "dir"
 

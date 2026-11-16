@@ -88,8 +88,8 @@ class CheckStagedTest(GitRepoCase):
         self.assertIn("CLEAN", r.stdout)
 
     def test_staged_artifact_fails(self):
-        (self.repo / ".auto-dev/SPEC.md").write_text("spec")
-        self.git("add", "-f", ".auto-dev/SPEC.md")
+        (self.repo / ".auto-dev/PLAN.md").write_text("spec")
+        self.git("add", "-f", ".auto-dev/PLAN.md")
         r = run("check-staged.py", self.repo)
         self.assertEqual(r.returncode, 1)
         self.assertIn("STAGED ARTIFACTS", r.stderr)
@@ -190,7 +190,7 @@ class CheckFreshTest(GitRepoCase):
         self.write(".gitignore", ".auto-dev/\n")
         self.git("add", ".gitignore")
         self.git("commit", "-q", "-m", "ignore .auto-dev/")
-        (self.artifacts / "SPEC.md").write_text("spec\n")
+        (self.artifacts / "PLAN.md").write_text("spec\n")
         tree = self.tree()
         listing = self.git("ls-tree", "-r", "--name-only", tree)
         self.assertNotIn(".auto-dev", listing)

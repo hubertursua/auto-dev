@@ -13,11 +13,11 @@
         "files": {},
         "head": "<head-at-brief>"
       },
-      "worker": "define"
+      "worker": "planner"
     },
     {
       "at": "2026-10-20T02:04:34+00:00",
-      "mode": null,
+      "mode": "review",
       "n": 1,
       "retry": null,
       "seq": 6,
@@ -26,7 +26,7 @@
         "files": {},
         "head": "<head-at-brief>"
       },
-      "worker": "define-reviewer"
+      "worker": "plan-critic"
     },
     {
       "at": "2026-10-20T02:04:34+00:00",
@@ -34,32 +34,6 @@
       "n": 1,
       "retry": null,
       "seq": 8,
-      "sets": {},
-      "tree": {
-        "files": {},
-        "head": "<head-at-brief>"
-      },
-      "worker": "planner"
-    },
-    {
-      "at": "2026-10-20T02:04:34+00:00",
-      "mode": null,
-      "n": 1,
-      "retry": null,
-      "seq": 10,
-      "sets": {},
-      "tree": {
-        "files": {},
-        "head": "<head-at-brief>"
-      },
-      "worker": "plan-reviewer"
-    },
-    {
-      "at": "2026-10-20T02:04:34+00:00",
-      "mode": "write",
-      "n": 1,
-      "retry": null,
-      "seq": 12,
       "sets": {
         "scope": "ALL CONDITIONS"
       },
@@ -72,14 +46,14 @@
     "total": 4
   },
   "created": "2026-10-20T02:04:32+00:00",
-  "events": 16,
+  "events": 12,
   "gates": [
     {
       "at": "2026-10-20T02:04:34+00:00",
       "choice": "proceed",
       "gate": "post-plan",
       "reason": "",
-      "seq": 14
+      "seq": 10
     }
   ],
   "high_risk": true,
@@ -90,11 +64,12 @@
   "log": [
     {
       "data": {
-        "high_risk": "yes",
+        "entry_points_changed": "no",
         "next": "FITS",
         "reading": "none",
+        "risk": "high",
         "status": "ok",
-        "worker": "define"
+        "worker": "planner"
       },
       "mode": "write",
       "n": 1,
@@ -102,54 +77,23 @@
       "seq": 5,
       "sets": {},
       "status": "ok",
-      "worker": "define"
-    },
-    {
-      "data": {
-        "blockers": "0",
-        "fix_file": "none",
-        "next": "CLEAN",
-        "status": "ok",
-        "worker": "define-reviewer"
-      },
-      "mode": null,
-      "n": 1,
-      "next": "CLEAN",
-      "seq": 7,
-      "sets": {},
-      "status": "ok",
-      "worker": "define-reviewer"
-    },
-    {
-      "data": {
-        "entry_points_changed": "no",
-        "next": "WRITTEN",
-        "status": "ok",
-        "worker": "planner"
-      },
-      "mode": "write",
-      "n": 1,
-      "next": "WRITTEN",
-      "seq": 9,
-      "sets": {},
-      "status": "ok",
       "worker": "planner"
     },
     {
       "data": {
         "blockers": "0",
-        "fix_file": "none",
-        "next": "CLEAN",
+        "next": "APPROVE",
+        "risk": "high",
         "status": "ok",
-        "worker": "plan-reviewer"
+        "worker": "plan-critic"
       },
-      "mode": null,
+      "mode": "review",
       "n": 1,
-      "next": "CLEAN",
-      "seq": 11,
+      "next": "APPROVE",
+      "seq": 7,
       "sets": {},
       "status": "ok",
-      "worker": "plan-reviewer"
+      "worker": "plan-critic"
     },
     {
       "data": {
@@ -162,7 +106,7 @@
       "mode": "write",
       "n": 1,
       "next": "SEALED",
-      "seq": 13,
+      "seq": 9,
       "sets": {
         "scope": "ALL CONDITIONS"
       },
@@ -173,19 +117,15 @@
   "notes": [
     {
       "at": "2026-10-20T02:04:34+00:00",
-      "text": "define #1 returned ok FITS"
+      "text": "high risk, post-plan gate on: the plan says the risk is high"
     },
     {
       "at": "2026-10-20T02:04:34+00:00",
-      "text": "define-reviewer #1 returned ok CLEAN"
+      "text": "planner #1 returned ok FITS"
     },
     {
       "at": "2026-10-20T02:04:34+00:00",
-      "text": "planner #1 returned ok WRITTEN"
-    },
-    {
-      "at": "2026-10-20T02:04:34+00:00",
-      "text": "plan-reviewer #1 returned ok CLEAN"
+      "text": "plan-critic #1 returned ok APPROVE"
     },
     {
       "at": "2026-10-20T02:04:34+00:00",
@@ -203,7 +143,7 @@
       "status": "done"
     },
     "2": {
-      "notes": "FITS, high risk: yes",
+      "notes": "FITS, risk: high",
       "started_seq": 4,
       "status": "done"
     },

@@ -73,7 +73,7 @@ class CheckRepoTest(unittest.TestCase):
 
     def test_an_agent_asking_for_a_prose_summary_fails(self):
         errors = self.check_agent_text(
-            "Write SPEC.md.\nReturn: assumptions, key risks.\n"
+            "Write PLAN.md.\nReturn: assumptions, key risks.\n"
             "Do NOT modify code. Return: your votes, one line each.\n"
             "Return a structured summary:\nReturn the findings.\nSay what you changed.\n"
             "Report what changed, TEST CHANGES and BLOCKED.\n"
@@ -191,7 +191,7 @@ class CheckRepoTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             copy = self.copy_of_the_repo(tmp)
             tool = copy / "tools" / "check-repo.py"
-            define = copy / "agents" / "define.md"
+            define = copy / "agents" / "planner.md"
             text = define.read_text(encoding="utf-8")
 
             def run():
@@ -230,17 +230,17 @@ class CheckRepoTest(unittest.TestCase):
             tool.check_briefs(Path(tmp))
         return tool.errors
 
-    def test_an_unknown_define_token_or_missing_template_fails_the_repo_check(self):
+    def test_an_unknown_planner_token_or_missing_template_fails_the_repo_check(self):
         agents = ROOT_DIR / "agents"
-        define = (agents / "define.md").read_text(encoding="utf-8")
-        self.assertIn("| OVERSIZED | REVISED\n", define)
-        errors = self.check_agents_dir({"define.md": define.replace(
-            "| OVERSIZED | REVISED\n", "| OVERSIZED | REVISED | SHRUGGED\n", 1)})
-        self.assertTrue(any("define.md" in e and "SHRUGGED" in e for e in errors), errors)
-        errors = self.check_agents_dir({"define.md": define + "\nSee templates/NOPE.md.\n"})
+        planner = (agents / "planner.md").read_text(encoding="utf-8")
+        self.assertIn("| OVERSIZED | REVISED", planner)
+        errors = self.check_agents_dir({"planner.md": planner.replace(
+            "| OVERSIZED | REVISED", "| OVERSIZED | SHRUGGED | REVISED", 1)})
+        self.assertTrue(any("planner.md" in e and "SHRUGGED" in e for e in errors), errors)
+        errors = self.check_agents_dir({"planner.md": planner + "\nSee templates/NOPE.md.\n"})
         self.assertTrue(any("templates/NOPE.md" in e for e in errors), errors)
-        errors = self.check_agents_dir({"define.md": define})
-        self.assertFalse(any(e.startswith("agents/define.md") for e in errors), errors)
+        errors = self.check_agents_dir({"planner.md": planner})
+        self.assertFalse(any(e.startswith("agents/planner.md") for e in errors), errors)
 
 
 if __name__ == "__main__":

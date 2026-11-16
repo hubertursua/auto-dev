@@ -454,10 +454,21 @@ def post_plan_summary(state, ad, args):
     for row in rows:
         per[row["#"].strip()] = per.get(row["#"].strip(), 0) + 1
     lines = [f"Task: {state['task'].get('text', '')}",
-             f"Spec: {ad / 'SPEC.md'}", f"Plan: {ad / 'IMPLEMENTATION.md'}",
+             f"Plan: {ad / 'PLAN.md'}",
              "Acceptance checks per condition: "
              + ", ".join(f"{k}: {v}" for k, v in per.items()),
-             "Not automatable: " + (", ".join(r.get("#", "") for r in na_rows) or "none")]
+             "Not automatable: " + (", ".join(r.get("#", "") for r in na_rows) or "none"),
+             f"Risk: {'high' if state.get('high_risk') else 'standard'}"]
+    blockers = state.get("plan_blockers")
+    if blockers is not None:
+        review = ad / "plan-review" / f"{blockers}.md"
+        lines.append(f"The plan critic left these blockers open after the planner's one "
+                     f"revision ({review}); decide whether to build anyway:")
+        try:
+            lines += [f"- {b['id']}. {b['text']} (evidence: {b['evidence']}; change: "
+                      f"{b['change']})" for b in art.plan_review(review)["blockers"]]
+        except art.ArtifactError as exc:
+            lines.append(f"- the review can't be read: {exc}")
     return lines, []
 
 
@@ -585,6 +596,10 @@ def ready_summary(state, ad, args):
         lines.append("No round was left to correct what is still open"
                      + (f" ({open_})" if open_ else "") + ": marking the PR ready ships "
                      "it, listed in its description")
+    recheck = state.get("risk_recheck") or {}
+    if recheck.get("high"):
+        lines.append("Risk: high after the build (" + "; ".join(recheck.get("why") or [])
+                     + ")")
     return lines, questions
 
 

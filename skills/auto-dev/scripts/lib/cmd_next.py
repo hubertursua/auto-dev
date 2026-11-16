@@ -3,8 +3,8 @@
 Usage:
     autodev.py next [--dir <artifact-dir>] [--explain] [--json]
 
-Reads state.json (the workers' recorded results, the briefs issued, the FIX
-outcomes, the gates, the marks and the Phase 6 fields) and the artifacts, and
+Reads state.json (the workers' recorded results, the briefs issued, the
+gates, the marks and the Phase 6 fields) and the artifacts, and
 prints the one thing to do now. Run it, do exactly that, run every AFTER
 command, then run `next` again. It never needs you to judge a file.
 
@@ -15,16 +15,16 @@ workers need no `record` call. A brief with no result file is issued again as
 it is. Run `next` only once every agent of the last spawn returned.
 
 It does the mechanical steps itself rather than asking you to: it writes the
-brief of the worker to spawn, spends a round of the budget before a
-re-review or a correction, installs the sealed acceptance checks before Phase 5's cleanup,
-applies a reviewer's FIX blocks, checks the acceptance tester's
-manifest, reads the verifier's verdicts, plans and applies the code-review
+brief of the worker to spawn, spends a round of the budget before a plan
+revision or a correction, installs the sealed acceptance checks before Phase
+5's cleanup, checks the acceptance tester's manifest, re-checks the risk tier
+from the verified build's diff, reads the verifier's verdicts, plans and applies the code-review
 re-votes, takes the review snapshot, and generates the PR body.
 
 Workers never negotiate the contract between themselves. A coder that finds
 a plan step wrong builds it the way that works and lists the deviation
 (deviations/coder-<n>.md); the ready-for-review gate summary names each one. A later worker
-that finds a SPEC.md criterion wrong or missing (the verifier, the review
+that finds a PLAN.md criterion wrong or missing (the verifier, the review
 judge, a security reviewer, the triager from a PR comment) lists it in
 spec-problems/<worker>-<n>.md, and `next` stops and asks the user before it
 acts on that result. A check the verifier, the code review or a PR comment
@@ -32,9 +32,10 @@ questions goes to the acceptance tester's repair mode; if it rules the check
 right as written (STANDS), `next` stops and asks the user. What the user keeps
 at either stop is told to every later worker that judges it.
 
-One iteration budget of rounds covers the run: a re-review after FIX blocks,
-a tester re-spawn for gaps, a re-dispatched BLOCKED step, and each correction
-(after verification, a review pass, a PR comment or red CI) spend one. With
+One iteration budget of rounds covers the run: the planner's one revision for
+the plan critic's blockers, a tester re-spawn for gaps, a re-dispatched
+BLOCKED step, and each correction (after verification, a review pass, a PR
+comment or red CI) spend one. With
 none left, `next` stops, except a correction in Phase 6 before the PR is marked
 ready: what is open goes to the ready-for-review gate instead.
 
@@ -93,7 +94,7 @@ next clean point with exit 6 and `handoff --checkpoint`, so no session's context
 grows without bound. A clean point is one where the step would be an action
 (exit 0) and no brief is in flight: a stop or a question the step would print
 comes first. A stop that only a write would reveal (one found
-after applying FIX blocks or starting a review pass) comes in the next session
+after starting a review pass) comes in the next session
 instead. A new session says `auto-dev continue` and picks up where this one
 stopped; resuming after a checkpoint lifts no stop, since nothing was fixed in
 between.
@@ -385,7 +386,7 @@ def plan_effort(c):
     """The code reviewers' effort the plan recommends; high when it names none
     (a plan written before 4.3) or names something else."""
     try:
-        value = art.review_effort(art.read(c.ad / "IMPLEMENTATION.md"))
+        value = art.review_effort(art.read(c.ad / "PLAN.md"))
     except art.ArtifactError:
         value = None
     return value if value in art.REVIEW_EFFORTS else art.DEFAULT_REVIEW_EFFORT
@@ -559,7 +560,7 @@ def fix_step(c):
         return None
     changed = fix_changes(c, brief)
     fix.update({"status": "fixed", "changed": changed,
-                "spec_changed": any(p.endswith("/SPEC.md") or p.endswith("/IMPLEMENTATION.md")
+                "spec_changed": any(p.endswith("/PLAN.md")
                                     for p in changed),
                 # A gate check's command in the settings counts: the gate runs again.
                 "code_changed": any(not p.startswith(scratch(c) + "/") or
@@ -830,33 +831,33 @@ def ended(c, how):
                 if c.state["repo"].get("adopted") else
                 f"The worktree is kept: {c.wt} (remove it with "
                 f"`git worktree remove {q(c.wt)}`).")
-        rows.append("The task is too big for one PR. Tell the user Define's reasons, the "
+        rows.append("The task is too big for one PR. Tell the user the planner's reasons, the "
                     "subsystems it found and its suggested split lines, below. Jira was "
                     f"not moved. {kept}")
         rows += size_check(c)
     rows.append(f"State and artifacts: {c.ad}")
-    define = c.last("define", mode="write")
-    if how == "stopped" and c.state.get("size") == "OVERSIZED" and define and \
-            define["next"] == "OVERSIZED":
-        return stop(rows, "Define found the task too big for one PR (OVERSIZED)",
-                    retry={"aside": [job_of(define)], "oversized": True},
-                    signoff={"rewrite": [define["worker"], define["n"], "FITS"],
+    plan = c.last("planner", mode="write")
+    if how == "stopped" and c.state.get("size") == "OVERSIZED" and plan and \
+            plan["next"] == "OVERSIZED":
+        return stop(rows, "the planner found the task too big for one PR (OVERSIZED)",
+                    retry={"aside": [job_of(plan)], "oversized": True},
+                    signoff={"rewrite": [plan["worker"], plan["n"], "FITS"],
                              "fits": True},
                     kind="oversized", after_fix="fits")
     return stop(rows, f"the run is {how}")
 
 
 def size_check(c):
-    """SPEC.md's Size check section, line by line, for the OVERSIZED report."""
+    """PLAN.md's Size check section, line by line, for the OVERSIZED report."""
     try:
-        section = art.find_section(art.read(c.ad / "SPEC.md"), "Size check")
+        section = art.find_section(art.read(c.ad / "PLAN.md"), "Size check")
     except art.ArtifactError:
         section = None
     lines = [ln.strip() for ln in (section or "").splitlines() if ln.strip()]
     if not lines:
-        return [("SPEC.md has no Size check section; its Context says what the task "
-                 f"touches ({c.ad}/SPEC.md).")]
-    return ["Define's size check (SPEC.md):", *lines]
+        return [("PLAN.md has no Size check section; its Context says what the task "
+                 f"touches ({c.ad}/PLAN.md).")]
+    return ["The planner's size check (PLAN.md):", *lines]
 
 
 def pending_briefs(c):
@@ -984,16 +985,19 @@ def checkpoint(c):
 
 def phase2(c):
     start = c.start(2)
-    define = c.last("define", after=start, mode="write")
-    if define is None:
-        return spawn(c, "define", "write", rule="Phase 2 starts with the Define agent")
+    plan = c.last("planner", after=start, mode="write")
+    if plan is None:
+        return spawn(c, "planner", "write", rule="Phase 2 starts with the planner")
     jira = jira_step(c, "in_progress", "jira-in-progress")
     if jira:
         return jira
-    review = review_loop(c, "define-reviewer", "define", c.ad / "SPEC.md", define["seq"])
-    if review:
-        return review
-    c.finish(2, f"FITS, high risk: {'yes' if c.state.get('high_risk') else 'no'}")
+    steps = steps_step(c, plan)
+    if steps:
+        return steps
+    critic = critic_step(c, plan["seq"])
+    if critic:
+        return critic
+    c.finish(2, f"FITS, risk: {'high' if c.state.get('high_risk') else 'standard'}")
     return None
 
 
@@ -1005,7 +1009,7 @@ def jira_step(c, key, step):
     name = c.state["settings"].get("jira_states", {}).get(key, JIRA_DEFAULTS[key])
     if choice is None:
         already = f"Already {name}"
-        out = ask(c, "Jira", [(f"Define confirmed the task fits one PR. Move {ticket} to "
+        out = ask(c, "Jira", [(f"The plan says the task fits one PR. Move {ticket} to "
                                f"`{name}` now?")],
                   [cmd_review.question("Jira", f"Move {ticket} to {name}?",
                                        ["Move it", already, "Leave Jira alone", "Stop"])],
@@ -1033,87 +1037,73 @@ def jira_step(c, key, step):
                   AFTER=[c.cmd("mark", step)])
 
 
-def review_loop(c, reviewer, author, target, after):
-    """Define or plan review: review, apply the FIX blocks, re-review (a round).
+FITS_DIRECTION = ("the user kept this as one PR: set the Size check to FITS and write "
+                  "the steps (Files, Design, Build sequence, Test plan, Migrations / "
+                  "config) and the `Review effort:` line")
 
-    A CLEAN review's FIX blocks (should-fix and nits) are applied once, with no
-    re-review and no round; if they don't apply, the author revises (no round)."""
-    review = c.last(reviewer, after=after)
-    if review is None:
-        return spawn(c, reviewer, rule=f"the first {reviewer} pass is free")
-    clean = review["next"] == "CLEAN"
-    fix = review["data"].get("fix_file", "none")
-    if clean and fix in NONE:
+
+def steps_step(c, plan):
+    """An OVERSIZED plan the user kept as one PR (a sign-off, or a fix at the
+    stop) may have no steps: the planner writes them once, with no round,
+    before the critic reads the plan."""
+    try:
+        text = art.read(c.ad / "PLAN.md")
+    except art.ArtifactError:
+        return None  # the critic's brief reports a missing plan
+    if cmd_work.plan_has_steps(text) and cmd_work.plan_size(text) != "OVERSIZED":
         return None
-    spend_id = f"{reviewer}-{review['n']}"
-    revised = [r for r in c.recs(author, after=review["seq"], mode="revise")
-               if r.get("sets", {}).get("fix_file") == fix]
-    if revised:
-        return None if clean else re_review(c, reviewer, spend_id, fix)
-    if fix in NONE:
-        return stop([(f"{reviewer} #{review['n']} found {review['data'].get('blockers')} "
-                     "blocker(s) but wrote no FIX block. Tell the user; the review is "
-                     f"in its reply and {c.ad}.")], "blockers with nothing to apply",
-                    retry={"aside": [job_of(review)]},
-                    signoff={"rewrite": [review["worker"], review["n"], "CLEAN",
-                                         {"blockers": "0", "fix_file": "none"}]},
-                    kind="review-no-fix")
-    if apply_once(c, target, fix) == "applied":
-        return None if clean else re_review(c, reviewer, spend_id, fix)
-    return spawn(c, author, "revise", {"fix_file": fix},
-                 rule=f"{Path(fix).name} did not apply as written: its author revises "
-                      f"{target.name} " + ("(no round: the review was clean)" if clean
-                                           else "(the re-review after it spends the round)"))
+    if any(r.get("sets", {}).get("direction") == FITS_DIRECTION
+           for r in c.recs("planner", after=plan["seq"], mode="revise")):
+        return None  # written once: the critic judges what is there
+    return spawn(c, "planner", "revise", {"direction": FITS_DIRECTION},
+                 rule="the plan was OVERSIZED and the user kept it as one PR: the planner "
+                      "writes its steps (no round)")
 
 
-def apply_once(c, target, fix):
-    """Apply a FIX file to `target` once; `applied` or `no-match`, recorded."""
-    key = str(Path(fix).resolve())
-    outcome = c.state.setdefault("fixes", {}).get(key)
-    if outcome is None:
-        c.would(f"apply the FIX blocks in {fix} to {target.name}",
-                "a reviewer wrote FIX blocks: next applies them")
-        blocks, failed = cmd_checks.apply_fix_file(target, fix)
-        outcome = {"outcome": "applied" if blocks and not failed else "no-match",
-                   "seq": c.seq(), "failed": failed}
-        c.state["fixes"][key] = outcome
+def critic_step(c, after):
+    """A fresh plan critic reviews PLAN.md. Blockers send it back to the planner
+    once (a round), and the critic re-checks only the revision; a blocker still
+    open after that goes to the user at the post-plan gate."""
+    review = c.last("plan-critic", after=after, mode="review")
+    if review is None:
+        return spawn(c, "plan-critic", "review",
+                     rule="a fresh critic reviews the plan before anything is built")
+    if review["next"] == "APPROVE":
+        return None
+    findings = str(c.ad / "plan-review" / f"{review['n']}.md")
+    revised = c.last("planner", after=review["seq"], mode="revise")
+    if revised is None:
+        budget = c.spend(f"plan-critic-{review['n']}", "plan revision")
+        if budget is None:
+            return exhausted(c, "no round left to revise the plan",
+                             f"Tell the user each blocker in {findings}, one by one.")
+        return spawn(c, "planner", "revise", {"review_file": findings},
+                     rule="the critic found blockers: the planner revises once (a round)",
+                     budget=budget)
+    recheck = c.last("plan-critic", after=revised["seq"], mode="recheck")
+    if recheck is None:
+        return spawn(c, "plan-critic", "recheck", {"earlier": findings},
+                     rule="the critic checks the revision and each blocker (no round)")
+    if recheck["next"] == "REVISE" and c.state.get("plan_blockers") != recheck["n"]:
+        c.would("send the open blockers to the post-plan gate",
+                "blockers are still open after the one revision")
+        c.state["plan_blockers"] = recheck["n"]
+        c.state["settings"]["post_plan_gate"] = True
+        st.add_note(c.state, f"{recheck['data'].get('blockers')} plan blocker(s) still open "
+                    "after the revision: the post-plan gate asks the user")
         c.dirty = True
-        if outcome["outcome"] == "applied" and Path(target).name == "SPEC.md":
-            try:  # a fix can add a Security/Compliance criterion: the gate turns on
-                if cmd_checks.rederive_risk(c.state, target):
-                    st.add_note(c.state, "SPEC.md gained a Security/Compliance "
-                                "criterion: high risk, post-plan gate on")
-            except art.ArtifactError:
-                pass  # SPEC.md is checked when it is used
-    return outcome["outcome"]
-
-
-def re_review(c, reviewer, spend_id, fix):
-    budget = c.spend(spend_id, f"{reviewer} re-review")
-    if budget is None:
-        return exhausted(c, f"no round left for a {reviewer} re-review",
-                         f"Tell the user each open blocker in {fix}, one by one.")
-    return spawn(c, reviewer, rule="the fixes changed the file: review it again (a round)",
-                 budget=budget)
+    return None
 
 
 # ---------------------------------------------------------------- Phase 3
 
 def phase3(c):
     start = c.start(3)
-    plan = c.last("planner", after=start, mode="write")
-    if plan is None:
-        return spawn(c, "planner", "write", rule="Phase 3 starts with the planner")
-    review = review_loop(c, "plan-reviewer", "planner", c.ad / "IMPLEMENTATION.md",
-                         plan["seq"])
-    if review:
-        return review
-    reviewed = c.last("plan-reviewer", after=plan["seq"])
-    tester = acceptance_step(c, reviewed["seq"])
+    tester = acceptance_step(c, start)
     if tester:
         return tester
     if c.state["settings"].get("post_plan_gate"):
-        gate = post_plan_gate(c, reviewed["seq"])
+        gate = post_plan_gate(c, start)
         if gate:
             return gate
     c.finish(3)
@@ -1125,25 +1115,27 @@ def acceptance_step(c, after):
     if tester is None:
         return spawn(c, "acceptance-tester", "write",
                      {"scope": "ALL CONDITIONS"},
-                     rule="the acceptance tester writes checks once the plan is reviewed")
+                     rule="the acceptance tester writes checks from the reviewed plan")
     ambiguous = str(tester["data"].get("ambiguous", "none")).strip()
     if ambiguous.lower() not in ("none", ""):
-        define = c.last("define", after=tester["seq"], mode="revise")
-        if define is None:
-            return spawn(c, "define", "revise", {
+        planner = next((r for r in c.recs("planner", after=tester["seq"], mode="revise")
+                        if r.get("sets", {}).get("ambiguous")), None)
+        if planner is None:
+            return spawn(c, "planner", "revise", {
                 "ambiguous": f"conditions {ambiguous}; both readings, one line each, are "
                              f"in {c.ad}/acceptance/AMBIGUOUS.md"},
                 rule="the acceptance tester found a condition that reads two ways: "
-                     "Define decides which is meant")
-        if define["data"].get("reading") == "other":
+                     "the planner decides which is meant")
+        if planner["data"].get("reading") == "other":
             budget = c.spend(f"acceptance-tester-{tester['n']}", "tester re-spawn")
             if budget is None:
                 return exhausted(c, "no round left to rewrite the checks",
                                  f"Conditions {ambiguous} read the other way now.")
             return spawn(c, "acceptance-tester", "write", {
-                "scope": f"ONLY conditions {ambiguous}: SPEC.md now says which reading "
+                "scope": f"ONLY conditions {ambiguous}: PLAN.md now says which reading "
                          "is meant, and it is not the one your checks test"},
-                rule="Define chose the other reading: rewrite those checks", budget=budget)
+                rule="the planner chose the other reading: rewrite those checks",
+                budget=budget)
     gaps = manifest_gaps(c)
     if gaps:
         ids, lines = gaps
@@ -1192,8 +1184,14 @@ def post_plan_gate(c, after):
                 "scope": "ALL CONDITIONS whose checks call an entry point the revised "
                          "plan changed",
                 "report": f"the plan was revised at the user's request and its entry "
-                          f"points changed: see {c.ad}/IMPLEMENTATION.md"},
+                          f"points changed: see {c.ad}/PLAN.md"},
                 rule="a plan revision changed the checks' entry points (no round)")
+        if c.state.get("plan_blockers") is not None and not c.readonly:
+            # The user has seen the open blockers and revised: the gate's next
+            # summary no longer lists them as left open. Bookkeeping, so
+            # --explain previews the gate question rather than this.
+            c.state.pop("plan_blockers")
+            c.dirty = True
     latest = max([e["seq"] for e in c.recs(("planner", "acceptance-tester"), after=after)]
                  + [after])
     if gate is None or (gate["choice"] == "revise" and gate["seq"] < latest):
@@ -1202,7 +1200,7 @@ def post_plan_gate(c, after):
             "Revise plan (tell me what to change)":
                 c.cmd("gate", "post-plan", "revise", "--reason", "<what the user said>"),
             "Stop": c.cmd("gate", "post-plan", "stop")},
-            "the post-plan gate is on (HIGH_RISK, or the config)")
+            "the post-plan gate is on (high risk, plan blockers left open, or the config)")
     return None
 
 
@@ -1242,6 +1240,89 @@ def phase4(c):
         c.finish(4)
         return None
     return result
+
+
+# The risk tier is re-checked from the diff once the build is verified (the
+# end of Phase 5), on the code that ships: a path that names a sensitive area,
+# or a large change, makes the run high-risk. The tier never goes down. A path
+# is split into whole words, at non-alphanumerics and camelCase humps
+# (`UserAuth.ts` is user, auth, ts; `author.ts` is author, ts), and each word
+# is looked up in SENSITIVE_WORDS. Lock files are left out of the line count.
+SENSITIVE_WORDS = frozenset((
+    "auth", "authn", "authz", "authentication", "authorization", "login", "logout",
+    "signin", "signup", "session", "sessions", "password", "passwords", "passwd",
+    "credential", "credentials", "secret", "secrets", "token", "tokens", "oauth", "saml",
+    "jwt", "sso", "crypto", "encrypt", "encryption", "decrypt", "permission",
+    "permissions", "acl", "rbac", "payment", "payments", "billing", "invoice",
+    "invoices", "checkout", "migration", "migrations", "migrate", "security"))
+LARGE_FILES = 25
+LARGE_LINES = 800
+LOCK_FILE_RE = re.compile(r"(^|[-._])lock([-._]|$)|^go\.sum$", re.IGNORECASE)
+
+
+def risk_recheck(c):
+    """Re-check the tier from the build's diff, once (state's risk_recheck)."""
+    if "risk_recheck" in c.state or c.readonly:
+        return  # --explain shows the step after it; the next `next` re-checks
+    paths, lines = build_diff(c)
+    why = []
+    sensitive = [p for p in paths if sensitive_path(p)]
+    if sensitive:
+        why.append("it touches " + ", ".join(sensitive[:5])
+                   + (f" and {len(sensitive) - 5} more" if len(sensitive) > 5 else ""))
+    if len(paths) > LARGE_FILES or lines > LARGE_LINES:
+        why.append(f"it is large ({len(paths)} files, {lines} lines changed)")
+    c.state["risk_recheck"] = {"seq": c.seq(), "high": bool(why), "why": why}
+    if why and not c.state.get("high_risk"):
+        c.state["high_risk"] = True
+        st.add_note(c.state, "risk raised to high after the build: " + "; ".join(why))
+    c.dirty = True
+
+
+def path_words(path):
+    """The whole words of a path, lowercased: split at non-alphanumerics and at
+    camelCase humps (`OAuthToken` is o, auth, token; `HTTPServer` is http, server)."""
+    words = []
+    for part in re.split(r"[^A-Za-z0-9]+", path):
+        words += re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+", part)
+    return [w.lower() for w in words]
+
+
+def sensitive_path(path):
+    return any(word in SENSITIVE_WORDS for word in path_words(path))
+
+
+def lock_file(path):
+    return bool(LOCK_FILE_RE.search(Path(path).name))
+
+
+def build_diff(c):
+    """(changed paths outside .auto-dev/, lines changed) between the branch's
+    merge base and the working tree, untracked files included."""
+    def out(*args):
+        code, text, _ = git(c.wt, *args, check=False)
+        return text if code == 0 else ""
+
+    add, remove = changed_paths(c.wt)
+    base = out("merge-base", c.state["repo"]["base"], "HEAD").strip()
+    committed = out("diff", "--name-only", f"{base}..HEAD").splitlines() if base else []
+    paths = sorted({p for p in add + remove + committed
+                    if p and not p.startswith(".auto-dev/")})
+    lines = 0
+    for row in out("diff", "--numstat", base or "HEAD").splitlines():
+        cells = row.split("\t")
+        if len(cells) == 3 and not cells[2].startswith(".auto-dev/") and \
+                not lock_file(cells[2]):
+            lines += sum(int(n) for n in cells[:2] if n.isdigit())
+    tracked = set(out("ls-files").splitlines())
+    for p in add:
+        if p not in tracked and not lock_file(p):
+            try:
+                lines += len((Path(c.wt) / p).read_text(encoding="utf-8",
+                                                          errors="replace").splitlines())
+            except OSError:
+                pass
+    return paths, lines
 
 
 # ---------------------------------------------------------------- Phases 5 and 6:
@@ -1455,7 +1536,7 @@ def blocked_step(c, coder):
                      rule="the coder returned BLOCKED: the planner decides why")
     if planner["next"] == "SPEC_IMPOSSIBLE":
         return stop([("The planner judged the spec impossible to meet as written. Tell "
-                     f"the user its reasons (its reply, and {c.ad}/IMPLEMENTATION.md).")],
+                     f"the user its reasons (its reply, and {c.ad}/PLAN.md).")],
                     "the planner returned SPEC_IMPOSSIBLE",
                     retry={"aside": [job_of(planner)]},
                     no_signoff="the plan has no way to meet the spec; say how to change it")
@@ -1469,7 +1550,7 @@ def blocked_step(c, coder):
             "scope": "ALL CONDITIONS whose checks call an entry point the revised plan "
                      "changed",
             "report": f"the plan was revised after a blocked step: see {c.ad}/"
-                      "IMPLEMENTATION.md"},
+                      "PLAN.md"},
             rule="the revised plan changed the checks' entry points", budget=budget)
     if c.last("coder", after=planner["seq"]) is None:
         return spawn(c, "coder", coder.get("mode") or "build", dict(coder.get("sets") or {}),
@@ -1523,7 +1604,7 @@ def spec_problems(rec):
 def spec_stop(c, recs, where, review_pass=None):
     """The stop for the results in `recs` that found a criterion wrong or
     missing, or None. Retrying sets them aside, so their step runs again;
-    signing off keeps SPEC.md as written and acts on them as if they found
+    signing off keeps PLAN.md as written and acts on them as if they found
     nothing."""
     found = [r for r in recs if r and spec_problems(r)]
     if not found:
@@ -1537,12 +1618,12 @@ def spec_stop(c, recs, where, review_pass=None):
                          f": {why}")
             if cid not in kept:
                 kept.append(cid)
-    return stop([(f"A worker found SPEC.md wrong {where}: a criterion that can't or "
+    return stop([(f"A worker found PLAN.md wrong {where}: a criterion that can't or "
                   "shouldn't be met as written, or one that is missing. Workers never "
                   "change the spec; the user decides. Tell the user each item:"),
                  *lines,
-                 ("To change the spec, the user says how (the fixer edits SPEC.md, and the "
-                  "plan and checks when they say so); signing off keeps SPEC.md as written. "
+                 ("To change the spec, the user says how (the fixer edits PLAN.md, and the "
+                  "plan and checks when they say so); signing off keeps PLAN.md as written. "
                   f"State and artifacts: {c.ad}")],
                 "a worker found a criterion wrong",
                 # A judge set aside consolidates again: its pass's re-votes too.
@@ -1563,7 +1644,7 @@ def disputed_stop(c, tester, who, where):
     which = (f"the checks of condition(s) {', '.join(ids)}" if ids else
              f"the checks {where} questions")
     return stop([(f"The acceptance tester ruled {which} right as written (against "
-                  f"SPEC.md), and {who} judges them wrong. Workers never settle it "
+                  f"PLAN.md), and {who} judges them wrong. Workers never settle it "
                   f"between themselves. Tell the user both sides: {where}, and the "
                   f"reason acceptance-tester #{tester['n']} gave above its result "
                   "block. Signing off keeps the checks as written.")],
@@ -1595,7 +1676,7 @@ def kept_texts(c):
             checks.append(f"{named} (the user's words: {words})")
     out = {}
     if spec:
-        out["spec_kept"] = ("the user kept SPEC.md as written for: " + "; ".join(spec)
+        out["spec_kept"] = ("the user kept PLAN.md as written for: " + "; ".join(spec)
                             + ". Judge these as worded; never report them as spec "
                               "problems again")
     if checks:
@@ -1607,10 +1688,10 @@ def kept_texts(c):
 
 def recheck(c, start, what_changed):
     """The verifier after a change: a first pass when a fix at a stop changed
-    SPEC.md or the plan since the loop began and no verifier ran since, since
+    PLAN.md or the plan since the loop began and no verifier ran since, since
     the contract changed."""
-    # A fix that changed SPEC.md or the plan, or a retry at a spec-problem stop
-    # (the user may have changed SPEC.md themselves).
+    # A fix that changed PLAN.md or the plan, or a retry at a spec-problem stop
+    # (the user may have changed PLAN.md themselves).
     changed = [f.get("done_seq") for f in overrides.fixes(c.state) if f.get("spec_changed")]
     changed += [o["seq"] for o in c.state.get("overrides") or []
                 if o["choice"] == "retry" and o["stop"].get("kind") == "spec-problem"]
@@ -1704,6 +1785,7 @@ def phase5(c):
                      stale], "check-fresh --phase 5 found a stale report",
                     retry={"aside": [job_of(r) for r in c.recs("cleanup", after=start)[-1:]]},
                     no_signoff="a stale report says nothing about the code that ships")
+    risk_recheck(c)
     c.finish(5)
     return None
 

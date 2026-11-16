@@ -14,7 +14,7 @@ Subcommands:
     show      print the run's state
     phase     set a phase's status
     note      record a decision or assumption
-    size      record the Define agent's size check (FITS or OVERSIZED)
+    size      record the planner's size check (FITS or OVERSIZED)
     budget    show the iteration budget, spend one round before a correction, or
               add rounds after the budget ran out
     gate      record a gate decision
@@ -26,13 +26,12 @@ Subcommands:
     pr-body   generate the PR description, or --check: lint one
     pr        publish: open the one PR, or refresh its description in place
     cleanup-worktree   remove the worktree after the final report
-    check-manifest     check the acceptance tester's MANIFEST.md against SPEC.md
+    check-manifest     check the acceptance tester's MANIFEST.md against PLAN.md
     eval-status        turn SPEC_EVAL.md into ALL_MET, CORRECT, REPAIR or STOP
-    apply-fix          apply a reviewer's FIX blocks to SPEC.md or IMPLEMENTATION.md
-    spec-overlap       refuse a brief or plan that copies SPEC.md's wording
+    spec-overlap       refuse a correction brief that copies a condition's wording
     install-checks     install the sealed acceptance checks in the worktree
     amend-checks       drop or reseal held-out checks for a fix the user asked for
-    security-reviewer  name the security reviewer to spawn for this SPEC.md
+    security-reviewer  name the security reviewer to spawn for this PLAN.md
     votes              plan the code-review re-votes, or apply them
     gate-summary       check a gate's preconditions; print its summary and question
     review-build       build CODE_REVIEW.md from the review judge's JUDGMENT.md
@@ -98,7 +97,6 @@ COMMANDS = {
     "cleanup-worktree": (cmd_ship, cmd_ship.cleanup_worktree),
     "check-manifest": (cmd_checks, cmd_checks.check_manifest),
     "eval-status": (cmd_checks, cmd_checks.eval_status),
-    "apply-fix": (cmd_checks, cmd_checks.apply_fix),
     "spec-overlap": (cmd_checks, cmd_checks.spec_overlap),
     "install-checks": (cmd_checks, cmd_checks.install_checks),
     "amend-checks": (cmd_amend, cmd_amend.main),

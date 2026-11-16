@@ -32,7 +32,7 @@ prep
        hold the checks when the test check has a `files` form (`autodev.py run
        test`), saved to evidence/acceptance.txt; it gets what is left of 570
        seconds after the wait in 1, at least 60, and is stopped past that.
-    6. For each SPEC.md condition with acceptance checks, evidence/C<n>.txt:
+    6. For each PLAN.md condition with acceptance checks, evidence/C<n>.txt:
        Expected, Command and Result lines and the lines of the run's output
        that name the condition's checks (its last 30 lines when none does). A
        line that names several checks goes to the longest name it holds.
@@ -312,7 +312,7 @@ def prep(args):
              f"by {int(waited)}s spent on an earlier mutation run; run `verify prep` "
              "again")
         return STILL_RUNNING
-    conditions = art.spec_conditions(ad / "SPEC.md")
+    conditions = art.spec_conditions(ad / "PLAN.md")
     owners = line_owners(lines, names)
     written = write_evidence(ad, conditions, names, command, code, lines, owners, budget)
     named = {pair for who in owners.values() for pair in who}

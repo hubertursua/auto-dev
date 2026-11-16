@@ -7,7 +7,7 @@ Pass: <first | re-check after <what changed>> · acceptance run: <n passed / n t
 
 | # | Condition | Verdict | Tier | Evidence | In plain words |
 |---|-----------|---------|------|----------|----------------|
-| 1 | <condition, in the spec's own words> | met | Strong | acceptance `todos.test.ts` :: "owner deleting…" passed (`evidence/C1.txt`) | the test written before the code passes |
+| 1 | <condition, in the plan's own words> | met | Strong | acceptance `todos.test.ts` :: "owner deleting…" passed (`evidence/C1.txt`) | the test written before the code passes |
 | 2 | <condition> | met | Adequate | expected `GET /todos` without the deleted id; saw it (`evidence/C2.txt`) | checked by listing the todos after a delete |
 | 3 | <condition> | partial | Weak | <what holds, what was not run, and why> | <the same, for a reader who doesn't know this pipeline> |
 | 4 | <condition> | unmet | Strong | acceptance check failed: <the failing assertion, one line> | <what still fails, in a sentence> |
@@ -41,7 +41,7 @@ are rows in this table — never a separate pass.
 <this pass's survivors only: a carried-forward mutant was caught, so it is never listed; "None survived." when none did>
 
 ## Defective acceptance checks
-<each check that asserts something SPEC.md does not say, or is too weak for
+<each check that asserts something PLAN.md does not say, or is too weak for
 what MANIFEST.md says it covers, named as MANIFEST.md names it (`path` ::
 "test name"), and why — or "None.">
 

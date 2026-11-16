@@ -245,8 +245,8 @@ the worktree you made when the run started in it.
   package the task actually touches. Detect the sub-package from the task/ticket
   and the files in play, and use that package's own `gate`; record with
   `autodev.py note` that the other packages were out of scope.
-  If the task genuinely spans packages, that's a sign it is OVERSIZED (the Define
-  agent's size check).
+  If the task genuinely spans packages, that's a sign it is OVERSIZED (the planner's
+  size check).
 - When scoping is ambiguous, surface it rather than guess.
 
 ## Repo-local override — `.auto-dev.yml`

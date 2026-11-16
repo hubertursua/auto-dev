@@ -11,8 +11,8 @@ Usage:
                     [--max-wait SECONDS] [--json]
 
 `--ticket-text-file` names a file holding the ticket's summary and description
-as read from the tracker; it is stored in state.json and given to the Define
-agent verbatim as its task (without it, Define gets --ask, else --task).
+as read from the tracker; it is stored in state.json and given to the planner
+verbatim as its task (without it, the planner gets --ask, else --task).
 
 Does, in order, stopping at the first failure:
  1. Preflight: python3 >= 3.9, PyYAML, git, gh installed and signed in, and an
@@ -108,7 +108,7 @@ def add_arguments(parser):
     parser.add_argument("--ask", help="the task restated in 1-2 sentences")
     parser.add_argument("--ticket-text-file", metavar="PATH",
                         help="a file holding the ticket's summary and description, "
-                             "given to the Define agent verbatim")
+                             "given to the planner verbatim")
     parser.add_argument("--profile", help="the saved or confirmed profile (YAML)")
     parser.add_argument("--profile-source", default="",
                         help="where the profile came from, for profile.md")

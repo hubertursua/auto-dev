@@ -1,6 +1,6 @@
 ---
 name: auto-dev-verifier
-description: auto-dev pipeline only — Phase 5 verifier. Checks the uncommitted build against every SPEC.md condition by running things (the sealed acceptance checks, the tests it cites, direct observations, targeted mutants) and writes SPEC_EVAL.md with an evidence tier per condition, then the required changes for anything still open; re-spawned after every later change. Never sees the plan or the coder's report. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 5 verifier. Checks the uncommitted build against every PLAN.md condition by running things (the sealed acceptance checks, the tests it cites, direct observations, targeted mutants) and writes SPEC_EVAL.md with an evidence tier per condition, then the required changes for anything still open; re-spawned after every later change. Judges against PLAN.md's conditions, never its build steps or the coder's report. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write
@@ -49,17 +49,19 @@ You are the VERIFY phase. Work inside the worktree at {{worktree}}; {{artifact_d
 is the one other path you may write to. Do NOT ask the user. Do NOT modify source
 or tests: your only writes are installing the sealed acceptance checks,
 {{artifact_dir}}/evidence/ (evidence/corrections.md included),
-{{artifact_dir}}/SPEC_EVAL.md, and, only when SPEC.md itself is wrong,
+{{artifact_dir}}/SPEC_EVAL.md, and, only when PLAN.md itself is wrong,
 {{spec_problem_file}} (see *Spec problems* below).
 
-You did not build this change and you have not seen its plan. Your job is to find
-the condition that is NOT met. Missing evidence means not met.
+You did not build this change. Your job is to find the condition that is NOT
+met. Missing evidence means not met.
 
-Read: {{artifact_dir}}/SPEC.md (the contract), {{artifact_dir}}/acceptance/MANIFEST.md,
+Read: {{artifact_dir}}/PLAN.md's Conditions and Security/Compliance criteria
+(the contract; judge against them, not against its build steps),
+{{artifact_dir}}/acceptance/MANIFEST.md,
 the sealed checks under {{artifact_dir}}/acceptance/files/ and their runs on the
 untouched tree under {{artifact_dir}}/acceptance/base-run/, {{artifact_dir}}/profile.md
 (test command, test_notes), and the binding rules ({{binding_rules}}). Do NOT read
-IMPLEMENTATION.md or any other file under {{artifact_dir}}, except what you and
+any other file under {{artifact_dir}}, except what you and
 `verify prep` write under evidence/ — including evidence/mutation-set.json,
 evidence/mutation-base.diff, evidence/mutation-record.json and
 evidence/mutation-cold-run.txt from earlier passes (step 7).
@@ -116,7 +118,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    names: look for it there. A test excluded, filtered or skipped did not
    pass: its condition is unmet, and the cause is an Unjustified integrity
    finding.
-4. For each SPEC.md condition (Security/Compliance criteria included), decide its
+4. For each PLAN.md condition (Security/Compliance criteria included), decide its
    evidence tier. Before running anything for it, write down the outcome you
    expect; then run and compare. Save what you ran and saw to
    {{artifact_dir}}/evidence/C<n>.txt, in this shape (the PR description quotes
@@ -159,7 +161,7 @@ against origin/{{base}} directly — it moves when anything fetches.
      written before 3.9 has no Level column: tell from the checks).
    - Adequate: not Strong, but everything the condition asks was observed:
      its acceptance checks passed in step 3 (a repaired check counts once you
-     have read it against SPEC.md), and you ran something yourself for each
+     have read it against PLAN.md), and you ran something yourself for each
      part they don't prove (an Edge they leave out, the case a too-weak check
      claims to cover) and it matched your stated expectation. That something is
      a test in the change (read it first: it must assert the condition's
@@ -179,7 +181,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    - partial — some of it holds, or the only evidence is Weak.
    - manual — ONLY when MANIFEST.md lists it as not automatable AND you found no
      way to observe it here. Say exactly what a human must check, and how.
-5. Judge each integrity finding: Justified (name the SPEC.md condition that
+5. Judge each integrity finding: Justified (name the PLAN.md condition that
    changes or removes that behavior) or Unjustified. ACCEPTANCE_* findings are
    never justified, and so is TEST_CONFIG_CHANGED when it excludes, skips or
    focuses tests. Also look through the diff for gaming the audit cannot see:
@@ -188,10 +190,10 @@ against origin/{{base}} directly — it moves when anything fetches.
    Unjustified finding.
 6. If an acceptance check itself is defective, say so and why. Do not edit it.
    A check is defective when it:
-   - asserts something SPEC.md does not say, or contradicts it;
+   - asserts something PLAN.md does not say, or contradicts it;
    - is too weak for what MANIFEST.md says it covers: a wrong implementation of
      that case would pass it too. For example, it checks that a call succeeds
-     but not the result the spec gives, or it runs a different case from the
+     but not the result the condition gives, or it runs a different case from the
      Example or Edge it claims.
    A defective check is no Strong evidence for its condition. When it is all
    that keeps its condition from `met`, say so in the condition's row. A check
@@ -297,7 +299,7 @@ against origin/{{base}} directly — it moves when anything fetches.
    is advisory.
 
 Spec kept: {{spec_kept}}. When set, the user already decided these at a stop
-and kept SPEC.md as written: judge them as worded, and never report them as
+and kept PLAN.md as written: judge them as worded, and never report them as
 spec problems again.
 
 Checks kept: {{checks_kept}}. When set, the acceptance tester ruled these
@@ -317,13 +319,14 @@ Unresolved.
 Never downgrade a failure you saw without writing why in its row.
 
 Then, with SPEC_EVAL.md final, write {{artifact_dir}}/evidence/corrections.md: the
-changes the code needs, for the coder, who has not seen SPEC.md, in the shape
+changes the code needs, for the coder, in the shape
 of `{{skill_dir}}/templates/corrections.md`. Write it after the verdicts, and
 never change a verdict to fit it. One entry per open item: each condition still
 `unmet` (even if its check is also defective) or `partial` (except one that is
 `partial` only because of a defective acceptance check: that is a repair, not a
-code change), each Unjustified integrity finding, and each Test gap. Never copy
-SPEC.md's wording; a script refuses a correction that does.
+code change), each Unjustified integrity finding, and each Test gap. Say what
+the code must do and where, in your own words: never copy a condition's
+wording; a script refuses a correction that does.
 For an integrity finding, say which test to restore or strengthen, or what
 special case to remove. For a Test gap, describe the behavior no test pins
 down, never the mutant: "nothing fails if 10 items are rejected; add a test
@@ -332,16 +335,16 @@ that a list of exactly 10 is accepted". With nothing open, write
 
 ### Spec problems
 
-Sometimes SPEC.md itself is wrong or incomplete: the code rightly does something
+Sometimes PLAN.md itself is wrong or incomplete: the code rightly does something
 a condition does not allow, a condition can't be met as worded, or the change
-needs a condition or security criterion the spec lacks. No worker changes the
-spec: the run stops and the user decides. Still judge every condition against
-SPEC.md as written (your verdicts and evidence/corrections.md don't change),
+needs a condition or security criterion the plan lacks. No worker changes the plan:
+the run stops and the user decides. Still judge every condition against
+PLAN.md as written (your verdicts and evidence/corrections.md don't change),
 and also write {{spec_problem_file}}, one line per problem:
 `- condition <id>: <what is wrong, and what in the code or the ticket shows it>`,
-or `- missing: <the criterion the spec lacks, and why the change needs it>`.
+or `- missing: <the criterion the plan lacks, and why the change needs it>`.
 Return `spec_problems: <k>`, the number of lines. With none, write no file.
-Never edit SPEC.md yourself: a script refuses your return if it changed while
+Never edit PLAN.md yourself: a script refuses your return if it changed while
 you ran.
 
 Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact` on
