@@ -32,11 +32,12 @@ jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
 MCP tools, or skipped: --value skipped), pushed (--value <the sha pushed>),
 pr-ready (the draft PR marked ready for review), final-report, main-ci (CI on
 main checked after the merge); and triage-<ID> (the user's answer at
-the PR gate for a pre-existing security finding, `triage-Others` for the
+the ready-for-review gate for a pre-existing security finding, `triage-Others` for the
 grouped rest: --value separate or ignore; it is also noted in WORK_LOG.md).
 
-`gate` records a gate decision. Gates: post-plan, pr, main, profile, jira,
-cleanup. Choices: proceed, hold, stop, revise (post-plan only), leave (jira
+`gate` records a gate decision. Gates: post-plan, pr (open the PR, only with
+`gates.open_pr`), ready (ready for review), main, profile, jira, cleanup.
+Choices: proceed, hold, stop, revise (post-plan only), leave (jira
 only: start work but leave Jira alone), already (jira only: the ticket is in
 progress already, so start work without moving it now; later milestones move
 it as after proceed), keep (cleanup only: keep the worktree). `hold` marks the
@@ -61,10 +62,11 @@ from .output import FAILED, Fail, emit
 EXIT_EXHAUSTED = 3
 MAX_RAISE = 10
 
-GATE_PHASE = {"post-plan": 3, "pr": 6, "main": 6, "profile": 1, "jira": 2,
+GATE_PHASE = {"post-plan": 3, "pr": 6, "ready": 6, "main": 6, "profile": 1, "jira": 2,
               "cleanup": 6}
 GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "pr": {"proceed", "hold", "stop"},
+                "ready": {"proceed", "hold", "stop"},
                 "main": {"proceed", "hold", "stop"},
                 "profile": {"proceed", "stop"},
                 "jira": {"proceed", "already", "leave", "stop"},
@@ -229,7 +231,8 @@ def mark(args):
     state.setdefault("marks", {})[args.step] = {"value": args.value, "at": st.now(),
                                                 "seq": st.seq(state)}
     if triage:
-        st.add_note(state, f"PR gate triage, {args.step[len('triage-'):]}: {args.value}")
+        st.add_note(state, f"ready-for-review gate triage, {args.step[len('triage-'):]}: "
+                    f"{args.value}")
     st.save(args.dir, state)
     emit(args.json, "MARKED", f"{args.step}: {args.value}")
     return 0

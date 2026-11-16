@@ -34,7 +34,7 @@ eval-status [--install-conflict] [--mutation-left-changes]
                               (the verifier stopped before writing it)
       REPAIR                  only defective acceptance checks are open: repair
                               mode for the `repair:` conditions
-      ALL_MET                 nothing open; manual conditions go to the PR gate
+      ALL_MET                 nothing open; manual conditions go to the ready gate
     A condition with a check listed under `## Defective acceptance checks` (as
     MANIFEST.md names it, `path` :: "test name", matched exactly; or by path
     alone when only that condition has checks in that file) goes to `repair:`.
@@ -348,7 +348,7 @@ def eval_status(args):
                        "; repair the listed checks first" if fields.get("repair") else ""),
         "REPAIR": "only defective acceptance checks are open: repair mode for these "
                   "conditions, then a verifier re-check",
-        "ALL_MET": "nothing open" + ("; the manual conditions go to the PR gate"
+        "ALL_MET": "nothing open" + ("; the manual conditions go to the ready-for-review gate"
                                      if fields.get("manual") else ""),
     }[token]
     emit(args.json, token, message, **fields)

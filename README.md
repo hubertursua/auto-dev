@@ -83,7 +83,7 @@ orchestrator runs:
 | 3 Plan | planner + plan reviewer, acceptance tester | `IMPLEMENTATION.md` — the technical how; `acceptance/` — held-out checks sealed from the coder (optional approval gate) |
 | 4 Build | coder | code + tests given **only** the plan |
 | 5 Verify | cleanup agent, then verifier | the sealed checks are installed, `/simplify` + the profile's quality gate run to green, then the verifier runs the held-out checks and audits the tests against the withheld spec → `SPEC_EVAL.md` (correction loop to Phase 4: coder, cleanup, verifier) |
-| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | code review panel and security review on the uncommitted change (correction loop to Phase 4 for must-fix findings), then commit + draft PR + CI, then merge to main + Jira Done, pausing at each gate |
+| 6 Ship | orchestrator, 3 code reviewers + judge, security reviewer, triager | commit + **draft PR** first (CI starts there), then the code review panel and security review on it alongside CI (each correction is committed on top), then the ready-for-review gate, the PR marked ready, merge to main + Jira Done, pausing at each gate |
 
 Workers never negotiate the contract between themselves. A coder that finds
 a plan step wrong builds it the way that works and records the deviation for
@@ -121,7 +121,7 @@ Orchestrator (main agent) ── runs the `next` loop and the human gates; never
 │           Acceptance tester  held-out checks from the spec, proven to fail, sealed [optional gate]
 ├─ Phase 4  Coder ......... code + tests (given only the plan)
 ├─ Phase 5  Cleanup + verifier  /simplify → quality gate → RUN the checks vs. the withheld spec
-└─ Phase 6  orch + reviewers  code review panel ∥ security review → [GATE] PR + CI → [GATE] main
+└─ Phase 6  orch + reviewers  draft PR → code review panel ∥ security review ∥ CI → [GATE] ready → [GATE] main
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
             Planner ......... settles a step the coder stopped (Phases 4–6)
             Acceptance tester  repairs a questioned check, or says why it is right (Phases 4–6)
@@ -184,7 +184,7 @@ weakening them. Verification is built around that:
 
   A repaired check can't be re-run on the old code, so its condition is
   Adequate at most. A condition no agent can observe is handed
-  to you at the PR gate as a manual check. The routine steps of each pass are
+  to you at the ready-for-review gate as a manual check. The routine steps of each pass are
   one script call (`autodev.py verify prep`), so the verifier spends its turns
   on the judging (`agents/verifier.md`).
 - **A test-integrity audit.** `skills/auto-dev/scripts/check-tests.py` flags
@@ -207,7 +207,7 @@ weakening them. Verification is built around that:
 - **The contract is yours to change.** Later work may show that a plan
   step, a held-out check or the spec itself is wrong. A wrong plan step is
   the coder's to fix as it builds: it builds the step the way that works and
-  lists each deviation and why in `deviations/coder-<n>.md`, and the PR gate
+  lists each deviation and why in `deviations/coder-<n>.md`, and the ready-for-review gate
   shows you every one. A check another worker calls wrong goes to the
   acceptance tester, which repairs it; if the tester finds the check right,
   the run stops and asks you. A criterion a later worker finds wrong or
@@ -281,10 +281,13 @@ The Define agent says whether the task fits one PR:
 Define also flags a task as **high-risk** (security criteria, auth, payments,
 access control or a data migration), which turns on the post-plan gate.
 
-## Review before the PR
+## Review on the draft PR
 
-Nothing is committed or pushed until the uncommitted change has been reviewed
-twice, at the same time, and you have seen the results:
+The verified build is committed and pushed as a **draft PR before any
+review**, so CI runs while it is reviewed; its description says it is not
+reviewed yet. (A repo that must not push unreviewed code sets `gates.open_pr:
+true` in `.auto-dev.yml`: the run then asks before the first push.) The draft
+is reviewed twice, at the same time:
 
 1. **Code review panel.** Three reviewers run `/code-review` on the changed
    files independently, at the effort the plan sets for the review (see
@@ -302,15 +305,18 @@ twice, at the same time, and you have seen the results:
    reviewer that weights those paths hardest does it.
 
 One correction fixes every must-fix finding from both, for one round of the
-iteration budget. With no round left before the commit, the run goes on to
-the PR gate, which names every must-fix finding still open; after the commit
-(a red CI fix, a PR comment), a must-fix finding with no round left stops the
-run. A finding about a held-out check goes to the acceptance
+iteration budget; it is reviewed before it is committed on top and pushed.
+With no round left before the PR is marked ready, the run goes on to the
+ready-for-review gate, which names every must-fix finding still open; after
+that (a red CI fix, a PR comment), a must-fix finding with no round left stops
+the run. A finding about a held-out check goes to the acceptance
 tester, never the coder; if the tester finds the check right, the run stops
 and shows you both sides. A problem that lies in `SPEC.md` rather than the code
 goes in a reviewer's report; the judge confirms it for the panel, and once the
 pass has settled the run stops and asks you.
-After the correction, the full panel reviews the result again. A re-review of a correction skips the nested `/code-review` and `/security-review` skills: the
+After the correction, the full panel reviews it again. Once the reviews
+settle, the PR's description is published again with them, and you decide at
+the ready-for-review gate whether the PR leaves draft. A re-review of a correction skips the nested `/code-review` and `/security-review` skills: the
 reviewers follow the correction and everything downstream of it themselves.
 When the judge passes a security lead from the panel on, a security run that
 skips `/security-review` checks just those leads.
@@ -325,14 +331,15 @@ A **rubric** (`skills/auto-dev/templates/rubric.md`) decides what must be fixed:
   covers, so the coder closes the whole gap in one round.
 - **Security findings.** One this change introduced, rated High or Medium with
   a traced path the judge confirms, is must-fix; a Low one is advisory. A High
-  or Medium one that was already there is shown to you at the PR gate, to note
+  or Medium one that was already there is shown to you at the ready-for-review gate, to note
   as a follow-up or ignore; this PR never fixes it.
 - **Confidence.** Every finding and every report carries a confidence level. A
   low-confidence report (say, two reviewers failed, or the security reviewer
   couldn't finish) is flagged at the gate, never
   shown as a clean pass.
 
-After the PR opens, a **triager** reads red CI logs and human review comments,
+Once the draft PR is open, a **triager** reads red CI logs, and once it is
+marked ready, people's review comments,
 so their text never reaches the orchestrator and can't steer the run. It sends
 only real code problems to the coder (and comments about a held-out check to
 the acceptance tester). A red CI run the code can't fix (a missing secret,
@@ -345,12 +352,15 @@ instructions are in `agents/code-reviewer.md`, `agents/review-judge.md`,
 
 ## Human gates & integrations
 
-Planning and build run unattended. The pipeline pauses for approval:
+Planning and build run unattended. The draft PR opens without asking, so CI
+runs while the change is reviewed. The pipeline pauses for approval:
 
-- before **opening the PR**, and
+- before the PR leaves draft (the **ready-for-review gate**, once the reviews
+  on the draft have settled), and
 - before the **main merge**,
 - plus an optional **post-plan gate** (on for high-risk tasks, or with
-  `gates.post_plan`).
+  `gates.post_plan`) and an optional **open-the-PR gate** before the first
+  push (with `gates.open_pr`, for repos that must not push unreviewed code).
 
 Three more pauses fire only when their situation arises: the **profile
 confirmation** (a repo with no valid saved profile and no `.auto-dev.yml`
@@ -360,16 +370,18 @@ progress; you can also answer that it is), and the
 **worktree cleanup offer** (after the final report; never for a worktree you
 made).
 
-Declining is safe at every gate: `Stop` ends the run; `Hold`, at the PR and
-main gates, pauses it so you can resume later. Both leave the branch, the worktree and every artifact on
+Declining is safe at every gate: `Stop` ends the run; `Hold`, at the
+open-the-PR, ready-for-review and main gates, pauses it so you can resume later. Both leave the branch, the worktree and every artifact on
 disk. What each option does is in `skills/auto-dev/references/tables.md`.
 
-- **The PR** opens as a draft and is marked ready before the main gate. Its
-  description follows the repo's default PR template (never one from a
+- **The PR** opens as a draft before any review, its description saying it is
+  not reviewed yet; once the reviews settle the description is published
+  again with them, and the PR is marked ready after the ready-for-review gate.
+  Its description follows the repo's default PR template (never one from a
   `PULL_REQUEST_TEMPLATE/` folder) and links the Jira ticket. A checklist box in
   the template is ticked only when the run's files show it is true.
   With `pr_review.inline_comments: true`, the review findings left open or
-  advisory are posted on the PR.
+  advisory are posted on the PR once the reviews settle.
 - **The merge** goes only through `gh pr merge`, respecting branch protection
   and never with `--admin`: `--squash` by default, `--merge` if the repo
   disallows squash, `--rebase` only when it is the one method allowed. It is
@@ -380,11 +392,13 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   skipped without a ticket. The ticket's text is stored at setup and given to
   the Define agent, which has no Jira access
   (`skills/auto-dev/references/gates-and-jira.md`).
-- **CI** is watched with a time limit on the PR, and again after the merge. CI
-  that timed out or couldn't be watched is shown as not monitored, never as
-  green.
-- **Deviations from the plan** the coder recorded are listed in the PR and
-  main gate summaries and the final report, each with its reason.
+- **CI** is watched with a time limit on the draft PR, again once it is marked
+  ready (some workflows skip drafts), and after the merge. A draft with no
+  check after a grace period doesn't hold the run up. CI that timed out, never
+  ran or couldn't be watched is shown as not monitored, never as green.
+- **Deviations from the plan** the coder recorded are listed in the
+  ready-for-review and main gate summaries and the final report, each with its
+  reason.
 - **A stop asks how to go on.** When the run stops on a result or a worker,
   you answer (any reply other than a pick is an instruction):
   - **Your instruction:** the fixer agent does what you said, and nothing
@@ -401,7 +415,7 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
     the `autodev.py` permission rule below covers the command.
   - **I fixed it myself:** only the step that stopped runs again.
   - **Sign off and go on:** the result is accepted as if it passed, and the
-    sign-off is named in the PR gate summary and the PR body. At a wrong
+    sign-off is named in the ready-for-review gate summary and the PR body. At a wrong
     criterion or a disputed check, signing off keeps it as written, and every
     later worker that judges it is told so. Never on red CI,
     a confirmed security finding, a possibly planted bug, stale results or
@@ -567,12 +581,13 @@ The keys most runs touch:
 | `iteration_budget` | revise rounds per task (default 4) |
 | `mutation.max` | mutants kept across the verifier's passes (default 20, at most 50, `0` = off) |
 | `gates.post_plan` | turn the post-plan gate on |
+| `gates.open_pr` | ask before the first push (off: the draft PR opens before any review) |
 | `branches` | `base` and `prefix` |
 | `ci`, `ci_timeout_minutes` | the CI provider, and how long to watch it (default 30 minutes) |
 | `worktree_files` | gitignored files (an `.env`, say) to copy into the run's worktree |
 | `security_docs` | the repo's security directives (default: `SECURITY.md`, `.github/SECURITY.md`, `docs/security/*.md`; `[]` = none) |
 | `symbol_lookup` | a code-index tool to use instead of `grep` |
-| `pr_review.inline_comments` | post the open and advisory review findings on the PR |
+| `pr_review.inline_comments` | post the open and advisory review findings on the PR, once the reviews settle |
 | `checkpoint_events` | events one session records before it checkpoints (default 80) |
 | `jira.states` | the board's state names for In Progress, In Review and Done |
 
@@ -698,7 +713,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports and their merged list (`review/pass-<n>/findings.md`), the re-votes (`VOTES-R<k>.md`), the judge's calls (`JUDGMENT.md`), the code review built from them (with the report as it stood before the pass, `CODE_REVIEW.before.md`), the security review, and the review's required changes for the coder (`review/pass-<n>/corrections.md`, `review/security-corrections.md`) |
 | `pr-body.md`, `pr-write.md`, `pr-output-comment.md` | Phase 6 | the generated PR description; the sections of it the orchestrator writes (the Summary, the Assumptions, a template section), with the text they draw on, which `pr publish` puts into the description; and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments, and the comments about a held-out check, for the tester (`human-<n>-checks.md`) |
-| `deviations/` | Phases 4–6, coder | each plan step the coder built differently, and why (`coder-<n>.md`), for the PR gate |
+| `deviations/` | Phases 4–6, coder | each plan step the coder built differently, and why (`coder-<n>.md`), for the ready-for-review gate |
 | `spec-problems/` | Phases 5–6 | a criterion a later worker found wrong or missing in `SPEC.md` (`<worker>-<n>.md`), for you to decide |
 | `lookups/` | any phase | lookup answers |
 | `tree/` | `autodev.py record` | a repo file a worker that never changes the repo changed anyway, as the worker left it, before `record` put it back (`tree/<worker>-<n>/<path>`) |
@@ -712,7 +727,7 @@ Autonomous but bounded:
   correction, every Define or plan re-review, every tester re-spawn for gaps
   and every re-dispatched `BLOCKED` step, one round each. When the budget
   runs out the run stops and names what is still open, except for review
-  findings before the commit: those go to the PR gate, which names each one,
+  findings before the PR is marked ready: those go to the ready-for-review gate, which names each one,
   and you decide. To go on after a budget stop, say how many more rounds you
   want (1 to 10): the run adds them and carries on from the step that
   stopped. It never adds rounds unasked.

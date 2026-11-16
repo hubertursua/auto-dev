@@ -1,4 +1,4 @@
-"""autodev.py votes / review-scope / gate-summary / review-build.
+"""autodev.py votes / gate-summary / review-build.
 
 Each takes `--dir <artifact-dir>` (default `./.auto-dev`) and `--json`.
 
@@ -31,16 +31,6 @@ votes --apply
     ways, an `**Overall confidence` line without `reviewers finished: <n>/3`
     and `coverage:`); nothing is written.
 
-review-scope --snapshot | --files | --clear | --next-pass
-    --snapshot  marks untracked files intent-to-add, then records the working
-                tree's hash as the snapshot to diff a correction against. Keeps
-                an existing snapshot: one per pending correction, not per round.
-    --files     prints the files changed since the snapshot (the scope of the
-                cleanup re-spawn and the next panel pass).
-    --clear     forgets the snapshot once a panel pass has reviewed it.
-    --next-pass creates review/pass-<n>/ for the next pass and prints <n>.
-    Exit: 0; 1 --files with no snapshot recorded.
-
 review-build
     The review judge runs it once it has written review/pass-<n>/JUDGMENT.md
     (templates/JUDGMENT.md) for the panel's pass <n>, from the merged
@@ -64,21 +54,25 @@ review-build
     line each; nothing is written); 2 no findings.md, judgment or judge brief,
     or CODE_REVIEW.md already holds this pass with no snapshot from before it.
 
-gate-summary <post-plan|pr|main> [--pr N]
+gate-summary <post-plan|pr|ready|main> [--pr N]
     Checks the gate's preconditions, then prints the summary and the
     AskUserQuestion JSON to ask with (on the line after `QUESTION:`).
-    pr: every report is fresh, one passing lint report per gate command, no
-    submodule holds uncommitted edits (`git submodule foreach` lists them),
-    no Unjustified integrity finding is open; then the acceptance block and
-    the two reviews, and one triage question per pre-existing security finding
-    whose Verdict is `for the user`, most severe first (with more than three,
-    the two most severe and one question for the rest, headed `Others`). Each
-    answer is recorded with `mark triage-<ID or Others> --value separate|ignore`;
-    a finding sent to a separate PR is listed in the PR body as a follow-up.
+    ready (the ready-for-review gate, on the draft PR once its reviews have
+    settled): every report is fresh, one passing lint report per gate command,
+    no submodule holds uncommitted edits (`git submodule foreach` lists them),
+    no Unjustified integrity finding is open; then the draft PR and its CI, the
+    acceptance block and the two reviews, and one triage question per
+    pre-existing security finding whose Verdict is `for the user`, most severe
+    first (with more than three, the two most severe and one question for the
+    rest, headed `Others`). Each answer is recorded with `mark triage-<ID or
+    Others> --value separate|ignore`; a finding sent to a separate PR is listed
+    in the PR body as a follow-up.
+    pr (the open-the-PR gate, before the first push, only with `gates.open_pr`
+    on): the same checks and summary, without the reviews, which have not run.
     main: the PR is open and not a draft, and every result was checked on its
     head commit.
-    pr and main also list each deviation from the plan the coder recorded
-    (deviations/coder-<n>.md), and each sign-off and fix made at a stop.
+    Each but post-plan also lists each deviation from the plan the coder
+    recorded (deviations/coder-<n>.md), and each sign-off and fix made at a stop.
     Exit: 0 printed; 1 a precondition failed (the reason says what to do; do
     not ask the gate): `STALE` when a result no longer matches the code,
     `PRECONDITION` otherwise; 2 check-fresh.py, `git submodule foreach` or gh
@@ -95,7 +89,6 @@ from pathlib import Path
 from . import artifacts as art
 from . import overrides
 from . import state as st
-from .cmd_checks import git_add_intent
 from .cmd_ship import check_fresh
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
@@ -107,6 +100,7 @@ COVERAGE_RE = re.compile(r"coverage:\s*(full|partial)")
 GATE_OPTIONS = {
     "post-plan": ["Approve & build", "Revise plan (tell me what to change)", "Stop"],
     "pr": ["Open PR", "Hold (don't push yet)", "Stop"],
+    "ready": ["Mark ready for review", "Hold (keep it a draft)", "Stop"],
     "main": ["Merge PR to main", "Hold", "Stop"],
 }
 # A pre-existing security finding's triage answers, and the value `mark
@@ -124,10 +118,6 @@ def add_arguments(parser, name):
         mode = parser.add_mutually_exclusive_group(required=True)
         mode.add_argument("--plan", action="store_true")
         mode.add_argument("--apply", action="store_true")
-    elif name == "review-scope":
-        mode = parser.add_mutually_exclusive_group(required=True)
-        for flag in ("--snapshot", "--files", "--clear", "--next-pass"):
-            mode.add_argument(flag, action="store_true")
     elif name == "gate-summary":
         parser.add_argument("gate", choices=sorted(GATE_OPTIONS))
         parser.add_argument("--pr", help="the PR number (default: from state)")
@@ -423,47 +413,6 @@ def recount(text, decided_2_1):
     return re.sub(r"^Must-fix: \d+ open.*$", counts, text, count=1, flags=re.MULTILINE)
 
 
-# ---------------------------------------------------------------- review-scope
-
-@wrap
-def review_scope(args):
-    state = st.load(args.dir)
-    wt = state["worktree"]
-    phase6 = state.setdefault("phase6", {})
-    if args.next_pass:
-        n = phase6.get("review_pass", 0) + 1
-        (Path(args.dir) / "review" / f"pass-{n}").mkdir(parents=True, exist_ok=True)
-        phase6["review_pass"] = n
-        st.save(args.dir, state)
-        emit(args.json, "PASS", str(n), dir=str(Path(args.dir) / "review" / f"pass-{n}"))
-        return 0
-    if args.clear:
-        phase6.pop("snapshot", None)
-        st.save(args.dir, state)
-        emit(args.json, "CLEARED", "snapshot forgotten")
-        return 0
-    git_add_intent(wt)
-    tree = print_tree(wt)
-    if args.snapshot:
-        if phase6.get("snapshot"):
-            emit(args.json, "KEPT", phase6["snapshot"], reason="a correction is still "
-                 "unreviewed; its snapshot covers this one too")
-            return 0
-        phase6["snapshot"] = tree
-        st.add_note(state, f"review snapshot {tree}")
-        st.save(args.dir, state)
-        emit(args.json, "SNAPSHOT", tree)
-        return 0
-    snap = phase6.get("snapshot")
-    if not snap:
-        raise Fail("no snapshot recorded: take one with --snapshot before dispatching "
-                   "the correction", FAILED, "NO-SNAPSHOT")
-    files = [f for f in git(wt, "diff", "--name-only", snap, tree).splitlines()
-             if f and not f.startswith(".auto-dev/")]
-    emit(args.json, "FILES", f"{len(files)} file(s) changed since {snap[:12]}", file=files)
-    return 0
-
-
 def print_tree(wt):
     code, out, err = run([sys.executable, str(SCRIPTS / "check-fresh.py"),
                           "--print-tree", wt], check=False)
@@ -483,8 +432,8 @@ def question(header, text, options):
 def gate_summary(args):
     state = st.load(args.dir)
     ad = Path(args.dir)
-    builder = {"post-plan": post_plan_summary, "pr": pr_summary,
-               "main": main_summary}[args.gate]
+    builder = {"post-plan": post_plan_summary, "pr": open_pr_summary,
+               "ready": ready_summary, "main": main_summary}[args.gate]
     lines, extra_questions = builder(state, ad, args)
     questions = [question("Gate", f"{args.gate} gate: how do you want to proceed?",
                           GATE_OPTIONS[args.gate])] + extra_questions
@@ -529,7 +478,7 @@ def acceptance_block(ad):
                    if f.get("Judgment", "").strip().lower() == "unjustified"]
     if unjustified:
         raise Fail("SPEC_EVAL.md has an Unjustified integrity finding still open: Phase 5 "
-                   "did not settle; do not ask the PR gate", FAILED, "PRECONDITION")
+                   "did not settle; do not ask the gate", FAILED, "PRECONDITION")
     justified = [f"{f.get('Location', '')} {f.get('Finding', '')} ({f.get('Reason', '')})"
                  for f in ev["integrity"]
                  if f.get("Judgment", "").strip().lower() == "justified"]
@@ -617,10 +566,32 @@ def submodule_edits(wt):
     return edits
 
 
-def pr_summary(state, ad, args):
+def open_pr_summary(state, ad, args):
+    """The opt-in gate before the first push: the checked build, no review yet."""
+    lines, _ = pr_summary(state, ad, args, reviewed=False)
+    return lines + [("Not reviewed yet: the code review and the security review run on "
+                     "the draft PR, alongside CI, once it is open")], []
+
+
+def ready_summary(state, ad, args):
+    """The ready-for-review gate: the reviews on the draft, its CI, and the PR."""
+    lines, questions = pr_summary(state, ad, args)
+    p6 = state.get("phase6", {})
+    pr = p6.get("pr")
+    lines.insert(0, f"Draft PR {p6.get('pr_url') or ('#' + str(pr))}, CI on the draft: "
+                 f"{ci_text(state)}")
+    if p6.get("exhausted"):
+        open_ = "; ".join(str(x) for x in p6["exhausted"].get("open") or [] if x)
+        lines.append("No round was left to correct what is still open"
+                     + (f" ({open_})" if open_ else "") + ": marking the PR ready ships "
+                     "it, listed in its description")
+    return lines, questions
+
+
+def pr_summary(state, ad, args, reviewed=True):
     wt = state["worktree"]
     fresh_or_fail(wt, ad, "results are stale; re-run them first, never ask this gate "
-                  "on them:")
+                  "on them:", *(() if reviewed else ("--phase", "5")))
     missing = []
     for check in state["settings"].get("gate", []):
         report = ad / "lint" / check.get("report", "")
@@ -638,9 +609,15 @@ def pr_summary(state, ad, args):
                    "a submodule. If all are generated output this run made, delete them "
                    "and run the gate summary again:\n" + "\n".join(subs), FAILED,
                    "PRECONDITION")
-    status = git(wt, "status", "--porcelain", "--untracked-files=all", "--no-renames",
-                 "--ignore-submodules=dirty")
-    files = [ln[3:] for ln in status.splitlines() if not ln[3:].startswith(".auto-dev/")]
+    if state.get("phase6", {}).get("verified_sha"):  # committed: the branch's change
+        from .cmd_work import cut_commit
+        names = git(wt, "diff", "--name-only", cut_commit(wt, state["repo"]["base"]),
+                    "HEAD").splitlines()
+        files = [f for f in names if f and not f.startswith(".auto-dev/")]
+    else:
+        status = git(wt, "status", "--porcelain", "--untracked-files=all", "--no-renames",
+                     "--ignore-submodules=dirty")
+        files = [ln[3:] for ln in status.splitlines() if not ln[3:].startswith(".auto-dev/")]
     lines = [f"Branch {state['branch']} → {state['repo']['base']}",
              f"Files changed: {len(files)}" + (f" ({', '.join(files[:8])}"
                                                f"{', …' if len(files) > 8 else ''})"
@@ -650,8 +627,10 @@ def pr_summary(state, ad, args):
                                               if c.get("report", "") in missing else "pass")
                  for c in state["settings"].get("gate", []))]
     lines += acceptance_block(ad)
-    review_lines, questions = review_block(ad)
-    lines += review_lines
+    questions = []
+    if reviewed:
+        review_lines, questions = review_block(ad)
+        lines += review_lines
     if state["budget"]["remaining"] <= 0:
         lines.append("Budget exhausted: no round is left for a fix; an open must-fix "
                      "finding ships listed in the PR body")

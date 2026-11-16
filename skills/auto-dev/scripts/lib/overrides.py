@@ -28,7 +28,8 @@ question; it is refused when `next` did not just stop on such a step.
     signoff  The user accepts the result and the run goes on as if the step
              had passed. Only where the stop offers it: never on a red CI run,
              a security criterion, or a mutation that may have left changes. It
-             is named in WORK_LOG.md, the PR gate's summary and the PR body.
+             is named in WORK_LOG.md, the ready-for-review gate's summary and the
+             PR body.
     talk     Records nothing: talk the stop through with the user, then run
              `next`, which asks the question again.
     leave    The run stays stopped: `next` reports the stop without the
@@ -290,8 +291,8 @@ def put_back_artifacts(ad, n, paths):
 # ---------------------------------------------------------------- reports
 
 def summary_lines(state):
-    """One line per sign-off and per fix made at a stop, for the PR gate's
-    summary, the PR body and the final report."""
+    """One line per sign-off and per fix made at a stop, for the gate
+    summaries, the PR body and the final report."""
     out = []
     for o in state.get("overrides") or []:
         what = o["stop"].get("rule") or "a stop"

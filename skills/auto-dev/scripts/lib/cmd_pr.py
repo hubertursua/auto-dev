@@ -33,7 +33,9 @@ of the same heading:
    offline, a 5xx) is exit 2 and is not recorded: run it again once gh works.
 
  - With `pr_review.inline_comments: true` in .auto-dev.yml, the first publish
-   also posts the review findings still open or advisory, once: inline at
+   after the ready-for-review gate is answered (never the draft's, opened
+   before any review) also posts the review findings still open or advisory,
+   once: inline at
    their line when it is in the PR's diff, the rest in one general comment.
    A pre-existing security finding is posted only when the user sent it to a
    separate PR at the gate. A failure to post is printed, never fatal.
@@ -76,6 +78,10 @@ WRITE_HEAD = ("<!-- The parts of the PR description you write. The quoted source
               "answer with `## `: `pr publish` puts each section into the description "
               "by its heading. -->")
 STRICT = ("Acceptance conditions", "Quality gate", "Review")
+NOT_REVIEWED = [("Not reviewed yet. This draft opened as soon as the build passed its "
+                 "checks, so CI runs"),
+                ("while the code review and the security review run; this section is "
+                 "updated when they finish.")]
 COMMENT_HEAD = "Command output for commit"
 ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 # The last line of every body and comment the pipeline posts: the triager
@@ -146,8 +152,12 @@ class Body:
         return "\n".join(out) + "\n", "\n".join(comment)
 
 
-def generate(state, ad, sha):
-    """Write <ad>/pr-body.md (and pr-output-comment.md when needed); return its path."""
+def generate(state, ad, sha, reviewed=True, ready=True):
+    """Write <ad>/pr-body.md (and pr-output-comment.md when needed); return its path.
+    With `reviewed` false (the draft PR, opened before any review), its Review
+    section says the reviews have not run yet. With `ready` false (the reviews
+    have settled, the ready-for-review gate not answered yet), a finding left
+    open says the user decides at that gate, not that they shipped it."""
     ad = Path(ad)
     wt = state["worktree"]
     url = repo_url(wt)
@@ -220,7 +230,7 @@ def generate(state, ad, sha):
     quality_gate(body, ad, state)
     body.text("")
     body.text("## Review")
-    for line in review_lines(ad, state):
+    for line in (review_lines(ad, state, ready) if reviewed else NOT_REVIEWED):
         body.text(line)
     body.text("")
     overridden = overrides.summary_lines(state)
@@ -728,7 +738,7 @@ def quality_gate(body, ad, state):
         body.unquote(start)
 
 
-def review_lines(ad, state):
+def review_lines(ad, state, ready=True):
     out = []
     for name, label in (("CODE_REVIEW.md", "Code review (3 independent reviewers)"),
                         ("SECURITY_REVIEW.md", "Security review")):
@@ -750,7 +760,7 @@ def review_lines(ad, state):
         out += [f"- {label} — confidence {level.group(1) if level else 'unknown'}: "
                 + QUOTE_OPEN,
                 f"  {lead}{total} {problems} that had to be fixed: {fixed} fixed, {opened} open"]
-        out += open_findings(text)
+        out += open_findings(text, ready)
         if name == "SECURITY_REVIEW.md":
             out += follow_ups(text, separate_pr(state))
         out.append(QUOTE_CLOSE)
@@ -769,7 +779,7 @@ def plain_words(text, fid):
 
 def separate_pr(state):
     """The pre-existing security findings the user sent to a separate PR at the
-    PR gate (`mark triage-<id> --value separate`); `*` stands for the ones the
+    ready-for-review gate (`mark triage-<id> --value separate`); `*` stands for the ones the
     gate grouped under "Others"."""
     ids = set()
     for step, mark in (state.get("marks") or {}).items():
@@ -803,7 +813,7 @@ def follow_ups(text, ids):
     return lines
 
 
-def open_findings(text):
+def open_findings(text, ready=True):
     lines = []
     for _, rows in art.tables(art.find_section(text, "Must-fix") or
                               art.find_section(text, "Findings") or ""):
@@ -813,8 +823,9 @@ def open_findings(text):
                 fid = row.get("ID", "").strip()
                 where = row.get("Location", "").strip()
                 what = plain_words(text, fid) or row.get("Finding", "").strip()
-                lines.append(f"  - Still open: {what} ({where}); shipped at the user's "
-                             "call at the PR gate")
+                lines.append(f"  - Still open: {what} ({where}); " + (
+                    "shipped at the user's call at the ready-for-review gate" if ready else
+                    "the user decides at the ready-for-review gate whether it ships"))
     return lines
 
 
@@ -966,7 +977,8 @@ def publish_body(args, state):
     p6.pop("publish_attempt", None)
     st.add_note(state, f"PR #{pr} description published for {sha}")
     inline = ""
-    if state["settings"].get("inline_comments") and not p6.get("inline"):
+    if state["settings"].get("inline_comments") and not p6.get("inline") and \
+            p6["body"].get("ready"):  # once the ready-for-review gate is answered
         p6["inline"] = post_findings(state, ad, pr, sha)
         inline = describe_inline(p6["inline"])
         st.add_note(state, f"review findings on PR #{pr}: {inline}")
@@ -1044,7 +1056,7 @@ def review_findings(ad, state):
     when the user sent it to a separate PR at the gate."""
     found = []
     code = _read(ad / "CODE_REVIEW.md")
-    for section, label in (("Must-fix", "Must-fix, left open at the PR gate"),
+    for section, label in (("Must-fix", "Must-fix, left open at the ready-for-review gate"),
                            ("Advisory", "Advisory")):
         for _, rows in art.tables(art.find_section(code, section) or ""):
             for row in rows:
@@ -1058,7 +1070,8 @@ def review_findings(ad, state):
             verdict = row.get("Verdict", "").strip().lower()
             if verdict == "must-fix" and row.get("Status", "").strip().lower().startswith(
                     "open"):
-                found.append(finding(sec, row, "Security must-fix, left open at the PR gate"))
+                found.append(finding(sec, row, "Security must-fix, left open at the "
+                                     "ready-for-review gate"))
             elif verdict == "advisory":
                 found.append(finding(sec, row, "Security advisory"))
     found += [finding(sec, row, "Pre-existing security finding, left for a separate PR")

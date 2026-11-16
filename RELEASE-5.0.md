@@ -216,3 +216,9 @@ The release PR from `feat/release-5-0` to `main` is titled
 - Tests are not sealed. The loss is accepted; the verifier's probes cover
   high-risk tasks.
 - No benchmark wave before the work starts. Timing benchmarks come later.
+- Rewrite checkpoint (after wave 1): Phase 6 of `cmd_next.py` is written
+  fresh in the 5.0 order in `feat/early-draft-pr` (draft PR, then review
+  alongside CI, then the ready-for-review gate); phases 2–5 and the shared
+  code stay and are changed in place by later waves.
+- Wave 2's two branches run one after the other, early draft PR first, each
+  cut from the release branch once the one before it merged.

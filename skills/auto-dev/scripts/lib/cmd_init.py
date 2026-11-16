@@ -339,6 +339,8 @@ def create_run(repo, worktree, branch, config, args, base, prefix, seed_from=Non
         "ci_timeout": config.get("ci_timeout_minutes", DEFAULTS["ci_timeout_minutes"]),
         "mutation_max": config.get("mutation", {}).get("max", DEFAULTS["mutation_max"]),
         "post_plan_gate": bool(config.get("gates", {}).get("post_plan", False)),
+        # Asked before the first push; off: the draft PR opens unasked (5.0).
+        "open_pr_gate": bool(config.get("gates", {}).get("open_pr", False)),
         "inline_comments": bool(config.get("pr_review", {}).get("inline_comments",
                                                                 False)),
         "jira_states": config.get("jira", {}).get("states", {}),
@@ -544,6 +546,7 @@ def render_profile(state, config, args, seeded, missing, missing_docs=()):
         f"- **Symbol lookup:** {symbol_lookup(config)}",
         f"- **`.auto-dev.yml`:** {override}",
         f"- **Post-plan gate:** {'on — gates.post_plan' if s['post_plan_gate'] else 'off'}",
+        f"- **Open-the-PR gate:** {'on — gates.open_pr' if s.get('open_pr_gate') else 'off'}",
         "- **Security directives:** " + security_line(s["security_docs"], missing_docs,
                                                       config, args),
         f"- **Jira:** {args.jira or 'unavailable — no ticket'}",

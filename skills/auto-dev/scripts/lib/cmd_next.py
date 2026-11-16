@@ -23,7 +23,7 @@ re-votes, takes the review snapshot, and generates the PR body.
 
 Workers never negotiate the contract between themselves. A coder that finds
 a plan step wrong builds it the way that works and lists the deviation
-(deviations/coder-<n>.md); the PR gate summary names each one. A later worker
+(deviations/coder-<n>.md); the ready-for-review gate summary names each one. A later worker
 that finds a SPEC.md criterion wrong or missing (the verifier, the review
 judge, a security reviewer, the triager from a PR comment) lists it in
 spec-problems/<worker>-<n>.md, and `next` stops and asks the user before it
@@ -35,8 +35,8 @@ at either stop is told to every later worker that judges it.
 One iteration budget of rounds covers the run: a re-review after FIX blocks,
 a tester re-spawn for gaps, a re-dispatched BLOCKED step, and each correction
 (after verification, a review pass, a PR comment or red CI) spend one. With
-none left, `next` stops, except a review pass's correction before the commit:
-its open findings go to the PR gate instead.
+none left, `next` stops, except a correction in Phase 6 before the PR is marked
+ready: what is open goes to the ready-for-review gate instead.
 
 Output lines (only the ones that apply):
     ACTION:   what to do, in one line
@@ -585,13 +585,13 @@ def fix_step(c):
         # The open correction's loop runs the gate and the verifier again, and
         # its review pass covers the fixer's files with its own.
         return None
-    if changed and st.phase(c.state, 6)["status"] == "in-progress" and passes:
+    if changed and st.phase(c.state, 6)["status"] == "in-progress":
         c.p6.setdefault("corrections", [])
+        c.p6.setdefault("passes", [])
         return start_correction(c, "fix", None, None,
                                 "the fixer changed the code or its contract at a stop: "
-                                "the quality gate, the verifier and a review of what it "
-                                "changed run again (no round)",
-                                snapshot=fix.get("tree_before"))
+                                "the quality gate, the verifier and (once committed) a "
+                                "review of what it changed run again (no round)")
     return None
 
 
@@ -607,10 +607,6 @@ def fixer_spawn(c, fix):
     c.would("spawn the fixer with the user's instruction",
             "the user said how to fix the stop")
     rebase_installed(c)  # each whole check file is its sealed copy: `record` reseals an edit
-    if st.phase(c.state, 6)["status"] == "in-progress" and \
-            not c.state.get("phase6", {}).get("verified_sha"):
-        cmd_checks.git_add_intent(c.wt)
-        fix["tree_before"] = cmd_review.print_tree(c.wt)
     result = spawn(c, "fixer", sets={
         "instruction": fix["text"],
         "stopped": "\n".join([f"Why the run stopped: {stop_.get('rule')}"]
@@ -1207,15 +1203,15 @@ def post_plan_gate(c, after):
 
 
 def gate_question(c, gate, answers, rule):
-    builder = {"post-plan": cmd_review.post_plan_summary, "pr": cmd_review.pr_summary,
-               "main": cmd_review.main_summary}[gate]
+    builder = {"post-plan": cmd_review.post_plan_summary, "pr": cmd_review.open_pr_summary,
+               "ready": cmd_review.ready_summary, "main": cmd_review.main_summary}[gate]
     ns = type("Args", (), {"pr": None, "dir": c.dir, "json": False})()
     try:
         lines, extra = builder(c.state, c.ad, ns)
     except Fail as exc:
         if exc.code == CANNOT_RUN:
             raise
-        if gate == "pr" and exc.token == "STALE":
+        if gate in ("pr", "ready") and exc.token == "STALE":
             return stale_again(c, str(exc))
         return stop([f"The {gate} gate's checks failed, so it can't be asked: {exc}"],
                     f"a {gate} gate precondition failed", retry={},
@@ -1413,9 +1409,10 @@ def last_fix(c, after):
 
 
 def exhausted_loop(c, fields):
-    """No round left for a correction: before the commit, a Phase 6 loop goes on
-    to the PR gate, which names what is open; anywhere else the run stops."""
-    if st.phase(c.state, 6)["status"] == "in-progress" and not c.p6.get("verified_sha"):
+    """No round left for a correction: in Phase 6 before the PR is marked ready,
+    the loop goes on to the ready-for-review gate, which names what is open;
+    anywhere else the run stops."""
+    if st.phase(c.state, 6)["status"] == "in-progress" and not marked_ready(c):
         c.p6["exhausted"] = {"seq": c.seq(), "open": fields.get("correct", [])}
         c.dirty = True
         return DONE_MARK
@@ -1437,10 +1434,7 @@ def coder_correction(c, corrections_file, budget, rule):
 
 
 def cleanup_spawn(c, scope, files, rule):
-    sets = {"scope": scope}
-    if scope in ("review-fix",):
-        sets["files"] = ", ".join(files or []) or "none"
-    return spawn(c, "cleanup", sets=sets, rule=rule)
+    return spawn(c, "cleanup", sets={"scope": scope}, rule=rule)
 
 
 def verifier_spawn(c, what_changed):
@@ -1711,27 +1705,49 @@ def phase5(c):
 
 
 # ---------------------------------------------------------------- Phase 6
+#
+# 5.0's order: the verified build is committed, pushed and opened as a draft
+# PR before any review (CI starts there), then the review runs alongside CI,
+# then the ready-for-review gate, the PR marked ready, CI watched once more,
+# people's comments, the main gate and the merge. Every correction lands on
+# top of a commit: it runs, its review pass reviews the uncommitted
+# correction, and it is committed and pushed in turn. The one change before
+# the first commit is the re-check of code changed outside the pipeline since
+# S2. The open-the-PR gate (`gates.open_pr`, off by default) asks before the
+# first push, for repos that must not push unreviewed code.
 
 def phase6(c):
     c.start(6)
     p6 = c.p6
     p6.setdefault("passes", [])
     p6.setdefault("corrections", [])
+    if p6.get("merged"):  # nothing before the merge runs again on a merged branch
+        return main_step(c, p6["merged"])
     result = open_correction(c)
     if result is not None:
         return result
-    if not p6["passes"]:
+    if not p6.get("verified_sha") and not p6["passes"]:
         stale = check_fresh(c, "--phase", "5")
         if stale and not any(k["entry"] == "outside" for k in p6["corrections"]):
             return start_correction(c, "outside", None, None,
                                     "the code changed outside the pipeline since S2: "
                                     "re-run the quality gate and the verifier first")
-        return start_pass(c, "first", None, "Phase 6a: the code review panel reviews "
-                          "the whole change")
-    review = review_step(c, p6["passes"][-1])
-    if review is not None:
-        return review
-    return ship_step(c)
+    if p6["passes"]:
+        review = review_step(c, p6["passes"][-1])
+        if review is not None:
+            return review
+    head = publish_step(c)
+    if head is not None:
+        return head
+    if not reviewed_whole(c):
+        return start_pass(c, "first", None, "the draft PR is open: the code review panel "
+                          "reviews the whole change while CI runs")
+    if (p6.get("body") or {}).get("reviewed") != p6["passes"][-1]["n"]:
+        # The description reports an earlier pass, or (the draft's) none yet.
+        body = body_step(c, p6["verified_sha"])
+        if body is not None:
+            return body
+    return ship_step(c, p6["verified_sha"])
 
 
 def open_correction(c):
@@ -1742,8 +1758,7 @@ def open_correction(c):
     passes = c.p6["passes"]
     if corr.get("closed") or (passes and passes[-1]["seq"] > corr["seq"]):
         return None
-    scope = "after-commit" if corr["after_commit"] else (
-        "outside" if corr["entry"] == "outside" else "review-fix")
+    scope = "after-commit" if corr["after_commit"] else "outside"
     if corr.get("checks") and corr.get("file"):
         # The tester went first; the coder's part runs in the same round.
         tester = c.last("acceptance-tester", after=corr["seq"])
@@ -1751,16 +1766,14 @@ def open_correction(c):
         if settled and c.last("coder", after=corr["seq"]) is None:
             return coder_correction(c, corr["file"], None, "the checks are settled; now "
                                     "the code's part of the correction (the same round)")
-    files = snapshot_files(c, corr) if scope == "review-fix" else None
-    result = loop_step(c, corr["seq"], scope,
-                       first=lambda: first_of(c, corr), files=files,
+    result = loop_step(c, corr["seq"], scope, first=lambda: first_of(c, corr),
                        after_change="a Phase 6 correction")
     if result is not DONE_MARK:
         return result
     corr["closed"] = True
     c.dirty = True
     # Even when the budget ran out, the code changed: reviews are free, and the
-    # gate needs reports on the code as it is.
+    # gates need reports on the code as it is.
     if corr.get("since"):
         # Committed outside changes: a working-tree pass would see nothing. The
         # working tree against `since` holds the commits and any edit the
@@ -1771,22 +1784,18 @@ def open_correction(c):
                  if f and not f.startswith(".auto-dev/")]
         return start_pass(c, "outside", files, "the outside commits are re-checked: the "
                           "panel reviews what they changed", since=corr["since"])
-    if corr["entry"] == "outside":
-        return start_pass(c, "first", None, "the outside changes are re-checked: the "
-                          "panel reviews the whole change")
-    if corr["entry"] == "fix" and not corr["after_commit"] and not snapshot_files(c, corr):
-        corr["unchanged"] = True  # a fix that touched no file: no pass
-        st.add_note(c.state, "the fix at a stop changed no repo file: no review pass")
+    if not corr["after_commit"]:
+        return None  # before the first commit: the first pass reviews the whole change
+    if unchanged(c):  # nothing to review or commit: the verified commit stands
+        corr["unchanged"] = True
+        mark_committed(c, "the correction changed nothing")
         return None
-    if corr["after_commit"]:
-        if unchanged(c):  # nothing to review or commit: the verified commit stands
-            corr["unchanged"] = True
-            mark_committed(c, "the correction after the commit changed nothing")
-            return None
-        return start_pass(c, "after-commit", None, "the correction is verified: the "
-                          "panel reviews it before it is committed")
-    return start_pass(c, "review-fix", snapshot_files(c, corr),
-                      "the correction is verified: the panel reviews the files it changed")
+    if not reviewed_whole(c):
+        # A fix at a stop before the first review pass: it is committed on top,
+        # and the first pass then reviews the whole change, the fix with it.
+        return None
+    return start_pass(c, "after-commit", None, "the correction is verified: the panel "
+                      "reviews it before it is committed on top")
 
 
 def first_of(c, corr):
@@ -1801,9 +1810,7 @@ def first_of(c, corr):
         return spawn(c, "acceptance-tester", "repair", dict(checks), rule=rule,
                      budget=corr.get("budget"))
     if not corr.get("file"):  # a fix at a stop: nothing for the coder
-        after = corr["after_commit"]
-        return cleanup_spawn(c, "after-commit" if after else "review-fix",
-                             None if after else snapshot_files(c, corr),
+        return cleanup_spawn(c, "after-commit" if corr["after_commit"] else "phase5", None,
                              "the fixer changed the code at a stop: the cleanup agent runs "
                              "the quality gate (no round)")
     return coder_correction(c, corr["file"], corr.get("budget"), corr["rule"])
@@ -1832,55 +1839,49 @@ def mark_committed(c, why):
     c.dirty = True
 
 
-def start_correction(c, entry, file, spend_id, rule, checks=None, why="",
-                     since=None, snapshot=None):
+def reviewed_whole(c):
+    """Whether a first pass (the whole change) has started."""
+    return any(p["scope"] == "first" for p in c.p6.get("passes") or [])
+
+
+def marked_ready(c):
+    return c.mark("pr-ready")
+
+
+def start_correction(c, entry, file, spend_id, rule, checks=None, why="", since=None):
     """A Phase 6 correction: the coder gets `file` (when given); `checks` (scope,
     report) sends acceptance checks to the tester's repair mode first. `why`
     goes into the report when no round is left (the red checks, for CI).
     `since` (an outside correction only): the outside changes are the commits
     after it, so the review pass that follows reviews `git diff <since>`.
-    A fix at a stop passes the tree `snapshot` taken before the fixer ran."""
+
+    With no round left, a review pass's correction before the ready-for-review
+    gate is not a stop: its open findings go to that gate, which names them.
+    Every other correction with no round left stops the run."""
     after_commit = bool(c.p6.get("verified_sha"))
     budget = None
     if spend_id:
         budget = c.spend(spend_id, f"{entry} correction")
-        if budget is None and after_commit:
-            what = file or (checks or {}).get("report")
-            return exhausted(c, "no round left for a correction after the commit",
-                             (f"{why} " if why else "") + f"Tell the user what is open: {what}")
-        if budget is None:
-            c.p6["exhausted"] = {"seq": c.seq(),
-                                 "open": [file or (checks or {}).get("report")]}
+        what = file or (checks or {}).get("report")
+        if budget is None and entry == "review" and not marked_ready(c):
+            c.p6["exhausted"] = {"seq": c.seq(), "open": [what]}
             c.dirty = True
-            return review_step(c, c.p6["passes"][-1]) or ship_step(c)
+            return None
+        if budget is None:
+            return exhausted(c, "no round left for a correction",
+                             (f"{why} " if why else "") + f"Tell the user what is open: {what}")
     # After the budget check (in memory only under --explain or a probe), so a
     # budget-exhausted stop is never hidden behind the step that would follow.
     c.would(f"start a {entry} correction ("
             f"{file or (checks or {}).get('report') or 'the fixer'})", rule)
-    if after_commit or entry == "outside":
-        snapshot = None
-    elif snapshot is None:
-        cmd_checks.git_add_intent(c.wt)
-        snapshot = cmd_review.print_tree(c.wt)
-    corr = {"entry": entry, "file": file, "checks": checks,
-            "seq": c.seq(), "after_commit": after_commit, "snapshot": snapshot,
-            "rule": rule, "budget": budget, "spend_id": spend_id}
+    corr = {"entry": entry, "file": file, "checks": checks, "seq": c.seq(),
+            "after_commit": after_commit, "rule": rule, "budget": budget,
+            "spend_id": spend_id}
     if since:
         corr["since"] = since
     c.p6["corrections"].append(corr)
     c.dirty = True
     return first_of(c, corr)
-
-
-def snapshot_files(c, corr):
-    snap = corr.get("snapshot")
-    if not snap:
-        return []
-    if not c.readonly:
-        cmd_checks.git_add_intent(c.wt)
-    tree = cmd_review.print_tree(c.wt)
-    return [f for f in git(c.wt, "diff", "--name-only", snap, tree).splitlines()
-            if f and not f.startswith(".auto-dev/")]
 
 
 def check_fresh(c, *extra):
@@ -1915,21 +1916,21 @@ def start_pass(c, scope, files, rule, since=None):
 
 
 def focus_text(p):
-    """The security reviewer's focus: what a re-review pass's correction changed,
-    or `none` (the whole change, with /security-review) on a first or outside pass."""
-    if p["scope"] == "review-fix":
-        return "the files a correction changed: " + (", ".join(p["files"]) or "none")
+    """The security reviewer's focus: the correction a re-review pass covers, or
+    `none` (the whole change, with /security-review) on a first or outside pass."""
     if p["scope"] == "after-commit":
         return "the uncommitted correction (the working tree against HEAD)"
     return "none"
 
 
 def first_pass_files(c):
-    """The files a first pass's /code-review gets: those the change adds or
-    modifies, outside .auto-dev/. With no target the skill reviews the branch
-    against its upstream, which is empty before the commit. A name that isn't
-    UTF-8 can't go in a brief; the reviewer still sees it in its own diff."""
-    return [f for f in changed_paths(c.wt)[0] if utf8(f)]
+    """The files a first pass's /code-review gets: those the branch adds or
+    modifies against the commit it was cut from, outside .auto-dev/. A name
+    that isn't UTF-8 can't go in a brief; the reviewer still sees it in its
+    own diff."""
+    cut = cmd_work.cut_commit(c.wt, c.state["repo"]["base"])
+    names = git(c.wt, "diff", "--name-only", "--diff-filter=d", cut, "HEAD").splitlines()
+    return [f for f in names if f and not f.startswith(".auto-dev/") and utf8(f)]
 
 
 def utf8(text):
@@ -1946,11 +1947,8 @@ def reviewer_sets(c, p, slot):
     scope = p["scope"]
     sets = {"reviewer": slot, "scope": scope,
             "review_effort": p.get("effort") or plan_effort(c)}
-    files = p["files"]
-    if scope == "first" and not files:  # a pass started before 4.12.1 kept none
-        files = first_pass_files(c)
-    if scope in ("first", "review-fix", "outside"):
-        sets["files"] = ", ".join(files) or "none"
+    if scope in ("first", "outside"):
+        sets["files"] = ", ".join(p["files"]) or "none"
     if scope == "outside":
         sets["since"] = p.get("since") or "HEAD"
     return sets
@@ -1972,8 +1970,8 @@ def review_step(c, p):
     jobs = [("code-reviewer", "review", reviewer_sets(c, p, slot)) for slot in respawn]
     secs = c.recs(SECURITY, after=p["seq"], ok=False)
     if not secs or secs[-1]["status"] != "ok":
-        # None yet (a pass started before 4.4.0), or it failed once: not_ok
-        # stops the run when it fails twice running.
+        # It failed once (or a retry at a stop set it aside): not_ok stops the
+        # run when it fails twice running.
         last = secs[-1].get("sets", {}) if secs else {}
         leads = last.get("leads") if secs else panel_leads(c)
         return spawn_security(c, jobs, leads or "none",
@@ -2011,22 +2009,20 @@ def review_step(c, p):
     if verify and verified is None:
         return spawn(c, "review-judge", "security-verify",
                      rule="the judge verifies every High or Medium security finding")
-    # With no round left before the commit, open findings go to the PR gate,
-    # for every pass until the commit. After it, that covers only the passes
-    # the user opened the PR with: once they add rounds, a later pass's
-    # must-fix findings get their correction.
-    opened = next((g for g in c.state["gates"]
-                   if g["gate"] == "pr" and g["choice"] == "proceed"), None)
+    # With no round left before the ready-for-review gate, open findings go to
+    # that gate. After it, that covers only the passes the user marked the PR
+    # ready with: once they add rounds, a later pass's findings get their
+    # correction.
+    ready = marked_ready(c)
     spent_out = bool(c.p6.get("exhausted")) and (
-        not c.p6.get("verified_sha") or opened is None
-        or p["seq"] < opened.get("seq", 0))
+        ready is None or p["seq"] < ready.get("seq", 0))
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(verify) and bool(confirmed_security(c))
     spec = spec_stop(c, [judge] + c.recs(SECURITY, after=p["seq"]),
                      f"in code-review pass {p['n']}", review_pass=p["n"])
     if spec is not None:
         return spec
-    if rows or security_open:  # with no round left, they go to the PR gate
+    if rows or security_open:  # with no round left, they go to the ready gate
         if not spent_out:
             return review_correction(c, p, rows, sec if security_open else None)
         return None
@@ -2243,34 +2239,34 @@ def check_scope(c, rows):
 
 
 def scope_text(p):
-    if p["scope"] == "review-fix":
-        return "only the files a correction changed: " + (", ".join(p["files"]) or "none")
     if p["scope"] == "outside":
         return (f"the commits pushed to the PR branch outside the pipeline (`git diff "
                 f"{p.get('since', 'HEAD')}`): " + (", ".join(p["files"]) or "none"))
-    return {"first": "the whole change (the uncommitted working tree against HEAD)",
+    return {"first": "the whole change, as committed on the branch: "
+                     + (", ".join(p["files"]) or "none"),
             "after-commit": "the uncommitted correction (the working tree against HEAD)",
             }.get(p["scope"], p["scope"])
 
 
 # ---------------------------------------------------------------- Phase 6: shipping
 
-def ship_step(c):
+def publish_step(c):
+    """Commit what is verified (and, after a correction, reviewed), push it, and
+    publish the PR's description for it: a draft PR on the first publish. None
+    once the PR describes the current commit."""
     p6 = c.p6
-    if p6.get("merged"):  # nothing before the merge runs again on a merged branch
-        return main_step(c, p6["merged"])
     sha = p6.get("verified_sha")
-    corrections = p6["corrections"]
-    last_fix = next((k for k in reversed(corrections) if k["after_commit"]), None)
+    last_fix = next((k for k in reversed(p6["corrections"]) if k["after_commit"]), None)
     needs_commit = sha is None or (last_fix and last_fix["seq"] > p6.get("commit_seq", 0))
     if needs_commit and sha and unchanged(c):
         mark_committed(c, "the correction after the commit changed nothing")
         needs_commit = False
     if needs_commit:
-        if sha is None:
-            gate = c.gate("pr", after=p6["passes"][-1]["seq"])
+        if sha is None and c.state["settings"].get("open_pr_gate"):
+            # Asked again after a re-check changed the code it was asked on.
+            gate = c.gate("pr", after=max([k["seq"] for k in p6["corrections"]] + [0]))
             if gate is None or gate["choice"] != "proceed":  # a hold re-asks on resume
-                return pr_gate(c)
+                return open_pr_gate(c)
         return commit_step(c)
     if (c.mark("pushed") or {}).get("value") != sha:
         return action(f"push the branch: `git -C {q(c.wt)} push -u origin HEAD` (never "
@@ -2278,44 +2274,96 @@ def ship_step(c):
                       AFTER=[c.cmd("mark", "pushed", "--value", sha)])
     if p6.get("published_sha") != sha:
         return body_step(c, sha)
-    ci = ci_step(c, sha)
-    if ci is not None:
-        return ci
+    return None
+
+
+def reviewed_pass(c):
+    """The review pass the PR's description reports: the latest one, or None
+    before the first review. Only asked once that pass has settled (phase6
+    publishes nothing while a pass is open)."""
+    passes = c.p6.get("passes") or []
+    return passes[-1]["n"] if passes else None
+
+
+def ship_step(c, sha):
+    """After the reviews: CI on the draft, the ready-for-review gate, the PR
+    marked ready, Jira In Review, CI once more, people's comments, the main gate
+    and the merge."""
+    p6 = c.p6
+    ready = marked_ready(c)
+    if not ready:
+        ci = ci_step(c, sha)
+        if ci is not None:
+            return ci
+        gate = c.gate("ready", after=p6.get("commit_seq", 0))
+        if gate is None or gate["choice"] != "proceed":  # a hold re-asks on resume
+            return ready_gate(c)
+        body = p6.get("body") or {}
+        if not body.get("ready") or triage_seq(c) > body.get("seq", 0):
+            # The description gets the gate's answers before the PR is ready:
+            # the follow-ups sent to a separate PR, and the open findings the
+            # user chose to ship. Inline findings are posted then.
+            return body_step(c, sha)
+        return action(f"mark the PR ready for review: `gh pr ready {q(p6.get('pr'))}` "
+                      f"(run in {q(c.wt)})", "the ready-for-review gate said proceed",
+                      AFTER=[c.cmd("mark", "pr-ready")])
     jira = jira_step(c, "in_review", "jira-in-review")
     if jira:
         return jira
-    human = human_step(c)
-    if human:
-        return human
-    ready = c.mark("pr-ready")
-    if not ready:
-        return action(f"mark the PR ready for review: `gh pr ready {q(p6.get('pr'))}` "
-                      f"(run in {q(c.wt)})", "the draft PR is checked and reviewed",
-                      AFTER=[c.cmd("mark", "pr-ready")])
     if c.state["settings"].get("ci", "none") != "none" and \
             (p6.get("ci") or {}).get("seq", 0) < ready["seq"]:
         # Workflows that skip drafts run only now: watch CI once more.
-        return ci_watch(c, "the PR was marked ready after CI was watched: workflows "
-                        "that skip drafts run now")
+        return ci_watch(c, "the PR was marked ready: workflows that skip drafts run now")
+    ci = ci_step(c, sha)
+    if ci is not None:
+        return ci
+    human = human_step(c)
+    if human:
+        return human
     return main_step(c, sha)
 
 
-def pr_gate(c):
+def ready_answered(c):
+    """Whether the user marked the PR ready at the ready-for-review gate."""
+    gate = c.gate("ready")
+    return bool(gate and gate["choice"] == "proceed")
+
+
+def triage_seq(c):
+    """The seq of the last answer for a pre-existing security finding (0: none)."""
+    return max([m.get("seq", 0) for k, m in (c.state.get("marks") or {}).items()
+                if k.startswith("triage-")] + [0])
+
+
+def open_pr_gate(c):
+    """The opt-in gate before the first push (`gates.open_pr` in .auto-dev.yml)."""
     return gate_question(c, "pr", {
         "Open PR": c.cmd("gate", "pr", "proceed"),
         "Hold (don't push yet)": c.cmd("gate", "pr", "hold", "--reason", "<why>"),
         "Stop": c.cmd("gate", "pr", "stop", "--reason", "<why>")},
-        "the reviews have settled: the PR gate")
+        "gates.open_pr is on: the user decides before anything is pushed")
+
+
+def ready_gate(c):
+    return gate_question(c, "ready", {
+        "Mark ready for review": c.cmd("gate", "ready", "proceed"),
+        "Hold (keep it a draft)": c.cmd("gate", "ready", "hold", "--reason", "<why>"),
+        "Stop": c.cmd("gate", "ready", "stop", "--reason", "<why>")},
+        "the reviews have settled on the draft: the ready-for-review gate")
+
+
+def last_asked(c):
+    """The seq of the last open-the-PR or ready-for-review answer."""
+    return max([g["seq"] for g in (c.gate("pr"), c.gate("ready")) if g] + [0])
 
 
 def stale_twice(c, detail, since=None):
     """The stop for a result stale again right after its own re-run (nobody
-    answered the PR gate or resumed since), or None. Commits brought in on top
-    of a newly verified commit (`since`) are a new push, never a second run."""
+    answered a gate or resumed since), or None. Commits brought in on top of a
+    newly verified commit (`since`) are a new push, never a second run."""
     outside = next((k for k in reversed(c.p6["corrections"]) if k["entry"] == "outside"),
                    None)
-    gate = c.gate("pr")
-    asked = max(gate["seq"] if gate else 0, c.resumed())
+    asked = max(last_asked(c), c.resumed())
     if not outside or outside["seq"] <= asked or (since and outside.get("since") != since):
         return None
     return stop([("A report is stale again right after its own re-run: something "
@@ -2338,8 +2386,7 @@ def stale_again(c, detail, since=None):
 
 def commit_step(c):
     attempt = c.p6.get("commit_attempt")
-    since = max([c.gate("pr")["seq"] if c.gate("pr") else 0]
-                + [k["seq"] for k in c.p6["corrections"]])
+    since = max([last_asked(c)] + [k["seq"] for k in c.p6["corrections"]])
     if attempt and attempt["seq"] > since:
         if attempt["result"] == "stale":
             return stale_again(c, "commit found stale results")
@@ -2356,10 +2403,12 @@ def commit_step(c):
                          "outside .auto-dev/. Tell the user; nothing was pushed.")],
                         "an empty change", retry={},
                         no_signoff="there is no change to ship")
+    first = not c.p6.get("verified_sha")
     return action(f"commit: run `{c.cmd('commit', '--message', '<type>(<scope>): <summary>')}`"
                   f", with a Conventional Commits subject you write for the change ({FILL})",
-                  "the PR gate said proceed (or a correction is verified and reviewed)",
-                  AFTER=[c.cmd("next")])
+                  "the build is verified: it is committed and pushed as a draft PR before "
+                  "any review" if first else "a correction is verified and reviewed: it is "
+                  "committed on top", AFTER=[c.cmd("next")])
 
 
 def body_step(c, sha):
@@ -2369,11 +2418,17 @@ def body_step(c, sha):
     # a quoted region (before 4.0.2, it had none), so the lint refuses an ID
     # it copied: write it again, unless a PR already carries it.
     old = "quoted" not in c.p6 or "verbatim" not in c.p6
-    if body.get("sha") != sha or (old and not c.p6.get("pr")):
+    reviewed, ready = reviewed_pass(c), ready_answered(c)
+    if body.get("sha") != sha or body.get("reviewed") != reviewed or \
+            bool(body.get("ready")) != ready or triage_seq(c) > body.get("seq", 0) or \
+            (old and not c.p6.get("pr")):
         c.would("generate the PR description for the verified commit",
-                "the commit is pushed: the PR opens next")
-        path = cmd_pr.generate(c.state, c.ad, sha)
-        body = {"sha": sha, "path": str(path), "seq": c.seq()}
+                "the commit is pushed: the PR opens next" if reviewed is None else
+                "the reviews have settled: the PR's description gets them")
+        path = cmd_pr.generate(c.state, c.ad, sha, reviewed=reviewed is not None,
+                               ready=ready)
+        body = {"sha": sha, "path": str(path), "seq": c.seq(), "reviewed": reviewed,
+                "ready": ready}
         c.p6["body"] = body
         c.dirty = True
     attempt = c.p6.get("publish_attempt")
@@ -2399,11 +2454,13 @@ def body_step(c, sha):
             c.dirty = True
         return write_body(c, body, "the description still holds a WRITE line",
                           refused=attempt.get("problems"))
-    if c.p6.get("pr"):
+    if c.p6.get("pr") and (body.get("published_seq") or 0) < body["seq"]:
         return action(f"publish the refreshed PR body: run `{c.cmd('pr', 'publish')}`",
-                      "a new commit was pushed: the PR body describes the old one",
-                      AFTER=[c.cmd("next")])
-    return write_body(c, body, "the commit is pushed: the PR opens next")
+                      "the PR body describes an older commit, or the code before its "
+                      "reviews", AFTER=[c.cmd("next")])
+    if c.p6.get("pr"):
+        return None
+    return write_body(c, body, "the commit is pushed: the draft PR opens next")
 
 
 def write_body(c, body, rule, refused=None):

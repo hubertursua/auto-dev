@@ -105,7 +105,7 @@ The repo's own checks, run on commit <short sha>:
   <the same lines for each problem still open>
   <!-- /auto-dev:quoted -->
 <Minor suggestions stay out. A security problem that predates this change
-appears here only if the user chose `Separate PR` at the PR gate, listed as a
+appears here only if the user chose `Separate PR` at the ready-for-review gate, listed as a
 follow-up.>
 
 <only when the repo has a default PR template: each of its sections this body

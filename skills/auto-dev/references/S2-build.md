@@ -20,7 +20,7 @@ see in S2, in order:
      entry points changed.
    - When a plan step is wrong as written, the coder builds it the way that
      works and lists the deviation in `deviations/coder-<n>.md`. Nothing is
-     sent anywhere and no round is spent; the PR gate's summary names each
+     sent anywhere and no round is spent; the ready-for-review gate's summary names each
      deviation.
 2. `next` installs the sealed checks in the worktree itself (a check that
    adds tests to an existing file goes in among the coder's lines; if one

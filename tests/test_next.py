@@ -984,8 +984,26 @@ class ShipTest(NextCase):
     def test_review_must_fix_runs_a_correction_then_reviews_its_files(self):
         self.correction_re_review()
 
+    def test_the_first_push_and_the_draft_pr_come_before_any_review_spawn(self):
+        # RELEASE-5.0, wave 2: the done-when of the early draft PR.
+        self.draft_pr()
+        state = self.state()
+        self.assertFalse([b for b in state["briefs"] if b["worker"] in (
+            "code-reviewer", "review-judge", "security-reviewer",
+            "security-reviewer-sensitive")])
+        pushed = state["marks"]["pushed"]["seq"]
+        published = state["phase6"]["body"]["published_seq"]
+        log = [json.loads(ln) for ln in (self.tmp / "gh.log").read_text().splitlines()]
+        self.assertTrue(any(e["args"][:3] == ["pr", "create", "--draft"] for e in log))
+        _, jobs = self.reviewers()  # the review is spawned only now, on the draft
+        first = min(b["seq"] for b in self.state()["briefs"]
+                    if b["worker"] == "code-reviewer")
+        self.assertLess(pushed, first)
+        self.assertLess(published, first)
+        self.assertEqual(self.sets(*jobs[0])["scope"], "first")
+
     def test_next_records_the_panel_s_parallel_results_in_spawn_order(self):
-        self.ship_ready()
+        self.draft_pr()
         out = self.next(0)
         jobs = self.spawned(out)
         self.assertEqual(len(jobs), 4, out)
@@ -1014,7 +1032,7 @@ class ShipTest(NextCase):
         self.assertGreater(judge["seq"], seqs[-1])
 
     def test_a_judge_result_with_no_judgment_is_refused(self):
-        self.ship_ready()
+        self.draft_pr()
         _, jobs = self.reviewers(None, 3)
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
@@ -1033,9 +1051,10 @@ class ShipTest(NextCase):
         self.assertIn("JUDGMENT.md: write your calls there", brief)
 
     def correction_re_review(self):
-        """Pass 1's must-fix C1, its one-line correction, then pass 2 spawned:
-        the whole panel, and a security reviewer focused on the correction."""
-        self.ship_ready()
+        """Pass 1 (on the draft PR) finds must-fix C1; its one-line correction
+        runs on top of the commit, then pass 2 is spawned: the whole panel on the
+        uncommitted correction, and a security reviewer focused on it."""
+        self.draft_pr()
         out, jobs = self.reviewers()
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
@@ -1055,25 +1074,28 @@ class ShipTest(NextCase):
         (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
         self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
         out, jobs = self.expect("cleanup", "GREEN")
-        self.assertEqual(self.sets(*jobs[0]), {"scope": "review-fix", "files": "sort.ts"})
+        self.assertEqual(self.sets(*jobs[0]), {"scope": "after-commit"})
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
         out, jobs = self.reviewers()  # a one-line correction: still the whole panel
-        self.assertEqual(self.sets(*jobs[0])["scope"], "review-fix")
-        self.assertEqual(self.sets(*jobs[0])["files"], "sort.ts")
+        self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
+        self.assertNotIn("files", self.sets(*jobs[0]))
         self.assertEqual(self.sets(*self.security_job)["focus"],
-                         "the files a correction changed: sort.ts")
+                         "the uncommitted correction (the working tree against HEAD)")
         self.assertEqual(self.state()["phase6"]["review_pass"], 2)
 
-    def to_body(self, extra=(), first=(), answers=("Open PR",)):
-        """Run S3 from the review to the PR body; returns (sha, url, out, body)."""
-        self.ship_ready()
-        self.review_clean()
+    def to_body(self, extra=(), first=(), answers=(), started=False):
+        """Run S3 to the draft PR's first body, before any review: returns
+        (sha, url, out, body). `answers`: the open-the-PR gate's, when it is on.
+        `started`: S3 has started already (the test ran S1 and S2 itself)."""
+        if not started:
+            self.ship_ready()
         self.lint()
         self.spec_eval()
-        out = self.next(5)
-        self.assertIn("pr gate", out["QUESTION"])
-        for choice in answers:
-            self.after(out, choice)
+        if answers:
+            out = self.next(5)
+            self.assertIn("pr gate", out["QUESTION"])
+            for choice in answers:
+                self.after(out, choice)
         out = self.next(0)
         self.assertIn("commit: run", out["ACTION"])
         r = self.autodev("commit", "--message", "feat(todos): add due dates", "--dir",
@@ -1089,6 +1111,7 @@ class ShipTest(NextCase):
             {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": url})},
             {"args": ["pr", "list"], "stdout": "[]"},
             {"args": ["pr", "create"], "stdout": f"{url}/pull/12\n"},
+            {"args": ["pr", "edit", "12"], "stdout": ""},
             {"args": ["pr", "view", "12", "--json", "number,url,body"],
              "stdout": json.dumps({"number": 12, "url": f"{url}/pull/12",
                                    "body": f"Checked at commit {sha}"})},
@@ -1107,13 +1130,14 @@ class ShipTest(NextCase):
         self.assertIn(str(body), out["ACTION"])
         text = body.read_text()
         self.assertIn(f"Checked at commit {sha}", text)
+        self.assertIn("Not reviewed yet", text)  # the draft opens before any review
         self.assertIn(f"{url}/blob/{sha}/src/due.acceptance.test.ts", text)
         self.assertNotIn(str(self.worktree), text)
         return sha, url, out, body
 
-    def open_pr(self, extra=(), first=()):
-        """Run S3 from the review to a published PR; returns (sha, url)."""
-        sha, url, out, body = self.to_body(extra, first)
+    def draft_pr(self, extra=(), first=(), answers=(), started=False):
+        """Run S3 to the published draft PR, before any review; returns (sha, url)."""
+        sha, url, out, body = self.to_body(extra, first, answers, started)
         text = body.read_text()
         r = self.autodev("pr", "publish", "--dir", self.dir)
         self.assertEqual(r.returncode, 1)  # the Summary is not written yet
@@ -1121,6 +1145,48 @@ class ShipTest(NextCase):
         body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text))
         self.after(out)
         self.assertEqual(self.state()["phase6"]["pr"], 12)
+        return sha, url
+
+    def refresh_body(self):
+        """`next` asks to publish the refreshed description: publish it."""
+        out = self.next(0)
+        self.assertIn("pr publish", out["ACTION"], json.dumps(out, indent=2))
+        gh = json.loads((self.tmp / "gh.json").read_text())  # GitHub holds what was sent
+        sha = self.state()["phase6"]["verified_sha"]
+        url = "https://github.com/acme/app"
+        self.script_gh([{"args": ["pr", "view", "12", "--json", "body"],
+                         "stdout": json.dumps({"body": self.published()})},
+                        {"args": ["pr", "view", "12", "--json", "number,url,body"],
+                         "stdout": json.dumps({"number": 12, "url": f"{url}/pull/12",
+                                               "body": f"Checked at commit {sha}"})}] + gh)
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def reviewed_pr(self, extra=(), first=()):
+        """The draft PR, then a clean review on it and its refreshed description."""
+        sha, url = self.draft_pr(extra, first)
+        self.review_clean()
+        self.refresh_body()
+        self.assertNotIn("Not reviewed yet", (self.dir / "pr-body.md").read_text())
+        return sha, url
+
+    def mark_ready(self, *answers):
+        """Answer the ready-for-review gate (and `answers`, its triage
+        questions), publish the description with the answers, and mark the PR
+        ready."""
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        for choice in (*answers, "Mark ready for review"):
+            self.after(out, choice)
+        self.refresh_body()  # the description gets the gate's answers
+        out = self.next(0)
+        self.assertIn("gh pr ready 12", out["ACTION"])
+        self.after(out)
+
+    def open_pr(self, extra=(), first=()):
+        """Run S3 to the reviewed PR marked ready for review; returns (sha, url)."""
+        sha, url = self.reviewed_pr(extra, first)
+        self.mark_ready()
         return sha, url
 
     def published(self):
@@ -1260,8 +1326,8 @@ class ShipTest(NextCase):
         self.assertIn("We put 5 small deliberate bugs", text)
         self.assertIn("They caught 4.", text)
 
-    def test_no_budget_for_a_review_fix_goes_to_the_pr_gate(self):
-        self.ship_ready()
+    def test_no_budget_for_a_review_fix_goes_to_the_ready_gate(self):
+        self.draft_pr()
         state = self.state()
         state["budget"]["remaining"] = 0
         self.write_state(state)
@@ -1275,25 +1341,55 @@ class ShipTest(NextCase):
             "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
             "missing due date\n")
         self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        self.refresh_body()  # the description names the open finding
         out = self.next(5)
-        self.assertIn("pr gate", out["QUESTION"])
-        self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
+        self.assertIn("ready gate", out["QUESTION"])
+        summary = " ".join(out["SUMMARY"])
+        self.assertIn("Budget exhausted", summary)
+        self.assertIn("No round was left to correct what is still open", summary)
 
-    def test_no_budget_for_a_re_check_after_open_pr_goes_to_the_pr_gate_again(self):
-        self.test_no_budget_for_a_review_fix_goes_to_the_pr_gate()
-        out = self.next(5)
-        self.after(out, "Open PR")
+    def test_no_round_left_inside_a_review_correction_goes_to_the_ready_gate(self):
+        self.draft_pr()
+        state = self.state()
+        state["budget"]["remaining"] = 1  # the review correction's round, no more
+        self.write_state(state)
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        _, jobs = self.expect("cleanup")
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval(v1="unmet")
+        (self.dir / "evidence").mkdir(exist_ok=True)
+        (self.dir / "evidence" / "corrections.md").write_text("# Required changes\n1. x\n")
+        self.answer(*jobs[0], "CORRECT", tree="x", corrections="1")
+        # No round for another correction: not a stop, before the PR is ready.
+        _, jobs = self.reviewers()
+        self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
+        self.assertTrue(self.state()["phase6"]["exhausted"]["open"])
+
+    def test_an_edit_at_the_ready_gate_is_re_checked_and_the_gate_asked_again(self):
+        self.test_no_budget_for_a_review_fix_goes_to_the_ready_gate()
         (self.worktree / "due.ts").write_text("export const due = 2;\n")  # outside edit
-        self.next(0)
-        r = self.autodev("commit", "--message", "feat: due dates", "--dir", self.dir)
-        self.assertEqual(r.returncode, 1, r.stdout)  # the reports are stale
-        self.expect("cleanup", "GREEN")
+        _, jobs = self.expect("cleanup", "GREEN")  # the gate's checks found it stale
+        self.assertEqual(self.sets(*jobs[0])["scope"], "outside")
         self.lint()
         _, jobs = self.expect("verifier")
         self.spec_eval()
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
         _, jobs = self.reviewers()
         pass_dir = self.dir / "review" / f"pass-{self.state()['phase6']['review_pass']}"
+        self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
         for w, n in jobs:
             (pass_dir / f"{self.sets(w, n)['reviewer']}.md").write_text(
                 r_report("- null due date crashes sort"))
@@ -1301,8 +1397,16 @@ class ShipTest(NextCase):
         (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
         (pass_dir / "corrections.md").write_text("# Required changes\n1. C1: guard\n")
         self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
-        out = self.next(5)  # the pass after Open PR, before the commit: the gate again
-        self.assertIn("pr gate", out["QUESTION"])
+        self.assertIn("commit: run", self.next(0)["ACTION"])  # on top, no round left
+        r = self.autodev("commit", "--message", "chore: due", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertIn("push", out["ACTION"])
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.after(out)
+        self.refresh_body()
+        out = self.next(5)  # the gate again, still naming the open finding
+        self.assertIn("ready gate", out["QUESTION"])
         self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
 
     def test_a_ticket_already_in_progress_still_moves_to_in_review(self):
@@ -1330,7 +1434,6 @@ class ShipTest(NextCase):
         self.after(out)
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
-        self.after(self.next(0))  # gh pr ready
         self.after(self.next(5), "Merge PR to main")
         r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1344,9 +1447,6 @@ class ShipTest(NextCase):
         sha, _ = self.open_pr()
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
-        out = self.next(0)
-        self.assertIn("gh pr ready 12", out["ACTION"])
-        self.after(out)
         out = self.next(5)
         self.assertIn("main gate", out["QUESTION"])
         self.after(out, "Merge PR to main")
@@ -1376,7 +1476,6 @@ class ShipTest(NextCase):
         self.write_state(state)
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
-        self.after(self.next(0))
         self.after(self.next(5), "Merge PR to main")
         self.next(0)
         self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
@@ -1389,7 +1488,7 @@ class ShipTest(NextCase):
         self.assertEqual(self.state()["phases"]["6"]["status"], "done")
 
     def test_a_security_must_fix_is_verified_then_corrected(self):
-        self.ship_ready()
+        self.draft_pr()
         jobs = self.panel(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
         self.assertEqual(len(jobs), 1)  # spawned with the consolidating judge
         self.assertEqual(self.sets(*jobs[0]), {})
@@ -1405,7 +1504,7 @@ class ShipTest(NextCase):
         self.assertIn("security-", out["BUDGET"])
 
     def test_panel_and_security_findings_share_one_correction(self):
-        self.ship_ready()
+        self.draft_pr()
         remaining = self.state()["budget"]["remaining"]
         corrections = ("# Required changes\n1. C1: guard the sort in src/sort.ts against "
                        "a missing due date\n")
@@ -1423,7 +1522,7 @@ class ShipTest(NextCase):
         self.assertEqual(self.state()["budget"]["remaining"], remaining - 1)
 
     def test_a_lead_the_security_review_has_not_seen_gets_a_security_run(self):
-        self.ship_ready()
+        self.draft_pr()
         lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
                 "the security review")
         covered = "- `src/due.ts:3` — dates are not escaped (raised by R1) → covered by S2"
@@ -1436,10 +1535,11 @@ class ShipTest(NextCase):
         self.answer(*jobs[0], "CLEAN", must_fix="0", pre_existing="0")
         self.lint()
         self.spec_eval()
-        self.assertIn("pr gate", self.next(5)["QUESTION"])  # seen now: no third run
+        self.refresh_body()
+        self.assertIn("ready gate", self.next(5)["QUESTION"])  # seen now: no third run
 
     def test_a_pass_started_without_the_security_review_runs_it_before_the_judge(self):
-        self.ship_ready()  # as a run started before 4.4.0 left it
+        self.draft_pr()  # as a run started before 4.4.0 left it
         _, jobs = self.reviewers()
         state = self.state()
         sec = [e for e in state["log"] if e["worker"].startswith("security-reviewer")]
@@ -1458,7 +1558,7 @@ class ShipTest(NextCase):
     def old_pass_judged(self, review):
         """A pass started before 4.4.0, with the panel and the judge done and
         no security review yet."""
-        self.ship_ready()
+        self.draft_pr()
         self.panel(review)
         state = self.state()  # as if the security reviewer had not run yet
         state["log"] = [e for e in state["log"]
@@ -1481,10 +1581,11 @@ class ShipTest(NextCase):
         self.answer(*jobs[0], "CLEAN", must_fix="0", pre_existing="0")
         self.lint()
         self.spec_eval()
-        self.assertIn("pr gate", self.next(5)["QUESTION"])  # the lead was given: no rerun
+        self.refresh_body()
+        self.assertIn("ready gate", self.next(5)["QUESTION"])  # the lead was given: no rerun
 
     def test_with_no_round_left_open_findings_go_to_the_gate_not_to_a_leads_run(self):
-        self.ship_ready()
+        self.draft_pr()
         state = self.state()
         state["budget"]["remaining"] = 0
         self.write_state(state)
@@ -1501,12 +1602,13 @@ class ShipTest(NextCase):
         self.answer(*jobs[0], "VERIFIED", must_fix_open="1", revote="0")
         self.lint()
         self.spec_eval()
+        self.refresh_body()
         out = self.next(5)
-        self.assertIn("pr gate", out["QUESTION"])
+        self.assertIn("ready gate", out["QUESTION"])
         self.assertIn("Budget exhausted", " ".join(out["SUMMARY"]))
 
     def test_a_wrapped_lead_is_sent_whole_and_a_placeholder_is_not_a_lead(self):
-        self.ship_ready()
+        self.draft_pr()
         leads = ("- `src/due.ts:9` — the owner is not checked when a todo's date\n"
                  "  is moved (raised by R2) → passed to the security review\n"
                  "- `path:line` — <lead> (raised by R<k>) → passed to the security review\n"
@@ -1523,7 +1625,7 @@ class ShipTest(NextCase):
         self.assertNotIn("<lead>", sent)
 
     def test_a_run_on_leads_alone_is_focused_on_them_and_so_is_its_re_spawn(self):
-        self.ship_ready()
+        self.draft_pr()
         lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
                 "the security review")
         self.panel(CLEAN_REVIEW.replace("## Security leads\nnone",
@@ -1540,7 +1642,7 @@ class ShipTest(NextCase):
         self.assertEqual(self.sets(*again[0])["leads"], sets["leads"])
 
     def test_the_judge_s_two_modes_fail_apart(self):
-        self.ship_ready()
+        self.draft_pr()
         _, jobs = self.reviewers(security=(SECURITY_MUST_FIX, "MUST_FIX", "1", "1"))
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md"
@@ -1561,7 +1663,7 @@ class ShipTest(NextCase):
         self.assertIn("stopped on purpose twice running", " ".join(out["REPORT"]))
 
     def test_a_security_reviewer_that_fails_beside_the_panel_is_respawned_once(self):
-        self.ship_ready()
+        self.draft_pr()
         out = self.next(0)
         jobs = self.spawned(out)
         sec = next(j for j in jobs if j[0].startswith("security-reviewer"))
@@ -1578,7 +1680,7 @@ class ShipTest(NextCase):
         self.assertIn("failed twice running", " ".join(out["REPORT"]))
 
     def test_a_security_reviewer_blocked_beside_the_panel_is_told_why(self):
-        self.ship_ready()
+        self.draft_pr()
         jobs = self.spawned(self.next(0))
         sec = next(j for j in jobs if j[0].startswith("security-reviewer"))
         self.answer(*sec, "", status="blocked")
@@ -1592,7 +1694,7 @@ class ShipTest(NextCase):
         self.assertIn("returned `blocked`, and the run spawned you again once", brief)
 
     def test_an_acceptance_check_finding_goes_to_the_tester(self):
-        self.ship_ready()
+        self.draft_pr()
         self.panel(CHECK_REVIEW, "MUST_FIX", corrections="# Required changes\nNone.\n")
         out, jobs = self.expect("acceptance-tester")
         sets = self.sets(*jobs[0])
@@ -1622,11 +1724,10 @@ class ShipTest(NextCase):
         self.assertIn("from a comment on the PR", report)
         self.assertIn("condition 2: comment 77", report)
         self.sign_off(out, "the spec is right")
-        out = self.next(0)  # nothing else open: on to the ready-for-review step
-        self.assertIn("gh pr ready 12", out["ACTION"])
+        self.assertIn("main gate", self.next(5)["QUESTION"])  # nothing else open
 
     def test_a_security_reviewer_that_finds_a_criterion_missing_stops_after_the_pass(self):
-        self.ship_ready()
+        self.draft_pr()
         _, jobs = self.reviewers(problems="- missing: the due date must be the owner's to "
                                           "set\n")
         for w, n in jobs:
@@ -1641,10 +1742,11 @@ class ShipTest(NextCase):
         self.assertIn("in code-review pass 1", report)
         self.assertIn("a missing criterion: the due date must be the owner's", report)
         self.sign_off(out)
-        self.assertIn("pr gate", self.next(5)["QUESTION"])
+        self.refresh_body()
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
 
     def test_a_retry_at_a_judge_s_spec_problem_applies_the_re_votes_again(self):
-        self.ship_ready()
+        self.draft_pr()
         _, jobs = self.reviewers()
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
@@ -1679,8 +1781,10 @@ class ShipTest(NextCase):
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
         self.after(self.next(6))
         self.resume()
+        self.draft_pr(started=True)
         self.review_clean()
-        summary = "\n".join(self.next(5)["SUMMARY"])
+        self.refresh_body()
+        summary = "\n".join(self.next(5)["SUMMARY"])  # the ready-for-review gate
         self.assertIn("Coder #1 deviated from the plan", summary)
         self.assertIn("- step 1: the field goes on the Todo type", summary)
 
@@ -1709,19 +1813,15 @@ class ShipTest(NextCase):
         _, jobs = self.expect("verifier")
         self.assertIn("kept the questioned", self.sets(*jobs[0])["what_changed"])
         self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
-        out = self.next(0)  # no commit, no empty review pass, no second triage
-        self.assertIn("gh pr ready 12", out["ACTION"])
-        self.after(out)
+        # No commit, no empty review pass, no second triage: the main gate.
         self.assertIn("main gate", self.next(5)["QUESTION"])
         self.assertNotIn("commit_attempt", self.state()["phase6"])
 
     def test_a_commit_made_but_not_checked_is_checked_not_refused(self):
         self.ship_ready()
-        self.review_clean()
         self.lint()
         self.spec_eval()
-        self.after(self.next(5), "Open PR")
-        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.assertIn("commit: run", self.next(0)["ACTION"])  # before any review
         # `commit` committed, then could not check the commit (killed, say).
         self.sh("git", "add", "-A", "--", ".", ":!.auto-dev", cwd=self.worktree)
         self.sh("git", "commit", "-q", "-m", "feat: x", cwd=self.worktree)
@@ -1881,7 +1981,6 @@ class ShipTest(NextCase):
         sha, _ = self.open_pr(first=first)
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
-        self.after(self.next(0))
         self.after(self.next(5), "Merge PR to main")
         return sha
 
@@ -1895,18 +1994,18 @@ class ShipTest(NextCase):
         self.assertEqual(self.next(4)["exit"], 4)
 
     def test_a_triage_answer_is_kept_and_listed_as_a_follow_up(self):
-        separate = "S2: Separate PR (note it as a follow-up)"
-        _sha, _url, _out, body = self.to_body(answers=(separate, "Open PR"))
+        self.reviewed_pr()
+        self.mark_ready("S2: Separate PR (note it as a follow-up)")
         self.assertEqual(self.state()["marks"]["triage-S2"]["value"], "separate")
+        body = self.dir / "pr-body.md"
         text = body.read_text()
         self.assertIn("Follow-up for a separate PR: session token not rotated", text)
         body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text))
         r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_an_edit_answered_at_the_pr_gate_is_re_checked_again(self):
-        self.ship_ready()
-        self.review_clean()
+    def test_an_edit_answered_at_the_ready_gate_is_re_checked_again(self):
+        self.reviewed_pr()
         (self.worktree / "extra.ts").write_text("export const extra = 1;\n")
         self.lint()  # stale for the gate: the code changed after the reviews
         _, jobs = self.expect("cleanup")
@@ -1915,25 +2014,61 @@ class ShipTest(NextCase):
         self.answer(*jobs[0], "GREEN")
         self.spec_eval()
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        self.review_clean()
-        self.lint()
-        self.spec_eval()
-        self.after(self.next(5), "Hold (don't push yet)")
+        self.review_clean()  # a pass on the edit, before it is committed on top
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], "after-commit")
+        r = self.autodev("commit", "--message", "chore: extra", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertIn("push", out["ACTION"])
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.after(out)
+        self.refresh_body()
+        self.after(self.next(5), "Hold (keep it a draft)")
         (self.worktree / "extra.ts").write_text("export const extra = 2;\n")
         self.resume()
         _, jobs = self.expect("cleanup")  # a new check, not "stale twice"
         self.assertEqual(self.sets(*jobs[0]), {"scope": "outside"})
 
-    def test_a_hold_at_the_pr_gate_stops_and_resume_asks_again(self):
-        self.ship_ready()
-        self.review_clean()
-        self.lint()
-        self.spec_eval()
-        self.after(self.next(5), "Hold (don't push yet)")
+    def test_a_hold_at_the_ready_gate_stops_and_resume_asks_again(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertIn("Draft PR https://github.com/acme/app/pull/12", out["SUMMARY"][0])
+        self.after(out, "Hold (keep it a draft)")
         out = self.next(4)
         self.assertIn("held", " ".join(out["REPORT"]))
         self.resume()
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def test_the_open_pr_gate_asks_before_the_first_push_only_when_on(self):
+        self.ship_ready()
+        state = self.state()
+        state["settings"]["open_pr_gate"] = True
+        self.write_state(state)
+        self.lint()
+        self.spec_eval()
+        out = self.next(5)  # nothing is committed or pushed before the answer
+        self.assertIn("pr gate", out["QUESTION"])
+        self.assertIn("Not reviewed yet", " ".join(out["SUMMARY"]))
+        self.assertNotIn("verified_sha", self.state()["phase6"])
+        self.after(out, "Hold (don't push yet)")
+        self.assertIn("held", " ".join(self.next(4)["REPORT"]))
+        self.resume()
+        self.after(self.next(5), "Open PR")
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        # The code changes after the answer: re-checked, then the gate again,
+        # since it was asked on other code.
+        (self.worktree / "extra.ts").write_text("export const extra = 1;\n")
+        r = self.autodev("commit", "--message", "feat: x", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout)  # stale: nothing committed
+        _, jobs = self.expect("cleanup")
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
         self.assertIn("pr gate", self.next(5)["QUESTION"])
+        self.assertNotIn("verified_sha", self.state()["phase6"])
 
     def test_the_planted_bug_count_covers_carried_and_rerun_mutants_once(self):
         # A re-check's Mutation line counts every mutant of the set, carried
@@ -2188,7 +2323,7 @@ class PublishTest(NextCase):
         still = [ln for ln in text.splitlines() if "Still open" in ln]
         self.assertEqual(still, [("  - Still open: sorting crashed on a todo with no due "
                                   "date. (`src/sort.ts:4`); shipped at the user's call at "
-                                  "the PR gate")])
+                                  "the ready-for-review gate")])
         body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text))
         r = self.autodev("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -2369,6 +2504,11 @@ class ReviewFindingsTest(unittest.TestCase):
 class TicketTest(NextCase):
     to_body = ShipTest.to_body
     open_pr = ShipTest.open_pr
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    published = ShipTest.published
 
     def ship_ready(self):
         ShipTest.ship_ready(self)
@@ -2484,6 +2624,11 @@ class TicketTest(NextCase):
 class InlineCommentsTest(NextCase):
     to_body = ShipTest.to_body
     open_pr = ShipTest.open_pr
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    published = ShipTest.published
     review_text = CLEAN_REVIEW.replace(
         "|----|---------|----------|----------|-------|------------|--------------|\n",
         "|----|---------|----------|----------|-------|------------|--------------|\n"
@@ -2528,6 +2673,18 @@ class InlineCommentsTest(NextCase):
         self.assertTrue(payload["body"].endswith(marker))
         self.assertTrue(payload["comments"][0]["body"].endswith(marker))
         self.assertEqual(self.state()["phase6"]["inline"]["inline"], 1)
+
+    def test_findings_are_posted_once_the_ready_gate_is_answered_separate_pr_included(self):
+        self.reviewed_pr(extra=[
+            {"args": ["api", "--method", "POST"], "stdout": "{}"},
+            {"args": ["pr", "comment"], "stdout": "https://x/pull/12#issuecomment-5\n"}])
+        self.assertNotIn("inline", self.state()["phase6"])  # the gate is not asked yet
+        self.mark_ready("S2: Separate PR (note it as a follow-up)")
+        self.assertIn("inline", self.state()["phase6"])
+        general = [c for c in self.calls() if c["args"][:2] == ["pr", "comment"]]
+        comment = next(iter(general[-1]["files"].values()))
+        self.assertIn("left for a separate PR", comment)
+        self.assertIn("src/auth.ts:88", comment)
 
     def test_a_pre_existing_finding_is_posted_only_when_sent_to_a_separate_pr(self):
         sys.path.insert(0, str(SCRIPTS))
@@ -2581,6 +2738,18 @@ class InlineCommentsTest(NextCase):
                                body.read_text()))
         r = self.autodev("pr", "publish", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("posted", r.stdout)  # the draft opens before any review
+        self.assertNotIn("inline", self.state()["phase6"])
+        self.review_clean()
+        self.refresh_body()  # the reviews are in the description, still nothing posted
+        self.assertNotIn("inline", self.state()["phase6"])
+        self.after(self.next(5), "Mark ready for review")
+        self.assertIn("pr publish", self.next(0)["ACTION"])
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([{"args": ["pr", "view", "12", "--json", "body"],
+                         "stdout": json.dumps({"body": self.published()})}] + gh)
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("1 posted inline, 1 in a general comment", r.stdout)
 
     def test_a_secret_looking_finding_does_not_blank_the_others(self):
@@ -2619,6 +2788,11 @@ class CiTest(NextCase):
     ship_ready = ShipTest.ship_ready
     to_body = ShipTest.to_body
     open_pr = ShipTest.open_pr
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    published = ShipTest.published
 
     def test_red_ci_is_triaged_and_corrected_after_the_commit(self):
         state = self.state()
@@ -2626,7 +2800,7 @@ class CiTest(NextCase):
         self.write_state(state)
         checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
                    "link": "https://ci/1"}]
-        _sha, _ = self.open_pr(extra=[{"args": ["pr", "checks"],
+        _sha, _ = self.reviewed_pr(extra=[{"args": ["pr", "checks"],
                                       "stdout": json.dumps(checks)}])
         out = self.next(0)
         self.assertIn("ci-watch", out["ACTION"])
@@ -2657,7 +2831,7 @@ class CiTest(NextCase):
         state["settings"]["ci"] = "github"
         self.write_state(state)
         pending = [{"name": "test", "state": "PENDING", "bucket": "pending", "link": ""}]
-        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(pending)}])
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(pending)}])
         out = self.next(0)
         self.assertIn("ci-watch", out["ACTION"])
         self.assertIn("then run AFTER whatever it exits", out["ACTION"])
@@ -2676,7 +2850,7 @@ class CiTest(NextCase):
         self.write_state(state)
         checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
                    "link": "https://ci/1"}]
-        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
         self.next(0)
         self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
         _, jobs = self.expect("triager")
@@ -2698,12 +2872,12 @@ class CiTest(NextCase):
         self.write_state(state)
         checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
                    "link": "https://ci/1"}]
-        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
         self.next(0)
         self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
         _, jobs = self.expect("triager")
-        # The review pass before the commit ran out of rounds: its must-fix
-        # finding went to the PR gate, and the user opened the PR with it.
+        # The review pass on the draft ran out of rounds: its must-fix finding
+        # went to the ready-for-review gate.
         (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
         state = self.state()
         state["budget"]["remaining"] = 0
@@ -2739,19 +2913,21 @@ class CiTest(NextCase):
         self.assertEqual(r.returncode, code, r.stdout + r.stderr)
 
     def ready(self, extra=None):
+        """The reviewed draft, CI watched on it, then the PR marked ready."""
         self.github_ci()
-        sha, _ = self.open_pr(extra=extra or self.GREEN)
-        self.watch()
+        sha, _ = self.reviewed_pr(extra=extra or self.GREEN)
+        self.watch()  # CI on the draft, before the ready-for-review gate
+        self.mark_ready()
+        return sha
+
+    def no_comments(self):
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
-        out = self.next(0)
-        self.assertIn("gh pr ready 12", out["ACTION"])
-        self.after(out)
-        return sha
 
     def test_ci_is_watched_again_once_the_pr_is_ready(self):
         self.ready()
         self.watch()  # workflows that skip drafts run now
+        self.no_comments()
         self.assertIn("main gate", self.next(5)["QUESTION"])
 
     def test_the_draft_s_green_checks_do_not_count_once_the_pr_is_ready(self):
@@ -2759,11 +2935,13 @@ class CiTest(NextCase):
         self.ready(extra=[old, *self.GREEN])
         self.watch(3)  # only the draft's checks so far: still pending
         self.watch()  # a check started after the mark: green
+        self.no_comments()
         self.assertIn("main gate", self.next(5)["QUESTION"])
 
     def test_a_resume_after_the_merge_goes_on_from_the_merge(self):
         sha = self.ready()
         self.watch()
+        self.no_comments()
         self.after(self.next(5), "Merge PR to main")
         r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -2777,6 +2955,7 @@ class CiTest(NextCase):
     def test_a_failed_findings_post_reaches_the_final_report(self):
         sha = self.ready()
         self.watch()
+        self.no_comments()
         self.after(self.next(5), "Merge PR to main")
         r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -2795,6 +2974,7 @@ class CiTest(NextCase):
     def test_the_main_gate_comes_next_and_shows_only_people_s_comments(self):
         self.ready()
         self.watch()
+        self.no_comments()
         # A staging branch on origin is ignored: the next gate is the main gate.
         self.sh("git", "push", "-q", "origin", "origin/main:refs/heads/staging",
                 cwd=self.worktree)
@@ -2818,7 +2998,7 @@ class CiTest(NextCase):
         self.github_ci()
         checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
                    "link": "https://ci/1"}]
-        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
         self.watch(1)
         self.expect("triager", "INFRA", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
@@ -2831,7 +3011,7 @@ class CiTest(NextCase):
         self.github_ci()
         checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
                    "link": "https://ci/1"}]
-        self.open_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
         self.watch(1)
         self.expect("triager", "SECRET", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
@@ -2847,6 +3027,7 @@ class CiTest(NextCase):
         state["phase6"]["ci"]["status"] = "timeout"
         state["phase6"]["ci"]["seq"] = state["events"] + 1
         self.write_state(state)
+        self.no_comments()
         out = self.next(5)
         self.assertIn("CI: not monitored (timeout) — never assume green",
                       " ".join(out["SUMMARY"]))
@@ -2856,6 +3037,11 @@ class HumanAndMainGateTest(NextCase):
     ship_ready = ShipTest.ship_ready
     to_body = ShipTest.to_body
     open_pr = ShipTest.open_pr
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    published = ShipTest.published
 
     def test_a_reviewer_blocker_becomes_a_correction(self):
         self.open_pr()
@@ -2888,9 +3074,6 @@ class HumanAndMainGateTest(NextCase):
         old, url = self.open_pr()
         self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
                     triage_file="none", checks_file="none")
-        out = self.next(0)
-        self.assertIn("gh pr ready", out["ACTION"])
-        self.after(out)
         out = self.next(5)
         self.assertIn("main", out["QUESTION"])
         self.after(out, "Hold")
@@ -3013,10 +3196,13 @@ class HumanAndMainGateTest(NextCase):
 
 
 class ReVoteTest(NextCase):
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    published = ShipTest.published
+
     def test_lone_findings_are_re_voted_then_applied(self):
-        self.plan_session()
-        self.build_session()
-        self.resume()
+        self.draft_pr()
         _out, jobs = self.reviewers()
         for w, n in jobs:
             slot = self.sets(w, n)["reviewer"]
@@ -3041,9 +3227,7 @@ class ReVoteTest(NextCase):
         self.assertIn("lone finding; re-vote 1/3", text)
 
     def test_a_re_voter_that_fails_twice_stops(self):
-        self.plan_session()
-        self.build_session()
-        self.resume()
+        self.draft_pr()
         _out, jobs = self.reviewers()
         for w, n in jobs:
             slot = self.sets(w, n)["reviewer"]
@@ -3069,13 +3253,16 @@ class ReVoteTest(NextCase):
 
 
 class ReviewEffortTest(NextCase):
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    published = ShipTest.published
+
     plan_text = IMPLEMENTATION.replace(
         "# Plan\n", "# Plan\n\nReview effort: xhigh — a state machine across three modules\n", 1)
 
     def to_panel(self):
-        self.plan_session()
-        self.build_session()
-        self.resume()
+        self.draft_pr()  # the review runs on the draft PR
 
     def test_the_plan_s_xhigh_effort_reaches_every_code_reviewer_spawn(self):
         self.to_panel()
@@ -3118,7 +3305,7 @@ class ReviewEffortTest(NextCase):
             sets = self.sets(w, n)
             self.assertEqual(sets["review_effort"], "xhigh")
             files = sets["files"].split(", ")
-            self.assertIn("due.ts", files)  # the coder's change, uncommitted
+            self.assertIn("due.ts", files)  # the branch's change, as committed
             self.assertFalse([f for f in files if f.startswith(".auto-dev/")], files)
             brief = (self.dir / "briefs" / f"{w}-{n}.md").read_text()
             self.assertIn("review_effort: xhigh", brief)
@@ -3133,22 +3320,6 @@ class ReviewEffortTest(NextCase):
             self.answer(w, n, "REVIEWED", findings="1", leads="0")
         _, again = self.expect("code-reviewer")
         self.assertEqual(self.sets(*again[0]), failed)
-
-    def test_a_first_pass_started_before_4_12_1_lists_the_changed_files(self):
-        self.to_panel()
-        _, jobs = self.reviewers()
-        state = json.loads((self.dir / "state.json").read_text())
-        state["phase6"]["passes"][0]["files"] = []  # as an older `next` saved it
-        (self.dir / "state.json").write_text(json.dumps(state))
-        for w, n in jobs:
-            slot = self.sets(w, n)["reviewer"]
-            if slot == "R1":
-                self.answer(w, n, "", status="failed")
-                continue
-            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
-            self.answer(w, n, "REVIEWED", findings="1", leads="0")
-        _, again = self.expect("code-reviewer")
-        self.assertIn("due.ts", self.sets(*again[0])["files"].split(", "))
 
     def test_a_plan_without_a_review_effort_runs_the_reviewers_at_high(self):
         self.plan_text = IMPLEMENTATION
@@ -3769,10 +3940,14 @@ class OverrideShipTest(OverrideCase):
     """Overrides in Phase 6: a correction that changed nothing."""
 
     ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    published = ShipTest.published
+    refresh_body = ShipTest.refresh_body
 
     def unchanged_correction(self):
         """Pass 1's must-fix C1, and a correction that changes nothing."""
-        self.ship_ready()
+        self.draft_pr()
         _, jobs = self.reviewers()
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
@@ -3804,12 +3979,14 @@ class OverrideShipTest(OverrideCase):
         self.assertIn("already spent", out["BUDGET"])
         self.assertEqual(self.state()["budget"]["remaining"], left)
 
-    def test_signing_off_open_findings_goes_to_the_pr_gate(self):
+    def test_signing_off_open_findings_goes_to_the_ready_gate(self):
         out = self.unchanged_correction()
         self.assertIn("Sign off and go on", self.labels(out))
         r = self.answer_stop(out, "Sign off and go on", "C1 can't happen in production")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.refresh_body()
         out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
         summary = " ".join(out["SUMMARY"])
         self.assertIn("Signed off by the user", summary)
         self.assertIn("C1 can’t happen in production", summary)
@@ -3820,6 +3997,62 @@ class OverrideShipTest(OverrideCase):
         self.assertIn("## Overrides by the user", text)
         self.assertIn("C1 can’t happen in production", text.split("## Overrides")[1])
 
+    def test_a_fix_before_the_first_commit_is_simplified_and_gated_with_the_build(self):
+        self.ship_ready()
+        self.lint()
+        self.spec_eval()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        state = self.state()  # `commit` failed (a hook refused it, say)
+        state["phase6"]["commit_attempt"] = {"result": "commit-failed",
+                                             "seq": state.get("events", 0) + 5}
+        self.write_state(state)
+        n = self.fix(self.next(4), "drop the debug line the hook refused")[1]
+        (self.worktree / "due.ts").write_text("export const due = 2;\n")
+        self.report(n, changed="- `due.ts` — the debug line dropped")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        _, jobs = self.expect("cleanup")
+        self.assertEqual(self.sets(*jobs[0]), {"scope": "phase5"})  # the coder's change, simplified
+
+    def test_a_fix_before_the_first_review_still_gets_the_whole_change_reviewed(self):
+        # Committed, then a stop before the first review pass (the draft's
+        # description refused), and a fix that changes the code.
+        _sha, _url, _out, body = self.to_body()
+        state = self.state()
+        state["phase6"]["publish_attempt"] = {"result": "problems", "problems": ["x"],
+                                              "seq": state.get("events", 0) + 5}
+        self.write_state(state)
+        n = self.fix(self.next(4), "rename the helper")[1]
+        (self.worktree / "sort.ts").write_text("export const sort = 2;\n")
+        self.report(n, changed="- `sort.ts` — the rename the user asked for")
+        self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
+        _, jobs = self.expect("cleanup")
+        self.assertEqual(self.sets(*jobs[0]), {"scope": "after-commit"})
+        self.lint()
+        self.answer(*jobs[0], "GREEN")
+        _, jobs = self.expect("verifier")
+        self.spec_eval()
+        self.answer(*jobs[0], "ALL_MET", tree="x", corrections="0")
+        self.assertIn("commit: run", self.next(0)["ACTION"])  # no pass on the fix alone
+        self.assertEqual(self.state()["phase6"]["passes"], [])
+        r = self.autodev("commit", "--message", "fix: rename", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.after(out)
+        out = self.next(0)  # the draft's description, for the new commit
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        sha = self.state()["phase6"]["verified_sha"]
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([{"args": ["pr", "view", "12", "--json", "number,url,body"],
+                         "stdout": json.dumps({"number": 12, "url": "https://x/pull/12",
+                                               "body": f"Checked at commit {sha}"})}] + gh)
+        self.after(out)
+        _, jobs = self.reviewers()  # the whole change, the fix with it
+        self.assertEqual(self.sets(*jobs[0])["scope"], "first")
+        self.assertIn("sort.ts", self.sets(*jobs[0])["files"])
+        self.assertEqual([p["scope"] for p in self.state()["phase6"]["passes"]], ["first"])
+
     def test_a_fix_in_phase_6_is_gated_verified_and_reviewed(self):
         out = self.unchanged_correction()
         n = self.fix(out, "guard the sort against a missing due date")[1]
@@ -3827,14 +4060,14 @@ class OverrideShipTest(OverrideCase):
         self.report(n, changed="- `sort.ts` — the guard the user asked for")
         self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
         out, jobs = self.expect("cleanup", "GREEN")
-        self.assertEqual(self.sets(*jobs[0]), {"scope": "review-fix", "files": "sort.ts"})
+        self.assertEqual(self.sets(*jobs[0]), {"scope": "after-commit"})
         self.assertEqual(self.state()["phase6"]["corrections"][-1]["entry"], "fix")
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        out, jobs = self.reviewers()
-        self.assertEqual(self.sets(*jobs[0])["files"], "sort.ts")
+        out, jobs = self.reviewers()  # the fix, on top of the commit
+        self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
 
     def test_a_fix_inside_an_open_correction_is_reviewed_with_it(self):
-        self.ship_ready()
+        self.draft_pr()
         _, jobs = self.reviewers()
         for w, n in jobs:
             (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
@@ -3855,11 +4088,15 @@ class OverrideShipTest(OverrideCase):
         self.report(n, changed="- `fixer.ts` — what the user asked")
         self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
         _, jobs = self.expect("cleanup")
-        self.assertEqual(self.sets(*jobs[0])["files"], "coder.ts, fixer.ts")
+        self.assertEqual(self.sets(*jobs[0]), {"scope": "after-commit"})
         self.assertEqual([k["entry"] for k in self.state()["phase6"]["corrections"]],
                          ["review"])  # no second correction beside the open one
         self.lint()
         self.answer(*jobs[0], "GREEN")
         self.expect("verifier", "ALL_MET", tree="x", corrections="0")
-        _, jobs = self.reviewers()
-        self.assertEqual(self.sets(*jobs[0])["files"], "coder.ts, fixer.ts")
+        _, jobs = self.reviewers()  # one pass on both, uncommitted on top of HEAD
+        self.assertEqual(self.sets(*jobs[0])["scope"], "after-commit")
+        self.assertEqual(sorted(self.sh("git", "diff", "--name-only", "HEAD",
+                                        cwd=self.worktree).split() + self.sh(
+            "git", "ls-files", "--others", "--exclude-standard",
+            cwd=self.worktree).split()), ["coder.ts", "fixer.ts"])
