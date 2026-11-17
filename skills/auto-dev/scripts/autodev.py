@@ -158,7 +158,15 @@ def build_parser():
 
 def main(argv=None):
     parser = build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `run … -- <arg> …`: what follows the first `--` is the command's own
+    # arguments, never autodev.py's options.
+    extra = []
+    if argv[:1] == ["run"] and "--" in argv:
+        cut = argv.index("--")
+        argv, extra = argv[:cut], argv[cut + 1:]
     args = parser.parse_args(argv)
+    args.extra = extra
     if args.command is None:
         parser.print_help()
         return CANNOT_RUN

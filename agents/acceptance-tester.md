@@ -131,7 +131,9 @@ For every PLAN.md condition, Security/Compliance criteria included:
    `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <your files>`:
    it runs the profile's test command scoped to those files, in the worktree,
    saves the output under {{artifact_dir}}/tmp/run/ and prints the command as
-   run and the output's tail. Never type a profile command yourself: a
+   run and the output's tail. Add the runner's own arguments after `--`
+   (`… --files <your files> -- <arg> …`) to narrow it further, such as to one
+   test name. Never type a profile command yourself: a
    permission check refuses `cd <worktree> && …` and every rewritten form.
    When `run` exits 2 because the check has no scoped form, run it whole
    (`run test` with no `--files`) and keep the lines that name your checks.

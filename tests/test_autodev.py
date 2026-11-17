@@ -2199,8 +2199,9 @@ class RunCommandTest(unittest.TestCase):
             {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
 
     def run_(self, *args):
-        return subprocess.run([sys.executable, str(AUTODEV), "run", *args, "--dir",
-                               str(self.ad)], capture_output=True, text=True,
+        cut = args.index("--") if "--" in args else len(args)  # --dir goes before `--`
+        return subprocess.run([sys.executable, str(AUTODEV), "run", *args[:cut], "--dir",
+                               str(self.ad), *args[cut:]], capture_output=True, text=True,
                               cwd=self.cwd, check=False)
 
     def output_of(self, r):
@@ -2397,6 +2398,30 @@ class RunCommandTest(unittest.TestCase):
         r = self.run_("gate", "BUILD")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(self.gone(pidfile))
+
+    def test_args_after_dashes_are_appended_quoted(self):
+        r = self.run_("test", "--files", "src/c.test.ts", "--", "--grep", "a b",
+                      "$(touch PWNED)", "src/c.test.ts:3")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['some', 'src/c.test.ts', '--verbose', '--grep', 'a b', "
+                      "'$(touch PWNED)', 'src/c.test.ts:3']", r.stdout)
+        self.assertFalse((self.wt / "PWNED").exists())
+        # Without --files, after the whole command; an option after `--` is
+        # the command's, not run's own.
+        r = self.run_("gate", "1", "--", "--out", "x", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['lint', '--out', 'x', '--show']", r.stdout)
+
+    def test_args_go_where_the_command_has_the_placeholder(self):
+        self.gate[2]["command"] = self.gate[2]["command"].replace(" all", " all <args> end")
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        r = self.run_("test", "--", "-k", "x")
+        self.assertIn("['all', '-k', 'x', 'end']", r.stdout)
+        r = self.run_("test")  # with none, the placeholder goes
+        self.assertIn("['all', 'end']", r.stdout)
+        r = self.run_("test", "--show")
+        self.assertNotIn("<args>", r.stdout)
 
     def test_without_state_it_could_not_run(self):
         (self.ad / "state.json").unlink()
