@@ -50,8 +50,9 @@ took 14 or more and two session restarts.
 - **One fix loop.** One correction, one round, takes what a pass left open
   (the verifier's items, the review's findings) and red CI on the pushed
   commit together. Only the plan's revision and the fix loops spend rounds;
-  a tester re-spawn for gaps, a red gate's correction and a `BLOCKED` step's
-  re-dispatch are free, once each.
+  a tester re-spawn for gaps, the planner's decision on a condition that
+  reads two ways, a red gate's correction and a `BLOCKED` step's re-dispatch
+  are free, once each; the same again is a stop.
 - **No proposals or rulings.** A coder that finds a plan step wrong builds it
   the way that works and records the deviation; the ready-for-review gate
   lists each one. A criterion that is wrong or impossible is a stop that asks
@@ -61,7 +62,9 @@ took 14 or more and two session restarts.
   run at `high`, not `xhigh`.
 - **Commands.** New: `autodev.py quality-gate`, `commit-tests` and
   `review-build --solo`. Removed: `size`, `pr-body`, `gate-summary`,
-  `install-checks` and `verify prep --pass`; `next` runs those steps itself.
+  `install-checks`, `apply-fix`, `spec-overlap`, `review-scope`,
+  `verify prep --pass`, `budget spend --consumer` and `gate … --condition`;
+  `next` runs what is left of those steps itself.
 - **Resume:** a run started on 4.x can't resume on 5.0 (`state.json` schema
   5): `resume` reports it as `OLD-VERSION`. Finish it on 4.27, or remove its
   worktree and start again.

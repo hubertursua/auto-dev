@@ -199,12 +199,13 @@ wrong about something? If yes, fix the README.
   it there; `MODE_RESULTS` narrows them per mode, as the agent file's prose
   says. `tools/check-repo.py` checks the slots and `RESULTS`, and that every
   template a script parses or an agent names exists.
-- **The spawn budget.** A default-lane happy path (standard risk, every worker
-  ok the first time) takes at most 5 worker spawns to the first push and 7 to
-  ready-for-review: the planner, the plan critic, the acceptance tester and the
-  coder, then the verifier and the reviewer (one plan revision adds the
-  revision and the critic's re-check). `LeanTest` in `tests/test_next.py`
-  walks it and pins the counts. A PR that adds a spawn to that path raises the
+- **The spawn budget.** A default-lane happy path (standard risk, the critic
+  approves, every worker ok the first time) takes at most 5 worker spawns to
+  the first push and 7 to ready-for-review; today 4 and 6: the planner, the
+  plan critic, the acceptance tester and the coder, then the verifier and the
+  reviewer. One plan revision adds the revision and the critic's re-check (6
+  and 8). `LeanTest` in `tests/test_next.py` walks both paths and pins the
+  counts. A PR that adds a spawn to that path raises the
   numbers in the test on purpose, says so in its Summary, and updates the
   README's *Size check*; never add a step to the happy path without it.
 
