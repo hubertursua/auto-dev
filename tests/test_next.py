@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from pathlib import Path
 
@@ -112,8 +113,9 @@ class NextCase(RunCase):
 
     # -------------------------------------------------------------- driving
 
-    def next(self, expect=None, refused_ok=False):
-        r = self.autodev("next", "--dir", self.dir, "--json")
+    def next(self, expect=None, refused_ok=False, reissue=False):
+        r = self.autodev("next", *(["--reissue"] if reissue else []), "--dir", self.dir,
+                         "--json")
         try:
             out = json.loads(r.stdout)
         except ValueError:
@@ -256,7 +258,9 @@ class NextCase(RunCase):
         out = self.next(0)
         self.assertIn(f"read references/{stage}.md", out["ACTION"], json.dumps(out))
         self.assertEqual(self.state()["stage"], stage)
-        self.after(out)
+        # AFTER is `next` itself: the caller runs it and acts on what it prints
+        # (run here, the spawn it printed would be lost, and then waited for).
+        self.assertEqual(out["AFTER"], [self.next_cmd()])
 
     def build_session(self):
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
@@ -379,6 +383,58 @@ class NextCase(RunCase):
         (self.dir / "returns" / f"{worker}-{n}.json").write_text(json.dumps(
             {"worker": worker, "status": "ok", **DEFAULT_KEYS.get(worker, {}),
              **data}))
+
+    def next_reissue(self, expect=None):
+        """`next --reissue`: every agent the last wait named has returned."""
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        try:
+            out = json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --reissue printed no JSON (exit {r.returncode}):\n"
+                      f"{r.stdout}{r.stderr}")
+        if expect is not None:
+            self.assertEqual(out.get("exit"), expect, json.dumps(out, indent=2))
+        return out
+
+    def assert_waits_for(self, out, *names):
+        """`out` tells the orchestrator to wait for each of `names` (`planner #1`)
+        and spawns nothing."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertTrue(out.get("ACTION", "").startswith("wait"), shown)
+        for name in names:
+            self.assertIn(name, out["ACTION"], shown)
+        self.assertNotIn("AGENT", out, shown)
+        self.assertNotIn("BRIEF", out, shown)
+
+    def assert_spawns_planner_1_again(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:planner"], shown)
+        self.assertEqual(self.spawned(out), [("planner", 1)], shown)
+        self.assertFalse((self.dir / "briefs" / "planner-2.md").exists())
+
+    def brief_files(self):
+        return sorted(p.name for p in (self.dir / "briefs").iterdir())
+
+    def stopped_after_three_spawns(self):
+        """planner #1 spawned, then `next --reissue` three times: the third stops."""
+        self.expect("planner")
+        for _ in range(2):
+            self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
+        return out
+
+    def sent_out_ago(self, worker, n, **ago):
+        """Make `worker` #`n`'s brief look as if it was last sent out `ago` back."""
+        when = (datetime.now(timezone.utc) - timedelta(**ago)).replace(microsecond=0)
+        state = self.state()
+        brief = next(b for b in state["briefs"] if (b["worker"], b["n"]) == (worker, n))
+        brief["at"] = when.isoformat()
+        if "issued_at" in brief:
+            brief["issued_at"] = when.isoformat()
+        self.write_state(state)
 
 
 OVERSIZED_PLAN = PLAN.split("## Size check")[0] + (
@@ -771,9 +827,9 @@ class PlanTest(NextCase):
 
     def test_an_unrecorded_brief_is_reissued_then_stops(self):
         out, jobs = self.expect("planner")
-        self.assertEqual(self.spawned(self.next(0)), jobs)
-        self.next(0)
-        out = self.next(4)
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), jobs)
+        self.next(0, reissue=True)
+        out = self.next(4, reissue=True)
         self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
 
     def test_a_long_session_checkpoints_and_resumes_where_it_stopped(self):
@@ -782,7 +838,7 @@ class PlanTest(NextCase):
         (self.dir / "state.json").write_text(json.dumps(state))
         self.expect("planner", "FITS", **PLANNED)
         _, jobs = self.expect("plan-critic")  # a brief in flight is finished first
-        self.assertEqual(self.spawned(self.next(0)), jobs)
+        self.assertTrue(self.next(0)["ACTION"].startswith("wait"))  # not a checkpoint
         (self.dir / "plan-review").mkdir(exist_ok=True)
         (self.dir / "plan-review" / "1.md").write_text(plan_review())
         self.answer(*jobs[0], "APPROVE", blockers="0", risk="high")
@@ -837,8 +893,8 @@ class PlanTest(NextCase):
         self.assertNotIn("AFTER", out)  # `next` records planner #2's result itself
         brief = (self.dir / "briefs" / "planner-2.md").read_text()
         self.assertIn("risk", brief)  # the refused issues ride along
-        self.next(0)
-        self.assertIn("spawned 3 times", " ".join(self.next(4)["REPORT"]))
+        self.next(0, reissue=True)
+        self.assertIn("spawned 3 times", " ".join(self.next(4, reissue=True)["REPORT"]))
 
     def test_next_records_a_returned_worker_itself(self):
         self.expect("planner")
@@ -858,7 +914,7 @@ class PlanTest(NextCase):
         self.assertLess(state["log"][0]["seq"], entry["seq"])
         self.assertNotIn("RECORDED", self.next(0))  # recorded once
         # A brief with no result file is issued again as it is, not refused.
-        self.assertEqual(self.spawned(self.next(0)), [("plan-critic", 1)])
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), [("plan-critic", 1)])
         self.assertNotIn("plan-critic-1", self.state().get("refused", {}))
 
     def test_next_refuses_a_bad_result_itself_and_briefs_the_job_again(self):
@@ -899,7 +955,7 @@ class PlanTest(NextCase):
         self.assertEqual(jobs, [("planner", 1)])
         for _ in range(3):  # an explain is not a spawn
             self.assertEqual(self.autodev("next", "--dir", self.dir, "--explain").returncode, 0)
-        self.assertEqual(self.spawned(self.next(0)), [("planner", 1)])
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), [("planner", 1)])
 
     def test_a_malformed_manifest_check_is_not_a_round(self):
         self.planned()
@@ -920,7 +976,11 @@ class PlanTest(NextCase):
         r = self.autodev("brief", "planner", "--mode", "write", "--retry", "1", "--dir",
                          self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.spawned(self.next(0)), [("planner", 2)])
+        out = self.next(0)  # `brief` printed the spawn: planner #2 is out
+        self.assertTrue(out["ACTION"].startswith("wait"), out)
+        self.assertIn("planner #2", out["ACTION"])
+        self.assertNotIn("BRIEF", out)
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), [("planner", 2)])
 
     def test_recording_a_job_again_keeps_its_place(self):
         self.expect("planner", "FITS", **PLANNED)
@@ -957,9 +1017,9 @@ class PlanTest(NextCase):
 
     def test_resume_after_a_worker_never_returned_spawns_it_again(self):
         self.expect("planner")
-        self.next(0)
-        self.next(0)
-        self.assertIn("spawned 3 times", " ".join(self.next(4)["REPORT"]))
+        self.next(0, reissue=True)
+        self.next(0, reissue=True)
+        self.assertIn("spawned 3 times", " ".join(self.next(4, reissue=True)["REPORT"]))
         self.resume()
         self.assertEqual(self.spawned(self.next(0)), [("planner", 1)])
 
@@ -969,6 +1029,111 @@ class PlanTest(NextCase):
         _, jobs = self.expect("planner")
         self.answer(*jobs[0], "", status="failed")
         self.assertIn("failed twice", " ".join(self.next(4)["REPORT"]))
+
+    def test_a_brief_out_in_this_session_is_waited_for(self):
+        self.expect("planner")
+        before = self.brief_files()
+        out = self.next(0)
+        self.assert_waits_for(out, "planner #1")
+        self.assertEqual(self.brief_files(), before)  # no brief written
+
+    def test_asking_again_and_again_while_a_worker_is_out_never_stops_the_run(self):
+        self.expect("planner")
+        events = self.state()["events"]
+        actions = []
+        for _ in range(5):
+            out = self.next()
+            self.assertNotIn("spawned 3 times", " ".join(out.get("REPORT", [])))
+            self.assert_waits_for(out, "planner #1")
+            self.assertEqual(self.state()["events"], events)
+            actions.append(out["ACTION"])
+        self.assertEqual(len(set(actions)), 1, actions)  # the same wait each time
+
+    def test_reissue_sends_the_same_brief_and_a_plain_next_then_waits(self):
+        self.expect("planner")
+        self.assert_spawns_planner_1_again(self.next_reissue(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_three_spawns_by_reissue_still_stop_the_run(self):
+        self.expect("planner")
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
+
+    def test_a_brief_from_an_earlier_session_is_sent_again(self):
+        self.expect("planner")
+        self.resume()
+        self.assert_spawns_planner_1_again(self.next(0))
+
+    def test_a_brief_sent_again_after_a_resume_is_waited_for(self):
+        self.expect("planner")
+        self.resume()
+        self.assert_spawns_planner_1_again(self.next(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_a_brief_out_over_three_hours_is_sent_again_then_waited_for(self):
+        self.expect("planner")
+        self.sent_out_ago("planner", 1, hours=3, minutes=10)
+        self.assert_spawns_planner_1_again(self.next(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_a_brief_out_under_three_hours_is_waited_for(self):
+        self.expect("planner")
+        self.sent_out_ago("planner", 1, hours=2, minutes=50)
+        before = self.brief_files()
+        self.assert_waits_for(self.next(0), "planner #1")
+        self.assertEqual(self.brief_files(), before)
+
+    def test_a_retry_at_the_three_spawn_stop_sends_the_brief_again(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_spawns_planner_1_again(self.next(0))
+
+    def test_the_brief_sent_again_after_a_retry_is_waited_for(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_spawns_planner_1_again(self.next(0))
+        before = self.brief_files()
+        self.assert_waits_for(self.next(0), "planner #1")
+        self.assertEqual(self.brief_files(), before)
+
+    def test_a_reissue_stamps_when_it_sent_the_brief_out(self):
+        self.expect("planner")
+        first = next(b for b in self.state()["briefs"] if b["worker"] == "planner")
+        self.next(0, reissue=True)
+        again = next(b for b in self.state()["briefs"] if b["worker"] == "planner")
+        self.assertEqual((again["at"], again["seq"]), (first["at"], first["seq"]))
+        self.assertGreater(again["issued_seq"], first["seq"])
+        self.assertIn("issued_at", again)
+
+    def test_a_brief_whose_issue_time_is_unreadable_is_sent_again(self):
+        for at in ("not a time", "2026-01-01T00:00:00"):  # the second has no zone
+            with self.subTest(at=at):
+                self.setUp()
+                self.expect("planner")
+                state = self.state()
+                state["briefs"][-1]["at"] = at
+                self.write_state(state)
+                self.assert_spawns_planner_1_again(self.next(0))
+
+    def test_explain_waits_too_and_writes_nothing(self):
+        self.expect("planner")
+        before = (self.dir / "state.json").read_text()
+        r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("nothing was done; run `next` to act) wait: planner #1", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+
+    def test_a_lone_spawn_is_sent_in_the_foreground(self):
+        out = self.next(0)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:planner"], json.dumps(out, indent=2))
+        self.assertIn("auto-dev:planner", out["ACTION"])
+        self.assertIn("run_in_background: false", out["ACTION"])
 
 
 class BuildTest(NextCase):
@@ -1754,7 +1919,10 @@ class ShipTest(NextCase):
         self.draft_pr()
         out = self.next(0)
         self.assertEqual([w for w, _ in self.spawned(out)], ["verifier"])
-        self.assertEqual(self.spawned(self.next(0)), self.spawned(out))  # not returned yet
+        waiting = self.next(0)  # not returned yet: waited for, not spawned again
+        self.assertTrue(waiting["ACTION"].startswith("wait"), waiting)
+        self.assertIn(f"verifier #{self.spawned(out)[0][1]}", waiting["ACTION"])
+        self.assertNotIn("BRIEF", waiting)
         self.answer(*self.spawned(out)[0], None, status="failed")
         again = self.spawned(self.next(0))
         self.assertEqual([w for w, _ in again], ["verifier"])  # still alone
@@ -2748,6 +2916,57 @@ class LeanTest(NextCase):
         self.assertIn("spent `pass-1`", out["BUDGET"])
         self.assertEqual(self.state()["budget"]["remaining"], left - 1)  # one round
         self.assertEqual(self.state()["phase6"]["corrections"][-1]["also"], ["ci-1"])
+
+    def test_a_pass_half_returned_records_and_waits(self):
+        self.draft_pr()
+        ver, rev = self.solo(verifier=None)  # only the reviewer's result is written
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue([ln for ln in out.get("RECORDED", [])
+                         if ln.startswith(f"reviewer-{rev[1]}:")], shown)
+        self.assert_waits_for(out, f"verifier #{ver[1]}")
+        self.assertNotIn(f"reviewer #{rev[1]}", out["ACTION"], shown)
+        self.assertIn("only once every agent this wait names has returned", out["ACTION"])
+
+    def test_a_pass_whose_last_worker_returns_moves_on_without_a_respawn(self):
+        self.draft_pr()
+        ver, _ = self.solo(verifier=None)
+        self.next(0)  # the reviewer's result is recorded
+        self.verifier_answer(ver)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue([ln for ln in out.get("RECORDED", [])
+                         if ln.startswith(f"verifier-{ver[1]}:")], shown)
+        self.assertFalse([w for w, _ in self.spawned(out) if w in ("verifier", "reviewer")],
+                         shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+
+    def test_a_parallel_pass_is_sent_in_one_message_not_the_foreground(self):
+        self.draft_pr()
+        out = self.next(0)
+        self.assertEqual(sorted(w for w, _ in self.spawned(out)), ["reviewer", "verifier"],
+                         json.dumps(out, indent=2))
+        self.assertIn("in one message, in parallel", out["ACTION"])
+        self.assertNotIn("run_in_background: false", out["ACTION"])
+
+    def test_the_three_spawn_stop_on_a_pass_ends_both_workers(self):
+        # Neither worker of the pass ever returns: the stop ends both spawns, so
+        # after talk the stop is asked again, not a wait for the other worker.
+        self.draft_pr()
+        out = self.next(0)
+        self.assertEqual(sorted(w for w, _ in self.spawned(out)), ["reviewer", "verifier"],
+                         json.dumps(out, indent=2))
+        for _ in range(2):
+            self.assertEqual(len(self.spawned(self.next_reissue(0))), 2)
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        r = self.autodev("override", "talk", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), shown)
+        self.assertIn("QUESTION", out, shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
 
 
 class PublishTest(NextCase):
@@ -4070,7 +4289,7 @@ class ReviewEffortTest(NextCase):
         self.assertIn("review pass 1: the panel runs at effort xhigh",
                       (self.dir / "WORK_LOG.md").read_text())
         # Re-issued (not recorded yet), in text: each PROMPT is followed by its EFFORT.
-        r = self.autodev("next", "--dir", self.dir)
+        r = self.autodev("next", "--reissue", "--dir", self.dir)
         lines = r.stdout.splitlines()
         prompts = [i for i, ln in enumerate(lines) if ln.startswith("PROMPT: ")]
         self.assertEqual(len(prompts), 3, r.stdout)
@@ -4132,7 +4351,8 @@ class ReviewEffortTest(NextCase):
         state = json.loads((self.dir / "state.json").read_text())
         del state["phase6"]["passes"][0]["effort"]  # as an older `next` saved it
         (self.dir / "state.json").write_text(json.dumps(state))
-        self.assertEqual(self.next(0)["EFFORT"], ["xhigh"] * 3)  # the plan, not the default
+        self.assertEqual(self.next(0, reissue=True)["EFFORT"],  # the plan, not the default
+                         ["xhigh"] * 3)
 
 
 class QuoteTest(RunCase):
@@ -4178,9 +4398,12 @@ class TextOutputTest(NextCase):
         self.assertTrue(lines[2].startswith(f"BRIEF: {self.dir}/briefs/planner-1.md"))
         self.assertTrue(lines[3].startswith("PROMPT: Your brief is at"))
         self.assertEqual(len(lines), 4)  # no AFTER: the next `next` records the result
-        self.assertIn("run `next` (it records their results)", lines[0])
+        self.assertIn("run `next` (it records its result)", lines[0])
         self.assertFalse(any(ln.startswith("RULE:") for ln in lines))
         r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertIn("nothing was done; run `next` to act) wait: planner #1", r.stdout)
+        self.assertIn("RULE: a brief sent out in this session has no result yet", r.stdout)
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--explain")
         self.assertIn("RULE: a brief was issued", r.stdout)
 
 
@@ -4339,7 +4562,8 @@ class OverrideTest(OverrideCase):
         self.assertIn(f"fixer-{n}: refused (MISMATCH)", out["RECORDED"])
         issues = self.state()["refused"][f"fixer-{n}"]
         self.assertTrue(any("`.auto-dev/state.json`" in i for i in issues), issues)
-        _, jobs = self.expect("fixer")  # the retry, held to the first brief's copy
+        jobs = self.spawned(out)  # the retry, held to the first brief's copy
+        self.assertEqual([w for w, _ in jobs], ["fixer"], json.dumps(out, indent=2))
         m = jobs[0][1]
         entry = next(b for b in self.state()["briefs"]
                      if b["worker"] == "fixer" and b["n"] == m)
@@ -4505,12 +4729,13 @@ class OverrideTest(OverrideCase):
         self.assertEqual(changed, [".auto-dev/acceptance/MANIFEST.md"])  # other rows stay
         self.report(n, changed="- `.auto-dev/acceptance/MANIFEST.md` — dropped")
         self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
-        self.next(0, refused_ok=True)
+        out = self.next(0, refused_ok=True)
         issues = self.state()["refused"][f"fixer-{n}"]
         self.assertTrue(any("still holds its test" in i for i in issues), issues)
         self.assertTrue(any("condition S1 has no check left" in i for i in issues), issues)
         # The retry takes the test out and adds the row.
-        _, jobs = self.expect("fixer")
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["fixer"], json.dumps(out, indent=2))
         installed = self.worktree / "src" / "due.acceptance.test.ts"
         installed.write_text("")
         r = self.amend("--not-automatable",
@@ -4661,6 +4886,49 @@ class OverrideTest(OverrideCase):
         self.assertEqual(self.state()["size"], "FITS")
         _, jobs = self.expect("planner")  # the kept plan gets its steps first
         self.assertEqual(self.mode(*jobs[0]), "revise")
+
+    def test_the_three_spawn_stop_asks_again_after_talk_and_leave(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "talk", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), shown)
+        self.assertIn("QUESTION", out, shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+        r = self.autodev("override", "leave", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("The user chose to leave the run stopped here; the worktree stays.",
+                      " ".join(out["REPORT"]), shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+
+    def test_a_fixer_at_the_three_spawn_stop_is_waited_for_alone(self):
+        out = self.stopped_after_three_spawns()
+        job = self.fix(out, "point the planner at the fixture")
+        self.assertEqual(job, ("fixer", 1))
+        out = self.next(0)
+        self.assert_waits_for(out, "fixer #1")
+        self.assertNotIn("planner #1", out["ACTION"])
+        self.report(1, proposal="Point the planner at the fixture repo.")
+        self.answer("fixer", 1, "NEEDS_CONSENT", fix_report="x", changed="0")
+        out = self.next(4)
+        self.assertEqual(self.labels(out)[0], "Approve the fixer's proposal")
+
+    def test_the_brief_a_fixed_fixer_sends_again_is_waited_for(self):
+        # The fixer's FIXED lifts the stop at the same seq the planner's brief is
+        # then sent out again at: that brief is out, not stale.
+        (self.dir / "acceptance" / "MANIFEST.md").unlink()  # the plan stage: no checks yet
+        out = self.stopped_after_three_spawns()
+        self.assertEqual(self.fix(out, "point the planner at the fixture"), ("fixer", 1))
+        self.report(1)
+        self.answer("fixer", 1, "FIXED", fix_report=str(self.dir / "override" / "fixer-1.md"),
+                    changed="0")
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("BRIEF"), [str(self.dir / "briefs" / "planner-1.md")], shown)
+        self.assert_waits_for(self.next(0), "planner #1")
 
 
 class OverrideShipTest(OverrideCase):
