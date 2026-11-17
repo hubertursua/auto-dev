@@ -4,16 +4,17 @@ run's worktree, and save its output.
 Usage:
     autodev.py run gate <n | REPORT> --dir <artifact-dir> [--files <path> ...]
                         [--out <file>] [--timeout <seconds>] [--tail <lines>]
-                        [--show] [--json]
+                        [--show] [--json] [-- <arg> ...]
     autodev.py run test --dir <artifact-dir> [--files <path> ...]
                         [--out <file>] [--timeout <seconds>] [--tail <lines>]
-                        [--show] [--json]
+                        [--show] [--json] [-- <arg> ...]
 
 A worker's shell doesn't start in the worktree, and a permission check refuses
 `cd <worktree> && <command>` and rewritten forms of it. This runs the command
 the profile lists, exactly as written, with the worktree as its directory, so
 a worker never composes one. It runs only the profile's commands (the `gate`
-checks confirmed in Phase 1, from state.json), never a command it is given.
+checks confirmed in Phase 1, from state.json), never a command it is given;
+a caller adds only arguments (after `--`), each passed as one quoted word.
 
 gate <n | REPORT>
     Runs the quality-gate check numbered <n> (1 is the first, as profile.md's
@@ -28,6 +29,12 @@ worktree, so a default would find no run, or an old one.
     replaced by the paths given, quoted, relative to the worktree (a relative
     path is taken from the worktree root). Each must exist inside the
     worktree. A check with no `files` form can't be scoped: exit 2.
+-- <arg> ...
+    Everything after `--` is extra arguments for the command (or its `files`
+    form), such as a test-name filter or a `<path>:<line>` target: each is
+    quoted, so it is one argument and never shell syntax. They go where the
+    command has `<args>`, else at its end. A command with `<args>` run with
+    none has the placeholder removed.
 
 --show prints `COMMAND: <the command>` and runs nothing (exit 0), so a caller
 that passes the command on uses the one `run` would run.
@@ -55,6 +62,7 @@ Exit codes:
 
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -67,6 +75,7 @@ from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
 TIMED_OUT = 3
 PLACEHOLDER = "<files>"
+ARGS_PLACEHOLDER = "<args>"
 TAIL = 40
 # Where --out may write, under the artifact dir: never state.json, PLAN.md or
 # MANIFEST.md.
@@ -158,28 +167,51 @@ def relative_paths(worktree, files):
     return out
 
 
-def quote(paths):
-    if os.name == "nt":  # cmd.exe: double quotes, and no name it would expand
-        bad = [p for p in paths if '"' in p or "%" in p]
+def quote(words):
+    if os.name == "nt":  # cmd.exe: double quotes, and no word it would expand
+        # (a trailing backslash would escape the closing quote)
+        bad = [w for w in words if '"' in w or "%" in w or w.endswith("\\")]
         if bad:
-            raise Fail(f"{bad[0]}: a name with `\"` or `%` can't be passed safely on "
-                       "Windows", CANNOT_RUN, "ERROR")
-        return " ".join(f'"{p}"' for p in paths)
-    return " ".join(shlex.quote(p) for p in paths)
+            raise Fail(f"{bad[0]}: an argument with `\"` or `%`, or ending in `\\`, "
+                       "can't be passed safely on Windows", CANNOT_RUN, "ERROR")
+        return " ".join(f'"{w}"' for w in words)
+    return " ".join(shlex.quote(w) for w in words)
 
 
-def command_for(n, check, worktree, files):
+def fill(command, values):
+    """The command with each placeholder in `values` replaced in one pass, so
+    a value that contains a placeholder is never filled in again. A
+    placeholder with an empty value goes, with the space before it."""
+    def sub(m):
+        value = values[m.group(2)]
+        return m.group(1) + value if value else ""
+    pattern = "|".join(re.escape(k) for k in values)
+    return re.sub(rf"( ?)({pattern})", sub, command)
+
+
+def with_args(command, extra, filled=None):
+    """The command with the caller's extra arguments, quoted, where it has
+    ARGS_PLACEHOLDER, else at its end; `filled` gives other placeholders'
+    values (<files>), replaced in the same pass."""
+    words = quote(extra) if extra else ""
+    values = {**(filled or {}), ARGS_PLACEHOLDER: words}
+    if words and ARGS_PLACEHOLDER not in command:
+        return f"{fill(command, values)} {words}"
+    return fill(command, values)
+
+
+def command_for(n, check, worktree, files, extra=()):
     if files is None:
         command = str(check.get("command") or "")
         if not command:
             raise Fail(f"gate check {n} has no command", CANNOT_RUN, "ERROR")
-        return command
+        return with_args(command, extra)
     form = str(check.get("files") or "")
     if PLACEHOLDER not in form:
         raise Fail(f"gate check {n} (`{check.get('command', '')}`) has no scoped form: "
                    f"the profile gives it no `files` command with {PLACEHOLDER}, so "
                    f"it can only run whole (drop --files)", CANNOT_RUN, "ERROR")
-    return form.replace(PLACEHOLDER, quote(relative_paths(worktree, files)))
+    return with_args(form, extra, {PLACEHOLDER: quote(relative_paths(worktree, files))})
 
 
 def output_file(ad, out, label):
@@ -272,7 +304,7 @@ def main(args):
         raise Fail("--tail must be 0 or more and --timeout more than 0", CANNOT_RUN,
                    "ERROR")
     n, check = pick(state["settings"].get("gate", []), args.what, args.check)
-    command = command_for(n, check, worktree, args.files)
+    command = command_for(n, check, worktree, args.files, getattr(args, "extra", ()))
     if args.show:
         emit(args.json, "COMMAND", command)
         return OK

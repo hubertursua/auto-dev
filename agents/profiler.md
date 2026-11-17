@@ -74,6 +74,11 @@ Find, from the repo itself:
    (the runner's verbose reporter, if its default only counts passing tests).
    Take it from how the repo or its runner's docs run one file; omit `files`
    for a check that can't be scoped (a whole-program type check, say).
+   Workers can add arguments (a test-name filter, a `<path>:<line>` target)
+   after `--`, which `run` appends to the command. When the runner only takes
+   them in one place (a script wrapper that needs `--` before its own
+   arguments, say), put `<args>` there in `command` and `files`; with no
+   arguments it is removed.
 4. Test scope: databases or services the suite needs, how to start them, the
    monorepo or workspace layout, slow tiers. This goes in test_notes.
 5. Gitignored files the suite needs that a fresh worktree won't have (`.env`,

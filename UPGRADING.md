@@ -4,6 +4,17 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 5.0
+
+- **Workers can pass arguments to the profile's commands.** `autodev.py run
+  gate|test … -- <arg> …` adds the words after `--` to the command, or to its
+  `files` form, each quoted as one argument: a test-name filter, a
+  `<path>:<line>` target. They go where the command has `<args>`, else at its
+  end; a command with `<args>` run with none has it removed. The coder, fixer
+  and acceptance tester are told they can. A profile needs no change; add
+  `<args>` only to a command whose arguments must go before its end.
+- A run in flight resumes on 5.1.
+
 ## Upgrading from 4.27
 
 5.0 is a lean pipeline: one session, a first push right after the build, and a

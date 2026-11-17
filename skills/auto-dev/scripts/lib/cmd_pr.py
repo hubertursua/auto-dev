@@ -59,7 +59,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import artifacts as art
-from . import overrides
+from . import cmd_run, overrides
 from . import state as st
 from .cmd_ship import (  # shared with the ship steps
     ARTIFACTS,
@@ -224,7 +224,7 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     # the region whole) and each gate command, as clean() left it in the text.
     # The lint skips each one.
     copied = {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} | \
-        {f"`{g['command']}`" for g in state["settings"].get("gate", [])}
+        {f"`{cmd_run.with_args(g['command'], ())}`" for g in state["settings"].get("gate", [])}
     state["phase6"]["verbatim"] = sorted(
         {s for s in (clean(x, wt) for x in copied) if s.strip("*`") and s in text})
     # The headings pr-write.md is written with: splice takes no others.
@@ -765,7 +765,8 @@ def quality_gate(body, ad, state):
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         first = text.splitlines()[0] if text else ""
         status = "passed" if first.rstrip().endswith("pass") else "failed"
-        body.text(f"- `{check['command']}`: {status}")
+        command = cmd_run.with_args(check["command"], ())
+        body.text(f"- `{command}`: {status}")
         start = body.quote()
         tail = art.find_section(text, "Output tail") or ""
         output = [ln for ln in tail.splitlines() if not ln.startswith("```")
@@ -782,7 +783,7 @@ def quality_gate(body, ad, state):
             output.append(f"({len(scratch)} line(s) about git-ignored pipeline files "
                           "left out)")
         if output:
-            body.block(check["command"], [("Output:", output)])
+            body.block(command, [("Output:", output)])
         body.unquote(start)
 
 

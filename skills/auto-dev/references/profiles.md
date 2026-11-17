@@ -77,7 +77,13 @@ Fields:
   same check run on only some files, with `<files>` where the paths go (quoted,
   relative to the worktree). Workers run a check through `autodev.py run gate
   <n>` (the test check: `run test`), which runs `command` in the worktree, or
-  `files` with `--files <path> …`. The test check's `files` form must name every
+  `files` with `--files <path> …`. Words after `--` (`run test --files <path>
+  -- <arg> …`) are extra arguments, such as a test-name filter or a
+  `<path>:<line>` target: each is quoted as one argument and added where the
+  command (or its `files` form) has `<args>`, else at its end; with none,
+  `<args>` is removed. Put `<args>` in a command whose arguments must go
+  somewhere other than its end (example in TypeScript: `npm test -- <args>`).
+  The test check's `files` form must name every
   test it runs and its result, since a base run and the verifier's acceptance
   run read the names. Without a `files` form a check only runs whole: a
   worker that wanted it scoped runs it whole and reads the lines about its
@@ -182,7 +188,10 @@ Guidance to show (adapt the paths):
 >
 > - The `autodev.py` rule also covers `autodev.py run`, which workers use to
 >   run this profile's gate and test commands in the worktree. It runs only
->   the commands in the profile you confirmed, never one a worker writes.
+>   the commands in the profile you confirmed, never one a worker writes. A
+>   worker can add arguments after `--`, each quoted as one argument: no
+>   shell syntax, though the command's own options (a config file, a setup
+>   script) still reach its tool.
 > - One rule per script, so any can be left out. The `autodev.py` rule also
 >   covers the test-integrity audit and mutation testing: `autodev.py verify
 >   prep` runs `check-tests.py`, and `autodev.py mutants run` runs `mutate.py`,

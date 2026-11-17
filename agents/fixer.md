@@ -76,7 +76,8 @@ The user's instruction:
    - **Code, tests, config.** Follow the repo's conventions. When you change
      code, run the tests that cover it with
      `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <test file> …`
-     (the profile's test command, {{test_command}}, scoped; hints:
+     (the profile's test command, {{test_command}}, scoped; add the runner's
+     own arguments after `--` to narrow it further; hints:
      {{test_notes}}), and the quality gate's commands on what you changed
      when the stop was about them:
      {{gate_commands}}

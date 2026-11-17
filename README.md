@@ -514,7 +514,11 @@ the command exactly as the profile lists it, in the run's worktree, and saves
 its output, so no worker has to rewrite a command with `cd`, which a
 permission check refuses. A check can also give a scoped form (`files`, with
 `<files>` where the paths go), so a worker can run it on only the files it
-changed or wrote; the profiler looks for one.
+changed or wrote; the profiler looks for one. A worker can also pass the
+command its own arguments after `--` (`autodev.py run test --files <path> --
+<arg> …`), such as a test-name filter or a `<path>:<line>` target. Each is
+quoted as one argument (never shell syntax) and goes where the command has
+`<args>`, else at its end.
 
 ### Where saved profiles live
 
