@@ -32,8 +32,9 @@ run's worktree decides on that run (RESUME, FINISHED or OLD-VERSION) even when
 others are open.
 Being given a task never resumes a run that doesn't match it.
 
-A run whose setup failed is open: RESUME at Phase 1, with the
-`init --continue` command to run once the cause is fixed.
+A run whose setup is not done is open: RESUME at Phase 1, with an action
+saying `next` finishes setup (it waits for it, or runs it again once the
+cause is fixed).
 
 Exit codes:
     0  a decision was printed
@@ -148,7 +149,8 @@ def describe(tree, state):
                           "which asks how to go on")
     if number == 1 and state["init"].get("setup") != "done":
         info["setup"] = state["init"].get("setup", "pending")
-        info["action"] = f"run `autodev.py init --continue {tree}`"
+        info["action"] = ("setup is not done: run `next` (it waits for setup, or runs it "
+                          "again once the cause is fixed)")
     return info
 
 

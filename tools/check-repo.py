@@ -25,6 +25,9 @@ Checks:
 - every evals/files/ path a string in evals/evals.json names exists (the
   setup and expectations as well as each eval's `files`);
 - SKILL.md's description fits Claude Code's 1024-character limit;
+- references/plan.md and SKILL.md never tell the orchestrator to run Phase 1's
+  setup by hand (profile-path.py, validate-config.py, `autodev.py init`,
+  `init --continue`, `brief profiler`, `brief lookup`): `next --repo` does it;
 - no file names a path from one person's machine: a home directory such as
   /Users/<name>, /home/<name> or C:\\Users\\<name>, or a folder of their own
   under ~ or $HOME (such a path must start with a dot directory, like
@@ -306,6 +309,20 @@ def check_skill_description(path=SKILL):
              f"the limit is {DESCRIPTION_LIMIT}")
 
 
+# Phase 1's steps `next --repo` runs: the runbook must not hand them back.
+RUNBOOK_SETUP = re.compile(r"profile-path\.py|validate-config\.py|autodev\.py init\b"
+                           r"|init --continue|brief profiler|brief lookup")
+
+
+def check_runbook_setup(paths=(SKILL_DIR / "references" / "plan.md", SKILL)):
+    for path in paths:
+        for n, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+            match = RUNBOOK_SETUP.search(line)
+            if match:
+                fail(f"{Path(path).name}:{n}: names `{match.group()}`, a setup step "
+                     "`next --repo` runs; tell the orchestrator to run `next --repo` instead")
+
+
 # A path only one person's machine has. ~/.claude, ~/.config and ~/… are fine:
 # a tool fixes those, not the user's own folder layout.
 PERSONAL_PATH = re.compile(r"(?<![\w.-])(?:/(?:Users|home)/|[A-Za-z]:[\\/]Users[\\/]"
@@ -341,6 +358,7 @@ def main():
     check_briefs()
     check_eval_paths()
     check_skill_description()
+    check_runbook_setup()
     check_personal_paths()
     for msg in errors:
         print(f"FAIL {msg}")

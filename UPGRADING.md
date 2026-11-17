@@ -16,6 +16,28 @@ can resume on the new one. Newest first. The current version is in
   without a result). A lone agent is spawned in the foreground
   (`run_in_background: false`). A 5.0 run in flight resumes on it: `resume`
   starts a new session, so a brief from before it is sent out again as before.
+- **`next` sets the run up.** Phase 1 is now the Jira fetch and a loop on
+  `autodev.py next --repo <repo> --task "<task>"` (with the ticket flags on the
+  first call), in the same ACTION/AFTER shape as the rest of the run: it runs
+  `profile-path.py` and `validate-config.py` itself, prints the adopted-tool
+  lookup for a saved profile (a check whose tool the repo never adopted is
+  still left out of this run only, and named in the summary), or the profiler
+  and then the profile question (exit 5), whose AFTER lines run the new
+  `autodev.py setup-answer`; then it runs `init` and says to move into the
+  worktree. The orchestrator no longer runs `profile-path.py`,
+  `validate-config.py`, `init` or `brief`, edits a draft's YAML, or picks the
+  slug and base branch (they come from the task and the repo). `Change
+  something` has the profiler redo its draft with your words. `autodev.py`
+  writes the saved profile, so the permissions guidance drops the
+  `Read`/`Edit` rules for the profiles folder and the `profile-path.py` and
+  `validate-config.py` allow rules (the Bash sandbox's `allowWrite` line
+  stays). `init` gains `--note` and `--profile-origin`; a new run keeps
+  `.auto-dev/profile-origin.json`, so a failed setup is retried from the
+  profile it was made from. `resume`'s `action:` for a run whose setup is not
+  done now says to run `next`, which waits for setup or, after a failure the
+  user fixed, runs it again. A 5.0 run in flight resumes on it; one held in
+  Phase 1 after a failed setup is set up again by `next`, from the saved
+  profile's `setup` (read again) with the run's own gate.
 
 ## Upgrading from 4.27
 

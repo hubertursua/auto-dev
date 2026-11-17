@@ -79,7 +79,7 @@ orchestrator runs:
 
 | Phase | Worker | Output |
 |-------|--------|--------|
-| 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch (or the worktree you started in), `.auto-dev/` |
+| 1 Setup | orchestrator (`next --repo`), lookup (a saved profile), profiler (first run on a repo) | resolve ticket; `autodev.py next --repo` loads the saved profile or has one researched and confirmed with you, then makes the isolated worktree + branch (or uses the worktree you started in) and `.auto-dev/` |
 | 2 Plan | planner + plan critic | `PLAN.md` — the ask, testable conditions, assumptions, security criteria, the **size check** (too big for one PR → back to you), the **risk tier** and the build steps; a fresh critic checks it against the ticket and the code, and the planner revises once; then the post-plan gate when it is on (high risk, blockers left open, or the config) |
 | 3 Tests | acceptance tester | `acceptance/` — a check per condition of the approved plan, proven to fail on the old code and **committed before the build** |
 | 4 Build | coder | code + tests from the plan, making the committed checks pass, and the profile's quality gate run to green |
@@ -116,7 +116,7 @@ writes, and each judge is a fresh worker that sees only what its brief names.
 ```
 Orchestrator (main agent) ── runs the `next` loop and the human gates; never reads code
 │
-├─ Phase 1  Setup ......... detect repo, profile (saved, or profiler + your OK), ticket, worktree
+├─ Phase 1  Setup ......... ticket, then `next --repo`: profile (saved, or profiler + your OK), worktree
 ├─ Phase 2  Planner ....... PLAN.md — conditions, SIZE CHECK, risk tier, steps
 │           Plan critic ..... checks it against the ticket and the code (one revision, one re-check)
 │                             [optional post-plan gate]
@@ -302,7 +302,7 @@ The planner says whether the task fits one PR:
   spawns to the first push and 7 to ready-for-review. Today it takes 4 and 6;
   one plan revision makes it 6 and 8, since the critic's re-check is a spawn
   too. The profiler runs only when the repo has
-  no saved profile, the triager only when CI fails or a person comments,
+  no saved profile (once more for each change you ask for to its draft), the triager only when CI fails or a person comments,
   `lookup` when the orchestrator needs a fact from the code, and the fixer
   only when you tell a stopped run how to fix it. When `PLAN.md`
   has security criteria, the security reviewer for sensitive paths takes the
@@ -423,8 +423,8 @@ runs while the change is reviewed. The pipeline pauses for approval:
   push (with `gates.open_pr`, for repos that must not push unreviewed code).
 
 Three more pauses fire only when their situation arises: the **profile
-confirmation** (a repo with no valid saved profile and no `.auto-dev.yml`
-that declares one), the **Jira In Progress confirmation** (only with a ticket, once
+question** (a repo with no valid saved profile and no `.auto-dev.yml`
+that declares one; `next --repo` asks it), the **Jira In Progress confirmation** (only with a ticket, once
 the size check says the task fits, and skipped when the ticket is already in
 progress; you can also answer that it is), and the
 **worktree cleanup offer** (after the final report; never for a worktree you
@@ -494,21 +494,23 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
 ## Stack profiles
 
 A **profile** says how a repo installs its dependencies and which commands make
-up its quality gate (test, lint, format check, type check, build). Phase 1 gets
-one in this order:
+up its quality gate (test, lint, format check, type check, build). Phase 1
+(`autodev.py next --repo`, which does each step below itself and prints the
+worker to spawn or the question to ask) gets one in this order:
 
 1. **A saved profile.** If you saved one for this repo on an earlier run, Phase 1
-   loads it without asking. If it lists a check whose tool the repo never
-   adopted, the run drops that check and tells you, so you can fix the file.
-   An invalid saved profile is researched again, and you're offered to
-   overwrite it.
+   loads it without asking. A `lookup` worker checks that the repo still uses
+   each gate check's tool; a check whose tool it never adopted is left out of
+   this run, and you're told, so you can fix the file. An invalid saved profile
+   is researched again, and you're offered to overwrite it.
 2. **A committed `.auto-dev.yml` that sets both `setup` and `gate`.** The repo
    has declared its profile, so there is nothing to research.
 3. **Research.** Otherwise the `profiler` worker reads the repo (CI config, task
    runners, manifests, lockfiles, contributing docs) and drafts a profile, citing
    the file and line each command came from and naming anything it guessed. The
    run shows you the draft and asks: save it for this repo, use it for this run
-   only, change something, or stop.
+   only, change something (the profiler redoes the draft as you say, and you're
+   asked again), or stop. `autodev.py` writes the saved file.
 
 `.auto-dev.yml` is applied on top in every case. The schema is in
 `skills/auto-dev/references/profiles.md`.
@@ -534,36 +536,19 @@ So `git@github.com:acme/web-app.git` is saved as
 worktree of that repo finds the same file. Set `AUTO_DEV_PROFILES_DIR` to use
 another directory (`$XDG_CONFIG_HOME/auto-dev/profiles` is used when that is
 set). `skills/auto-dev/scripts/profile-path.py <repo>` prints the path for a
-repo. Edit the file to change the profile, or delete it to have the next run
+repo (setup runs it for you). Edit the file to change the profile, or delete it to have the next run
 research it again. It holds only how the stack installs and checks itself;
 repo policy such as branches and the iteration budget stays in `.auto-dev.yml`.
 
 ### Permissions for unattended runs
 
-Claude Code asks before reading or writing a file outside the directory it was
-started in, so loading and saving a profile prompts unless you allow it. Add
-these rules to `~/.claude/settings.json` (or run `/permissions`):
+`autodev.py` reads and saves the profile itself, so the `autodev.py` rule below
+covers it; the orchestrator never touches the file.
 
-```json
-{
-  "permissions": {
-    "allow": [
-      "Read(~/.config/auto-dev/**)",
-      "Edit(~/.config/auto-dev/**)"
-    ]
-  }
-}
-```
-
-- `Edit(...)` also covers creating the file; there is no separate `Write` rule.
-- If you moved the directory with `AUTO_DEV_PROFILES_DIR` or `XDG_CONFIG_HOME`,
-  use that path instead: `~/…` inside your home directory, `//…` for any other
-  absolute path (`Read(//opt/auto-dev/profiles/**)`).
-- For a single session, start with `claude --add-dir ~/.config/auto-dev` or run
-  `/add-dir ~/.config/auto-dev`. Reads stop prompting; saving still asks unless
-  you accept edits.
-- With the Bash sandbox on, also add
-  `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }`.
+- With the Bash sandbox on, add
+  `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }` to
+  `~/.claude/settings.json`, so the script can save there (the moved
+  directory instead, if you set `AUTO_DEV_PROFILES_DIR` or `XDG_CONFIG_HOME`).
 - The directory is deliberately not under `~/.claude/`: Claude Code protects
   that folder, and every write there prompts whatever your rules say.
 
@@ -578,15 +563,14 @@ works in a worktree next to your repo, so both need rules too. Add these to
     "allow": [
       "Read(~/.claude/plugins/cache/auto-dev-marketplace/auto-dev/**)",
       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/autodev.py *)",
-      "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/profile-path.py *)",
-      "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/validate-config.py *)",
       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-fresh.py *)"
     ]
   }
 }
 ```
 
-- The `autodev.py` rule also lets workers run the profile's gate and test
+- The `autodev.py` rule also covers setup (`next --repo`, which finds, checks
+  and saves the profile), lets workers run the profile's gate and test
   commands through `autodev.py run`, and lets the fixer change acceptance checks'
   rows with `autodev.py amend-checks` while the fix you asked for is open. It runs only the commands in the profile
   you confirmed, never one a worker writes.
@@ -607,7 +591,7 @@ works in a worktree next to your repo, so both need rules too. Add these to
   worktree you made yourself, allow its own path instead). With the
   Bash sandbox on, also add that parent folder to `allowWrite`.
 
-`autodev.py init` runs the setup commands and `autodev.py run` the gate, so
+`autodev.py next` runs the setup commands and `autodev.py run` the gate, so
 the `autodev.py` rule covers the profile's commands during a run. To run the profile's commands yourself
 without prompts, add them to the main checkout's `.claude/settings.local.json`
 (or to the worktree you made, when the run started in one), which applies to
@@ -630,7 +614,7 @@ lists them. Optional: `Bash(gh run list *)`, `Bash(gh run view *)`,
 (`gh api` can also write, so allow it only if you accept that), the Jira tools
 if you use a ticket (`mcp__<server>__getJiraIssue` and the transition tools),
 and `Skill(code-review)` and `Skill(security-review)` for the review
-workers. At the profile confirmation the orchestrator
+workers. At the profile question the orchestrator
 prints these snippets filled in with your real paths and commands. It never
 edits your settings itself.
 
@@ -654,8 +638,9 @@ The keys most runs touch:
 | `jira.states` | the board's state names for In Progress, In Review and Done |
 
 It can also set any profile key (`setup`, `gate`, `test_notes`, …) to override
-the profile. Phase 1 validates the file with `scripts/validate-config.py`, so a
-mistyped key is reported rather than silently ignored.
+the profile. Phase 1 (`next --repo`) validates the file with
+`scripts/validate-config.py`, so a mistyped key is reported rather than
+silently ignored, before anything is created.
 
 ## Dependencies
 
@@ -666,8 +651,8 @@ mistyped key is reported rather than silently ignored.
   watches CI: any CI that reports checks to GitHub, such as GitHub Actions or
   CircleCI. Phase 1 stops if it is missing, signed out, or `origin` isn't on
   GitHub.
-- **Python 3.9+** with **PyYAML** (`pip install pyyaml`). `autodev.py init`
-  stops if either is missing.
+- **Python 3.9+** with **PyYAML** (`pip install pyyaml`). Setup (`autodev.py
+  next --repo`) stops if either is missing.
 - **Optional:** the Atlassian MCP for Jira (found by tool name, so it can be
   registered under any server name), and a code-index tool named by the
   profile's `symbol_lookup`.
@@ -677,9 +662,9 @@ library, except where they read YAML:
 
 | Script | What it does |
 | ------ | ------------ |
-| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action. `autodev.py quality-gate` runs the profile's whole quality gate before the push. `autodev.py --help` lists every subcommand |
-| `validate-config.py` | checks `.auto-dev.yml`, or a saved profile with `--profile` |
-| `profile-path.py` | prints the saved profile's path for a repo and whether it exists |
+| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action (from Phase 1's setup, with `--repo`, on; `autodev.py setup-answer` records the answer to the profile question). `autodev.py quality-gate` runs the profile's whole quality gate before the push. `autodev.py --help` lists every subcommand |
+| `validate-config.py` | checks `.auto-dev.yml`, or a saved profile with `--profile` (setup runs it) |
+| `profile-path.py` | prints the saved profile's path for a repo and whether it exists (setup runs it) |
 | `exclude-artifacts.py` | makes `.auto-dev/` ignore itself and checks it with git |
 | `check-staged.py` | before each commit, checks nothing under `.auto-dev/` is staged |
 | `check-fresh.py` | checks each report was produced on the code as it is now |
@@ -761,6 +746,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `state.json` | `autodev.py` only | the run's state: phases, size check, gates, budget and every round spent, and each quality-gate run (`gate_runs`) |
 | `WORK_LOG.md` | generated from `state.json` | the same, for people to read |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
+| `profile-origin.json`, `profile.yml`, `profile-retry.yml` | Phase 1 (`next`) | where the run's profile came from (the saved file and the checks left out of this run, a draft kept for this run only in `profile.yml`, or `.auto-dev.yml`), so a failed setup is retried from it; `profile-retry.yml` is the profile a retry re-read |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
 | `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output |
 | `HANDOFF.md` | a checkpoint, or the user asking to stop | the brief for the next session |

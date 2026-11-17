@@ -49,14 +49,15 @@ correction, paid as usual.
 
 Each one ends with `next` exiting 4 (or the command named exiting 1). Tell the
 user the `REPORT` lines. The worktree and `.auto-dev/` stay. Every stop `next`
-reports, except #11, #19 and a merge whose outcome is unknown, comes with a
-`QUESTION`: the user can override it (_Overriding a stop_, below).
+reports, except #1–#3 (setup: the `REPORT` says how to go on), #11, #19 and a
+merge whose outcome is unknown, comes with a `QUESTION`: the user can override
+it (_Overriding a stop_, below).
 
 | # | Condition | Detected by |
 |---|---|---|
-| 1 | `gh` missing or signed out, `origin` not on GitHub, python3 < 3.9 or no PyYAML | `init` exit 1 |
-| 2 | invalid `.auto-dev.yml` or saved profile, no test command in the quality gate | `init` exit 1 |
-| 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing; in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `init` exit 1 |
+| 1 | `gh` missing or signed out, `origin` not on GitHub, python3 < 3.9 or no PyYAML | `next` (setup) exit 4 |
+| 2 | invalid `.auto-dev.yml`, a profiler draft invalid twice running, no test command in the quality gate, the user's Stop at the profile question, a setup worker that never returned or did not return ok twice | `next` (setup) exit 4 |
+| 3 | a seeded file not gitignored, a setup command missing or failing (the run is kept: once the file the `REPORT` names is fixed, `auto-dev continue` runs setup again); in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `next` (setup) exit 4 |
 | 4 | the run was started on auto-dev 3.x or 4.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | the planner returns `OVERSIZED` |
 | 6 | a worker did not return ok twice running: it stopped on purpose, failed, or one of each (lifted by `auto-dev continue`) | `next` records a second result that is not ok |
@@ -161,7 +162,13 @@ run the one for each answer the user gave. A `separate` finding is listed in
 the PR body (published again before the PR is marked ready) and the final
 report as a follow-up for its own PR; the pipeline doesn't open that PR.
 
-The profile confirmation (Phase 1) has its own options: `plan.md`, step 4.
+The profile question (Phase 1, exit 5 from `next --repo`) has its own options:
+`Looks right — save it for this repo` · `Looks right — use it for this run
+only` · `Change something (tell me what)` · `Stop`. Each answer's `AFTER` line is
+`autodev.py setup-answer save|run-only|change|stop --repo <repo> --task
+"<task>"` (`change` with `--text` holding the user's words); the next `next
+--repo` acts on it: save writes the saved profile, change has the profiler redo
+the draft and asks again, Stop ends setup with nothing created.
 
 ## Freshness: when a report no longer matches the code
 

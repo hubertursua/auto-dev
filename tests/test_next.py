@@ -5678,3 +5678,109 @@ class SetupFlowTest(RunCase):
         for label in (self.OPTIONS[0], self.OPTIONS[2], "Stop"):
             self.answer_with(question, label)  # the run exists: these may be refused
         self.assertEqual([str(p) for p in self.tmp.rglob("pwned")], [])
+
+    # -------------------------------------------------------------- more of setup (the coder's)
+
+    def scratch_folder(self):
+        folders = [p for p in (self.temp / f"auto-dev-setup-{os.getuid()}").iterdir()
+                   if p.is_dir()]
+        self.assertEqual(len(folders), 1, folders)
+        return folders[0]
+
+    def test_the_scratch_folder_goes_once_the_run_is_set_up(self):
+        out = self.with_saved_profile(BOTH_ADOPTED)
+        self.ready(out)
+        self.assertEqual(list((self.temp / f"auto-dev-setup-{os.getuid()}").iterdir()), [])
+
+    def test_retry_keeps_the_checks_dropped_at_creation(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n",
+                                      text=self.saved.read_text())
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        self.save_profile()  # the user fixes the setup; the lint check is still listed
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+        self.assertEqual(self.gate(), ["true"])
+
+    def test_a_run_without_an_origin_record_retries_with_the_saved_setup(self):
+        self.failed_setup()
+        (self.dir / "profile-origin.json").unlink()  # as a run made by 5.0
+        self.save_profile(SAVED_PROFILE + '  - { kind: build, command: "make", '
+                                          'report: "BUILD.md" }\n')
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])  # the run's own
+
+    def test_a_draft_the_user_kept_for_the_run_is_retried_from_the_run(self):
+        self.answered(self.to_question(), self.OPTIONS[1])
+        self.ready(self.setup_next())
+        self.assertEqual((self.dir / "profile.yml").read_text(), PROFILER_DRAFT)
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text()),
+                         {"kind": "draft"})
+
+    def test_a_stale_pre_run_brief_is_sent_again(self):
+        self.brief(self.setup_next(expect=0), "profiler")
+        setup = self.scratch_folder() / "setup.json"
+        info = json.loads(setup.read_text())
+        info["spawns"][-1]["issued_at"] = (datetime.now(timezone.utc)
+                                           - timedelta(hours=4)).isoformat()
+        setup.write_text(json.dumps(info))
+        values = self.brief(self.setup_next(expect=0), "profiler")
+        self.assertEqual(Path(values["path"]).name, "profiler-2.md")
+
+    def test_reissue_after_the_never_returned_stop_spawns_again(self):
+        self.brief(self.setup_next(expect=0), "profiler")
+        for _ in range(2):
+            self.brief(self.setup_next("--reissue", expect=0), "profiler")
+        self.setup_next("--reissue", expect=4)
+        self.setup_next(expect=4)  # without --reissue it stays stopped
+        values = self.brief(self.setup_next("--reissue", expect=0), "profiler")
+        self.assertEqual(Path(values["path"]).name, "profiler-4.md")
+
+    def test_a_profiler_that_fails_twice_stops(self):
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.returns(values, "profiler", "failed", None, next="CONFIRM",
+                     draft=values["draft_path"], questions="0")
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.assertIn("failed", values["previous_issues"])
+        self.returns(values, "profiler", "failed", None, next="CONFIRM",
+                     draft=values["draft_path"], questions="0")
+        out = self.setup_next(expect=4)
+        self.assertTrue([ln for ln in out["REPORT"] if "--reissue" in ln],
+                        json.dumps(out, indent=2))
+        self.assertNotIn("QUESTION", out)
+        self.no_run_made()
+
+    def test_the_question_says_where_the_report_is_when_it_has_no_file(self):
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        Path(values["draft_path"]).write_text(PROFILER_DRAFT)
+        Path(values["result_file"]).write_text(json.dumps(
+            {"worker": "profiler", "status": "ok", "next": "CONFIRM",
+             "draft": values["draft_path"], "questions": "0"}))
+        out = self.setup_next(expect=5)
+        self.assertIn("in its reply", self.summary(out))
+
+    def test_explain_and_setup_flags_without_repo_cannot_run(self):
+        for args in (("next", "--repo", self.repo, "--task", self.TASK, "--explain"),
+                     ("next", "--task", self.TASK)):
+            with self.subTest(args=args):
+                r = self.autodev(*args)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("ERROR", r.stderr)
+        self.assertEqual(self.worker_briefs(), [])
+
+    def test_next_dir_waits_for_setup_still_running(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt",
+                                                "sleep 2 && echo ready > setup-ran.txt"))
+        self.lookup_answers(self.setup_next(expect=0, wait="1"), BOTH_ADOPTED)
+        self.ready(self.setup_next(wait="0"))
+        self.assertEqual(self.state()["phases"]["1"]["status"], "in-progress")
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+        self.assertEqual(self.state()["phases"]["1"]["status"], "done")

@@ -286,6 +286,9 @@ class BriefTest(WorkCase):
                          "--set", "base=main", "--set", f"draft_path={out}/p.yml")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue((out / "profiler-1.md").exists())
+        # Its report goes to a file too, so `next` can show it to the user.
+        self.assertEqual(self.brief_values(out / "profiler-1.md")["answer_file"],
+                         str(out.resolve() / "profiler-1-answer.md"))
 
     def test_lookup_brief_before_the_run_needs_no_state(self):
         out = self.tmp / "look"

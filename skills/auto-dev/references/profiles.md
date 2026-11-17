@@ -12,14 +12,18 @@ any clone or worktree of the same repo find it.
 
 - **Profile schema** — the keys a profile holds and what each means.
 - **Saved profiles** — where they live and how a run finds them.
-- **Permissions** — what the user allows so a run reads and saves the profile
+- **Permissions** — what the user allows so a run saves the profile and runs
   without prompts, and the guidance to show them.
 - **Monorepos, umbrellas, and multi-stack repos** — scoping the quality gate to
   the right package.
 - **Repo-local override — `.auto-dev.yml`** — every key a project can override.
 
-How a run finds, researches and confirms the profile is `references/plan.md`,
-step 4. `autodev.py init` then validates it, applies `.auto-dev.yml` over it,
+`autodev.py next --repo` finds, researches and confirms the profile
+(`references/plan.md`, step 2): it runs `profile-path.py` and
+`validate-config.py` itself, asks a lookup whether a saved profile's gate tools
+are adopted, spawns the profiler when there is no usable profile, asks the user
+the profile question and writes the saved file on their `save` answer. `autodev.py
+init`, which it runs, then validates the profile, applies `.auto-dev.yml` over it,
 refuses a quality gate with no test command, and writes `.auto-dev/profile.md`.
 
 ## Profile schema
@@ -111,8 +115,8 @@ to `~/.config/auto-dev/profiles/github.com/acme/web-app.yml`: lowercased, `.git`
 dropped, and a nested path (a GitLab subgroup) keeps every segment.
 `<profiles-dir>` is `$AUTO_DEV_PROFILES_DIR` if set, else
 `$XDG_CONFIG_HOME/auto-dev/profiles`, else `~/.config/auto-dev/profiles`.
-`scripts/profile-path.py` applies this convention; always use it rather than
-building the path by hand. A fork has its own `origin`, so it gets its own file.
+`scripts/profile-path.py` applies this convention (`next --repo` runs it);
+never build the path by hand. A fork has its own `origin`, so it gets its own file.
 
 The file is the user's: they can edit it, or delete it to have the next run
 research the profile again. Its commands run verbatim, like a profile's, so it
@@ -122,44 +126,26 @@ allow rules say.
 
 ## Permissions
 
-The saved profile lives outside the working directory, so Claude Code asks
-before reading or writing it, and the Bash sandbox (when the user has turned it
-on) blocks writes outside the working directory. A run also runs the helper
+The saved profile lives outside the working directory. `autodev.py` reads and
+writes it (the orchestrator never does), so no `Read` or `Edit` rule is
+needed for it; but the Bash sandbox (when the user has turned it on) blocks a
+script's writes outside the working directory. A run also runs the helper
 scripts and the profile's commands through Bash, in a worktree outside the
 working directory, and each new command or path can prompt. Show the user the
-guidance below at the profile confirmation, and again whenever a read or write
-of the saved profile is denied. Fill in the real `<profiles-dir>`,
-`<skill-dir>` and commands. **Never edit the user's settings
-files yourself**: the user decides what to allow.
+guidance below at the profile question, and again when saving the profile
+failed. Fill in the real `<profiles-dir>`, `<skill-dir>` and commands (the
+profile question's `SUMMARY` names the paths). **Never edit the user's
+settings files yourself**: the user decides what to allow.
 
 Guidance to show (adapt the paths):
 
-> **Let auto-dev read and save this repo's profile without asking.** Add these
-> rules to `~/.claude/settings.json` (your user settings, which apply in every
-> repo), or run `/permissions` and add them there:
->
-> ```json
-> {
->   "permissions": {
->     "allow": [
->       "Read(~/.config/auto-dev/**)",
->       "Edit(~/.config/auto-dev/**)"
->     ]
->   }
-> }
-> ```
->
-> - `Edit(...)` also covers creating the file; there is no separate `Write` rule.
-> - If the profiles directory is not under `~/.config/auto-dev` (you set
->   `AUTO_DEV_PROFILES_DIR` or `XDG_CONFIG_HOME`), use that path: `~/…` for a
->   path in your home directory, `//…` for any other absolute path (for example
->   `Read(//opt/auto-dev/profiles/**)`).
-> - For one session only, start Claude Code with
->   `claude --add-dir ~/.config/auto-dev` (or run `/add-dir ~/.config/auto-dev`).
->   Reads there stop prompting; saving still asks unless you accept edits.
-> - If you use the Bash sandbox, also add
->   `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }`, so a
->   shell command can write there too.
+> **Let auto-dev save this repo's profile.** `autodev.py` writes it. If you use
+> the Bash sandbox, add
+> `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }` to
+> `~/.claude/settings.json` (your user settings, which apply in every repo), so
+> the script can write there. If the profiles directory is not under
+> `~/.config/auto-dev` (you set `AUTO_DEV_PROFILES_DIR` or `XDG_CONFIG_HOME`),
+> use that path instead.
 >
 > **Let the run's scripts and files go without asking.** Add these to the same
 > `~/.claude/settings.json`. Replace `<home>` with the absolute home folder (a
@@ -172,8 +158,6 @@ Guidance to show (adapt the paths):
 >     "allow": [
 >       "Read(~/.claude/plugins/cache/auto-dev-marketplace/auto-dev/**)",
 >       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/autodev.py *)",
->       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/profile-path.py *)",
->       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/validate-config.py *)",
 >       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-fresh.py *)"
 >     ]
 >   }
@@ -182,7 +166,9 @@ Guidance to show (adapt the paths):
 >
 > - The `autodev.py` rule also covers `autodev.py run`, which workers use to
 >   run this profile's gate and test commands in the worktree. It runs only
->   the commands in the profile you confirmed, never one a worker writes.
+>   the commands in the profile you confirmed, never one a worker writes. It
+>   covers setup too (`next --repo`), which finds, checks and saves the
+>   profile.
 > - One rule per script, so any can be left out. The `autodev.py` rule also
 >   covers the test-integrity audit and mutation testing: `autodev.py verify
 >   prep` runs `check-tests.py`, and `autodev.py mutants run` runs `mutate.py`,
@@ -201,7 +187,7 @@ Guidance to show (adapt the paths):
 >   too.
 >
 > **To run this repo's own commands yourself without prompts** (a run doesn't
-> need these: setup runs in `autodev.py init`, and workers run the gate
+> need these: setup runs in `autodev.py next`, and workers run the gate
 > through `autodev.py run`), add its setup and quality-gate commands to the
 > main checkout's `.claude/settings.local.json` (not committed; it applies
 > only to this repo):
