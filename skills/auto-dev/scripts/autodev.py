@@ -14,7 +14,6 @@ Subcommands:
     show      print the run's state
     phase     set a phase's status
     note      record a decision or assumption
-    size      record the planner's size check (FITS or OVERSIZED)
     budget    show the iteration budget, spend one round before a correction, or
               add rounds after the budget ran out
     gate      record a gate decision
@@ -23,7 +22,6 @@ Subcommands:
     commit    stage by name, check, commit, and verify the commit (Phase 6)
     ci-watch  poll the PR's checks, bounded; green, red, pending or unavailable
     merge-pr  merge the PR locked to the checked commit, never --admin
-    pr-body   generate the PR description, or --check: lint one
     pr        publish: open the one PR, or refresh its description in place
     cleanup-worktree   remove the worktree after the final report
     check-manifest     check the acceptance tester's MANIFEST.md against PLAN.md
@@ -32,7 +30,6 @@ Subcommands:
     amend-checks       drop or add acceptance check rows for a fix the user asked for
     security-reviewer  name the security reviewer to spawn for this PLAN.md
     votes              plan the code-review re-votes, or apply them
-    gate-summary       check a gate's preconditions; print its summary and question
     review-build       build CODE_REVIEW.md from the review judge's JUDGMENT.md
     brief              write a worker's brief file and print the prompt to spawn it with
     record             check a worker's result against its artifacts; update state
@@ -87,7 +84,6 @@ COMMANDS = {
     "show": (cmd_state, cmd_state.show),
     "phase": (cmd_state, cmd_state.phase),
     "note": (cmd_state, cmd_state.note),
-    "size": (cmd_state, cmd_state.size),
     "budget": (cmd_state, cmd_state.budget),
     "gate": (cmd_state, cmd_state.gate),
     "mark": (cmd_state, cmd_state.mark),
@@ -95,7 +91,6 @@ COMMANDS = {
     "commit": (cmd_ship, cmd_ship.commit),
     "ci-watch": (cmd_ship, cmd_ship.ci_watch),
     "merge-pr": (cmd_ship, cmd_ship.merge_pr),
-    "pr-body": (cmd_ship, cmd_ship.pr_body),
     "cleanup-worktree": (cmd_ship, cmd_ship.cleanup_worktree),
     "check-manifest": (cmd_checks, cmd_checks.check_manifest),
     "eval-status": (cmd_checks, cmd_checks.eval_status),
@@ -103,7 +98,6 @@ COMMANDS = {
     "amend-checks": (cmd_amend, cmd_amend.main),
     "security-reviewer": (cmd_checks, cmd_checks.security_reviewer),
     "votes": (cmd_review, cmd_review.votes),
-    "gate-summary": (cmd_review, cmd_review.gate_summary),
     "review-build": (cmd_review, cmd_review.review_build),
     "brief": (cmd_work, cmd_work.brief),
     "record": (cmd_work, cmd_work.record),
@@ -121,9 +115,14 @@ NAMED = (cmd_state, cmd_ship, cmd_checks, cmd_review, cmd_work, cmd_pr)
 
 
 # One line per subcommand, from the "Subcommands:" list in this docstring.
-SUMMARIES = dict(
-    line.strip().split(None, 1) for line in
-    __doc__.split("Subcommands:")[1].split("\n\n")[0].strip().splitlines())
+# A line indented past the names continues the one above it.
+SUMMARIES = {}
+for _line in __doc__.split("Subcommands:")[1].split("\n\n")[0].strip("\n").splitlines():
+    if _line.startswith("    ") and not _line.startswith("     "):
+        _name, _, _text = _line.strip().partition(" ")
+        SUMMARIES[_name] = _text.strip()
+    elif SUMMARIES:
+        SUMMARIES[_name] += " " + _line.strip()
 
 
 class Parser(argparse.ArgumentParser):

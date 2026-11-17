@@ -21,10 +21,7 @@ default 4. `next` spends a round before the action that needs it and prints a
 `BUDGET:` line when it does. You never spend one yourself.
 
 Each of these spends one round: the planner's one revision for the plan
-critic's blockers, re-spawning the acceptance tester for gaps or for the
-other reading of an ambiguous condition, a re-dispatched `BLOCKED` step, a
-the coder's correction for a red quality gate, and each correction after a
-review pass (one round for everything the pass left open: the verifier's
+critic's blockers, and each correction after a review pass (one round for everything the pass left open: the verifier's
 items, the review's findings, a repair of the checks either calls wrong, and
 red CI on the pushed commit, which joins it), for people's comments on the PR,
 or for red CI alone.
@@ -37,7 +34,11 @@ the user asks for more rounds and gives the number (1 to 10; it is refused
 unless `next` just stopped on the budget). Then `next` takes the step that
 stopped, spending the new rounds as usual.
 
-Free (no round): every review pass (the verifier with the review), every
+Free (no round), but bounded: the acceptance tester's one more go for gaps
+(gaps again stop) and its rewrite for the other reading of an ambiguous
+condition, the coder's one correction for a red quality gate (red again
+stops), and a `BLOCKED` step's one re-dispatch (blocked again in the same
+change stops). Free: every review pass (the verifier with the review), every
 quality-gate run, a user's "Revise plan" at the post-plan gate, a re-spawn after a
 worker failed once, the entry-point repair a plan revision calls for, a stop
 and whatever the user's answer to it runs (a fix, a retry, a sign-off), and
@@ -56,7 +57,7 @@ reports, except #11, #19 and a merge whose outcome is unknown, comes with a
 | 1 | `gh` missing or signed out, `origin` not on GitHub, python3 < 3.9 or no PyYAML | `init` exit 1 |
 | 2 | invalid `.auto-dev.yml` or saved profile, no test command in the quality gate | `init` exit 1 |
 | 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing; in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `init` exit 1 |
-| 4 | the run was started on auto-dev 3.x | `resume` prints `OLD-VERSION` |
+| 4 | the run was started on auto-dev 3.x or 4.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | the planner returns `OVERSIZED` |
 | 6 | a worker did not return ok twice running: it stopped on purpose, failed, or one of each (lifted by `auto-dev continue`) | `next` records a second result that is not ok |
 | 7 | a worker was spawned three times and never left a result `next` accepts (lifted by `auto-dev continue`) | `next` |
@@ -136,8 +137,8 @@ what they said, then run `next`.
 | | Already In Progress (also run without asking when the ticket's status shows it) | `gate jira already` | no move now; Jira moves at each later milestone |
 | | Leave Jira alone | `gate jira leave` | no Jira move for the rest of the run |
 | | Stop | `gate jira stop` | the run stops |
-| Post-plan (Phase 3; on when the risk tier is high, the plan critic left blockers open after the planner's one revision (the summary lists them), or `gates.post_plan: true` in `.auto-dev.yml`) | Approve & build | `gate post-plan proceed` | Phase 3 ends; the Build stage starts |
-| | Revise plan (tell me what to change) | `gate post-plan revise --reason "<the user's words>"` | the planner revises (no round); if its entry points changed the tester repairs the checks; the gate is asked again |
+| Post-plan (end of Phase 2, before any check is written; on when the risk tier is high, the plan critic left blockers open after the planner's one revision (the summary lists them), or `gates.post_plan: true` in `.auto-dev.yml`) | Approve & build | `gate post-plan proceed` | Phase 2 ends; the acceptance tester writes the checks |
+| | Revise plan (tell me what to change) | `gate post-plan revise --reason "<the user's words>"` | the planner revises (no round); the gate is asked again |
 | | Stop | `gate post-plan stop` | the run stops |
 | Open the PR (Phase 6, before the first push; only with `gates.open_pr: true` in `.auto-dev.yml`) | Open PR | `gate pr proceed` | commit, push, open the draft PR |
 | | Hold (don't push yet) | `gate pr hold --reason "<why>"` | the run is held before anything is pushed |

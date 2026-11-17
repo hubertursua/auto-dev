@@ -280,7 +280,7 @@ security_docs:                # the security directives every worker must obey, 
 pr_review:
   inline_comments: false      # once the reviews finish, post the findings left open or advisory on the PR
 gates:
-  post_plan: true             # force the Phase 3 post-plan gate on for this repo
+  post_plan: true             # force the post-plan gate (end of Phase 2) on for this repo
   open_pr: false              # ask before the first push (default off: the draft PR opens before review)
 mutation:
   max: 20                     # mutants kept across the verifier's passes (0 = off; at most 50)

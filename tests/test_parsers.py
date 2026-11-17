@@ -1,5 +1,5 @@
 """Tests for autodev.py's artifact parsers (check-manifest, eval-status,
-votes, gate-summary).
+votes, and the gate summaries through tests/lib_cli.py).
 
 Run: python3 -m unittest discover -s tests -v   (from the repo root)
 
@@ -82,6 +82,18 @@ class ArtifactCase(unittest.TestCase):
 
 
 class CheckManifestTest(ArtifactCase):
+    def test_not_re_run_for_a_repair_needs_a_check_a_tests_commit_holds(self):
+        (self.dir / "acceptance" / "base-run" / "C2.txt").write_text(
+            BASE_RUNS["C2.txt"].replace("failed: unsorted", "not re-run (repair)"))
+        r = self.cmd("check-manifest")  # a new check: it never ran on the old code
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no tests commit holds it", r.stdout)
+        (self.dir / "state.json").write_text(json.dumps({
+            "schema": 5, "worktree": str(self.tmp),
+            "tests_commits": [{"sha": "abc", "paths": ["src/sort.acceptance.test.ts"]}]}))
+        r = self.cmd("check-manifest")  # repaired: committed before, so it ran then
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_complete_manifest_passes(self):
         r = self.cmd("check-manifest")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -553,7 +565,7 @@ class ReviewAndGateTest(RunCase):
     def test_ready_gate_summary_and_triage_question(self):
         (self.worktree / "app.ts").write_text("export const one = 2;\n")
         self.reports()
-        r = self.cmd("gate-summary", "ready", "--json")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
         summary = "\n".join(out["summary"])
@@ -568,7 +580,7 @@ class ReviewAndGateTest(RunCase):
         self.reports()
         for name in ("CODE_REVIEW.md", "SECURITY_REVIEW.md"):  # no review has run yet
             (self.dir / name).unlink()
-        r = self.cmd("gate-summary", "pr", "--json")
+        r = self.lib("gate-summary", "--dir", self.dir, "pr", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
         summary = "\n".join(out["summary"])
@@ -580,11 +592,11 @@ class ReviewAndGateTest(RunCase):
     def test_ready_gate_refuses_stale_results_and_open_integrity_findings(self):
         self.reports()
         (self.worktree / "app.ts").write_text("export const one = 5;\n")
-        r = self.cmd("gate-summary", "ready")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 1)
         self.assertIn("stale", r.stderr)
         self.reports(judgment="Unjustified")
-        r = self.cmd("gate-summary", "ready")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 1)
         self.assertIn("Unjustified", r.stderr)
 
@@ -613,21 +625,21 @@ class ReviewAndGateTest(RunCase):
     def test_ready_gate_cannot_run_when_check_fresh_cannot(self):
         self.reports()
         self.stub_git(STUB_GIT_FAIL="-C")  # check-fresh.py runs `git -C <worktree>`
-        r = self.cmd("gate-summary", "ready")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertNotIn("stale", r.stderr)
 
     def test_ready_gate_cannot_run_when_submodule_foreach_fails(self):
         self.reports()
         self.stub_git(STUB_GIT_FAIL="foreach")
-        r = self.cmd("gate-summary", "ready")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("submodule", r.stderr)
 
     def test_ready_gate_refuses_edits_inside_a_submodule(self):
         self.reports()
         self.stub_git(STUB_GIT_SUBMODULE="Entering 'vendor/lib'\n?? src/generated.ts")
-        r = self.cmd("gate-summary", "ready")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("vendor/lib: ?? src/generated.ts", r.stderr)
 
@@ -641,7 +653,7 @@ class ReviewAndGateTest(RunCase):
             f"| {i} | finding {i} | `src/auth.ts:{n}` | pre-existing | {conf} | confirmed "
             f"| {verdict} | — |\n" for n, (i, conf, verdict) in enumerate(rows))
         path.write_text(text)
-        r = self.cmd("gate-summary", "ready", "--json")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
         self.assertEqual([q["header"] for q in out["questions"]],
@@ -652,7 +664,7 @@ class ReviewAndGateTest(RunCase):
     def test_main_gate_refuses_a_draft(self):
         self.script_gh([{"args": ["pr", "view"], "stdout": json.dumps(
             {"state": "OPEN", "isDraft": True, "headRefOid": "a" * 40})}])
-        r = self.cmd("gate-summary", "main", "--pr", "7")
+        r = self.lib("gate-summary", "--dir", self.dir, "main", "--pr", "7")
         self.assertEqual(r.returncode, 1)
         self.assertIn("draft", r.stderr)
 

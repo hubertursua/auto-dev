@@ -89,6 +89,14 @@ class RunCase(unittest.TestCase):
                               capture_output=True, text=True, env=self.env,
                               cwd=cwd or self.tmp, check=False)
 
+    def lib(self, *args, cwd=None):
+        """tests/lib_cli.py: the library steps `next` runs with no subcommand
+        of their own (the PR body's generate and lint, a gate's summary)."""
+        return subprocess.run([sys.executable, str(Path(__file__).resolve().parent /
+                                                   "lib_cli.py"), *map(str, args)],
+                              capture_output=True, text=True, env=self.env,
+                              cwd=cwd or self.tmp, check=False)
+
     def init(self, *extra, task="Add due dates to todos"):
         return self.autodev("init", "--repo", self.repo, "--slug", "due-dates",
                             "--task", task, "--profile", self.profile,
@@ -107,7 +115,7 @@ class InitTest(RunCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(f"INIT: {self.worktree}", r.stdout)
         state = self.state()
-        self.assertEqual(state["schema"], 4)
+        self.assertEqual(state["schema"], 5)
         self.assertEqual(state["branch"], "feat/due-dates")
         self.assertEqual(state["phases"]["1"]["status"], "done")
         self.assertNotIn("staging", state["repo"])
@@ -698,24 +706,6 @@ class StateCommandsTest(RunCase):
         self.assertEqual(state["gates"], [])
         self.assertNotIn("staging-ci", state.get("marks") or {})
 
-    def test_oversized_stops_the_run(self):
-        r = self.cmd("size", "OVERSIZED", "--high-risk", "no")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("STOP: OVERSIZED", r.stdout)
-        phases = self.state()["phases"]
-        self.assertEqual(phases["2"], {"status": "stopped", "notes": "OVERSIZED"})
-        self.assertEqual({phases[n]["status"] for n in "3456"}, {"n/a"})
-
-    def test_high_risk_turns_on_the_post_plan_gate(self):
-        self.cmd("size", "FITS", "--high-risk", "yes")
-        self.assertTrue(self.state()["settings"]["post_plan_gate"])
-
-    def test_size_never_lowers_a_high_risk(self):
-        self.cmd("size", "FITS", "--high-risk", "yes")
-        r = self.cmd("size", "FITS", "--high-risk", "no")
-        self.assertIn("high risk: yes", r.stdout)
-        self.assertTrue(self.state()["high_risk"])
-
     def test_handoff_names_the_next_session(self):
         for n in (2, 3):
             self.cmd("phase", str(n), "done")
@@ -744,7 +734,7 @@ class StateCommandsTest(RunCase):
             (self.dir / "state.json").write_text(text)
             r = self.cmd("show")
             self.assertEqual(r.returncode, 2, text + r.stdout + r.stderr)
-            self.assertIn("not a 4.x state object", r.stderr)
+            self.assertIn("not a state object", r.stderr)
 
     def test_show_prints_the_ask_on_one_line_only_when_there_is_one(self):
         state = self.state()
@@ -1147,14 +1137,14 @@ class ShipTest(RunCase):
         self.write_state(state)
         body = self.tmp / "body.md"
         body.write_text(GOOD_BODY.format(sha="a" * 40))
-        r = self.cmd("pr-body", "--check", body)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         (self.dir / "CODE_REVIEW.md").write_text(
             "# Code review\n\n| # | Finding |\n|---|---|\n| C2 | an empty list |\n")
         body.write_text(GOOD_BODY.format(sha="b" * 40).replace("### Test strength", "")
                         + f"See C2 in .auto-dev/PLAN.md, from {self.worktree}.\n"
                         + "token = ghp_" + "x" * 30 + "\n")
-        r = self.cmd("pr-body", "--check", body)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 1)
         for text in ("### Test strength", "not the verified commit", ".auto-dev/",
                      "C2", "worktree", "secret"):
@@ -1174,14 +1164,14 @@ class ShipTest(RunCase):
             "Served from /application/data.\n"))
         env = dict(self.env)
         self.env["HOME"] = "/app"
-        r = self.cmd("pr-body", "--check", body)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.env = env
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         body.write_text(GOOD_BODY.format(sha="a" * 40)
                         + "Fixes S1; see /app/src/x.ts | met | Strong |\n"
                         + "GH=ghp_" + "y" * 36 + "\n")
         self.env["HOME"] = "/app"
-        r = self.cmd("pr-body", "--check", body)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.env = env
         self.assertEqual(r.returncode, 1)
         for text in ("S1", "home directory", "evidence tier", "secret"):
@@ -1197,14 +1187,14 @@ class ShipTest(RunCase):
                      'API_KEY="abcd1234"', "GH=ghp_" + "z" * 36):
             with self.subTest(line=line):
                 body.write_text(GOOD_BODY.format(sha="a" * 40) + line + "\n")
-                r = self.cmd("pr-body", "--check", body)
+                r = self.lib("pr-body", "--check", body, "--dir", self.dir)
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
                 self.assertIn("secret", r.stdout)
         # Type annotations (example in TypeScript) are not secrets.
         body.write_text(GOOD_BODY.format(sha="a" * 40) + (
             "`token: string`\n`{ token: string }`\n`password: string;`\n"
             "`function login(password: Password) {}`\n`token: number | null`\n"))
-        r = self.cmd("pr-body", "--check", body)
+        r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     # cleanup-worktree
@@ -2206,7 +2196,7 @@ class RunCommandTest(unittest.TestCase):
              "report": "BUILD.md"},
         ]
         (self.ad / "state.json").write_text(json.dumps(
-            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
 
     def run_(self, *args):
         return subprocess.run([sys.executable, str(AUTODEV), "run", *args, "--dir",
@@ -2304,7 +2294,7 @@ class RunCommandTest(unittest.TestCase):
 
     def test_other_refusals(self):
         (self.ad / "state.json").write_text(json.dumps(
-            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate[:2]}}))
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate[:2]}}))
         r = self.run_("test")
         self.assertEqual(r.returncode, 2)
         self.assertIn("no `kind: test` check", r.stderr)
@@ -2353,7 +2343,7 @@ class RunCommandTest(unittest.TestCase):
         self.gate[3]["command"] = (f"sleep 30 & echo $! > {shlex.quote(str(pidfile))}; "
                                    f"sleep 31 & echo $! >> {shlex.quote(str(pidfile))}; wait")
         (self.ad / "state.json").write_text(json.dumps(
-            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
         return pidfile
 
     @unittest.skipIf(os.name == "nt", "POSIX process groups")
@@ -2403,7 +2393,7 @@ class RunCommandTest(unittest.TestCase):
         pidfile = self.tmp / "pids"
         self.gate[3]["command"] = f"sleep 30 & echo $! > {shlex.quote(str(pidfile))}"
         (self.ad / "state.json").write_text(json.dumps(
-            {"schema": 4, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
         r = self.run_("gate", "BUILD")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(self.gone(pidfile))
@@ -2487,7 +2477,7 @@ class VerifyPrepTest(unittest.TestCase):
         self.tests_sha = self.git("rev-parse", "HEAD").strip()
         py = shlex.quote(sys.executable)
         (self.ad / "state.json").write_text(json.dumps({
-            "schema": 4, "worktree": str(self.wt), "repo": {"base": "main"},
+            "schema": 5, "worktree": str(self.wt), "repo": {"base": "main"},
             "tests_commits": [{"sha": self.tests_sha, "paths": ["tests/due.test.ts"]}],
             "settings": {"gate": [{"kind": "test", "command": f"{py} runner.py tests",
                                    "report": "TEST.md",
@@ -2514,7 +2504,7 @@ class VerifyPrepTest(unittest.TestCase):
         return (self.ad / "evidence" / name).read_text()
 
     def test_prep_does_the_first_pass_steps(self):
-        r = self.verify("prep", "--pass", "first pass")
+        r = self.verify("prep")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
         # The committed check is audited against its tests commit.
@@ -2542,7 +2532,7 @@ class VerifyPrepTest(unittest.TestCase):
 
     def test_an_edited_check_is_audited_against_every_tests_commit(self):
         self.write("tests/due.test.ts", "test: an old test\ntest: keeps the date\n")
-        r = self.verify("prep", "--pass", "re-check")
+        r = self.verify("prep")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         integrity = self.evidence("integrity.txt")
         self.assertTrue(integrity.startswith("check-tests.py exit 3"), integrity)
@@ -2697,7 +2687,7 @@ class MutationRunTest(unittest.TestCase):
 
     def state(self, mutation_max, files, command):
         self.write(".auto-dev/state.json", json.dumps({
-            "schema": 4, "worktree": str(self.wt), "repo": {"base": "main"},
+            "schema": 5, "worktree": str(self.wt), "repo": {"base": "main"},
             "settings": {"mutation_max": mutation_max, "gate": [
                 {"kind": "test", "command": command, "report": "TEST.md", "files": files}]}}))
 
@@ -4002,8 +3992,6 @@ class QualityGateTest(RunCase):
         report = (self.dir / "lint" / "TEST.md").read_text()
         self.assertTrue(report.startswith("# TEST — pass"), report)
         self.assertIn(f"- **Tree:** {self.tree()}", report)
-        check = self.autodev("check-artifact", str(self.dir / "lint" / "TEST.md"))
-        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
         run = self.state()["gate_runs"][-1]
         self.assertEqual((run["result"], run["tree"], run["failing"]),
                          ("GREEN", self.tree(), []))
@@ -4043,6 +4031,14 @@ class QualityGateTest(RunCase):
         r = self.autodev("quality-gate", "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("the code changed on every run", r.stdout)
+
+    def test_the_report_of_a_check_the_gate_no_longer_has_goes(self):
+        (self.dir / "lint").mkdir(exist_ok=True)
+        (self.dir / "lint" / "OLD.md").write_text("# OLD — pass\n\n- **Tree:** abc\n")
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sorted(p.name for p in (self.dir / "lint").glob("*.md")),
+                         ["TEST.md"])
 
     def test_no_gate_could_not_run(self):
         self.set_gate()

@@ -1,6 +1,6 @@
 ---
 name: auto-dev-security-reviewer-sensitive
-description: auto-dev pipeline only — Phase 6a security reviewer for changes on sensitive paths (auth, data handling, payments, access control). Same job as security-reviewer, with the sensitive paths weighted hardest. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6 security reviewer of a high-risk run, for changes on sensitive paths (auth, data handling, payments, access control). Same job as security-reviewer, with the sensitive paths weighted hardest. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write, Skill
@@ -87,7 +87,7 @@ The rubric: read the security findings and overall report confidence sections of
 
 Write {{artifact_dir}}/SECURITY_REVIEW.md to the template at `{{skill_dir}}/templates/SECURITY_REVIEW.md` (strict): read
 it there and copy everything below its first comment line.
-Leave every Verified cell as `pending`; the judge fills them in.
+Leave every new finding's Verified cell as `pending`; the judge fills them in. A row carried from an earlier run keeps its Verified value.
 
 When PLAN.md itself is wrong or incomplete on security (most often: the change
 needs a Security/Compliance criterion the plan lacks), no worker changes it:
@@ -109,13 +109,13 @@ End your reply with this block, and write the same keys as one JSON object to
 `status` is `ok` when you did the job, `blocked` when you stopped on purpose, `failed`
 when you couldn't run. Your reply is the block. Above it, write only why, in one
 to three sentences, when `status` is `blocked` or `failed`, and anything this
-file says goes above the result block; nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `MUST_FIX` when any introduced finding is must-fix, else `CLEAN`.
+file says goes above the result block; nothing reads a summary. Write every key in the block: one that doesn't apply to your mode or result is `none` (a count is `0`). `next` is one of: `MUST_FIX` when SECURITY_REVIEW.md has an open must-fix finding whose Verified isn't `refuted`, else `CLEAN`.
 
 ```auto-dev-result
 worker: security-reviewer-sensitive
 status: ok
 next: CLEAN | MUST_FIX
-must_fix: <introduced must-fix findings>
-pre_existing: <pre-existing findings for the user>
+must_fix: <open must-fix findings in SECURITY_REVIEW.md whose Verified isn't refuted>
+pre_existing: <pre-existing findings for the user whose Verified is pending>
 spec_problems: <number of lines in {{spec_problem_file}}; 0 if none>
 ```

@@ -74,9 +74,7 @@ Scope: {{scope}} (ALL CONDITIONS, or ONLY the conditions it names, and why).
   are. One test file can hold checks for several conditions: in each file
   that holds a named condition's checks, change only the named conditions'
   tests, where they are in the worktree. Replace only the named conditions'
-  rows and base-run files. If MANIFEST.md has no
-  Covers column (it was written before 3.9), keep its columns as they are for
-  the rows you write. Still save their base runs when the tree is untouched;
+  rows and base-run files. Still save their base runs when the tree is untouched;
   in repair mode there is none to save (see Repair mode).
 
 For every PLAN.md condition, Security/Compliance criteria included:
@@ -214,7 +212,7 @@ check whose file is missing from the worktree, …). Fix each gap in a condition
 the base run, fix the file), then run it again. Never fix one by writing a Result the run
 didn't show, or by changing a check's Kind to fit its result: a check that
 passes on the untouched tree follows step 3. A gap `next` finds instead
-re-spawns you (in the Plan stage at the cost of a round) or stops the run. Leave a gap you
+re-spawns you once (in the Plan stage, at no round) or stops the run. Leave a gap you
 can't fix after two tries, or one in a condition outside the scope. An `ERROR:`
 or `MALFORMED:` result is not a gap: return as you would without it.
 

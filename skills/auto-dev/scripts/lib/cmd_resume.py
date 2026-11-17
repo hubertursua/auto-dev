@@ -3,9 +3,9 @@
 Usage:
     autodev.py resume [--repo <the directory you are in>] [--task "<ticket or task>"] [--json]
 
-Scans every tree `git worktree list` names for `.auto-dev/state.json` (a 4.x
-run) or a `WORK_LOG.md` with no state.json (a 3.x run), and prints one
-decision on the first line:
+Scans every tree `git worktree list` names for `.auto-dev/state.json` (a run;
+schema 4 is a 4.x run) or a `WORK_LOG.md` with no state.json (a 3.x run), and
+prints one decision on the first line:
 
     FRESH            --task names no run here: start a fresh run (init)
     RESUME <tree>    continue this run: its stage (and that stage's runbook,
@@ -21,9 +21,9 @@ decision on the first line:
     FINISHED <tree>  the run the task names already finished or was stopped (a
                      run stopped on a step the user can still override, an
                      OVERSIZED task, is RESUMEd instead: `next` asks how to go on)
-    OLD-VERSION <tree>  the run was started on auto-dev 3.x, which 4.x does not
-                     resume: finish it on 3.9, or remove its worktree and start
-                     again
+    OLD-VERSION <tree>  the run was started on auto-dev 3.x or 4.x, which this
+                     version does not resume: finish it on that version (3.9,
+                     or 4.27), or remove its worktree and start again
 
 Pass --task whenever the user states the task (its Jira key or what it does);
 omit it on a bare `auto-dev continue` or a loose name like "the dark-mode run".
@@ -42,6 +42,7 @@ Exit codes:
        decision
 """
 
+import json
 from pathlib import Path
 
 from . import state as st
@@ -85,6 +86,10 @@ def candidates(repo):
     for tree in worktrees(repo):
         artifact_dir = Path(tree) / ".auto-dev"
         if (artifact_dir / st.STATE_FILE).exists():
+            old = old_state_fields(artifact_dir)
+            if old is not None:
+                found.append(("old", tree, old, None))
+                continue
             try:
                 state = st.load(artifact_dir)
             except st.StateError as exc:
@@ -92,10 +97,29 @@ def candidates(repo):
                 continue
             fields = {"Task": state["task"].get("text", ""),
                       "Ticket": st.ticket_line(state["task"])}
-            found.append(("v4", tree, fields, state))
+            found.append(("run", tree, fields, state))
         elif (artifact_dir / st.LEDGER).exists():
-            found.append(("v3", tree, old_ledger_fields(artifact_dir / st.LEDGER), None))
+            found.append(("old", tree, {**old_ledger_fields(artifact_dir / st.LEDGER),
+                                        "version": "3.x"}, None))
     return found
+
+
+def old_state_fields(artifact_dir):
+    """The task fields of a 4.x run's state.json (schema 4), or None for any
+    other file: this version's runs, and ones `st.load` reports as unreadable."""
+    try:
+        state = json.loads((artifact_dir / st.STATE_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or state.get("schema") != 4:
+        return None
+    task = state.get("task") if isinstance(state.get("task"), dict) else {}
+    phases = state.get("phases") if isinstance(state.get("phases"), dict) else {}
+    statuses = [p.get("status") for p in phases.values() if isinstance(p, dict)]
+    ended = bool(statuses) and (all(s in st.COMPLETE for s in statuses)
+                                or "stopped" in statuses)
+    return {"Task": task.get("text", ""), "Ticket": st.ticket_line(task), "version": "4.x",
+            "ended": ended}
 
 
 def current_tree(repo):
@@ -170,7 +194,7 @@ def main(args):
         if mine[0][0] == "broken":
             unreadable(mine)
         return decide_one(mine[0], args)
-    open_runs = [i for i in found if i[0] == "v4" and st.resumable(i[3])]
+    open_runs = [i for i in found if i[0] == "run" and st.resumable(i[3])]
     if len(open_runs) == 1:
         return decide_one(open_runs[0], args)
     if len(open_runs) > 1:
@@ -178,20 +202,27 @@ def main(args):
              candidates=[f"{t} — {f.get('Task', '')}" for _, t, f, _ in open_runs])
         return 0
     unreadable(found)
-    old = [i for i in found if i[0] == "v3"]
+    old = [i for i in found if i[0] == "old" and not i[2].get("ended")]
     if len(old) == 1:
         return decide_one(old[0], args)
     emit(args.json, "ASK", "no open run to continue; ask the user what to work on",
-         candidates=[f"{t} — {f.get('Task', '')} (3.x run)" for _, t, f, _ in old])
+         candidates=[f"{t} — {f.get('Task', '')} ({f['version']} run)"
+                     for _, t, f, _ in old])
     return 0
 
 
 def decide_one(item, args):
     kind, tree, fields, state = item
-    if kind == "v3":
+    if kind == "old" and fields.get("ended"):  # nothing left to finish on 4.x
+        emit(args.json, "FINISHED", tree, run="ended on auto-dev 4.x",
+             task=fields.get("Task", ""))
+        return 0
+    if kind == "old":
+        version = fields["version"]
+        last = {"3.x": "3.9", "4.x": "4.27"}[version]
         emit(args.json, "OLD-VERSION", tree, task=fields.get("Task", ""),
-             action="this run was started on auto-dev 3.x; finish it on 3.9, or "
-                    "remove its worktree and start again on 4.x")
+             action=f"this run was started on auto-dev {version}; finish it on {last}, "
+                    "or remove its worktree and start again")
         return 0
     info = describe(tree, state)
     if info["run"] in ("finished", "stopped") and not st.resumable(state):
@@ -209,7 +240,6 @@ def start_session(tree, state):
     re-fires it)."""
     number, _ = st.first_open_phase(state)
     state["stage"] = st.STAGES[number]
-    state.pop("session", None)  # 4.x named the session; the stage replaces it
     for n, _ in st.PHASES:
         if st.phase(state, n)["status"] == "held":
             st.set_phase(state, n, "in-progress")

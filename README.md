@@ -79,8 +79,8 @@ orchestrator runs:
 | Phase | Worker | Output |
 |-------|--------|--------|
 | 1 Setup | orchestrator, profiler (first run on a repo) | detect repo, load the saved profile or research one and confirm it with you, resolve ticket, isolated worktree + branch (or the worktree you started in), `.auto-dev/` |
-| 2 Plan | planner + plan critic | `PLAN.md` — the ask, testable conditions, assumptions, security criteria, the **size check** (too big for one PR → back to you), the **risk tier** and the build steps; a fresh critic checks it against the ticket and the code, and the planner revises once |
-| 3 Tests | acceptance tester | `acceptance/` — a check per condition, proven to fail on the old code and **committed before the build**; then the post-plan gate when it is on (high risk, blockers left open, or the config) |
+| 2 Plan | planner + plan critic | `PLAN.md` — the ask, testable conditions, assumptions, security criteria, the **size check** (too big for one PR → back to you), the **risk tier** and the build steps; a fresh critic checks it against the ticket and the code, and the planner revises once; then the post-plan gate when it is on (high risk, blockers left open, or the config) |
+| 3 Tests | acceptance tester | `acceptance/` — a check per condition of the approved plan, proven to fail on the old code and **committed before the build** |
 | 4 Build | coder | code + tests from the plan, making the committed checks pass, and the profile's quality gate run to green |
 | 5 Gate | orchestrator (a script, no worker) | `autodev.py quality-gate` confirms the quality gate → `lint/` (red: one coder correction, then you decide); the risk tier re-checked from the diff |
 | 6 Ship | orchestrator, verifier + reviewer (high risk: 3 code reviewers + judge, security reviewer), triager | commit + **draft PR** first (CI starts there), then the verifier and the review on it alongside CI → `SPEC_EVAL.md`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md`; one correction takes what they left open and red CI (each committed on top), then the ready-for-review gate, the PR marked ready, merge to main + Jira Done, pausing at each gate |
@@ -182,7 +182,7 @@ weakening them. Verification is built around that:
 - **The quality gate, confirmed before the push.** The coder runs the
   profile's quality gate to green itself; then `autodev.py quality-gate` runs
   every check again, as a script with no worker, and writes its reports. A red
-  gate goes back to the coder once (a round); red again, the run stops and
+  gate goes back to the coder once (no round); red again, the run stops and
   asks you.
 - **An independent verifier that runs things.** Once the build is pushed as a
   draft PR, a fresh verifier, spawned with the review while CI runs,
@@ -775,10 +775,12 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 
 Autonomous but bounded:
 
-- **One iteration budget per task** (default 4 revise rounds) covers every
-  correction (a review pass's open findings and red CI share one), the
-  planner's one revision for the critic, every tester re-spawn for gaps
-  and every re-dispatched `BLOCKED` step, one round each. When the budget
+- **One iteration budget per task** (default 4 revise rounds) covers the
+  planner's one revision for the critic and every fix loop (a review pass's
+  open findings and red CI share one; people's comments, or red CI alone,
+  get their own), one round each. The tester's one more go for gaps, a red
+  gate's correction and a `BLOCKED` step's re-dispatch are free, once each:
+  the same again stops and asks you. When the budget
   runs out the run stops and names what is still open, except for review
   findings before the PR is marked ready: those go to the ready-for-review gate, which names each one,
   and you decide. To go on after a budget stop, say how many more rounds you

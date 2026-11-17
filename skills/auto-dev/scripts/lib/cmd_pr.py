@@ -11,14 +11,15 @@ of the same heading:
 
  - It refuses while the description still holds a `<!-- WRITE: ... -->` line
    (the Summary, the Assumptions, any section the repo's PR template adds and
-   the boxes of its checklist are yours to write), or while `pr-body --check`
-   finds a problem. Once the PR has a description, the template's checklist
+   the boxes of its checklist are yours to write), or while its lint
+   (cmd_ship.lint_body) finds a problem. Once the PR has a description, the template's checklist
    is the live one: its boxes and items stand, and are not checked again.
  - No PR yet: it looks for an open PR from this branch first and uses that one;
    otherwise it opens a draft PR to the base branch, titled with the commit's
    subject (or --title). There is never a second PR.
  - A PR already open: it reads the live description and replaces only the
-   sections the pipeline writes (Acceptance conditions, Quality gate, Review),
+   sections the pipeline writes (Acceptance conditions, Quality gate, Review,
+   and Overrides by the user),
    so the Summary, the Assumptions and any edit made on GitHub survive, and a
    box someone ticked under "Checks for a person" stays ticked.
  - Output too long for the description goes to one PR comment, edited in place
@@ -60,11 +61,16 @@ from pathlib import Path
 from . import artifacts as art
 from . import overrides
 from . import state as st
-from .cmd_ship import ARTIFACTS, SECRET_RE, gh_cannot_run  # shared with the ship steps
+from .cmd_ship import (  # shared with the ship steps
+    ARTIFACTS,
+    ATTRIBUTION,
+    BODY_LIMIT,
+    SECRET_RE,
+    gh_cannot_run,
+)
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
 
-BODY_LIMIT = 60000
 TAIL = 10
 WRITE_RE = re.compile(r"<!-- WRITE: .*?-->")
 WRITE_FILE = "pr-write.md"  # only the sections with a WRITE line, for the orchestrator
@@ -83,7 +89,6 @@ NOT_REVIEWED = [("Not reviewed yet. This draft opened as soon as the build passe
                 ("while the verifier and the review run; this section is "
                  "updated when they finish.")]
 COMMENT_HEAD = "Command output for commit"
-ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 # The last line of every body and comment the pipeline posts: the triager
 # skips a comment that carries it.
 MARKER = "<!-- auto-dev -->"
@@ -196,8 +201,11 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     if overridden:
         body.text("## Overrides by the user")
         body.text("The run stopped at these steps, and the user chose how it went on:")
+        # The user's own words, quoted: they may name a finding ID.
+        start = body.quote()
         for line in overridden:
             body.text(f"- {line}")
+        body.unquote(start)
         body.text("")
     for line in template_sections(find_template(wt)):
         body.text(line)
@@ -277,11 +285,11 @@ def splice_written(text, ad, slots=None):
     """The description with each section pr-write.md holds below SLOTS_MARK put
     in place of the section of the same heading (in order, when a heading
     repeats) that still holds a WRITE line; one already written in pr-body.md
-    (by hand, or by a session before 4.17) stands. Refused (UNWRITTEN, so the
+    by hand stands. Refused (UNWRITTEN, so the
     orchestrator fixes pr-write.md) when the mark line is gone, text sits
     between it and the first heading, a heading there is not one pr-write.md
-    was written with (`slots`, saved by generate; before 4.17, any of the
-    description's), or a section still holding a WRITE line has no section
+    was written with (`slots`, saved by generate), or a section still holding
+    a WRITE line has no section
     there. With no pr-write.md, the text as it is."""
     path = Path(ad) / WRITE_FILE
     if not path.exists():
@@ -298,7 +306,7 @@ def splice_written(text, ad, slots=None):
     mine = [(h, b) for h, b in split if h]
     sections = split_sections(text)
     have = Counter(h for h, _ in mine)
-    allowed = Counter(slots) if slots is not None else Counter(h for h, _ in sections if h)
+    allowed = Counter(slots or ())
     need = Counter(h for h, b in sections if h and WRITE_RE.search(b))
     problems = []
     for heading in have:
@@ -780,7 +788,7 @@ def quality_gate(body, ad, state):
 
 def review_lines(ad, state, ready=True):
     out = []
-    for name, label in (("CODE_REVIEW.md", "Code review (3 independent reviewers)"),
+    for name, label in (("CODE_REVIEW.md", "Code review"),
                         ("SECURITY_REVIEW.md", "Security review")):
         try:
             text = art.read(ad / name)
@@ -788,6 +796,9 @@ def review_lines(ad, state, ready=True):
             out.append(f"- {label}: not run")
             continue
         head = art.header_line(text, "**Overall confidence")
+        if name == "CODE_REVIEW.md":  # one reviewer, or the panel of three
+            solo = re.search(r"reviewers finished:\s*\d+/1\b", head)
+            label += " (one reviewer)" if solo else " (3 independent reviewers)"
         level = re.search(r"Overall confidence:\s*([A-Za-z]+)", head)
         reason = head.split("—", 1)[-1].strip() if "—" in head else ""
         counts = re.search(r"Must-fix:\s*(\d+) open · (\d+) fixed", text)
@@ -1170,8 +1181,15 @@ def existing_pr(wt, branch):
     return found[0]["number"] if found else None
 
 
+# A section the pipeline writes only when it applies: refreshed from the new
+# description, and dropped when the new one has none.
+OVERRIDES = "Overrides by the user"
+
+
 def merge_live(live, new):
-    """The live description with the pipeline's sections replaced from `new`."""
+    """The live description with the pipeline's sections replaced from `new`:
+    the strict ones, and the user's overrides (which can come after the draft
+    opened)."""
     if not live.strip():
         return new
     new_sections = split_sections(new)
@@ -1179,16 +1197,19 @@ def merge_live(live, new):
                                                                      "conditions"),
                             re.MULTILINE))
     out = []
+    owned = STRICT + (OVERRIDES,)
     for heading, body in split_sections(live):
         name = heading[3:].strip() if heading else ""
-        if name in STRICT:
+        if name == OVERRIDES and heading not in dict(new_sections):
+            continue
+        if name in owned:
             body = dict(new_sections).get(heading, body)
             if name == "Acceptance conditions":
                 body = keep_ticks(body, ticked)
         out.append((heading, body))
     present = {h for h, _ in out}
     for heading, body in new_sections:
-        if heading and heading[3:].strip() in STRICT and heading not in present:
+        if heading and heading[3:].strip() in owned and heading not in present:
             out.append((heading, body))
     text = "\n".join((f"{h}\n" if h else "") + b for h, b in out)
     # The attribution and the marker close the description, whatever moved.

@@ -1,6 +1,6 @@
 ---
 name: auto-dev-code-reviewer
-description: auto-dev pipeline only — Phase 6a code-review panelist (one of three). Runs /code-review on the changed files at the effort the plan sets (not on a correction's re-review) and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6 code-review panelist of a high-risk run (one of three). Runs /code-review on the changed files at the effort the plan sets (not on a correction's re-review) and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write, Skill

@@ -23,7 +23,7 @@ new one, as `commit`'s `git status --porcelain --untracked-files=all
 --expect list that names the old path could never match.
 
 An expected path that is neither on disk nor in HEAD is reported as IGNORED,
-not MISSING: it was only marked intent-to-add (Phase 5's `git add -N`) and then
+not MISSING: it was only marked intent-to-add (the review pass's `git add -N`) and then
 deleted, so the commit has nothing to record for it. That is safe only because
 --expect also requires that nothing outside .auto-dev/ is left changed but
 unstaged (UNSTAGED): a mistyped path is IGNORED, but the real one it should
@@ -191,7 +191,7 @@ def check() -> int:
 
     if expected is not None:
         missing = [p for p in expected if p not in staged]
-        # A file Phase 5 only marked intent-to-add and a later step deleted was
+        # A file a review pass only marked intent-to-add and a later step deleted was
         # never committed and is gone: there is nothing to stage for it.
         vanished = [p for p in missing if never_existed(top, p)]
         missing = [p for p in missing if p not in vanished]

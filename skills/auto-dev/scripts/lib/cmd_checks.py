@@ -10,9 +10,10 @@ check-manifest
     a check covering it or an `<n> (Edge)` row; no check's Level is below its
     condition's Verify by (unless the Level cell says why); every condition with
     checks has base-run/C<n>.txt with a Result for each check that fits its
-    kind (pass-to-pass passed, fail-to-pass failed, a repair `not re-run
-    (repair)`); and every check's file is in the worktree (the tester leaves
-    its checks there, and `next` commits them). A check's Result is the
+    kind (pass-to-pass passed, fail-to-pass failed, and `not re-run (repair)`
+    only for a check a tests commit already holds); and every check's file is
+    in the worktree (the tester leaves its checks there, and `next` commits
+    them). A check's Result is the
     base-run line for its exact test name, else the one line whose name
     contains it.
     Prints `OK: <n> condition(s) covered`, or `GAPS: <n> condition(s) with
@@ -128,7 +129,7 @@ def check_manifest(args):
                     and not explained:
                 gap(cid, f"a check is {have}, below Verify by {want}, with no reason")
         if checks:
-            gap_base_run(ad, cid, checks, gap)
+            gap_base_run(ad, cid, checks, gap, committed_checks(ad))
         for row in checks:
             path = art.check_path(row["Check (path :: test name)"])
             if not path:
@@ -146,7 +147,17 @@ def check_manifest(args):
     return 0
 
 
-def gap_base_run(ad, cid, checks, gap):
+def committed_checks(ad):
+    """The check files a tests commit already holds: only a check in one can
+    have been repaired (`not re-run (repair)`); a new check runs on the old code."""
+    try:
+        state = st.load(ad)
+    except st.StateError:
+        return set()
+    return {p for c in state.get("tests_commits") or [] for p in c.get("paths") or []}
+
+
+def gap_base_run(ad, cid, checks, gap, committed=frozenset()):
     path = ad / "acceptance" / "base-run" / f"C{cid}.txt"
     if not path.exists():
         gap(cid, f"no base-run/C{cid}.txt")
@@ -160,7 +171,9 @@ def gap_base_run(ad, cid, checks, gap):
         if result is None:
             gap(cid, f"base-run/C{cid}.txt has no Result for `{name}`")
         elif result.startswith("not re-run (repair)"):
-            continue
+            if art.check_path(cell) not in committed:
+                gap(cid, f"`{name}` says `not re-run (repair)`, but no tests commit holds "
+                         "it: a new check runs on the old code")
         elif kind == "pass-to-pass" and not result.startswith("passed"):
             gap(cid, f"`{name}` is pass-to-pass but did not pass on the old code")
         elif kind == "fail-to-pass" and not result.startswith("failed"):

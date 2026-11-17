@@ -18,7 +18,7 @@ see in the Build stage, in order:
 
 1. `coder` builds from the plan.
    - It may return `BLOCKED`: `next` sends the `planner` in blocked mode, then
-     the coder again (a round), or the acceptance tester first when the plan's
+     the coder again (no round), or the acceptance tester first when the plan's
      entry points changed.
    - When a plan step is wrong as written, the coder builds it the way that
      works and lists the deviation in `deviations/coder-<n>.md`. Nothing is
@@ -34,8 +34,7 @@ see in the Build stage, in order:
    and writes one `lint/<REPORT>.md` per check (the acceptance checks are in
    the tree already, committed before the build). Whatever it exits, run its
    `AFTER` line (`next`). `GREEN` ends the stage. `RED` sends the `coder` in
-   correction mode with the failing reports (a round; `BUDGET:` shows what's
-   left), then the gate again. Red again after that correction is a stop (#9):
+   correction mode with the failing reports (no round), then the gate again. Red again after that correction is a stop (#9):
    the user fixes it (the fixer, or themselves), retries (_I fixed it myself_
    runs the gate again), or signs the failing checks off, which counts them
    green for the rest of the run.

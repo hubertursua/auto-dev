@@ -174,17 +174,19 @@ see in the Plan stage, in order:
    only the revision. A blocker still open after that goes to the user at
    the post-plan gate; the workers don't loop. The critic can raise the risk tier,
    never lower it. You do nothing but spawn.
-4. `acceptance-tester`. It writes a check per condition as ordinary test files
+4. The post-plan gate (exit 5) when the task is high-risk, the critic left
+   blockers open (the gate lists them), or the repo turns it on: before any
+   check is written, so a revision the user asks for never leaves one stale.
+5. `acceptance-tester`. It writes a check per condition as ordinary test files
    in the worktree and shows each new-behavior check failing on the untouched
-   code. It may be spawned again for listed conditions, or send the `planner`
-   a question about a condition that reads two ways. Then `next` commits the
+   code. It may be spawned once more for gaps in what it wrote (a second set
+   of gaps stops), or send the `planner` a question about a condition that
+   reads two ways. Then `next` commits the
    checks as their own commit (`test: acceptance checks for <task>`), before
    any code, by itself: there is nothing to run. From then on `check-tests.py`
    guards every line that commit added.
    A worker whose result `next` refuses (a `RECORDED: … refused` line) is
    briefed again by that `next`, with the refused issues.
-5. The post-plan gate (exit 5) when the task is high-risk, the critic left
-   blockers open (the gate lists them), or the repo turns it on.
 6. Once the tests are written, `next` says the run goes on to the Build stage in
    this session: read `references/build.md`, as its `ACTION` says, then run `next`.
    Don't stop or hand off.

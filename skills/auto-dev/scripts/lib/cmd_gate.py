@@ -9,7 +9,8 @@ before anything is pushed by having the orchestrator run this, so no worker is
 spawned for it. It runs each check of the profile's `gate` (state.json's
 settings, confirmed in Phase 1) in order, exactly as written, in the worktree
 (the same runner as `autodev.py run gate <n>`), and writes one
-<artifact-dir>/lint/<REPORT>.md per check in the shape of templates/lint.md:
+<artifact-dir>/lint/<REPORT>.md per check in the shape of templates/lint.md
+(removing the report of a check the gate no longer has):
 the command, pass or fail, the last 20 lines of its output and the `Tree:`
 line of the code it checked. Every check runs, even after one fails. Each
 check's whole output is saved under <artifact-dir>/tmp/run/.
@@ -73,8 +74,7 @@ def run_all(ad, worktree, gate, timeout):
         tail = lines[-TAIL:]
         if code is None:
             tail = tail + [f"(stopped after {timeout:g}s)"]
-        results.append((str(check.get("report") or f"GATE-{n}.md"), command,
-                        code == 0, tail))
+        results.append((str(check["report"]), command, code == 0, tail))
     return results
 
 
@@ -120,6 +120,9 @@ def main(args):
     changing = tree != before
     lint = ad / "lint"
     lint.mkdir(parents=True, exist_ok=True)
+    for old in lint.glob("*.md"):  # a check the gate no longer has: its report goes
+        if old.name not in {r for r, _, _, _ in results}:
+            old.unlink()
     for report, command, passed, tail in results:
         (lint / report).write_text(report_text(report, command, passed and not changing,
                                                tail, tree), encoding="utf-8")
