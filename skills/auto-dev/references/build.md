@@ -59,9 +59,7 @@ Every stop is exit 4 with its reason in `REPORT`
 (`references/tables.md`, _Stop conditions_), and most ask how to go on
 (`SKILL.md`, _A stop_). The usual ones here:
 
-- the budget ran out before the quality gate's correction (#11): tell the user,
-  and that they can go on with more rounds if they say how many
-  (`references/tables.md`, _The iteration budget_);
 - the quality gate is still red after the coder's correction (#9);
 - the coder stopped a step and the planner found the conditions can't be met
-  as written (#8).
+  as written (#8), or the coder stopped a step again after the planner's
+  decision (#22).

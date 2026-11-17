@@ -102,10 +102,11 @@ class FixtureFilesTest(unittest.TestCase):
 
     def test_the_eval_suite_has_the_cases_where_the_user_decides(self):
         sessions = [e.get("session", "") for e in EVALS["evals"]]
-        for label in ("Build (spec problem: the run stops)",
-                      "Build (spec problem: fixed at the user's instruction)",
-                      "Ship (spec problem: a PR comment)", "Build (a deviation from the plan)",
-                      "Build (a check the tester rules right)"):
+        for label in ("Ship (spec problem: the run stops)",
+                      "Ship (spec problem: fixed at the user's instruction)",
+                      "Ship (spec problem: a PR comment)",
+                      "Build, Ship (a deviation from the plan)",
+                      "Ship (a check the tester rules right)"):
             self.assertTrue(any(s.startswith(label) for s in sessions), label)
 
     def test_each_state_fixture_has_its_generated_work_log(self):

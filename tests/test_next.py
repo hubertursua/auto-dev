@@ -973,7 +973,7 @@ class PlanTest(NextCase):
 
 class BuildTest(NextCase):
     def test_the_run_goes_straight_through_in_one_session(self):
-        # RELEASE-5.0, wave 2: plan, build and ship in one session. Each stage
+        # 5.0: plan, build and ship in one session. Each stage
         # starts with its runbook; no session ends, so no HANDOFF.md is written.
         events = self.state()["events"]
         self.plan_session()
@@ -1273,7 +1273,7 @@ class ShipTest(NextCase):
         self.correction_re_review()
 
     def test_the_first_push_and_the_draft_pr_come_before_any_review_spawn(self):
-        # RELEASE-5.0, wave 2: the done-when of the early draft PR.
+        # 5.0: the first push and the draft PR come before any review.
         self.draft_pr()
         state = self.state()
         self.assertFalse([b for b in state["briefs"] if b["worker"] in (
@@ -2465,7 +2465,7 @@ class LeanTest(NextCase):
         return at_push, self.spawns()
 
     def test_the_default_lane_holds_the_spawn_budget(self):
-        # RELEASE-5.0's target: at most 5 worker spawns to the first push and 7
+        # The spawn budget (CLAUDE.md): at most 5 worker spawns to the first push and 7
         # to ready-for-review. A PR that adds a step raises these on purpose.
         at_push, at_ready = self.walk_to_ready("APPROVE")
         self.assertLessEqual(at_push, 5)

@@ -75,6 +75,7 @@ reports, except #11, #19 and a merge whose outcome is unknown, comes with a
 | 19 | the user chose Stop at a gate or pause | `gate … stop` |
 | 20 | a later worker found a PLAN.md condition or criterion wrong or missing (the verifier, the reviewer, the review judge, a security reviewer, or the triager from a PR comment): the report names each item from `spec-problems/<worker>-<n>.md`. Workers never change the plan's conditions; the user decides, and a sign-off keeps it as written | `next`, on a result with `spec_problems` |
 | 21 | the acceptance tester ruled a check right as written (STANDS) that the verifier, a review finding or a PR comment called wrong: the report names both sides. A sign-off keeps the check as written | `next` |
+| 22 | a free step came round a second time: the acceptance checks still have gaps after the tester's one more go, a condition still reads two ways after the planner's decision, or the coder stopped a step again after the planner's decision in the same change | `next` |
 
 ## Hold and Stop
 

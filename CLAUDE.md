@@ -68,7 +68,10 @@ that a script can check, add it there.
   `tests/test_eval_run.py` (`tools/eval-run.py`) or
   `tests/test_eval_fixtures.py` (the eval fixtures;
   regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
-  tests.test_eval_fixtures`), and check that it fails without your change. Tests run the script as a subprocess,
+  tests.test_eval_fixtures`), and check that it fails without your change. A
+  library step `next` runs in-process, with no subcommand of its own (the PR
+  body's generate and lint, a gate's summary), is tested through
+  `tests/lib_cli.py`. Tests run the script as a subprocess,
   the way the pipeline does, and build throwaway git repos in a temp dir. A
   command that calls `gh` is tested against `tests/fake_gh/gh`, which plays
   back the responses the test scripts; never call the real GitHub from a test.
@@ -193,8 +196,18 @@ wrong about something? If yes, fix the README.
 - **Briefs and results.** Each `{{slot}}` in an agent file is listed as AUTO,
   CALLER or OPTIONAL in `skills/auto-dev/scripts/lib/briefs.py`, and each agent
   file's `auto-dev-result` block lists exactly the `next` tokens `RESULTS` gives
-  it there. `tools/check-repo.py` checks both, and that every template a script
-  parses or an agent names exists.
+  it there; `MODE_RESULTS` narrows them per mode, as the agent file's prose
+  says. `tools/check-repo.py` checks the slots and `RESULTS`, and that every
+  template a script parses or an agent names exists.
+- **The spawn budget.** A default-lane happy path (standard risk, the critic
+  approves, every worker ok the first time) takes at most 5 worker spawns to
+  the first push and 7 to ready-for-review; today 4 and 6: the planner, the
+  plan critic, the acceptance tester and the coder, then the verifier and the
+  reviewer. One plan revision adds the revision and the critic's re-check (6
+  and 8). `LeanTest` in `tests/test_next.py` walks both paths and pins the
+  counts. A PR that adds a spawn to that path raises the
+  numbers in the test on purpose, says so in its Summary, and updates the
+  README's *Size check*; never add a step to the happy path without it.
 
 ## Branches, commits and PRs
 

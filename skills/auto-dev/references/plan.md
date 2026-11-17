@@ -200,4 +200,6 @@ Every stop is exit 4 with its reason in `REPORT`, and most ask how to go on
 (`SKILL.md`, _A stop_). The full list is
 `references/tables.md`, _Stop conditions_. The usual ones here: OVERSIZED,
 no round left for the plan's revision (the user can add rounds: `SKILL.md`,
-_The loop_), a worker that didn't return ok twice.
+_The loop_), a worker that didn't return ok twice, and the acceptance checks
+still having gaps after the tester's one more go, or a condition still reading
+two ways after the planner's decision (#22).

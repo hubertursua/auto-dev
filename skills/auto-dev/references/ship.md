@@ -18,7 +18,7 @@ see in the Ship stage, in order:
 
 1. Commit, push, the PR body and `pr publish`: steps 3–5 below. The build,
    its quality gate green, opens as a **draft PR before any review**, so CI starts on it while
-   the reviews run; its description says it is not reviewed yet. With
+   the reviews run; its description says it is not verified or reviewed yet. With
    `gates.open_pr: true` in `.auto-dev.yml`, the open-the-PR gate asks first
    (exit 5): `Open PR`, `Hold (don't push yet)` or `Stop`.
 2. The first review pass, on the draft's commit: the
