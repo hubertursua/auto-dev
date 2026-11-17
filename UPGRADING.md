@@ -65,6 +65,16 @@ took 14 or more and two session restarts.
   `install-checks`, `apply-fix`, `spec-overlap`, `review-scope`,
   `verify prep --pass`, `budget spend --consumer` and `gate … --condition`;
   `next` runs what is left of those steps itself.
+- **A worker still out is waited for, not spawned again.** `next` used to
+  send a brief with no result file out again on every call, so a `next` run
+  before a background worker returned started a second one in the same
+  worktree. Now it answers `wait` (naming the worker) while the brief was sent
+  out in this session, after the latest retry at a stop and less than 3 hours
+  ago, and sends it out again only after a new session, a retry at a stop, 3
+  hours, or `next --reissue` (once every agent the wait names returned
+  without a result). A lone agent is spawned in the foreground
+  (`run_in_background: false`). A 5.0 run in flight resumes on it: `resume`
+  starts a new session, so a brief from before it is sent out again as before.
 - **Resume:** a run started on 4.x can't resume on 5.0 (`state.json` schema
   5): `resume` reports it as `OLD-VERSION`. Finish it on 4.27, or remove its
   worktree and start again.

@@ -274,7 +274,11 @@ only when it stopped, or has something the user must be told). `next` records
 each result itself before it decides, checking it against the worker's files,
 so a worker costs no extra orchestrator turn; a refused one goes back to the same
 worker, which fixes the listed issues in what it wrote rather than redoing the
-job. `next` ends a long
+job. `next` never sends a brief out twice while its worker may still be
+running: it answers wait until the result is there, and sends the brief out
+again only in a new session, after a retry at a stop, after 3 hours, or when
+the orchestrator says every agent it waits for returned without a result
+(`next --reissue`). A lone worker is spawned in the foreground. `next` ends a long
 session at a **checkpoint** after 80 recorded events (about 35 workers;
 `checkpoint_events` in `.auto-dev.yml` changes it). There it writes
 `.auto-dev/HANDOFF.md` and stops; start a fresh session and say `auto-dev

@@ -1,7 +1,7 @@
 """autodev.py next — print the pipeline's one next action.
 
 Usage:
-    autodev.py next [--dir <artifact-dir>] [--explain] [--json]
+    autodev.py next [--dir <artifact-dir>] [--explain] [--reissue] [--json]
 
 Reads state.json (the workers' recorded results, the briefs issued, the
 gates, the marks and the Phase 6 fields) and the artifacts, and
@@ -11,8 +11,11 @@ command, then run `next` again. It never needs you to judge a file.
 It records the workers' results itself first: each issued brief whose result
 file exists and isn't recorded yet is recorded as `autodev.py record` would
 (one it can't accept is refused, its issues saved for the retry), so spawned
-workers need no `record` call. A brief with no result file is issued again as
-it is. Run `next` only once every agent of the last spawn returned.
+workers need no `record` call. A brief with no result file is waited for
+while its worker may still be running: the ACTION starts with `wait`, names
+it, and spawns nothing. Run `next` only once every agent of the last spawn
+returned; `next --reissue` sends such a brief out again, and is for when
+every agent the wait names returned without writing its result file.
 
 It does the mechanical steps itself rather than asking you to: it writes the
 brief of the worker to spawn, spends a round of the budget before a plan
@@ -110,12 +113,17 @@ instead. A new session says `auto-dev continue` and picks up where this one
 stopped; resuming after a checkpoint lifts no stop, since nothing was fixed in
 between.
 
-A brief issued but not yet recorded is re-issued as the same spawn (after a
-cut-off session, say); one `next` refused is re-issued as a new brief that
-carries the refused issues (as `brief --retry <n>` writes). Spawned three
-times with no usable result, it stops. A stop on a worker (blocked, failed
-twice, never returned) is lifted by `resume`: the next session spawns that
-worker again. A stop on a result (a red quality gate, an impossible spec)
+A brief issued but not yet recorded is waited for while it was sent out in
+this session, after the latest retry at a stop and less than 3 hours ago
+(IN_FLIGHT_HOURS). It is re-issued as the same spawn after a new session (a
+cut-off session, say), after a retry at a stop (`override retry`, or a
+fixer's FIXED), once 3 hours have passed, or with `--reissue`; while any
+brief is waited for, nothing is re-issued. One `next` refused is re-issued
+as a new brief that carries the refused issues (as `brief --retry <n>`
+writes). Spawned three times with no usable result, it stops; a brief that
+stop ended is no longer waited for, so the stop is asked again. A stop on a
+worker (blocked, failed twice, never returned) is lifted by `resume`: the
+next session spawns that worker again. A stop on a result (a red quality gate, an impossible spec)
 comes back until the user overrides it. Every stop but the budget's, a gate's
 Stop, a failed setup and a merge of unknown outcome prints a QUESTION and is
 saved as state["stop"]: `autodev.py override` records the answer (the fixer
@@ -132,6 +140,7 @@ import re
 import shlex
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import artifacts as art
@@ -165,6 +174,9 @@ from .proc import git, run
 SCRIPTS = Path(__file__).resolve().parent.parent
 AUTODEV = SCRIPTS / "autodev.py"
 MAX_EMITS = 3
+# A brief sent out this long ago with no result is sent out again unasked: a
+# backstop for a worker lost without a notification.
+IN_FLIGHT_HOURS = 3
 CHECKPOINT_EVENTS = 80  # about 35 workers; tune on the fixture repo
 SLOTS = ("R1", "R2", "R3")
 SECURITY = ("security-reviewer", "security-reviewer-sensitive")
@@ -185,6 +197,10 @@ def add_arguments(parser):
     parser.add_argument("--explain", action="store_true",
                         help="print the action and the rule that chose it, changing "
                              "nothing")
+    parser.add_argument("--reissue", action="store_true",
+                        help="send out again every brief that has no result yet, even "
+                             "one sent out in this session: only once every agent it "
+                             "was sent to returned without writing its result file")
 
 
 def q(value):
@@ -216,6 +232,7 @@ class Ctx:
         self.quiet = False  # state["stop"] changed: saved, but not an event of its own
         self.recorded = []  # the RECORDED lines of the results this call recorded
         self.readonly = bool(getattr(args, "explain", False))
+        self.reissue = bool(getattr(args, "reissue", False))
         self.probing = False
         self.peeked = {}
         self.prev_stopped = None  # the budget stop the last `next` saved, if any
@@ -369,10 +386,14 @@ def spawn_lines(agents, briefs_, prompts, rule, budget=None, efforts=None):
     """efforts, when any is set, parallels agents ("" for an agent spawned at its
     own effort). No AFTER line: the next `next` records what they return."""
     efforts = efforts if efforts and any(efforts) else None
-    what = (f"spawn {agents[0]} with the PROMPT" if len(agents) == 1 else
-            f"spawn these {len(agents)} agents in one message, in parallel, each "
-            "with its PROMPT")
-    what += "; once every agent returned, run `next` (it records their results)"
+    if len(agents) == 1:
+        what = (f"spawn {agents[0]} with the PROMPT, in the foreground (the Agent "
+                "tool's `run_in_background: false`); once it returned, run `next` "
+                "(it records its result)")
+    else:
+        what = (f"spawn these {len(agents)} agents in one message, in parallel, each "
+                "with its PROMPT; once every agent returned, run `next` (it records "
+                "their results)")
     if efforts:
         what += ", passing its EFFORT as the Agent tool's `effort` parameter"
     return action(what, rule, AGENT=agents, BRIEF=briefs_, PROMPT=prompts,
@@ -733,7 +754,8 @@ def record_returns(c):
     """Record every issued brief whose result file exists and is not logged yet,
     as `autodev.py record` would: one it can't accept is refused and its issues
     saved for the retry `pending_briefs` writes. A brief with no result file is
-    left to `pending_briefs`, which issues it again as it is. One line per job.
+    left to `pending_briefs`, which waits for it while it is in flight and
+    otherwise issues it again as it is. One line per job.
     Under --explain it records nothing (recording a tester's result writes
     files): it says it would record them first, and stops there."""
     done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
@@ -850,22 +872,78 @@ def size_check(c):
     return ["The planner's size check (PLAN.md):", *lines]
 
 
+def issued(b):
+    """When brief entry `b` was last sent out: (UTC ISO time, event seq). A
+    re-issue stamps issued_at / issued_seq; the first issue is the entry's own
+    at / seq."""
+    return b.get("issued_at") or b.get("at"), b.get("issued_seq", b.get("seq", 0))
+
+
+def in_flight(c, b):
+    """Whether open brief `b`'s worker may still be running: sent out in this
+    session, after the latest retry that lifted a stop, less than
+    IN_FLIGHT_HOURS ago, with no result file, not refused, and not ended by the
+    "spawned 3 times" stop."""
+    if (c.ad / "returns" / f"{b['worker']}-{b['n']}.json").exists():
+        return False
+    if cmd_work.job(b["worker"], b["n"]) in c.state.get("refused", {}):
+        return False
+    at, seq = issued(b)
+    if b.get("stopped_seq", 0) > seq:
+        return False
+    if seq < max(c.state.get("session_seq", 0), c.state.get("lifted_seq", 0)):
+        return False
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(at)
+    except (ValueError, TypeError):  # unreadable, or a naive time: stale
+        return False
+    return age.total_seconds() < IN_FLIGHT_HOURS * 3600
+
+
+def wait_for(c, out):
+    """The answer while briefs `out` are in flight: spawn nothing, and wait."""
+    names = ", ".join(f"{b['worker']} #{b['n']} (sent out {issued(b)[0]})" for b in out)
+    return action(
+        f"wait: {names} {'has' if len(out) == 1 else 'have'} not returned yet and "
+        "may still be running. Spawn "
+        "nothing; once every agent you spawned has returned, run `next`. Run "
+        f"`{c.cmd('next', '--reissue')}` only once every agent this wait names has "
+        "returned and `next` still names it (it wrote no result file): it sends that "
+        "brief out again",
+        "a brief sent out in this session has no result yet: its worker may still "
+        "be running")
+
+
 def pending_briefs(c):
-    """Re-issue the briefs issued after the last recorded result and not recorded.
+    """Re-issue the briefs issued after the last recorded result and not recorded,
+    unless one is still in flight (sent out in this session, after the latest
+    lifting retry, less than IN_FLIGHT_HOURS ago): then wait, unless --reissue.
 
     A job `record` refused (MISSING, MALFORMED, MISMATCH) is re-spawned as
     `brief --retry <n>` would: a new brief whose previous_issues carries the
     issues, replacing the old one."""
     done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
-    issued = c.state.get("briefs", [])
-    open_ = [b for b in issued if (b["worker"], b["n"]) not in done
+    issued_ = c.state.get("briefs", [])
+    open_ = [b for b in issued_ if (b["worker"], b["n"]) not in done
              and not b.get("retried_as")]
     if not open_:
         return None
+    if not c.reissue:
+        out = [b for b in open_ if in_flight(c, b)]
+        if out:
+            return wait_for(c, out)
     refused = c.state.get("refused", {})
     for i, b in enumerate(open_):
         tries = b.get("emitted", 1) + 1
         if tries > MAX_EMITS:
+            if not c.readonly:
+                # The stop ends these spawns: none is waited for, so the stop is
+                # asked again (after talk, leave, or a fixer's proposal).
+                for x in open_:
+                    if x.get("emitted", 1) >= MAX_EMITS and \
+                            x.get("stopped_seq", 0) <= issued(x)[1]:
+                        x["stopped_seq"] = c.seq()
+                        c.quiet = True
             return stop([(f"{b['worker']} #{b['n']} was spawned {MAX_EMITS} times and "
                          "never left a result that `next` accepts. Tell the user; its "
                          f"brief is {c.ad}/briefs/{b['worker']}-{b['n']}.md. Once the "
@@ -883,6 +961,7 @@ def pending_briefs(c):
             open_[i] = new
         else:
             b["emitted"] = tries
+            b["issued_at"], b["issued_seq"] = st.now(), c.seq()
             cmd_work.fresh_tree(c.state, b)  # what changed since is not this spawn's
         c.dirty = True
     agents = [f"auto-dev:{b['worker']}" for b in open_]

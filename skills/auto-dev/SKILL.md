@@ -115,7 +115,7 @@ Its exit code says what kind of step it is:
 
 | Exit | Meaning | Do |
 |---|---|---|
-| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned (not on the first agent's notification). A command in backticks: run it. Then the `AFTER` lines |
+| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3): a single `AGENT` in the foreground (the Agent tool's `run_in_background: false`); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned (not on the first agent's notification). An `ACTION` that starts with `wait`: a worker is still out; spawn nothing, and run `next` once every agent you spawned has returned. Only once every agent the wait names has returned and `next` still names it, run the `next --reissue` command it names; while any of them is still running, never. A command in backticks: run it. Then the `AFTER` lines |
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed. With a `QUESTION`, the user decides how to go on (_A stop_, below); without one, stop. Do nothing more (one exception: more rounds after a budget stop, below) |
@@ -169,7 +169,9 @@ runbook of the stage you are in.
 available agents list: `auto-dev:auto-dev-<worker>` (plugin install),
 `auto-dev:<worker>`, or `auto-dev-<worker>` (agents symlinked into
 `~/.claude/agents/`). If none exists, stop and tell the user to install the
-plugin. Each worker's model and tools are fixed by its agent file:
+plugin. A spawn of one agent (a lookup too) goes in the foreground
+(`run_in_background: false`), so you hear back before your next step. Each
+worker's model and tools are fixed by its agent file:
 
 | Worker | Agent type | Model · effort |
 | ------ | ---------- | -------------- |
