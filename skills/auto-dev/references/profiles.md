@@ -189,8 +189,9 @@ Guidance to show (adapt the paths):
 > - The `autodev.py` rule also covers `autodev.py run`, which workers use to
 >   run this profile's gate and test commands in the worktree. It runs only
 >   the commands in the profile you confirmed, never one a worker writes. A
->   worker can add arguments after `--`, each quoted as one argument, so
->   they can narrow a command but never chain another.
+>   worker can add arguments after `--`, each quoted as one argument: no
+>   shell syntax, though the command's own options (a config file, a setup
+>   script) still reach its tool.
 > - One rule per script, so any can be left out. The `autodev.py` rule also
 >   covers the test-integrity audit and mutation testing: `autodev.py verify
 >   prep` runs `check-tests.py`, and `autodev.py mutants run` runs `mutate.py`,

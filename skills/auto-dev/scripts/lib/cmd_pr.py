@@ -224,7 +224,7 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     # the region whole) and each gate command, as clean() left it in the text.
     # The lint skips each one.
     copied = {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} | \
-        {f"`{g['command']}`" for g in state["settings"].get("gate", [])}
+        {f"`{cmd_run.with_args(g['command'], ())}`" for g in state["settings"].get("gate", [])}
     state["phase6"]["verbatim"] = sorted(
         {s for s in (clean(x, wt) for x in copied) if s.strip("*`") and s in text})
     # The headings pr-write.md is written with: splice takes no others.

@@ -517,8 +517,8 @@ permission check refuses. A check can also give a scoped form (`files`, with
 changed or wrote; the profiler looks for one. A worker can also pass the
 command its own arguments after `--` (`autodev.py run test --files <path> --
 <arg> …`), such as a test-name filter or a `<path>:<line>` target. Each is
-quoted as one argument and goes where the command has `<args>`, else at its
-end, so it can narrow the profile's command but never run another.
+quoted as one argument (never shell syntax) and goes where the command has
+`<args>`, else at its end.
 
 ### Where saved profiles live
 

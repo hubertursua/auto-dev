@@ -62,6 +62,7 @@ Exit codes:
 
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -168,23 +169,35 @@ def relative_paths(worktree, files):
 
 def quote(words):
     if os.name == "nt":  # cmd.exe: double quotes, and no word it would expand
-        bad = [w for w in words if '"' in w or "%" in w]
+        # (a trailing backslash would escape the closing quote)
+        bad = [w for w in words if '"' in w or "%" in w or w.endswith("\\")]
         if bad:
-            raise Fail(f"{bad[0]}: an argument with `\"` or `%` can't be passed safely "
-                       "on Windows", CANNOT_RUN, "ERROR")
+            raise Fail(f"{bad[0]}: an argument with `\"` or `%`, or ending in `\\`, "
+                       "can't be passed safely on Windows", CANNOT_RUN, "ERROR")
         return " ".join(f'"{w}"' for w in words)
     return " ".join(shlex.quote(w) for w in words)
 
 
-def with_args(command, extra):
+def fill(command, values):
+    """The command with each placeholder in `values` replaced in one pass, so
+    a value that contains a placeholder is never filled in again. A
+    placeholder with an empty value goes, with the space before it."""
+    def sub(m):
+        value = values[m.group(2)]
+        return m.group(1) + value if value else ""
+    pattern = "|".join(re.escape(k) for k in values)
+    return re.sub(rf"( ?)({pattern})", sub, command)
+
+
+def with_args(command, extra, filled=None):
     """The command with the caller's extra arguments, quoted, where it has
-    ARGS_PLACEHOLDER, else at its end."""
-    if not extra:  # the placeholder goes, with the space before it
-        return command.replace(" " + ARGS_PLACEHOLDER, "").replace(ARGS_PLACEHOLDER, "")
-    words = quote(extra)
-    if ARGS_PLACEHOLDER in command:
-        return command.replace(ARGS_PLACEHOLDER, words)
-    return f"{command} {words}"
+    ARGS_PLACEHOLDER, else at its end; `filled` gives other placeholders'
+    values (<files>), replaced in the same pass."""
+    words = quote(extra) if extra else ""
+    values = {**(filled or {}), ARGS_PLACEHOLDER: words}
+    if words and ARGS_PLACEHOLDER not in command:
+        return f"{fill(command, values)} {words}"
+    return fill(command, values)
 
 
 def command_for(n, check, worktree, files, extra=()):
@@ -198,8 +211,7 @@ def command_for(n, check, worktree, files, extra=()):
         raise Fail(f"gate check {n} (`{check.get('command', '')}`) has no scoped form: "
                    f"the profile gives it no `files` command with {PLACEHOLDER}, so "
                    f"it can only run whole (drop --files)", CANNOT_RUN, "ERROR")
-    return with_args(form.replace(PLACEHOLDER, quote(relative_paths(worktree, files))),
-                     extra)
+    return with_args(form, extra, {PLACEHOLDER: quote(relative_paths(worktree, files))})
 
 
 def output_file(ad, out, label):

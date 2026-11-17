@@ -2422,6 +2422,13 @@ class RunCommandTest(unittest.TestCase):
         self.assertIn("['all', 'end']", r.stdout)
         r = self.run_("test", "--show")
         self.assertNotIn("<args>", r.stdout)
+        # A path that names a placeholder is never filled in again.
+        (self.wt / "src" / "<args>.ts").write_text("z\n")
+        self.gate[2]["files"] = self.gate[2]["files"].replace("<files>", "<files> <args>")
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        r = self.run_("test", "--files", "src/<args>.ts", "--", "-k", "x")
+        self.assertIn("['some', 'src/<args>.ts', '-k', 'x', '--verbose']", r.stdout)
 
     def test_without_state_it_could_not_run(self):
         (self.ad / "state.json").unlink()
