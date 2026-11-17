@@ -5082,3 +5082,599 @@ class OverrideShipTest(OverrideCase):
                                         cwd=self.worktree).split() + self.sh(
             "git", "ls-files", "--others", "--exclude-standard",
             cwd=self.worktree).split()), ["coder.ts", "fixer.ts"])
+
+
+# A saved profile for the setup tests: two gate checks, so a lookup can find
+# one of them never adopted.
+SAVED_PROFILE = """\
+stack: typescript
+setup: ["echo ready > setup-ran.txt"]
+gate:
+  - { kind: test, command: "true", report: "TEST.md" }
+  - { kind: lint, command: "npx eslint .", report: "LINT.md" }
+"""
+BOTH_ADOPTED = "check 1: adopted — package.json:9\ncheck 2: adopted — .eslintrc.json:1\n"
+PROFILER_DRAFT = """\
+stack: typescript
+setup: ["echo ready > setup-ran.txt"]
+gate:
+  - { kind: test, command: "true", report: "TEST.md" }
+"""
+PROFILER_REPORT = ("PROFILE\n```yaml\n" + PROFILER_DRAFT + "```\n"
+                   "EVIDENCE\n- true: package.json:9\n"
+                   "NOT ADOPTED — eslint: no config file or dependency\n"
+                   "NOT INSTALLED — jq: not on PATH\n"
+                   "QUESTIONS — the e2e suite in CI is left out of the gate; keep it out?\n")
+FULL_OVERRIDE = 'setup: ["true"]\ngate:\n  - { kind: test, command: "true", report: "TEST.md" }\n'
+
+
+class SetupFlowTest(RunCase):
+    """`next --repo <repo> --task <task>` sets a run up before it exists: it
+    prints the lookup or profiler to spawn and the profile question, then
+    creates the run. The origin looks like GitHub (a throwaway git config
+    rewrites it to the local bare repo), so profile-path.py names a saved
+    profile under AUTO_DEV_PROFILES_DIR; TMPDIR is the test's own folder."""
+
+    TASK = "Add due dates to todos"
+    OPTIONS = ("Looks right — save it for this repo", "Looks right — use it for this run only",
+               "Change something (tell me what)", "Stop")
+
+    def setUp(self):
+        super().setUp()
+        self.temp = self.tmp / "tmpdir"
+        self.temp.mkdir()
+        self.profiles = self.tmp / "profiles"
+        gitconfig = self.tmp / "gitconfig"
+        gitconfig.write_text(f'[url "file://localhost{self.tmp / "origin.git"}"]\n'
+                             "\tinsteadOf = https://github.com/acme/app.git\n")
+        self.env.update(TMPDIR=str(self.temp), AUTO_DEV_PROFILES_DIR=str(self.profiles),
+                        GIT_CONFIG_GLOBAL=str(gitconfig))
+        self.sh("git", "remote", "set-url", "origin", "https://github.com/acme/app.git",
+                cwd=self.repo)
+        r = subprocess.run([sys.executable, str(SCRIPTS / "profile-path.py"), str(self.repo)],
+                           capture_output=True, text=True, env=self.env, check=False)
+        self.assertIn(r.returncode, (0, 1), r.stdout + r.stderr)
+        self.saved = Path(r.stdout.splitlines()[0].split(": ", 1)[1])
+        self.worktree = self.tmp / "app-add-due-dates-to-todos"
+        self.dir = self.worktree / ".auto-dev"
+        self.outs = []
+
+    # -------------------------------------------------------------- driving
+
+    def setup_next(self, *extra, task=None, wait="5", expect=None):
+        r = self.autodev("next", "--repo", self.repo, "--task", task or self.TASK,
+                         "--max-wait", wait, *extra, "--json")
+        try:
+            out = json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --repo printed no JSON (exit {r.returncode}):\n"
+                      f"{r.stdout}{r.stderr}")
+        self.outs.append(out)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), r.returncode, shown)
+        if expect is not None:
+            self.assertEqual(out.get("exit"), expect, shown)
+        return out
+
+    def next_dir(self, expect=None):
+        r = self.autodev("next", "--dir", self.dir, "--json")
+        try:
+            out = json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --dir printed no JSON (exit {r.returncode}):\n"
+                      f"{r.stdout}{r.stderr}")
+        if expect is not None:
+            self.assertEqual(out.get("exit"), expect, json.dumps(out, indent=2))
+        return out
+
+    def brief(self, out, worker):
+        """The slot values of the one `worker` brief `out` spawns."""
+        self.assertEqual(out.get("AGENT"), [f"auto-dev:{worker}"], json.dumps(out, indent=2))
+        path = Path(out["BRIEF"][0])
+        values, name = {"path": str(path)}, None
+        for line in path.read_text().splitlines()[1:]:
+            if line.startswith("  ") and name:
+                values[name] += "\n" + line[2:]
+            else:
+                name, _, value = line.partition(": ")
+                values[name] = value
+        return values
+
+    def returns(self, values, worker, status, answer, **data):
+        answer_file = values.get("answer_file") or values["result_file"][:-5] + "-answer.md"
+        if answer is not None:
+            Path(answer_file).write_text(answer)
+        Path(values["result_file"]).write_text(json.dumps(
+            {"worker": worker, "status": status, **data}))
+
+    def lookup_answers(self, out, answer, status="ok", nxt="ANSWERED"):
+        values = self.brief(out, "lookup")
+        self.returns(values, "lookup", status, answer, next=nxt,
+                     answer_file=values.get("answer_file", "none"))
+        return values
+
+    def profiler_returns(self, out, draft=PROFILER_DRAFT, status="ok"):
+        values = self.brief(out, "profiler")
+        Path(values["draft_path"]).write_text(draft)
+        self.returns(values, "profiler", status, PROFILER_REPORT, next="CONFIRM",
+                     draft=values["draft_path"], questions="1")
+        return values
+
+    def to_question(self, task=None):
+        self.profiler_returns(self.setup_next(task=task, expect=0))
+        return self.setup_next(task=task, expect=5)
+
+    def with_saved_profile(self, answer, text=SAVED_PROFILE, **kw):
+        """A saved profile, its lookup answered with `answer`; the next `next`."""
+        self.save_profile(text)
+        self.lookup_answers(self.setup_next(expect=0, **kw), answer)
+        return self.setup_next(**kw)
+
+    def save_profile(self, text=SAVED_PROFILE):
+        self.saved.parent.mkdir(parents=True, exist_ok=True)
+        self.saved.write_text(text)
+
+    def commit_override(self, text):
+        seed = self.tmp / "seed"
+        (seed / ".auto-dev.yml").write_text(text)
+        self.sh("git", "add", ".auto-dev.yml", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "override", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "pull", "-q", "--ff-only", "origin", "main", cwd=self.repo)
+
+    def options(self, out):
+        return tuple(o["label"]
+                     for o in json.loads(out["QUESTION"])["questions"][0]["options"])
+
+    def answer_with(self, out, label, text="drop the lint check"):
+        """Run the AFTER line for `label`, its placeholder filled with `text`."""
+        line = next((ln.split(" → ", 1)[1] for ln in out.get("AFTER", [])
+                     if ln.startswith(f'"{label}"')), None)
+        self.assertIsNotNone(line, json.dumps(out, indent=2))
+        line = re.sub(r"'<[^']*>'", lambda _: shlex.quote(text), line)
+        return subprocess.run(line, shell=True, capture_output=True, text=True,
+                              env=self.env, cwd=self.tmp, check=False)
+
+    def answered(self, out, label, text="drop the lint check"):
+        r = self.answer_with(out, label, text)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def ready(self, out, worktree=None):
+        """`out` is the action to move into a created run's worktree."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        after = out.get("AFTER", [])
+        self.assertEqual(len(after), 1, shown)
+        argv = shlex.split(after[0])
+        self.assertEqual(argv[:4], ["python3", str(AUTODEV), "next", "--dir"], shown)
+        self.assertEqual(len(argv), 5, shown)
+        ad = Path(argv[4])
+        if worktree is not None:
+            self.assertEqual(ad, worktree / ".auto-dev", shown)
+        self.worktree, self.dir = ad.parent, ad
+        self.assertTrue((ad / "state.json").exists(), shown)
+        self.assertIn(str(ad.parent), out.get("ACTION", ""), shown)
+
+    def to_the_planner(self):
+        for _ in range(3):
+            out = self.next_dir(0)
+            if out.get("AGENT"):
+                self.assertEqual(out["AGENT"], ["auto-dev:planner"], json.dumps(out, indent=2))
+                return out
+        self.fail("next --dir never spawned the planner")
+
+    def profile_line(self):
+        for line in (self.dir / "profile.md").read_text().splitlines():
+            if line.startswith("- **Profile:** "):
+                return line[len("- **Profile:** "):]
+        self.fail("profile.md has no Profile line")
+
+    def gate(self):
+        return [check["command"] for check in self.state()["settings"]["gate"]]
+
+    def work_log(self):
+        return (self.dir / "WORK_LOG.md").read_text()
+
+    def summary(self, out):
+        return "\n".join(out.get("SUMMARY", []))
+
+    def no_run_made(self):
+        self.assertEqual(sorted(p.name for p in self.tmp.glob("app-*")), [])
+
+    def worker_briefs(self):
+        return sorted(p.name for p in self.temp.rglob("*.md")
+                      if re.match(r"(profiler|lookup)-\d+\.md$", p.name))
+
+    def failed_setup(self):
+        """A saved profile whose setup is `false`: the run is made and stops."""
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        out = self.with_saved_profile(BOTH_ADOPTED, text=self.saved.read_text())
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        report = "\n".join(out.get("REPORT", []))
+        for part in ("false", "exited 1", str(self.saved)):
+            self.assertIn(part, report)
+        self.assertTrue((self.dir / "state.json").exists())
+        return out
+
+    # -------------------------------------------------------------- a saved profile
+
+    def test_a_saved_profile_sets_up_the_run_after_one_lookup(self):
+        self.save_profile()
+        out = self.setup_next(expect=0)
+        self.assertIn("npx eslint .", self.lookup_answers(out, BOTH_ADOPTED)["question"])
+        out = self.setup_next(expect=0)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.state()["branch"], "feat/add-due-dates-to-todos")
+        self.assertEqual(self.sh("git", "branch", "--show-current", cwd=self.worktree).strip(),
+                         "feat/add-due-dates-to-todos")
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}")
+        profile_md = (self.dir / "profile.md").read_text()
+        self.assertIn("| 1 | test | `true` |", profile_md)
+        self.assertIn("| 2 | lint | `npx eslint .` |", profile_md)
+        self.assertTrue([ln for ln in out.get("SUMMARY", [])
+                         if f"Using the saved profile at {self.saved}" in ln],
+                        json.dumps(out, indent=2))
+        self.assertEqual([a for o in self.outs for a in o.get("AGENT", [])],
+                         ["auto-dev:lookup"])
+        self.assertFalse([o for o in self.outs if o.get("exit") == 5 or o.get("QUESTION")])
+
+    def test_a_lookup_with_no_usable_answer_keeps_every_check(self):
+        cases = [("failed", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("blocked", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("ok", "OUT_OF_SCOPE", "OUT_OF_SCOPE: whether eslint counts is a verdict\n"),
+                 ("ok", "ANSWERED", "Both tools look used to me.\n")]
+        self.save_profile()
+        for i, (status, nxt, answer) in enumerate(cases, 1):
+            with self.subTest(status=status, next=nxt):
+                task = f"Add due dates case {i}"
+                self.lookup_answers(self.setup_next(task=task, expect=0), answer,
+                                    status=status, nxt=nxt)
+                out = self.setup_next(task=task)
+                self.ready(out)
+                self.assertEqual(self.gate(), ["true", "npx eslint ."])
+                self.assertNotIn("dropped gate check", self.work_log())
+
+    def test_a_check_the_repo_never_adopted_is_left_out_of_this_run(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config or dependency\n")
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}, without npx eslint .")
+        self.assertIn(f"dropped gate check npx eslint .: the repo never adopted its tool "
+                      f"(saved profile {self.saved})", self.work_log())
+        self.assertTrue([ln for ln in out.get("SUMMARY", [])
+                         if "npx eslint ." in ln and str(self.saved) in ln],
+                        json.dumps(out, indent=2))
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_contradicting_or_out_of_range_answer_lines_drop_nothing(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: adopted — package.json:12\n"
+                                      "check 2: not adopted — no eslint config\n"
+                                      "check 7: not adopted — no such tool\n")
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertNotIn("dropped gate check", self.work_log())
+
+    def test_a_lookup_answer_in_doubt_drops_no_check(self):
+        out = self.with_saved_profile("I could not tell for check 2\n")
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertNotIn("dropped gate check", self.work_log())
+
+    # -------------------------------------------------------------- researching a profile
+
+    def test_with_no_profile_the_profiler_researches_then_the_user_is_asked(self):
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.assertEqual(values["repo"], str(self.repo))
+        self.assertEqual(values["base"], "main")
+        scratch = self.temp / f"auto-dev-setup-{os.getuid()}"
+        self.assertTrue(str(values["draft_path"]).startswith(f"{scratch}{os.sep}"), values)
+        self.profiler_returns(out)
+        out = self.setup_next(expect=5)
+        shown = json.dumps(out, indent=2)
+        summary = self.summary(out)
+        for line in PROFILER_DRAFT.splitlines():
+            self.assertIn(line.strip(), summary)
+        questions = summary.find("the e2e suite in CI")
+        self.assertNotEqual(questions, -1, shown)
+        for later in ("jq: not on PATH", "package.json:9"):
+            self.assertGreater(summary.find(later), questions, shown)
+        self.assertTrue([ln for ln in out["SUMMARY"] if f"Save path: {self.saved}" in ln], shown)
+        self.assertEqual(self.options(out), self.OPTIONS)
+        self.assertEqual(len(out["AFTER"]), 4, shown)
+        for label, line in zip(self.OPTIONS, out["AFTER"]):
+            self.assertTrue(line.startswith(f'"{label}" → '), shown)
+        self.no_run_made()
+        self.assertEqual(self.sh("git", "status", "--porcelain", cwd=self.repo), "")
+
+    def test_an_origin_with_no_save_path_leaves_out_the_save_option(self):
+        self.sh("git", "remote", "set-url", "origin", str(self.tmp / "origin.git"),
+                cwd=self.repo)
+        out = self.to_question()
+        self.assertEqual(self.options(out), self.OPTIONS[1:])
+        self.assertEqual(len(out["AFTER"]), 3, json.dumps(out, indent=2))
+        self.assertRegex(self.summary(out).lower(), r"can(no|'|’)t be saved")
+        self.no_run_made()
+
+    def test_the_save_answer_writes_the_profile_and_creates_the_run(self):
+        self.answered(self.to_question(), self.OPTIONS[0])
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        name = self.saved.relative_to(self.profiles).with_suffix("").as_posix()
+        days = {datetime.now().date().isoformat(),
+                datetime.now(timezone.utc).date().isoformat()}
+        self.assertIn(self.saved.read_text().splitlines()[0],
+                      {f"# auto-dev profile for {name}, saved {day}" for day in days})
+        r = subprocess.run([sys.executable, str(SCRIPTS / "validate-config.py"), "--profile",
+                            str(self.saved)], capture_output=True, text=True, env=self.env,
+                           check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.profile_line(), "researched by the profiler, confirmed by the user")
+
+    def test_the_run_only_answer_creates_the_run_without_saving_the_profile(self):
+        self.answered(self.to_question(), self.OPTIONS[1])
+        self.ready(self.setup_next(), self.tmp / "app-add-due-dates-to-todos")
+        self.assertFalse(self.saved.exists())
+
+    def test_the_change_answer_has_the_profiler_redo_the_draft_then_asks_again(self):
+        first = self.brief(self.setup_next(expect=0), "profiler")
+        self.profiler_returns(self.outs[-1])
+        self.answered(self.setup_next(expect=5), self.OPTIONS[2], "drop the lint check")
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.assertNotEqual(values["path"], first["path"])
+        self.assertIn("drop the lint check", values["previous_issues"])
+        self.profiler_returns(out)
+        out = self.setup_next(expect=5)
+        self.assertEqual(self.options(out), self.OPTIONS)
+        self.no_run_made()
+
+    def test_the_stop_answer_ends_setup_with_nothing_created(self):
+        self.answered(self.to_question(), "Stop")
+        out = self.setup_next(expect=4)
+        report = " ".join(out.get("REPORT", [])).lower()
+        self.assertIn("profile question", report)
+        self.assertIn("nothing", report)
+        self.no_run_made()
+        self.brief(self.setup_next(expect=0), "profiler")  # a later call starts over
+
+    def test_a_profile_that_cannot_be_saved_still_sets_up_the_run(self):
+        blocker = self.profiles / self.saved.relative_to(self.profiles).parts[0]
+        self.profiles.mkdir()
+        blocker.write_text("a file where the folder should be\n")
+        out = self.to_question()
+        self.answered(out, self.OPTIONS[0])
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        summary = self.summary(out)
+        self.assertRegex(summary.lower(), r"not (been )?saved")
+        self.assertIn(str(blocker), summary)
+        for line in PROFILER_DRAFT.splitlines():
+            self.assertIn(line.strip(), summary)
+        self.assertFalse(self.saved.exists())
+
+    def test_an_invalid_saved_profile_is_researched_and_offered_for_overwrite(self):
+        self.save_profile('stack: typescript\nsetup: ["true"]\n')
+        out = self.setup_next(expect=0)
+        self.profiler_returns(out)  # the profiler, not a lookup
+        out = self.setup_next(expect=5)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("a saved profile must set `gate`", self.summary(out))
+        self.assertIn(self.OPTIONS[0], self.options(out))
+        self.assertTrue([ln for ln in out["SUMMARY"] if f"Save path: {self.saved}" in ln], shown)
+        self.assertNotIn("auto-dev:lookup", [a for o in self.outs for a in o.get("AGENT", [])])
+
+    def test_an_invalid_draft_is_sent_back_once_then_setup_stops(self):
+        bad = 'stack: typescript\nsetup: ["true"]\n'
+        first = self.profiler_returns(self.setup_next(expect=0), draft=bad)
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.assertNotEqual(values["path"], first["path"])
+        self.assertIn("must set `gate`", values["previous_issues"])
+        self.profiler_returns(out, draft=bad)
+        out = self.setup_next(expect=4)
+        self.assertIn("must set `gate`", "\n".join(out.get("REPORT", [])))
+        self.assertNotIn("QUESTION", out)
+        self.no_run_made()
+
+    # -------------------------------------------------------------- .auto-dev.yml
+
+    def test_an_override_with_setup_and_gate_needs_no_research(self):
+        self.commit_override(FULL_OVERRIDE)
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertNotIn("AGENT", out)
+        self.assertNotIn("QUESTION", out)
+        self.assertEqual(self.worker_briefs(), [])
+        self.assertEqual(self.profile_line(), ".auto-dev.yml")
+
+    def test_a_partial_override_is_researched_and_listed_in_the_question(self):
+        self.commit_override("iteration_budget: 2\n")
+        out = self.to_question()
+        self.assertTrue([ln for ln in out["SUMMARY"]
+                         if "iteration_budget" in ln and ".auto-dev.yml" in ln],
+                        json.dumps(out, indent=2))
+
+    def test_an_override_with_an_unknown_key_stops_before_anything(self):
+        self.commit_override("iteration_budgt: 2\n")
+        out = self.setup_next(expect=4)
+        self.assertIn("did you mean `iteration_budget`", "\n".join(out.get("REPORT", [])))
+        self.assertNotIn("AGENT", out)
+        self.assertEqual(self.worker_briefs(), [])
+        self.no_run_made()
+
+    # -------------------------------------------------------------- setup that can't finish
+
+    def test_a_failed_setup_stops_and_continue_runs_it_again_from_the_fixed_profile(self):
+        self.failed_setup()
+        self.save_profile()  # the user fixes the saved file
+        self.next_dir(4)
+        self.assertFalse((self.worktree / "setup-ran.txt").exists())
+        r = self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.assertIn("RESUME", r.stdout, r.stdout + r.stderr)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+
+    def test_a_retry_reads_the_saved_profile_with_the_scratch_folder_gone(self):
+        self.failed_setup()
+        self.save_profile()
+        for path in self.temp.iterdir():
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        r = self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.assertIn("RESUME", r.stdout, r.stdout + r.stderr)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+
+    def test_a_signed_out_gh_stops_before_any_research(self):
+        self.script_gh([{"args": ["auth", "status"], "stderr": "not logged in", "exit": 1}])
+        out = self.setup_next(expect=4)
+        self.assertIn("not signed in", "\n".join(out.get("REPORT", [])))
+        self.assertNotIn("AGENT", out)
+        self.assertEqual(self.worker_briefs(), [])
+        self.no_run_made()
+        self.assertEqual(self.sh("git", "branch", "--list", "feat/*", cwd=self.repo), "")
+
+    def test_setup_still_running_at_the_wait_limit_is_an_action(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "sleep 3"))
+        self.lookup_answers(self.setup_next(expect=0, wait="1"), BOTH_ADOPTED)
+        out = self.setup_next(wait="1")
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+
+    # -------------------------------------------------------------- running it again
+
+    def test_a_worker_with_no_result_is_waited_for_and_reissue_sends_it_again(self):
+        self.brief(self.setup_next(expect=0), "profiler")
+        out = self.setup_next(expect=0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue(out.get("ACTION", "").startswith("wait"), shown)
+        self.assertIn("profiler #1", out["ACTION"], shown)
+        self.assertNotIn("AGENT", out, shown)
+        values = self.brief(self.setup_next("--reissue", expect=0), "profiler")
+        self.assertEqual(Path(values["path"]).name, "profiler-2.md")
+
+    def test_a_third_spawn_with_no_result_stops_naming_the_retry_command(self):
+        self.brief(self.setup_next(expect=0), "profiler")
+        for _ in range(2):
+            self.brief(self.setup_next("--reissue", expect=0), "profiler")
+        out = self.setup_next("--reissue", expect=4)
+        report = "\n".join(out.get("REPORT", []))
+        self.assertIn("profiler", report)
+        self.assertTrue([ln for ln in out.get("REPORT", [])
+                         if "next" in ln and "--repo" in ln and "--reissue" in ln], report)
+
+    def test_an_existing_run_for_the_task_is_pointed_to_not_made_again(self):
+        r = self.autodev("init", "--repo", self.repo, "--slug", "add-due-dates-to-todos",
+                         "--task", self.TASK, "--profile", self.profile, "--max-wait", "30")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        before = self.sh("git", "worktree", "list", cwd=self.repo)
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertNotIn("AGENT", out)
+        self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
+
+    def test_a_folder_at_the_worktree_path_gets_a_numbered_suffix(self):
+        self.commit_override(FULL_OVERRIDE)
+        taken = self.tmp / "app-add-due-dates-to-todos"
+        taken.mkdir()
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos-2")
+        self.assertEqual(self.state()["branch"], "feat/add-due-dates-to-todos-2")
+        self.assertEqual(list(taken.iterdir()), [])
+
+    def test_a_leftover_branch_gets_a_numbered_suffix(self):
+        self.commit_override(FULL_OVERRIDE)
+        self.sh("git", "branch", "feat/add-due-dates-to-todos", cwd=self.repo)
+        out = self.setup_next(expect=0)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos-2")
+        self.assertEqual(self.state()["branch"], "feat/add-due-dates-to-todos-2")
+        self.assertFalse((self.tmp / "app-add-due-dates-to-todos").exists())
+
+    # -------------------------------------------------------------- a Jira ticket
+
+    def test_ticket_details_given_once_reach_the_run(self):
+        text = "Add due dates\n\nTodos get an optional due date."
+        url = "https://acme.atlassian.net/browse/PROJ-123"
+        ticket = self.tmp / "t.txt"
+        ticket.write_text(text)
+        self.save_profile()
+        out = self.setup_next("--ticket", "PROJ-123", "--ticket-url", url,
+                              "--ticket-text-file", ticket, "--jira", "available, cloudId abc",
+                              task="PROJ-123", expect=0)
+        self.lookup_answers(out, BOTH_ADOPTED)
+        out = self.setup_next(task="PROJ-123")
+        self.ready(out)
+        state = self.state()
+        self.assertEqual(state["branch"], "feat/proj-123-add-due-dates")
+        self.assertEqual(state["task"]["ticket"], "PROJ-123")
+        self.assertEqual(state["task"]["ticket_url"], url)
+        self.assertEqual(state["task"]["ticket_text"], text)
+        self.assertIn("- **Jira:** available, cloudId abc\n",
+                      (self.dir / "profile.md").read_text())
+        values = self.brief(self.to_the_planner(), "planner")
+        self.assertEqual(values["task"], text)
+
+    def test_a_missing_or_empty_ticket_text_file_cannot_run(self):
+        self.save_profile()
+        empty = self.tmp / "empty.txt"
+        empty.write_text("")
+        for path in (self.tmp / "missing.txt", empty):
+            with self.subTest(file=path.name):
+                r = self.autodev("next", "--repo", self.repo, "--task", "PROJ-123",
+                                 "--ticket", "PROJ-123", "--ticket-text-file", path, "--json")
+                both = r.stdout + r.stderr
+                self.assertEqual(r.returncode, 2, both)
+                self.assertIn("ERROR", both)
+                self.assertIn(str(path), both)
+                self.assertEqual(self.worker_briefs(), [])
+        # The same call with a readable file goes on: the file was the cause.
+        readable = self.tmp / "t.txt"
+        readable.write_text("Add due dates\n\nTodos get an optional due date.")
+        self.brief(self.setup_next("--ticket", "PROJ-123", "--ticket-text-file", readable,
+                                   task="PROJ-123", expect=0), "lookup")
+
+    # -------------------------------------------------------------- safety
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX folder ownership")
+    def test_a_scratch_parent_others_can_write_to_or_a_symlink_is_refused(self):
+        parent = self.temp / f"auto-dev-setup-{os.getuid()}"
+        theirs = self.tmp / "theirs"
+        theirs.mkdir()
+        for case in ("writable by others", "a symlink"):
+            with self.subTest(case=case):
+                if parent.is_symlink():
+                    parent.unlink()
+                elif parent.exists():
+                    shutil.rmtree(parent)
+                if case == "a symlink":
+                    parent.symlink_to(theirs, target_is_directory=True)
+                    watched, why = theirs, r"link"
+                else:
+                    parent.mkdir()
+                    os.chmod(parent, 0o777)
+                    watched, why = parent, r"writ"
+                r = self.autodev("next", "--repo", self.repo, "--task", self.TASK, "--json")
+                both = r.stdout + r.stderr
+                self.assertEqual(r.returncode, 2, both)
+                self.assertIn("ERROR", both)
+                self.assertIn(str(parent), both)
+                self.assertRegex(both.lower(), why)
+                self.assertEqual(list(watched.iterdir()), [])
+                self.no_run_made()
+
+    def test_task_text_in_the_printed_commands_never_runs_as_shell(self):
+        task = "Add dates'; touch pwned; echo '"
+        question = self.to_question(task=task)
+        for line in question["AFTER"]:
+            argv = shlex.split(re.sub(r"'<[^']*>'", "'x'", line.split(" → ", 1)[1]))
+            self.assertEqual(argv[argv.index("--task") + 1], task, line)
+        self.answered(question, self.OPTIONS[1])
+        self.ready(self.setup_next(task=task))
+        self.assertEqual(self.state()["task"]["text"], task)
+        for label in (self.OPTIONS[0], self.OPTIONS[2], "Stop"):
+            self.answer_with(question, label)  # the run exists: these may be refused
+        self.assertEqual([str(p) for p in self.tmp.rglob("pwned")], [])
