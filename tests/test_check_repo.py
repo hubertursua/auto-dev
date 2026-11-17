@@ -37,17 +37,17 @@ class CheckRepoTest(unittest.TestCase):
         return tool.errors
 
     def test_eval_path_in_setup_that_exists_passes(self):
-        evals = {"evals": [{"setup": "Copy evals/files/resume-s2/state.json over it.",
-                            "files": ["evals/files/resume-s2/WORK_LOG.md"]}]}
+        evals = {"evals": [{"setup": "Copy evals/files/resume-build/state.json over it.",
+                            "files": ["evals/files/resume-build/WORK_LOG.md"]}]}
         self.assertEqual(self.check_evals(evals), [])
 
     def test_missing_eval_path_fails_wherever_it_is_named(self):
         evals = {"notes": "See skills/auto-dev/evals/files/gone/notes.md.",
-                 "evals": [{"setup": "Copy evals/files/resume-s2/missing.json.",
+                 "evals": [{"setup": "Copy evals/files/resume-build/missing.json.",
                             "expectations": ["Reads evals/files/no-such-dir/."]}]}
         errors = self.check_evals(evals)
         self.assertEqual(len(errors), 3, errors)
-        for ref in ("evals/files/gone/notes.md", "evals/files/resume-s2/missing.json",
+        for ref in ("evals/files/gone/notes.md", "evals/files/resume-build/missing.json",
                     "evals/files/no-such-dir"):
             self.assertTrue(any(f"names {ref}," in e for e in errors), (ref, errors))
 
@@ -73,11 +73,11 @@ class CheckRepoTest(unittest.TestCase):
 
     def test_an_agent_asking_for_a_prose_summary_fails(self):
         errors = self.check_agent_text(
-            "Write SPEC.md.\nReturn: assumptions, key risks.\n"
+            "Write PLAN.md.\nReturn: assumptions, key risks.\n"
             "Do NOT modify code. Return: your votes, one line each.\n"
             "Return a structured summary:\nReturn the findings.\nSay what you changed.\n"
             "Report what changed, TEST CHANGES and BLOCKED.\n"
-            "Return `proposals: <k>`, and return `next: STANDS`.\n")
+            "Return `deviations: <k>`, and return `next: STANDS`.\n")
         self.assertEqual([e.split(": asks")[0] for e in errors],
                          [f"coder.md:{n}" for n in range(2, 8)], errors)
 
@@ -191,7 +191,7 @@ class CheckRepoTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             copy = self.copy_of_the_repo(tmp)
             tool = copy / "tools" / "check-repo.py"
-            define = copy / "agents" / "define.md"
+            define = copy / "agents" / "planner.md"
             text = define.read_text(encoding="utf-8")
 
             def run():
@@ -211,14 +211,14 @@ class CheckRepoTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("NO-SUCH-RULINGS.md", result.stdout)
 
-    def test_the_release_is_4_27_with_notes_on_upgrading_from_4_26(self):
+    def test_the_release_is_5_0_with_notes_on_upgrading_from_4_27(self):
         root = TOOL.parent.parent
         plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
-        self.assertRegex(plugin["version"], r"^4\.27\.\d+$")  # a patch keeps the notes
+        self.assertRegex(plugin["version"], r"^5\.0\.\d+$")  # a patch keeps the notes
         upgrading = (root / "UPGRADING.md").read_text(encoding="utf-8")
         first = re.search(r"^## (.*)$", upgrading, re.MULTILINE)
-        self.assertEqual(first.group(1).strip(), "Upgrading from 4.26")
-        section = re.search(r"^## Upgrading from 4\.26\b.*?(?=^## |\Z)", upgrading,
+        self.assertEqual(first.group(1).strip(), "Upgrading from 4.27")
+        section = re.search(r"^## Upgrading from 4\.27\b.*?(?=^## |\Z)", upgrading,
                             re.MULTILINE | re.DOTALL)
         self.assertRegex(section.group(0), r"(?i)resum")
 
@@ -230,17 +230,17 @@ class CheckRepoTest(unittest.TestCase):
             tool.check_briefs(Path(tmp))
         return tool.errors
 
-    def test_an_unknown_define_token_or_missing_template_fails_the_repo_check(self):
+    def test_an_unknown_planner_token_or_missing_template_fails_the_repo_check(self):
         agents = ROOT_DIR / "agents"
-        define = (agents / "define.md").read_text(encoding="utf-8")
-        self.assertIn("| REVISED | STANDS\n", define)
-        errors = self.check_agents_dir({"define.md": define.replace(
-            "| REVISED | STANDS\n", "| REVISED | STANDS | SHRUGGED\n", 1)})
-        self.assertTrue(any("define.md" in e and "SHRUGGED" in e for e in errors), errors)
-        errors = self.check_agents_dir({"define.md": define + "\nSee templates/NOPE.md.\n"})
+        planner = (agents / "planner.md").read_text(encoding="utf-8")
+        self.assertIn("| OVERSIZED | REVISED", planner)
+        errors = self.check_agents_dir({"planner.md": planner.replace(
+            "| OVERSIZED | REVISED", "| OVERSIZED | SHRUGGED | REVISED", 1)})
+        self.assertTrue(any("planner.md" in e and "SHRUGGED" in e for e in errors), errors)
+        errors = self.check_agents_dir({"planner.md": planner + "\nSee templates/NOPE.md.\n"})
         self.assertTrue(any("templates/NOPE.md" in e for e in errors), errors)
-        errors = self.check_agents_dir({"define.md": define})
-        self.assertFalse(any(e.startswith("agents/define.md") for e in errors), errors)
+        errors = self.check_agents_dir({"planner.md": planner})
+        self.assertFalse(any(e.startswith("agents/planner.md") for e in errors), errors)
 
 
 if __name__ == "__main__":

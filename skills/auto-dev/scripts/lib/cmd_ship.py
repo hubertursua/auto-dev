@@ -1,12 +1,16 @@
-"""autodev.py commit / ci-watch / merge-pr / pr-body --check / cleanup-worktree.
+"""autodev.py commit / ci-watch / merge-pr / cleanup-worktree.
 
 Phase 6's git and gh steps. Each takes `--dir <artifact-dir>` (default
 `./.auto-dev`) and `--json`, re-reads git and gh rather than trusting the stored
 state, and records what it did in state.json.
 
 commit --message "<type>(<scope>): <summary>" [--body TEXT]
-    Re-checks that every report checked the code as it is now (check-fresh.py),
-    stages every changed path outside .auto-dev/ by name (deleted paths with
+    Re-checks that every report checked the code as it is now (check-fresh.py;
+    before the first review pass, which runs on the draft PR, only the quality
+    gate's lint reports),
+    refuses when a line of the committed acceptance checks changed (the guard
+    check-tests.py applies; only a tests commit changes them), stages every
+    changed path outside .auto-dev/ by name (deleted paths with
     `git rm --cached`), runs check-staged.py on exactly that list, commits, then
     checks the commit carries the checked code (check-fresh.py --ref HEAD) and
     records it as the verified commit. Unstages everything it staged if any
@@ -15,9 +19,10 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     again on the clean tree and it checks that commit instead of committing.
     `next` uses the same path for commits pushed to the PR branch outside the
     pipeline, once they are brought into the worktree and re-checked.
-    Exit: 0 committed and verified (push it); 1 refused: stale results (re-run
-    them and ask the PR gate again), nothing to commit, staged-set check or the
-    commit failed; 3 committed but NOT verified: do not push, stop and report.
+    Exit: 0 committed and verified (push it); 1 refused: stale results (run
+    `next`: it re-runs them), nothing to commit, an acceptance check changed,
+    staged-set check or the commit failed; 3 committed but NOT verified: do
+    not push, stop and report.
     A refusal is recorded for `next` as `commit_attempt`, except "nothing to
     commit" (`next` never asks for a commit with nothing changed) and exit 2.
 
@@ -54,37 +59,6 @@ merge-pr --pr N --sha <checked commit>
     `next` never offers it again); 3 queued or auto-merge
     enabled, not merged (report and stop; don't move Jira); 4 refused (report
     the requirement blocking it and stop).
-
-pr-body
-    Generates the PR description for the verified commit from the run's
-    artifacts and templates/pr-body.md, into <artifact-dir>/pr-body.md, leaving
-    a `<!-- WRITE: ... -->` line for the Summary and one for the Assumptions. It
-    links the ticket when the run has one, and adds the sections of the repo's
-    PR template it lacks: a testing section points at the checks, a checklist
-    is copied unticked with a WRITE line to tick the boxes the run shows are
-    true, and any other section gets a WRITE line of its own. It also writes
-    <artifact-dir>/pr-write.md: the text those lines draw on, quoted, then only
-    the sections holding a WRITE line, which the orchestrator fills in there and
-    `pr publish` puts into the description. Links point at the commit;
-    worktree and home paths are hidden and lines that look like secrets
-    dropped; output blocks are cut, then moved to pr-output-comment.md, to keep
-    it under 60,000 characters. `next` runs it.
-    Exit: 0 written; 1 no verified commit yet.
-
-pr-body --check <file>
-    Lints a PR description before it is published: the strict sections and the
-    attribution line are present, `Checked at commit <sha>` names the verified
-    commit, it is under 60,000 characters, and it holds no `.auto-dev/` path,
-    none of the run's own condition, finding or mutant IDs (those its artifacts
-    define), no "held-out" / "fail-to-pass" / "pass-to-pass", no evidence tier
-    used as one, no absolute worktree or home path and nothing that looks like
-    a secret, and each checklist of the repo's PR template is there with its
-    items unchanged (ticked or not). The ID, term and tier checks skip what the
-    description quotes word for word between `<!-- auto-dev:quoted -->`
-    markers (test names, commands and their output, and what the workers
-    wrote) as generate wrote it, and the condition titles and gate commands it
-    copies; a quoted region edited since is checked like the rest.
-    Exit: 0 clean; 1 problems (each printed).
 
 cleanup-worktree
     Removes the run's worktree from the main checkout with `git worktree
@@ -126,7 +100,7 @@ ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 ID_FORM = r"(?:CS|C|M|S)\d+"
 ID_DEF_RE = re.compile(rf"^\s*\|\s*({ID_FORM})\s*\||^#+\s*({ID_FORM})\b|"
                        rf"^\s*({ID_FORM})\.\s", re.MULTILINE)
-ID_SOURCES = ("SPEC.md", "acceptance/MANIFEST.md", "SPEC_EVAL.md", "CODE_REVIEW.md",
+ID_SOURCES = ("PLAN.md", "acceptance/MANIFEST.md", "SPEC_EVAL.md", "CODE_REVIEW.md",
               "SECURITY_REVIEW.md")
 ID_USE_RE = re.compile(rf"(?<![\w/.-])({ID_FORM})(?![\w-])")
 # A region the PR description quotes word for word (cmd_pr.QUOTE_OPEN). Its
@@ -187,9 +161,6 @@ def add_arguments(parser, name):
     elif name == "merge-pr":
         parser.add_argument("--pr", required=True)
         parser.add_argument("--sha", required=True, help="the checked commit")
-    elif name == "pr-body":
-        parser.add_argument("--check", metavar="FILE",
-                            help="the PR description to lint")
 
 
 def load(args):
@@ -253,9 +224,16 @@ def make_commit(args, state):
             and git(wt, "rev-parse", "HEAD").strip() == unverified:
         # An earlier run committed but could not finish checking the commit.
         return verify_commit(args, state, unverified, 0)
-    code, detail = check_fresh(wt, ad)
+    # Before freshness: a changed check also makes the reports stale, and
+    # re-running them would not undo it.
+    broken = changed_checks(state)
+    if broken:
+        raise Fail("the committed acceptance checks changed, which nothing may do (a fix "
+                   "the user asks for is committed as a tests commit first): "
+                   + ", ".join(broken), FAILED, "CHECKS-CHANGED")
+    code, detail = check_fresh(wt, ad, *fresh_phase(state))
     if code != 0:
-        raise Fail(f"results are stale; re-run them and ask the PR gate again:\n{detail}",
+        raise Fail(f"results are stale; run `next`, which re-runs them:\n{detail}",
                    FAILED, "STALE")
     if not add and not remove:
         raise Fail("nothing to commit", FAILED, "NOTHING")
@@ -286,12 +264,33 @@ def make_commit(args, state):
     return verify_commit(args, state, sha, len(staged))
 
 
+def changed_checks(state):
+    """The committed acceptance checks' lines changed or removed in the
+    worktree, as `path:line` (`path` for a file that is gone)."""
+    from . import protected
+    shas = [c["sha"] for c in state.get("tests_commits") or []]
+    if not shas:
+        return []
+    try:
+        return protected.locations(state["worktree"], shas)
+    except protected.GuardError as exc:
+        raise Fail(f"cannot check the committed acceptance checks: {exc}", CANNOT_RUN,
+                   "ERROR") from None
+
+
+def fresh_phase(state):
+    """The check-fresh arguments a commit is held to: Phase 5's reports for the
+    first commit, which opens the draft PR before any review; every report once
+    a review pass has run."""
+    return () if state.get("phase6", {}).get("passes") else ("--phase", "5")
+
+
 def verify_commit(args, state, sha, paths):
     """Check the commit carries the checked code; record it as verified or not."""
     wt, ad = state["worktree"], state["artifact_dir"]
     phase6 = state.setdefault("phase6", {})
     code, out, err = run([sys.executable, str(SCRIPTS / "check-fresh.py"), wt, ad,
-                          "--ref", sha], check=False)
+                          "--ref", sha, *fresh_phase(state)], check=False)
     detail = (err or out).strip()
     if code not in (0, 1):
         raise Fail(f"commit {sha} was made, but check-fresh.py could not check it "
@@ -545,37 +544,19 @@ def note_merge(args, state, result):
     st.save(args.dir, state)
 
 
-def pr_body(args):
-    state = load(args)
-    if not args.check:
-        from .cmd_pr import generate
-        sha = state.get("phase6", {}).get("verified_sha")
-        if not sha:
-            raise Fail("no verified commit yet: commit first", FAILED, "NO-COMMIT")
-        path = generate(state, Path(state["artifact_dir"]), sha)
-        state["phase6"]["body"] = {"sha": sha, "path": str(path), "seq": st.seq(state)}
-        st.save(args.dir, state)
-        emit(args.json, "WRITTEN", str(path), commit=sha,
-             then="replace the WRITE lines in pr-write.md beside it, then "
-                  "`autodev.py pr publish`")
-        return 0
-    try:
-        text = Path(args.check).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise Fail(f"cannot read {args.check}: {exc}", CANNOT_RUN, "ERROR") from None
-    problems = lint_body(text, state)
-    if problems:
-        emit(args.json, "PROBLEMS", f"{len(problems)} problem(s) in {args.check}",
-             problem=problems)
-        return FAILED
-    emit(args.json, "CLEAN", f"{args.check}: {len(text)} characters")
-    return 0
-
-
 def lint_body(text, state, checklist=True):
-    """The problems in a PR description. `checklist` also checks the repo's PR
-    template checklists kept their items; off once the PR is open, where a
-    person may have edited them on GitHub."""
+    """The problems in a PR description, which `pr publish` refuses: a strict
+    section or the attribution line missing, `Checked at commit <sha>` not
+    naming the verified commit, over 60,000 characters, or holding a
+    `.auto-dev/` path, one of the run's own condition, finding or mutant IDs,
+    "held-out" / "fail-to-pass" / "pass-to-pass", an evidence tier used as one,
+    an absolute worktree or home path, or something that looks like a secret.
+    The ID, term and tier checks skip what generate quoted word for word
+    between `<!-- auto-dev:quoted -->` markers, and the condition titles and
+    gate commands it copies; a quoted region edited since is checked like the
+    rest. `checklist` also checks the repo's PR template checklists kept their
+    items; off once the PR is open, where a person may have edited them on
+    GitHub."""
     problems = []
     if len(text) > BODY_LIMIT:
         problems.append(f"{len(text)} characters, over {BODY_LIMIT}: cut output blocks "

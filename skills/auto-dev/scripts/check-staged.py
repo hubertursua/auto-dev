@@ -14,16 +14,16 @@ Usage:
 <worktree> is the worktree about to commit. Each --expect path is relative to
 the worktree root (an absolute path inside it also works); repeat the flag or
 list several paths after one. With --expect, the staged set must equal the
-expected set exactly — the files the PR gate summary listed.
+expected set exactly — the changed files `autodev.py commit` found.
 
 The staged set is `git -C <worktree> diff --cached --name-only --no-renames`.
 `--no-renames` makes a staged rename list both its old (deleted) path and its
-new one, as the PR gate's `git status --porcelain --untracked-files=all
+new one, as `commit`'s `git status --porcelain --untracked-files=all
 --no-renames --ignore-submodules=dirty` list does; without it git lists only the new path, and an
 --expect list that names the old path could never match.
 
 An expected path that is neither on disk nor in HEAD is reported as IGNORED,
-not MISSING: it was only marked intent-to-add (Phase 5's `git add -N`) and then
+not MISSING: it was only marked intent-to-add (the review pass's `git add -N`) and then
 deleted, so the commit has nothing to record for it. That is safe only because
 --expect also requires that nothing outside .auto-dev/ is left changed but
 unstaged (UNSTAGED): a mistyped path is IGNORED, but the real one it should
@@ -191,7 +191,7 @@ def check() -> int:
 
     if expected is not None:
         missing = [p for p in expected if p not in staged]
-        # A file Phase 5 only marked intent-to-add and a later step deleted was
+        # A file a review pass only marked intent-to-add and a later step deleted was
         # never committed and is gone: there is nothing to stage for it.
         vanished = [p for p in missing if never_existed(top, p)]
         missing = [p for p in missing if p not in vanished]
@@ -227,7 +227,7 @@ def check() -> int:
                   f"that are not staged:", file=sys.stderr)
             for path in unstaged:
                 print(f"  {printable(path)}", file=sys.stderr)
-            print("  Stage each one the PR gate summary listed (deleted paths "
+            print("  Stage each changed file `commit` found (deleted paths "
                   "with `git rm --cached`), and fix the --expect list to "
                   "match.", file=sys.stderr)
 

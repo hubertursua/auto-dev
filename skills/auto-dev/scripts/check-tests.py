@@ -3,14 +3,14 @@
 deleted, skipped, focused, weakened or tampered with, and new tests that assert
 nothing.
 
-Run by the Phase 5 verifier on every pass (agents/verifier.md). Read-only: it
+Run by the verifier (Phase 6) on every pass (agents/verifier.md). Read-only: it
 never stages, edits or restores anything. Each
-finding is a claim for the verifier to judge against SPEC.md — a deleted test
+finding is a claim for the verifier to judge against PLAN.md — a deleted test
 can be right when the spec removes that behavior — except ACCEPTANCE_*, which
 is never justified.
 
 Usage:
-    python3 <skill-dir>/scripts/check-tests.py <worktree> --base <ref> [--acceptance <dir>]
+    python3 <skill-dir>/scripts/check-tests.py <worktree> --base <ref> [--tests-commit <sha>]...
     python3 <skill-dir>/scripts/check-tests.py --help
 
 <skill-dir> is the auto-dev skill's own directory, not the target repo.
@@ -19,18 +19,19 @@ Usage:
 `git diff <ref>` (which includes files marked intent-to-add), plus untracked
 files, read straight from disk. Paths under `.auto-dev/` are ignored.
 
---acceptance is `<artifact-dir>/acceptance`, the held-out checks Phase 3
-wrote. Each `.sealed` file under its `files/` directory is the sealed copy of
-one test file, stored at `<repo-relative install path>.sealed` so no test
-runner collects it. A sealed copy of a new file must be installed whole, with
-any lines added only before or after it. A sealed copy that adds tests to a
-file that already existed has a `<path>.base` beside it (the file it added
-to): each run of lines it added must be in the installed file, unchanged and
-in order, and the other lines of that file are audited like any test file.
+--tests-commit (repeatable, oldest first) names a commit that holds the
+acceptance checks: Phase 3 commits them before the build, and a repair or a fix
+the user asked for is a later tests commit. Every line a tests commit added
+stays protected (lib/protected.py): for each file, the last tests commit that
+touched it is the reference, and `git blame` there says which lines a tests
+commit wrote. The working tree may add lines around them, never change or
+remove one. A new file a tests commit added and nothing changed since is left
+out of the rest of the audit.
 
 Findings (one per line on stdout, tab-separated: KIND, location, detail):
-    ACCEPTANCE_MISSING   a sealed acceptance test is not installed
-    ACCEPTANCE_MODIFIED  an installed acceptance test differs from its sealed copy
+    ACCEPTANCE_MISSING   a file holding committed acceptance checks is gone
+    ACCEPTANCE_MODIFIED  a line of the committed acceptance checks was changed
+                         or removed (at its line in the tests commit)
     DELETED_TEST         a test file that exists at the base is gone (and was
                          not renamed: a rename is diffed as an edit instead)
     REMOVED_ASSERTION    a line holding an assertion was removed or changed in
@@ -58,10 +59,9 @@ Output:
 
 Exit codes:
     0  clean — no findings
-    1  findings — each needs a justification tied to SPEC.md, or a correction
-    2  usage error, not a git worktree, the base ref does not resolve, or no
-       `files/` directory under --acceptance (an empty one is fine: every
-       condition was not automatable)
+    1  findings — each needs a justification tied to PLAN.md, or a correction
+    2  usage error, not a git worktree, the base ref or a tests commit does
+       not resolve
     3  an acceptance test is missing or modified — never justified (takes
        precedence over 1)
 """
@@ -74,7 +74,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib import sealed as sealed_lib
+from lib import protected
 from lib.testfiles import SKIP, TEST_CONFIG, code, is_test_file
 
 ASSERTION = re.compile(
@@ -127,7 +127,7 @@ def main() -> int:
     )
     parser.add_argument("worktree")
     parser.add_argument("--base", required=True)
-    parser.add_argument("--acceptance")
+    parser.add_argument("--tests-commit", action="append", default=[])
     args = parser.parse_args()  # bad arguments exit 2 via argparse
     wt = os.path.abspath(args.worktree)
 
@@ -146,27 +146,19 @@ def main() -> int:
     findings = []
     tampered = False
 
-    # Acceptance tests: each sealed check must be in its file, unchanged.
-    sealed = set()  # new files that hold nothing but a sealed check
-    if args.acceptance:
-        ad = os.path.dirname(os.path.abspath(args.acceptance))
-        root = os.path.join(os.path.abspath(args.acceptance), "files")
-        if not os.path.isdir(root):
-            print(f"ERROR: no sealed-checks directory at {root}", file=sys.stderr)
-            return 2
-        # An empty files/ is valid: every condition was not automatable.
+    # Acceptance tests: each committed check line must be in its file, unchanged.
+    committed = set()  # new files that hold nothing but committed checks, untouched
+    if args.tests_commit:
         try:
-            for rel, src in sealed_lib.sealed_files(ad).items():
-                current = sealed_lib.read(os.path.join(wt, rel))
-                if current is None:
-                    findings.append(("ACCEPTANCE_MISSING", rel, "sealed check not installed"))
-                    tampered = True
-                elif not sealed_lib.intact(ad, rel, current):
-                    findings.append(("ACCEPTANCE_MODIFIED", rel, "differs from the sealed copy"))
-                    tampered = True
-                elif sealed_lib.base_of(ad, rel) is None and current == sealed_lib.read(src):
-                    sealed.add(rel)
-        except sealed_lib.SealError as e:
+            for finding in protected.findings(wt, args.tests_commit):
+                findings.append(finding)
+                tampered = True
+            for rel in protected.untouched(wt, args.tests_commit):
+                try:
+                    git(wt, "cat-file", "-e", f"{args.base}:{rel}")
+                except RuntimeError:
+                    committed.add(rel)  # new since the base, as the tests commit left it
+        except protected.GuardError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 2
 
@@ -185,7 +177,7 @@ def main() -> int:
         if TEST_CONFIG.search(path):
             findings.append(("TEST_CONFIG_CHANGED", path, "runner config or test helper changed"))
 
-    tests = [(c, p) for c, p in changed if is_test_file(p) and p not in sealed]
+    tests = [(c, p) for c, p in changed if is_test_file(p) and p not in committed]
     added = {p: (read(os.path.join(wt, p)) or b"").decode("utf-8", "replace")
              for c, p in tests if c == "A"}
     paired = set()

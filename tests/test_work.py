@@ -13,9 +13,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_autodev import SCRIPTS, RunCase
 from test_autodev import RunCase as InitCase
-from test_parsers import CODE_REVIEW, FIXTURES, MANIFEST, SPEC, SPEC_EVAL
+from test_parsers import CODE_REVIEW, FIXTURES, MANIFEST, PLAN, SECURITY_REVIEW, SPEC_EVAL
 
-SPEC_NO_SECURITY = SPEC.split("## Security/Compliance criteria")[0]
+# The fixture plan at standard risk: no Security/Compliance criteria.
+PLAN_NO_SECURITY = PLAN.replace("Risk: high", "Risk: standard").split(
+    "## Security/Compliance criteria")[0] + "## Size check" + PLAN.split("## Size check")[1]
+PLANNED = {"risk": "high", "reading": "none", "entry_points_changed": "no"}
+
+
+def plan_review(verdict="APPROVE", risk="high", blockers=()):
+    """A plan critic's review file; `blockers` are (evidence, change) pairs."""
+    rows = "".join(f"### B{i}. the plan misses case {i}\n- Evidence: {ev}\n- Change: {ch}\n\n"
+                   for i, (ev, ch) in enumerate(blockers, 1)) or "none\n\n"
+    return (f"# Plan review — review\n\nVerdict: {verdict}\nRisk: {risk} — right\n\n"
+            f"## Blockers\n{rows}## Notes\nnone\n")
+# The result keys most tests leave at their default: nothing found.
+DEFAULT_KEYS = {"coder": {"deviations": "0"}, "verifier": {"spec_problems": "0"},
+                "review-judge": {"spec_problems": "0"},
+                "security-reviewer": {"spec_problems": "0"},
+                "security-reviewer-sensitive": {"spec_problems": "0"},
+                "triager": {"spec_problems": "0"}}
 CORRECTION = ("# Required changes\n1. Show the due date next to the title in src/list.ts\n"
               "   Where: `src/list.ts:12` — the row renderer\n")
 
@@ -24,7 +41,7 @@ class WorkCase(RunCase):
     def setUp(self):
         super().setUp()
         self.assertEqual(self.init().returncode, 0)
-        (self.dir / "SPEC.md").write_text(SPEC)
+        (self.dir / "PLAN.md").write_text(PLAN)
         (self.dir / "acceptance").mkdir(exist_ok=True)
         (self.dir / "acceptance" / "MANIFEST.md").write_text(MANIFEST)
 
@@ -48,7 +65,8 @@ class WorkCase(RunCase):
     def returned(self, worker, n, status="ok", **data):
         path = self.dir / "returns" / f"{worker}-{n}.json"
         path.parent.mkdir(exist_ok=True)
-        path.write_text(json.dumps({"worker": worker, "status": status, **data}))
+        path.write_text(json.dumps({"worker": worker, "status": status,
+                                    **DEFAULT_KEYS.get(worker, {}), **data}))
 
     def write(self, rel, text):
         path = self.dir / rel
@@ -68,20 +86,33 @@ class WorkCase(RunCase):
 
 
 class BriefTest(WorkCase):
-    def test_define_brief_fills_its_slots_from_state(self):
-        r = self.cmd("brief", "define", "--mode", "write")
+    def test_planner_brief_fills_its_slots_from_state(self):
+        r = self.cmd("brief", "planner", "--mode", "write")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("agent: auto-dev:define", r.stdout)
-        path = self.dir / "briefs" / "define-1.md"
+        self.assertIn("agent: auto-dev:planner", r.stdout)
+        path = self.dir / "briefs" / "planner-1.md"
         self.assertIn(f"prompt: Your brief is at {path}. Read it first.", r.stdout)
         values = self.brief_values(path)
         self.assertEqual(values["mode"], "write")
         self.assertEqual(values["worktree"], str(self.worktree))
         self.assertEqual(values["task"], "Add due dates to todos")
-        self.assertEqual(values["result_file"], str(self.dir / "returns" / "define-1.json"))
+        self.assertEqual(values["result_file"], str(self.dir / "returns" / "planner-1.json"))
         self.assertIn("CLAUDE.md", values["binding_rules"])
-        self.cmd("brief", "define", "--mode", "write")
-        self.assertTrue((self.dir / "briefs" / "define-2.md").exists())
+        self.cmd("brief", "planner", "--mode", "write")
+        self.assertTrue((self.dir / "briefs" / "planner-2.md").exists())
+
+    def test_the_critic_s_review_file_is_filled_and_the_planner_s_is_optional(self):
+        r = self.cmd("brief", "plan-critic", "--mode", "review")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "plan-critic-1.md")
+        self.assertEqual(values["review_file"], str(self.dir / "plan-review" / "1.md"))
+        self.assertEqual(values["task"], "Add due dates to todos")
+        r = self.cmd("brief", "plan-critic", "--mode", "recheck", "--set",
+                     f"earlier={self.dir}/plan-review/1.md")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "plan-critic-2.md")
+        self.assertEqual(values["earlier"], f"{self.dir}/plan-review/1.md")
+        self.assertEqual(values["review_file"], str(self.dir / "plan-review" / "2.md"))
 
     def test_coder_correction_brief_names_the_acceptance_paths(self):
         r = self.cmd("brief", "coder", "--mode", "correction", "--set",
@@ -112,19 +143,30 @@ class BriefTest(WorkCase):
         r = self.cmd("brief", "planner", "--mode", "revise", "--set", "direction=use UTC")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         values = self.brief_values(self.dir / "briefs" / "planner-1.md")
-        self.assertEqual(values["fix_file"], "none")
+        self.assertEqual(values["review_file"], "none")
         self.assertEqual(values["direction"], "use UTC")
 
+    def test_a_standard_risk_verifier_runs_no_mutation_and_no_probes(self):
+        r = self.cmd("brief", "verifier", "--set", "mode=first pass")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "verifier-1.md")
+        self.assertEqual(values["mutation_cap"], "0 (off: a standard-risk run)")
+        self.assertEqual(values["probes"], "off (a standard-risk run)")
+
     def test_verifier_brief_carries_the_last_survivors(self):
+        state = json.loads((self.dir / "state.json").read_text())
+        state["high_risk"] = True  # mutation and probes run on a high-risk run
+        (self.dir / "state.json").write_text(json.dumps(state))
         (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
             tree="0" * 40, v1="met", v2="met", e2="x", judgment="Justified",
             defective="None."))
         r = self.cmd("brief", "verifier", "--set", "mode=re-check",
-                     "--set", "what_changed=the cleanup pass")
+                     "--set", "what_changed=a correction")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         text = (self.dir / "briefs" / "verifier-1.md").read_text()
         self.assertIn("| M2 | `src/sort.ts:4` |", text)
         self.assertIn("mutation_cap: 20", text)
+        self.assertIn("probes: on", text)
         modes = [ln for ln in text.splitlines() if ln.startswith("mode:")]
         self.assertEqual(modes, ["mode: re-check"])
 
@@ -136,9 +178,9 @@ class BriefTest(WorkCase):
         (self.worktree / "late.txt").write_text("x\n")
         self.sh("git", "-C", str(self.worktree), "add", "late.txt")
         self.sh("git", "-C", str(self.worktree), "commit", "-q", "-m", "late")
-        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        r = self.cmd("brief", "verifier", "--set", "mode=first pass")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        values = self.brief_values(self.dir / "briefs" / "cleanup-1.md")
+        values = self.brief_values(self.dir / "briefs" / "verifier-1.md")
         self.assertEqual(values["cut"], cut)
         # origin/main moving on after a fetch leaves the cut where it was.
         seed = self.tmp / "seed"
@@ -148,17 +190,17 @@ class BriefTest(WorkCase):
         self.sh("git", "-C", str(seed), "commit", "-q", "-m", "upstream")
         self.sh("git", "-C", str(seed), "push", "-q", "origin", "main")
         self.sh("git", "-C", str(self.worktree), "fetch", "-q", "origin")
-        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        r = self.cmd("brief", "verifier", "--set", "mode=first pass")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        values = self.brief_values(self.dir / "briefs" / "cleanup-2.md")
+        values = self.brief_values(self.dir / "briefs" / "verifier-2.md")
         self.assertEqual(values["cut"], cut)
 
-    def test_cleanup_brief_gives_a_run_command_for_each_gate_check(self):
-        # The worker runs each check through `autodev.py run`, never by typing
+    def test_coder_brief_gives_a_run_command_for_each_gate_check(self):
+        # The coder runs each check through `autodev.py run`, never by typing
         # the profile's command (a permission check refuses `cd <wt> && …`).
-        r = self.cmd("brief", "cleanup", "--set", "scope=phase5")
+        r = self.cmd("brief", "coder", "--mode", "build")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        text = (self.dir / "briefs" / "cleanup-1.md").read_text()
+        text = (self.dir / "briefs" / "coder-1.md").read_text()
         runs = re.findall(r"run: `([^`]+)`", text)
         self.assertEqual(len(runs), 1, text)
         self.assertIn(" run gate 1 --dir ", runs[0])
@@ -187,26 +229,26 @@ class BriefTest(WorkCase):
         self.assertEqual(values["tree"], "a" * 40)
 
     def test_refused_issues_reach_only_that_jobs_retry(self):
-        self.returned("define", 1, next="FITS", high_risk="no", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 1)
-        self.assertEqual(self.cmd("brief", "define", "--mode", "write", "--retry", "1")
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 1)
+        self.assertEqual(self.cmd("brief", "planner", "--mode", "write", "--retry", "1")
                          .returncode, 0)
-        text = (self.dir / "briefs" / "define-1.md").read_text()
-        self.assertIn("\n  - SPEC.md has Security/Compliance criteria", text)
+        text = (self.dir / "briefs" / "planner-1.md").read_text()
+        self.assertIn("\n  - risk is standard but PLAN.md's `Risk:` line says high", text)
         # A fix-up, not a redo: the refused return's files are kept.
         self.assertIn("previous_issues: `record` refused your last return for this job, "
                       "and the files you wrote for it are still in place.", text)
         self.assertIn("redo what your fix makes stale", text)
         self.assertIn("even where your instructions say to start clean", text)
         self.assertIn("If they are missing, partial or from an earlier pass", text)
-        self.cmd("brief", "define", "--mode", "write")
-        values = self.brief_values(self.dir / "briefs" / "define-2.md")
+        self.cmd("brief", "planner", "--mode", "write")
+        values = self.brief_values(self.dir / "briefs" / "planner-2.md")
         self.assertEqual(values["previous_issues"], "none")
-        self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        r = self.cmd("brief", "define", "--mode", "write", "--retry", "1")
+        self.returned("planner", 1, next="FITS", **PLANNED)
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+        r = self.cmd("brief", "planner", "--mode", "write", "--retry", "1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("refused no return for define-1", r.stderr)
+        self.assertIn("refused no return for planner-1", r.stderr)
 
     def test_sibling_jobs_keep_their_own_issues(self):
         # Three reviewers in parallel: R1 wrote nothing, R2 is fine, R3 left a key out.
@@ -257,41 +299,132 @@ class BriefTest(WorkCase):
 
 
 class RecordTest(WorkCase):
-    def test_define_size_is_recorded_and_checked_against_the_spec(self):
-        self.returned("define", 1, next="FITS", high_risk="no", reading="none")
-        r = self.cmd("record", "define", "1")
+    def test_the_planner_s_size_and_risk_are_recorded_and_checked_against_the_plan(self):
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("Security/Compliance criteria", r.stdout)
-        self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
-        r = self.cmd("record", "define", "1")
+        self.assertIn("risk is standard but PLAN.md's `Risk:` line says high", r.stdout)
+        self.returned("planner", 1, next="FITS", **PLANNED)
+        r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = self.state()
         self.assertEqual(state["size"], "FITS")
+        self.assertTrue(state["high_risk"])
         self.assertTrue(state["settings"]["post_plan_gate"])
 
-    def test_define_spec_is_checked_against_its_template(self):
-        # Define has no shell to run check-artifact: record does it.
-        (self.dir / "SPEC.md").write_text(SPEC.replace(
-            "   - Edge: an invalid date is rejected → 400\n", "", 1))
-        self.returned("define", 1, next="FITS", high_risk="yes", reading="none")
-        r = self.cmd("record", "define", "1")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("SPEC.md: condition 1 has no `Edge:` line", r.stdout)
-        (self.dir / "SPEC.md").write_text(SPEC)
-        r = self.cmd("record", "define", "1")
+    def test_the_planner_s_size_must_match_the_plan_s_size_check(self):
+        self.returned("planner", 1, next="OVERSIZED", **PLANNED)
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("next is OVERSIZED but PLAN.md's size check says FITS", r.stdout)
+
+    def test_security_criteria_need_a_high_risk_plan(self):
+        self.write("PLAN.md", PLAN.replace("Risk: high", "Risk: standard"))
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Security/Compliance criteria but its `Risk:` is not high", r.stdout)
+
+    def test_a_standard_plan_is_recorded_standard(self):
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        for nxt in ("REVISED", "OVERSIZED"):  # every ok return is checked
-            (self.dir / "SPEC.md").write_text(SPEC.replace(
+        state = self.state()
+        self.assertFalse(state["high_risk"])
+        self.assertFalse(state["settings"].get("post_plan_gate"))
+
+    def test_the_plan_is_checked_against_its_template(self):
+        # The planner has no shell to run check-artifact: record does it.
+        (self.dir / "PLAN.md").write_text(PLAN.replace(
+            "   - Edge: an invalid date is rejected → 400\n", "", 1))
+        self.returned("planner", 1, next="FITS", **PLANNED)
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("PLAN.md: condition 1 has no `Edge:` line", r.stdout)
+        (self.dir / "PLAN.md").write_text(PLAN)
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for nxt in ("REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST"):  # every ok return
+            (self.dir / "PLAN.md").write_text(PLAN.replace(
                 "   - Verify by: unit\n", "", 1))
-            self.returned("define", 2, next=nxt, high_risk="yes", reading="none")
-            r = self.cmd("record", "define", "2")
+            self.returned("planner", 2, next=nxt, **PLANNED)
+            r = self.cmd("record", "planner", "2")
             self.assertEqual(r.returncode, 1, nxt + r.stdout + r.stderr)
             self.assertIn("condition 2 has no `Verify by:` line", r.stdout)
 
     def test_oversized_stops_the_run(self):
-        self.returned("define", 1, next="OVERSIZED", high_risk="yes", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        self.assertEqual(self.state()["phases"]["2"]["status"], "stopped")
+        self.write("PLAN.md", PLAN.split("## Size check")[0] + "## Size check\n"
+                   "OVERSIZED: three deliverables.\n")
+        self.returned("planner", 1, next="OVERSIZED", **PLANNED)
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+        state = self.state()
+        self.assertEqual(state["phases"]["2"]["status"], "stopped")
+        self.assertFalse(state["high_risk"])  # an OVERSIZED plan raises nothing
+
+    def test_a_revision_can_raise_the_risk_but_not_lower_it(self):
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+        self.assertFalse(self.state()["high_risk"])
+        self.write("PLAN.md", PLAN)
+        self.returned("planner", 2, next="REVISED", **PLANNED)
+        self.assertEqual(self.cmd("record", "planner", "2").returncode, 0)
+        state = self.state()
+        self.assertTrue(state["high_risk"])
+        self.assertTrue(state["settings"]["post_plan_gate"])
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.returned("planner", 3, next="REVISED", **{**PLANNED, "risk": "standard"})
+        self.assertEqual(self.cmd("record", "planner", "3").returncode, 0)
+        self.assertTrue(self.state()["high_risk"])
+
+    def test_the_critic_can_t_lower_a_high_plan(self):
+        self.state_size("FITS")  # PLAN.md is the fixture: Risk: high
+        self.write("plan-review/1.md", plan_review("REVISE", "standard",
+                                                   [("`src/due.ts:3`", "add a step")]))
+        self.returned("plan-critic", 1, next="REVISE", blockers="1", risk="standard")
+        r = self.cmd("record", "plan-critic", "1")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("the critic can't lower the tier", r.stdout)
+
+    def test_the_critic_s_result_must_match_its_review(self):
+        self.state_size("FITS")
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.write("plan-review/1.md", plan_review("REVISE", "standard",
+                                                   [("`src/due.ts:3`", "add a step")]))
+        for data, why in (
+                ({"next": "APPROVE", "blockers": "1", "risk": "standard"},
+                 "next is APPROVE but the review's verdict is REVISE"),
+                ({"next": "REVISE", "blockers": "2", "risk": "standard"},
+                 "blockers is 2 but the review lists 1"),
+                ({"next": "REVISE", "blockers": "1", "risk": "high"},
+                 "risk is high but the review's `Risk:` says standard")):
+            self.returned("plan-critic", 1, **data)
+            r = self.cmd("record", "plan-critic", "1")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn(why, r.stdout)
+        self.returned("plan-critic", 1, next="REVISE", blockers="1", risk="standard")
+        r = self.cmd("record", "plan-critic", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_the_critic_must_write_its_review(self):
+        self.returned("plan-critic", 1, next="APPROVE", blockers="0", risk="high")
+        r = self.cmd("record", "plan-critic", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("plan-review/1.md does not exist", r.stdout)
+
+    def test_a_high_risk_critic_raises_the_tier(self):
+        self.write("PLAN.md", PLAN_NO_SECURITY)
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
+        self.write("plan-review/2.md", plan_review("APPROVE", "high"))
+        self.returned("plan-critic", 2, next="APPROVE", blockers="0", risk="high")
+        self.assertEqual(self.cmd("record", "plan-critic", "2").returncode, 0)
+        state = self.state()
+        self.assertTrue(state["high_risk"])
+        self.assertTrue(state["settings"]["post_plan_gate"])
+        self.assertIn("high risk, post-plan gate on: the plan critic says the risk is high",
+                      [n["text"] for n in state["notes"]])
 
     def test_verifier_next_must_match_eval_status(self):
         (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
@@ -309,55 +442,12 @@ class RecordTest(WorkCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("next: CORRECT", r.stdout)
 
-    def test_a_plan_that_copies_the_spec_is_refused(self):
-        from test_next import IMPLEMENTATION
-        copied = IMPLEMENTATION.replace(
-            "1. add the field",
-            "1. a todo can carry a due date that the list shows next to its title")
-        (self.dir / "IMPLEMENTATION.md").write_text(copied)
-        self.returned("planner", 1, next="WRITTEN", entry_points_changed="no")
+    def test_a_plan_with_no_plan_file_is_refused(self):
+        (self.dir / "PLAN.md").unlink()
+        self.returned("planner", 1, next="FITS", **PLANNED)
         r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording", r.stdout)
-        self.assertIn("condition 1", r.stdout)
-        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
-        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
-
-    def test_a_plan_without_its_spec_is_not_passed(self):
-        from test_next import IMPLEMENTATION
-        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION)
-        (self.dir / "SPEC.md").unlink()
-        self.returned("planner", 1, next="WRITTEN", entry_points_changed="no")
-        r = self.cmd("record", "planner", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("SPEC.md", r.stdout)
-
-    def test_a_plan_fix_that_copies_the_spec_is_refused(self):
-        fix = self.write("fixes/plan-reviewer-1.md", (
-            "FIX B1\n<<<<<<< OLD\n1. add the field\n=======\n"
-            "1. a todo can carry a due date that the list shows next to its title\n"
-            ">>>>>>> NEW\n"))
-        self.returned("plan-reviewer", 1, next="CLEAN", blockers="0", fix_file=str(fix))
-        r = self.cmd("record", "plan-reviewer", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("plan-reviewer-1.md's new text copies SPEC.md's wording", r.stdout)
-        self.assertIn("condition 1", r.stdout)
-        fix.write_text("FIX B1\n<<<<<<< OLD\na todo can carry a due date that the list "
-                       "shows next to its title\n=======\n1. add the field\n>>>>>>> NEW\n")
-        self.assertEqual(self.cmd("record", "plan-reviewer", "1").returncode, 0)
-
-    def test_corrections_that_copy_the_spec_are_refused(self):
-        (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
-            tree="0" * 40, v1="unmet", v2="met", e2="x", judgment="Justified",
-            defective="None."))
-        (self.dir / "evidence").mkdir(exist_ok=True)
-        corrections = self.dir / "evidence" / "corrections.md"
-        corrections.write_text("# Required changes\n1. Make sure the list sorts todos "
-                               "by due date with the earliest first\n")
-        self.returned("verifier", 1, next="CORRECT", tree="x", corrections="1")
-        r = self.cmd("record", "verifier", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("corrections.md copies SPEC.md's wording", r.stdout)
+        self.assertIn("PLAN.md", r.stdout)
 
     def test_a_review_report_must_follow_its_template(self):
         state = self.state()
@@ -448,7 +538,6 @@ class RecordTest(WorkCase):
         self.assertIn("VOTES-R2.md", r.stdout)
 
     def test_a_security_review_must_follow_its_template(self):
-        from test_next import SECURITY_REVIEW
         broken = SECURITY_REVIEW.format(tree="0" * 40).split("## Coverage")[0]
         (self.dir / "SECURITY_REVIEW.md").write_text(broken)
         self.returned("security-reviewer", 1, next="CLEAN", must_fix="0", pre_existing="1")
@@ -475,39 +564,6 @@ class RecordTest(WorkCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("SPEC_EVAL.md: no `Tree:` line", r.stdout)
 
-    def test_a_lint_report_needs_its_tree_line(self):
-        (self.dir / "lint").mkdir(exist_ok=True)
-        (self.dir / "lint" / "TEST.md").write_text("# TEST — pass\n")
-        self.returned("cleanup", 1, next="GREEN")
-        r = self.cmd("record", "cleanup", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("TEST.md: no `Tree:` line", r.stdout)
-
-    def test_a_reviewer_fix_file_needs_a_fix_block(self):
-        fix = self.write("fixes/define-reviewer-1.md", "just prose\n")
-        self.returned("define-reviewer", 1, next="BLOCKERS", blockers="1", fix_file=str(fix))
-        r = self.cmd("record", "define-reviewer", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("define-reviewer-1.md: no FIX block", r.stdout)
-
-    def test_a_revised_plan_that_copies_the_spec_is_refused(self):
-        from test_next import IMPLEMENTATION
-        (self.dir / "IMPLEMENTATION.md").write_text(IMPLEMENTATION.replace(
-            "1. add the field",
-            "1. a todo can carry a due date that the list shows next to its title"))
-        self.returned("planner", 1, next="REVISED", entry_points_changed="no")
-        r = self.cmd("record", "planner", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording", r.stdout)
-
-    def test_cleanup_green_needs_passing_reports(self):
-        (self.dir / "lint").mkdir(exist_ok=True)
-        (self.dir / "lint" / "TEST.md").write_text("# TEST — fail\n")
-        self.returned("cleanup", 1, next="GREEN")
-        self.assertEqual(self.cmd("record", "cleanup", "1").returncode, 1)
-        (self.dir / "lint" / "TEST.md").write_text("# TEST — pass\n\n- **Tree:** abc\n")
-        self.assertEqual(self.cmd("record", "cleanup", "1").returncode, 0)
-
     def test_a_malformed_return_is_refused(self):
         self.returned("coder", 1, next="DONE", blocked="0", test_changes="none")
         r = self.cmd("record", "coder", "1")
@@ -531,69 +587,33 @@ class RecordTest(WorkCase):
         self.returned("coder", 1, next="BUILT", blocked="2", test_changes="none")
         self.assertEqual(self.cmd("record", "coder", "1").returncode, 1)
 
-    def test_a_failed_define_return_changes_nothing(self):
-        self.returned("define", 1, status="failed", next="OVERSIZED")
-        r = self.cmd("record", "define", "1")
+    def test_a_failed_planner_return_changes_nothing(self):
+        self.returned("planner", 1, status="failed", next="OVERSIZED")
+        r = self.cmd("record", "planner", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = self.state()
         self.assertIsNone(state["size"])
         self.assertNotEqual(state["phases"]["2"]["status"], "stopped")
-        self.returned("define", 2, status="blocked", next="DONE")
-        r = self.cmd("record", "define", "2")
+        self.returned("planner", 2, status="blocked", next="DONE")
+        r = self.cmd("record", "planner", "2")
         self.assertEqual(r.returncode, 1)
         self.assertIn("MALFORMED", r.stdout)
 
-    def test_high_risk_accepts_true(self):
-        self.returned("define", 1, next="FITS", high_risk=True, reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
+    def test_a_risk_word_is_read_in_any_case(self):
+        self.write("PLAN.md", PLAN.replace("Risk: high", "**Risk:** High"))
+        self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "High"})
+        self.assertEqual(self.cmd("record", "planner", "1").returncode, 0)
         self.assertTrue(self.state()["high_risk"])
-
-    def test_a_security_criterion_added_later_turns_the_gate_on(self):
-        self.write("SPEC.md", SPEC_NO_SECURITY)
-        self.returned("define", 1, next="FITS", high_risk="no", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        self.assertFalse(self.state()["settings"]["post_plan_gate"])
-        self.write("SPEC.md", SPEC)
-        self.returned("define", 2, next="REVISED", high_risk="yes", reading="none")
-        self.assertEqual(self.cmd("record", "define", "2").returncode, 0)
-        state = self.state()
-        self.assertTrue(state["high_risk"])
-        self.assertTrue(state["settings"]["post_plan_gate"])
-
-    def test_a_fix_adding_a_security_criterion_turns_the_gate_on(self):
-        self.write("SPEC.md", SPEC_NO_SECURITY)
-        self.returned("define", 1, next="FITS", high_risk="no", reading="none")
-        self.assertEqual(self.cmd("record", "define", "1").returncode, 0)
-        fix = self.write("fixes/define-1.md", "FIX B1\n<<<<<<< OLD\n## Assumptions\n- none\n"
-                         "=======\n## Assumptions\n- none\n\n## Security/Compliance "
-                         "criteria\nS1. Only the owner can set a todo's due date\n"
-                         "   - Example: Given user B, when B sets it, then 404.\n"
-                         "   - Verify by: integration\n>>>>>>> NEW\n")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", fix)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("high_risk: yes", r.stdout)
-        self.assertTrue(self.state()["settings"]["post_plan_gate"])
 
     def test_verifier_unmet_with_a_defective_check_is_correct(self):
         self.spec_eval(v1="unmet", defective='- `src/due.acceptance.test.ts` :: '
-                       '"shows the due date" — asserts a format SPEC.md does not give')
+                       '"shows the due date" — asserts a format PLAN.md does not give')
         self.write("evidence/corrections.md", CORRECTION)
         self.returned("verifier", 1, next="REPAIR", tree="x", corrections="1")
         r = self.cmd("record", "verifier", "1")
         self.assertEqual(r.returncode, 1)
         self.assertIn("eval-status says CORRECT", r.stdout)
         self.returned("verifier", 1, next="CORRECT", tree="x", corrections="1")
-        r = self.cmd("record", "verifier", "1")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    def test_install_conflict_needs_its_corrections(self):
-        self.returned("verifier", 1, next="INSTALL_CONFLICT", tree="none", corrections="0")
-        r = self.cmd("record", "verifier", "1")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("INSTALL_CONFLICT", r.stdout)
-        self.write("evidence/corrections.md", "# Required changes\n1. Move "
-                   "`src/due.acceptance.test.ts`; an acceptance check installs there\n")
-        self.returned("verifier", 1, next="INSTALL_CONFLICT", tree="none", corrections="1")
         r = self.cmd("record", "verifier", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
@@ -619,19 +639,6 @@ class RecordTest(WorkCase):
         r = self.judge("REVOTE", "1", "1")
         self.assertIn("revote is 1", r.stdout)
 
-    def test_judge_corrections_must_not_copy_the_spec(self):
-        no_pending = "\n".join(ln for ln in CODE_REVIEW.splitlines()
-                               if not ln.startswith(("| C4", "| C6")))
-        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: the list "
-                   "sorts todos by due date with the earliest first\n")
-        r = self.judge("MUST_FIX", "1", "0", no_pending)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording", r.stdout)
-        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: guard "
-                   "the null due date in `src/sort.ts:4` before comparing\n")
-        r = self.judge("MUST_FIX", "1", "0", no_pending)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
     def test_triager_check_comments_go_to_the_checks_file(self):
         triage = self.dir / "triage" / "human-1.md"
         checks = self.dir / "triage" / "human-1-checks.md"
@@ -649,336 +656,245 @@ class RecordTest(WorkCase):
                       triage_file=str(triage), checks_file=str(checks))
         self.assertEqual(self.cmd("record", "triager", "1").returncode, 1)
 
-    def test_a_quoted_test_name_is_not_a_copy_of_the_spec(self):
-        quoted = ("# Required changes\n1. C1: put todos with a due date before undated ones\n"
-                  "   Where: `src/sort.ts:4` — the comparator\n"
-                  "   Now: `src/sort.acceptance.test.ts` :: \"the list sorts todos by due "
-                  "date with the earliest first\" fails\n")
-        path = self.write("evidence/corrections.md", quoted)
-        r = self.cmd("spec-overlap", path)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.cmd("check-artifact", path).returncode, 0)
-        path.write_text(quoted.replace('"the list', "the list").replace('first" fails',
-                                                                         "first fails"))
-        self.assertEqual(self.cmd("spec-overlap", path).returncode, 1)
-        r = self.cmd("check-artifact", path)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording", r.stdout)
-        # A plan is checked quoted text and all.
-        plan = self.write("IMPLEMENTATION.md", "Test: \"the list sorts todos by due date "
-                          "with the earliest first\"\n")
-        self.assertEqual(self.cmd("spec-overlap", plan).returncode, 1)
+    def checks(self, *paths):
+        for rel in paths:
+            path = self.worktree / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"test in {rel}\n")
 
-    def test_install_checks_installs_refuses_a_conflict_and_rechecks(self):
-        # The verifier installs the sealed checks with one command, not a
-        # shell loop a permission check refuses.
-        self.write("acceptance/files/src/due.acceptance.test.ts.sealed", "due\n")
-        self.write("acceptance/files/src/sort.acceptance.test.ts.sealed", "sort\n")
-        due = self.worktree / "src" / "due.acceptance.test.ts"
-        due.parent.mkdir(parents=True, exist_ok=True)
-        due.write_text("the coder's own file\n")
-        r = self.cmd("install-checks")
+    def test_the_tester_leaves_its_checks_in_the_worktree(self):
+        self.job("acceptance-tester", "write", scope="ALL CONDITIONS")
+        self.checks("src/due.acceptance.test.ts")
+        self.returned("acceptance-tester", 1, next="WRITTEN", checks="4", ambiguous="none")
+        r = self.cmd("record", "acceptance-tester", "1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("conflict: src/due.acceptance.test.ts", r.stdout)
-        self.assertFalse((self.worktree / "src" / "sort.acceptance.test.ts").exists())
-        due.unlink()
-        r = self.cmd("install-checks")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("INSTALLED: 2 check(s)", r.stdout)
-        self.assertEqual(due.read_text(), "due\n")
-        r = self.cmd("install-checks")  # a resumed pass: nothing to write
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotIn("installed:", r.stdout)
-        due.write_text("edited\n")
-        self.assertEqual(self.cmd("install-checks").returncode, 1)
-        r = self.cmd("install-checks", "--recheck")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(due.read_text(), "due\n")
-
-    SHARED_BASE = ('import { one } from "./one";\n\ndescribe("todos", () => {\n'
-                   '  it("adds", () => {\n    expect(one).toBe(1);\n  });\n});\n')
-    SHARED_SEALED = ('import { one } from "./one";\nimport { due } from "./due";\n\n'
-                     'describe("todos", () => {\n  it("adds", () => {\n'
-                     '    expect(one).toBe(1);\n  });\n  it("shows the due date", () => {\n'
-                     '    expect(due()).toBe("2026-01-01");\n  });\n});\n')
-
-    def shared_check(self):
-        """A sealed check that adds a test to src/todos.test.ts, which the coder
-        has also edited: a changed import and a test of its own."""
-        self.write("acceptance/files/src/todos.test.ts.sealed", self.SHARED_SEALED)
-        self.write("acceptance/files/src/todos.test.ts.base", self.SHARED_BASE)
-        target = self.worktree / "src" / "todos.test.ts"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(self.SHARED_BASE.replace("{ one }", "{ one, two }").replace(
-            "  });\n});", '  });\n  it("adds two", () => {\n    expect(two).toBe(2);\n'
-            "  });\n});"))
-        return target
-
-    def test_install_checks_adds_a_check_among_the_coders_lines(self):
-        target = self.shared_check()
-        r = self.cmd("install-checks")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("installed: src/todos.test.ts", r.stdout)
-        self.assertEqual(target.read_text(), (
-            'import { one, two } from "./one";\nimport { due } from "./due";\n\n'
-            'describe("todos", () => {\n  it("adds", () => {\n    expect(one).toBe(1);\n'
-            '  });\n  it("shows the due date", () => {\n'
-            '    expect(due()).toBe("2026-01-01");\n  });\n  it("adds two", () => {\n'
-            "    expect(two).toBe(2);\n  });\n});\n"))
-        r = self.cmd("install-checks")  # in already: nothing to write
-        self.assertNotIn("installed:", r.stdout)
-
-    def test_install_checks_conflicts_when_the_lines_around_a_check_changed(self):
-        target = self.shared_check()
-        target.write_text(target.read_text().replace(
-            'import { one, two } from "./one";\n\ndescribe', 'describe'))
-        r = self.cmd("install-checks")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("conflict: src/todos.test.ts", r.stdout)
-        self.assertNotIn("due()", target.read_text())
-
-    def test_recheck_undoes_only_the_edits_that_touched_a_shared_check(self):
-        target = self.shared_check()
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        good = target.read_text()
-        target.write_text("// the coder's comment\n" + good.replace(
-            '"2026-01-01"', '"anything"'))
-        r = self.cmd("install-checks", "--recheck")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(target.read_text(), "// the coder's comment\n" + good)
-
-    def test_recheck_without_a_snapshot_is_a_conflict(self):
-        target = self.shared_check()
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        (self.dir / "acceptance/files/src/todos.test.ts.installed").unlink()
-        target.write_text(target.read_text().replace('"2026-01-01"', '"anything"'))
-        r = self.cmd("install-checks", "--recheck")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("conflict: src/todos.test.ts", r.stdout)
-
-    def installed_shared_check(self):
-        """The shared check of shared_check(), listed in MANIFEST.md and installed."""
-        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
-            '`src/due.acceptance.test.ts` :: "shows the due date"',
-            '`src/todos.test.ts` :: "shows the due date"'))
-        target = self.shared_check()
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        return target
-
-    def test_a_brief_lists_the_lines_a_check_adds_besides_its_tests(self):
-        # The check's own import line is sealed too: a coder told only the
-        # test's name edited it for its own test, and every re-check put it back.
-        self.installed_shared_check()
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('src/todos.test.ts (tests: "shows the due date"; and the lines they '
-                      'add besides the tests, each run (joined by +) kept whole: '
-                      '`import { due } from "./due";`)', paths)
-        # The lines don't hide a file from the check files the brief listed.
-        sys.path.insert(0, str(SCRIPTS))
-        from lib import check_props
-        self.assertEqual(check_props.shown_paths(self.dir, "coder", n),
-                         {"src/due.acceptance.test.ts", "src/sort.acceptance.test.ts",
-                          "src/todos.test.ts"})
-
-    def test_a_coder_that_edits_a_check_s_import_line_is_refused(self):
-        target = self.installed_shared_check()
-        good = target.read_text()
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        target.write_text(good.replace('import { due } from "./due";',
-                                       'import { due, type Due } from "./due";'))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("you changed lines of the held-out acceptance checks in "
-                      "src/todos.test.ts (whitespace and blank lines count): the line "
-                      '`import { due } from "./due";`, of which these are changed or gone',
+        self.assertIn("src/sort.acceptance.test.ts is in MANIFEST.md but not in the worktree",
                       r.stdout)
-        self.assertIn("add your own import line above the first line of a run of theirs, "
-                      "or below its last line", r.stdout)
-        # A retry is held to the same checks.
-        r = self.cmd("brief", "coder", "--mode", "correction", "--retry", str(n), "--set",
-                     f"corrections_file={self.dir}/evidence/corrections.md")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.returned("coder", n + 1, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", str(n + 1))
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('the line `import { due } from "./due";`', r.stdout)
-        target.write_text(good.replace('import { due } from "./due";',
-                                       'import { due } from "./due";\n'
-                                       'import type { Due } from "./due";'))
-        r = self.cmd("record", "coder", n)  # its own line beside theirs is fine
+        self.assertFalse((self.dir / "acceptance" / "files").exists())
+        self.checks("src/sort.acceptance.test.ts")
+        r = self.cmd("record", "acceptance-tester", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_a_cleanup_that_edits_a_check_line_is_told_to_say_so(self):
-        target = self.installed_shared_check()
-        self.job("cleanup", scope="phase5")
-        target.write_text(target.read_text().replace("    expect(due())", "  expect(due())"))
-        self.returned("cleanup", 1, next="GREEN")
-        r = self.cmd("record", "cleanup", "1")
+    def test_the_tester_only_adds_to_a_file_the_repo_had(self):
+        shared = self.worktree / "src" / "due.acceptance.test.ts"
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        shared.write_text("the repo's own test\n")
+        self.sh("git", "add", "src/due.acceptance.test.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "the repo's test", cwd=self.worktree)
+        n = self.job("acceptance-tester", "write", scope="ALL CONDITIONS")
+        self.checks("src/sort.acceptance.test.ts")
+        shared.write_text("the repo's own test, rewritten\nthe new check\n")
+        self.returned("acceptance-tester", n, next="WRITTEN", checks="4", ambiguous="none")
+        r = self.cmd("record", "acceptance-tester", str(n))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        # The indentation shows: the line the formatter re-indented is still
-        # in the file, without it.
-        self.assertIn('`    expect(due()).toBe("2026-01-01");`', r.stdout)
-        self.assertIn("return ACCEPTANCE_CHECK_FAILS_GATE", r.stdout)
-
-    def test_a_line_added_inside_a_check_names_the_run_it_broke(self):
-        target = self.installed_shared_check()
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        target.write_text(target.read_text().replace(
-            '    expect(due()).toBe("2026-01-01");\n',
-            '    expect(due()).toBe("2026-01-01");\n    expect(1).toBe(1);\n'))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('the run of lines from `  it("shows the due date", () => {` to `  });`',
+        self.assertIn("src/due.acceptance.test.ts: you changed or removed line(s) 1",
                       r.stdout)
-        target.unlink()
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("src/todos.test.ts was removed or moved: put it back", r.stdout)
-
-    def test_a_check_named_by_its_whole_path_lists_only_the_lines_besides_it(self):
-        # The runner names the test `todos > shows the due date`; the source
-        # holds only the last part, so the test's body is not listed.
-        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
-            '`src/due.acceptance.test.ts` :: "shows the due date"',
-            '`src/todos.test.ts` :: "todos > shows the due date"'))
-        self.shared_check()
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('kept whole: `import { due } from "./due";`)', paths)
-        self.assertNotIn("expect(due())", paths)
-
-    GROUP_BASE = ('import { one } from "./one";\n\ndescribe("todos", () => {\n'
-                  '  it("adds", () => {});\n});\n')
-    GROUP_SEALED = ('import { one } from "./one";\n\nimport { due } from "./due";\n\n'
-                    'describe("todos", () => {\n  it("adds", () => {});\n'
-                    '  it("shows the due date", () => {});\n});\n')
-
-    def grouped_check(self, rel="src/todos.test.ts", base=GROUP_BASE, sealed=GROUP_SEALED):
-        """A check whose import starts a group of its own, with its blank line."""
-        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
-            '`src/due.acceptance.test.ts` :: "shows the due date"',
-            f'`{rel}` :: "shows the due date"'))
-        self.write(f"acceptance/files/{rel}.sealed", sealed)
-        if base is not None:
-            self.write(f"acceptance/files/{rel}.base", base)
-        target = self.worktree / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if base is not None:
-            target.write_text(base)
-        self.assertEqual(self.cmd("install-checks").returncode, 0)
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        return target, n
-
-    def test_a_run_s_blank_line_is_listed_and_named_when_split(self):
-        # "Below the last line" means after the blank line the run ends with.
-        target, n = self.grouped_check()
-        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('kept whole: `import { due } from "./due";` + (blank line))', paths)
-        target.write_text(target.read_text().replace(
-            'import { due } from "./due";\n',
-            'import { due } from "./due";\nimport type { Due } from "./due";\n'))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('the line `import { due } from "./due";`: a line was added inside it, '
-                      'or a blank line in it added or removed; it reads '
-                      '`import { due } from "./due";` + (blank line)', r.stdout)
-        target.write_text(target.read_text().replace(
-            'import type { Due } from "./due";\n', "").replace(
-            'import { due } from "./due";\n\n', 'import { due } from "./due";\n\n'
-            'import type { Due } from "./due";\n'))
-        self.assertEqual(self.cmd("record", "coder", n).returncode, 0)
-
-    def test_a_run_that_goes_on_into_its_tests_says_so(self):
-        # A new check file is one run: nothing may go below its imports.
-        _target, n = self.grouped_check(
-            rel="src/due.check.test.ts", base=None,
-            sealed='import { due } from "./due";\n\ndescribe("due", () => {\n'
-                   '  it("shows the due date", () => {});\n});\n')
-        paths = self.brief_values(self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"]
-        self.assertIn('kept whole: `import { due } from "./due";` + (blank line) + '
-                      '`describe("due", () => {` + its tests)', paths)
-
-    def test_a_blank_line_a_check_adds_is_named_by_the_line_before_it(self):
-        target, n = self.grouped_check(
-            base='import { one } from "./one";\ndescribe("todos", () => {\n'
-                 '  it("adds", () => {});\n});\n',
-            sealed='import { one } from "./one";\n\ndescribe("todos", () => {\n'
-                   '  it("adds", () => {});\n  it("shows the due date", () => {});\n});\n')
-        target.write_text(target.read_text().replace(
-            'import { one } from "./one";\n\n', 'import { one } from "./one";\n'))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('the 1 blank line(s) they add after `import { one } from "./one";` '
-                      "are gone or changed", r.stdout)
-
-    def test_a_check_not_whole_when_the_worker_was_briefed_is_not_its_doing(self):
-        # Before the install, the checks are not in the worktree: the coder's
-        # result is not held to them.
-        self.write("acceptance/MANIFEST.md", MANIFEST.replace(
-            '`src/due.acceptance.test.ts` :: "shows the due date"',
-            '`src/todos.test.ts` :: "shows the due date"'))
-        self.shared_check()
-        n = self.job("coder", "correction",
-                     corrections_file=self.write("evidence/corrections.md", CORRECTION))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
-        r = self.cmd("record", "coder", n)
+        shared.write_text("the repo's own test\nthe new check\n")
+        r = self.cmd("record", "acceptance-tester", str(n))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_a_check_is_not_anchored_on_punctuation_alone(self):
-        # The coder rewrote everything around the check but a closing line:
-        # splicing it in there would land inside the coder's code.
-        self.write("acceptance/files/src/x.test.ts.base", "a();\n});\nb();\n")
-        self.write("acceptance/files/src/x.test.ts.sealed", "a();\n});\ncheck();\nb();\n")
-        target = self.worktree / "src" / "x.test.ts"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("c();\n});\nd();\n")
-        r = self.cmd("install-checks")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("conflict: src/x.test.ts", r.stdout)
+    def test_the_tester_changes_only_its_check_files(self):
+        for mode, nxt in (("write", "WRITTEN"), ("repair", "REPAIRED")):
+            with self.subTest(mode=mode):
+                extra = {"report": "x"} if mode == "repair" else {}
+                n = self.job("acceptance-tester", mode, scope="ALL CONDITIONS", **extra)
+                self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+                (self.worktree / "src" / "fix.ts").write_text("the tester's fix to the code\n")
+                self.returned("acceptance-tester", n, next=nxt, checks="1",
+                              ambiguous="none")
+                r = self.cmd("record", "acceptance-tester", str(n))
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("you changed src/fix.ts, which MANIFEST.md names as no "
+                              "check file", r.stdout)
+                (self.worktree / "src" / "fix.ts").unlink()
+                r = self.cmd("record", "acceptance-tester", str(n))
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
-    def test_after_the_build_a_check_cant_claim_a_file_that_holds_none(self):
-        state = self.state()
-        state["phases"]["4"]["status"] = "done"
+    def tests_commit(self):
+        self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
+
+    def test_commit_tests_commits_the_checks_alone_once(self):
+        (self.worktree / "app.ts").write_text("the coder's work, not yet\n")
+        r = self.tests_commit()
+        self.assertTrue(r.stdout.startswith("COMMITTED: "), r.stdout)
+        sha = r.stdout.split()[1]
+        self.assertEqual(self.state()["tests_commits"][0]["sha"], sha)
+        self.assertEqual(self.state()["tests_commits"][0]["paths"],
+                         ["src/due.acceptance.test.ts", "src/sort.acceptance.test.ts"])
+        shown = self.sh("git", "show", "--name-only", "--format=%s", "HEAD",
+                        cwd=self.worktree).split()
+        self.assertEqual(" ".join(shown[:5]), "test: acceptance checks for Add")
+        self.assertEqual(sorted(shown[-2:]),
+                         ["src/due.acceptance.test.ts", "src/sort.acceptance.test.ts"])
+        self.assertIn("app.ts", self.sh("git", "status", "--porcelain",
+                                        cwd=self.worktree))  # left uncommitted
+        r = self.cmd("commit-tests")  # nothing changed since
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("UNCHANGED"), r.stdout)
+        self.assertEqual(len(self.state()["tests_commits"]), 1)
+
+    def test_commit_tests_after_a_repair_appends_a_commit(self):
+        self.tests_commit()
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, repaired\n")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        commits = self.state()["tests_commits"]
+        self.assertEqual(len(commits), 2)
+        self.assertEqual(commits[1]["paths"], ["src/due.acceptance.test.ts"])
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip(),
+                         commits[1]["sha"])
+
+    def test_a_tests_commit_state_json_missed_is_adopted(self):
+        self.tests_commit()
+        sha = self.state()["tests_commits"][0]["sha"]
+        state = self.state()  # as if the run stopped between the commit and the save
+        del state["tests_commits"]
         self.write_state(state)
-        self.write("acceptance/files/app.ts.sealed", "export const one = 1;\ncheck\n")
-        self.returned("acceptance-tester", 1, next="REPAIRED", checks="1", ambiguous="none")
-        r = self.cmd("record", "acceptance-tester", 1)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("holds no check yet", r.stdout)
-
-    def test_record_gives_a_sealed_copy_its_base_and_refuses_a_changed_line(self):
-        self.write("acceptance/files/app.ts.sealed",
-                   "export const one = 1;\nexport const two = 2;\n")
-        self.write("acceptance/files/src/new.test.ts.sealed", "a new file\n")
-        self.returned("acceptance-tester", 1, next="SEALED", checks="2", ambiguous="none")
-        self.assertEqual(self.cmd("record", "acceptance-tester", 1).returncode, 0)
-        base = self.dir / "acceptance" / "files" / "app.ts.base"
-        self.assertEqual(base.read_text(), "export const one = 1;\n")  # app.ts at HEAD
-        self.assertFalse((self.dir / "acceptance/files/src/new.test.ts.base").exists())
-        self.write("acceptance/files/app.ts.sealed", "export const one = 2;\n")
-        self.returned("acceptance-tester", 2, next="SEALED", checks="2", ambiguous="none")
-        r = self.cmd("record", "acceptance-tester", 2)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("may only add lines", r.stdout)
-
-    def test_apply_fix_reports_applied_when_the_new_spec_is_malformed(self):
-        self.state_size("FITS")
-        fix = self.write("fixes/define-1.md", "FIX B1\n<<<<<<< OLD\n## Conditions\n"
-                         "=======\n## Criteria\n>>>>>>> NEW\n")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", fix)
+        r = self.cmd("commit-tests")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("## Criteria", (self.dir / "SPEC.md").read_text())
+        self.assertTrue(r.stdout.startswith("UNCHANGED"), r.stdout)
+        self.assertEqual([c["sha"] for c in self.state()["tests_commits"]], [sha])
+        # A commit of the same subject that touches anything else is not adopted.
+        state = self.state()
+        del state["tests_commits"]
+        self.write_state(state)
+        (self.worktree / "app.ts").write_text("x\n")
+        self.sh("git", "add", "app.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "test: acceptance checks, and more",
+                cwd=self.worktree)
+        self.cmd("commit-tests")
+        self.assertEqual([c["sha"] for c in self.state()["tests_commits"]], [sha])
+
+    def test_a_hook_that_rejects_the_tests_commit_leaves_nothing_staged(self):
+        hooks = self.tmp / "hooks"
+        hooks.mkdir()
+        (hooks / "pre-commit").write_text("#!/bin/sh\necho 'lint says no' >&2\nexit 1\n")
+        (hooks / "pre-commit").chmod(0o755)
+        self.sh("git", "config", "core.hooksPath", str(hooks), cwd=self.worktree)
+        self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("lint says no", r.stdout + r.stderr)
+        self.assertIn("COMMIT-FAILED", r.stdout + r.stderr)
+        self.assertEqual(self.sh("git", "diff", "--cached", "--name-only",
+                                 cwd=self.worktree), "")
+        self.assertNotIn("tests_commits", self.state())
+
+    def test_commit_tests_commits_a_dropped_check_file(self):
+        self.tests_commit()
+        (self.worktree / "src" / "sort.acceptance.test.ts").unlink()
+        manifest = self.dir / "acceptance" / "MANIFEST.md"
+        manifest.write_text("\n".join(ln for ln in manifest.read_text().splitlines()
+                                      if "sort.acceptance" not in ln) + "\n")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["tests_commits"][-1]["paths"],
+                         ["src/sort.acceptance.test.ts"])
+        self.assertNotIn("sort.acceptance", self.sh("git", "ls-files", cwd=self.worktree))
+
+    def test_the_first_commit_tests_refuses_a_file_with_no_change(self):
+        self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+        self.sh("git", "add", "src/sort.acceptance.test.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "someone committed it already",
+                cwd=self.worktree)
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no change from HEAD in src/sort.acceptance.test.ts",
+                      r.stdout + r.stderr)
+        self.assertNotIn("tests_commits", self.state())
+        (self.worktree / "src" / "sort.acceptance.test.ts").unlink()
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not in the worktree: src/sort.acceptance.test.ts", r.stdout + r.stderr)
+
+    def test_commit_tests_path_must_be_a_check_file(self):
+        self.tests_commit()
+        r = self.cmd("commit-tests", "--path", "app.ts")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("MANIFEST.md names no check in app.ts", r.stdout + r.stderr)
+
+    def test_a_coder_that_breaks_a_check_and_fails_is_refused_too(self):
+        # Whatever its status: a coder's edit left in a committed check would be
+        # counted as broken already by the next coder's brief, and excused.
+        self.tests_commit()
+        n = self.job("coder", "build")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("weakened\n")
+        self.returned("coder", n, status="failed")
+        r = self.cmd("record", "coder", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("committed acceptance checks in src/due.acceptance.test.ts", r.stdout)
+
+    def test_a_tester_that_rules_a_check_right_but_changed_the_tree_is_refused(self):
+        self.tests_commit()
+        n = self.job("acceptance-tester", "repair", scope="ONLY conditions 1: x",
+                     report="the review")
+        (self.worktree / "app.ts").write_text("the tester's edit\n")
+        self.returned("acceptance-tester", n, next="STANDS", checks="0", ambiguous="none")
+        r = self.cmd("record", "acceptance-tester", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("you changed app.ts but returned no repair", r.stdout)
+
+    def test_a_token_from_another_mode_is_refused(self):
+        n = self.job("planner", "blocked", blocked="the steps listed in x")
+        self.returned("planner", n, next="FITS", risk="high", reading="none",
+                      entry_points_changed="no")
+        r = self.cmd("record", "planner", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("is not one of PLAN_REVISED, SPEC_IMPOSSIBLE, UPDATE_OLD_TEST "
+                      "(in blocked mode)", r.stdout)
+
+    def test_a_security_reviewer_whose_counts_disagree_is_refused(self):
+        n = self.job("security-reviewer", leads="none")
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree="0" * 40)
+                                                     .replace(
+            "| S2 | session token not rotated |",
+            "| S3 | any user can set the date | `src/due.ts:9` | introduced | High "
+            "| pending | must-fix | open |\n| S2 | session token not rotated |"))
+        self.returned("security-reviewer", n, next="CLEAN", must_fix="0", pre_existing="0",
+                      spec_problems="0")
+        r = self.cmd("record", "security-reviewer", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("must_fix is 0 but SECURITY_REVIEW.md has 1 open must-fix", r.stdout)
+        self.returned("security-reviewer", n, next="MUST_FIX", must_fix="1",
+                      pre_existing="0", spec_problems="0")
+        r = self.cmd("record", "security-reviewer", str(n))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_coder_that_breaks_a_committed_check_is_refused_once_it_was_whole(self):
+        self.tests_commit()
+        n = self.job("coder", "build")
+        check = self.worktree / "src" / "due.acceptance.test.ts"
+        check.write_text("test in src/due.acceptance.test.ts\nthe coder's own test\n")
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        self.assertEqual(self.cmd("record", "coder", str(n)).returncode, 0)
+        n = self.job("coder", "correction", corrections_file="the gate's reports")
+        check.write_text("weakened\n")
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("committed acceptance checks in src/due.acceptance.test.ts at line(s) 1",
+                      r.stdout)
+        # Broken before the brief: not this worker's doing.
+        n = self.job("coder", "build")
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        self.assertEqual(self.cmd("record", "coder", str(n)).returncode, 0)
+
+    def test_a_new_break_in_a_file_already_broken_at_the_brief_is_refused(self):
+        self.checks("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("one\ntwo\nthree\n")
+        self.assertEqual(self.cmd("commit-tests").returncode, 0)
+        check = self.worktree / "src" / "due.acceptance.test.ts"
+        check.write_text("ONE\ntwo\nthree\n")  # broken before the brief
+        n = self.job("coder", "build")
+        check.write_text("ONE\ntwo\nTHREE\n")  # and a new break, later in the file
+        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none")
+        r = self.cmd("record", "coder", str(n))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("src/due.acceptance.test.ts at line(s) 3", r.stdout)
+        self.assertNotIn("line(s) 1", r.stdout)
 
     def test_each_documented_result_block_is_accepted(self):
         agents = Path(__file__).resolve().parents[1] / "agents"
@@ -1044,45 +960,9 @@ class RecordTest(WorkCase):
             self.assertEqual(r.returncode, 0, (answer, r.stdout))
 
 
-PROPOSAL_ON_1 = """# Spec proposals
-
-## P1
-- Target: condition 1
-- Why: the ticket asks for the date in the detail view as well as in the list
-- Comment: none
-- New text:
-1. A todo can carry a due date that both the list and its detail view show
-   - Example: Given todo 7, when its due date is set to 2026-01-02, then the list and
-     the detail view show 2026-01-02.
-   - Edge: an invalid date is rejected → 400
-   - Verify by: integration
-"""
-NEW_CONDITION = """
-## P{k}
-- Target: new condition
-- Why: undated todos have no place in the order
-- Comment: {comment}
-- New text:
-{n}. A todo with no due date is listed after every dated todo
-   - Example: Given one dated and one undated todo, when listed, then the undated one is last.
-   - Edge: two undated todos keep the order they were created in
-   - Verify by: unit
-"""
-NEW_CRITERION = """
-## P{k}
-- Target: new security criterion
-- Why: the due date is visible to anyone who knows the id
-- Comment: none
-- New text:
-{n}. Only the owner can read a todo's due date
-   - Example: Given user B, when B reads A's todo, then it is refused with 404.
-   - Verify by: integration
-"""
-
-
 class TreeGuardTest(WorkCase):
-    """A worker that never changes the repo (planner, define, the spec and plan
-    reviewers, the review judge, the triager) is held to the tree it was
+    """A worker that never changes the repo (the planner, the plan critic, the
+    review judge, the triager) is held to the tree it was
     briefed on: `record` refuses a change outside .auto-dev/ and puts it back,
     but only a change the worker could have made."""
 
@@ -1090,13 +970,13 @@ class TreeGuardTest(WorkCase):
         return self.sh("git", "-C", str(self.worktree), *args)
 
     def reviewer(self):
-        return self.job("plan-reviewer")
+        return self.job("plan-critic", "review")
 
     def answered(self, n):
-        self.returned("plan-reviewer", n, status="blocked")
+        self.returned("plan-critic", n, status="blocked")
 
     def record(self, n):
-        return self.cmd("record", "plan-reviewer", str(n))
+        return self.cmd("record", "plan-critic", str(n))
 
     def test_record_refuses_a_change_and_puts_the_files_back(self):
         wt = self.worktree
@@ -1119,11 +999,11 @@ class TreeGuardTest(WorkCase):
         os.chmod(wt / "tool.sh", 0o644)
         (wt / "new.ts").write_text("export {};\n")
         (wt / ".gitignore").write_text("setup-ran.txt\n")
-        self.write("fixes/plan-1.md", "none\n")
+        self.write(f"plan-review/{n}.md", "none\n")
         self.answered(n)
         r = self.record(n)
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn(f"plan-reviewer-{n} changed 6 repo file(s)", r.stdout)  # with .env
+        self.assertIn(f"plan-critic-{n} changed 6 repo file(s)", r.stdout)  # with .env
         for path in (".gitignore", "app.ts", "new.ts", "notes.txt", "tool.sh"):
             self.assertIn(path, r.stdout)
         self.assertEqual((wt / "app.ts").read_text(), "export const one = 2;\n")
@@ -1132,7 +1012,7 @@ class TreeGuardTest(WorkCase):
         self.assertTrue(os.access(wt / "tool.sh", os.X_OK))
         self.assertFalse((wt / "new.ts").exists())
         self.assertEqual((wt / ".env").read_text(), env)  # ignored again, so kept
-        backup = self.dir / "tree" / f"plan-reviewer-{n}"
+        backup = self.dir / "tree" / f"plan-critic-{n}"
         self.assertEqual((backup / "app.ts").read_text(), "export const one = 3;\n")
         self.assertEqual((backup / "new.ts").read_text(), "export {};\n")
         self.assertEqual(self.git("status", "--porcelain", "--", "app.ts", "tool.sh"),
@@ -1141,8 +1021,7 @@ class TreeGuardTest(WorkCase):
         self.assertEqual(self.record(n).returncode, 0)
 
     def test_each_worker_that_never_changes_the_repo_is_checked(self):
-        guarded = [("define", "write", {}), ("define-reviewer", None, {}),
-                   ("planner", "write", {}), ("plan-reviewer", None, {}),
+        guarded = [("planner", "write", {}), ("plan-critic", "review", {}),
                    ("review-judge", "security-verify", {}),
                    ("triager", "ci", {"failing": "test"})]
         for worker, as_mode, sets in guarded:
@@ -1199,7 +1078,7 @@ class TreeGuardTest(WorkCase):
         n = self.reviewer()
         (wt / "mine.ts").write_text("// the reviewer's\n")
         self.answered(n)
-        result = self.dir / "returns" / f"plan-reviewer-{n}.json"
+        result = self.dir / "returns" / f"plan-critic-{n}.json"
         os.utime(wt / "mine.ts", (result.stat().st_mtime - 5,) * 2)
         (wt / "app.ts").write_text("// the user's, after the reviewer returned\n")
         os.utime(wt / "app.ts", (result.stat().st_mtime + 5,) * 2)
@@ -1240,7 +1119,7 @@ class TreeGuardTest(WorkCase):
         (self.worktree / "app.ts").write_text("// the reviewer's\n")
         self.answered(n)
         self.assertEqual(self.record(n).returncode, 1)
-        r = self.cmd("brief", "plan-reviewer", "--retry", str(n))
+        r = self.cmd("brief", "plan-critic", "--mode", "review", "--retry", str(n))
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.state()["briefs"][-1]["tree"]["files"], {})
         # The user edits while no worker is out; `next` sends the brief again.
@@ -1262,1274 +1141,25 @@ class TreeGuardTest(WorkCase):
         self.assertEqual(self.record(n).returncode, 0)
 
 
-class SpecProposalRecordTest(WorkCase):
-    """`record` on a filer's spec proposals and on Define's rulings."""
-
-    def brief(self, worker, as_mode=None, **sets):
-        args = [a for k, v in sets.items() for a in ("--set", f"{k}={v}")]
-        r = self.cmd("brief", worker, *(("--mode", as_mode) if as_mode else ()), *args)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        return int(r.stdout.split("BRIEF:")[1].split()[0].rsplit("-", 1)[1][:-3])
-
-    def entry(self, worker, n):
-        return next(b for b in self.state()["briefs"]
-                    if b["worker"] == worker and b["n"] == n)
-
-    def verifier(self, proposal=None, count=None, **extra):
-        """A verifier's CORRECT return, with `proposal` as its proposal file."""
-        n = self.brief("verifier", mode="first pass", what_changed="none")
-        self.spec_eval(v1="unmet")
-        self.write("evidence/corrections.md", CORRECTION)
-        if proposal is not None:
-            self.write(f"proposals/verifier-{n}.md", proposal)
-        if count is None:
-            count = str(proposal.count("\n## P")) if proposal else "0"
-        self.returned("verifier", n, next="CORRECT", tree="x", corrections="1",
-                      proposals=count, **extra)
-        return self.cmd("record", "verifier", n)
-
-    def refused(self, r, *words):
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        for word in words:
-            self.assertIn(word, r.stdout)
-
-    def test_a_return_without_the_proposals_key_records(self):
-        n = self.brief("verifier", mode="first pass", what_changed="none")
-        self.spec_eval(v1="unmet")
-        self.write("evidence/corrections.md", CORRECTION)
-        self.returned("verifier", n, next="CORRECT", tree="x", corrections="1")
-        r = self.cmd("record", "verifier", n)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        path = self.write("returns/define-9.json", json.dumps(
-            {"worker": "define", "status": "ok", "next": "STANDS", "high_risk": "no",
-             "reading": "none"}))
-        self.assertEqual(self.cmd("check-artifact", path).returncode, 0)
-        path.write_text(json.dumps({"worker": "define", "status": "ok", "next": "SHRUG",
-                                    "high_risk": "no", "reading": "none"}))
-        self.assertEqual(self.cmd("check-artifact", path).returncode, 1)
-
-    def test_a_filer_brief_snapshots_the_spec_and_a_retry_keeps_it(self):
-        n = self.brief("verifier", mode="first pass", what_changed="none")
-        values = self.brief_values(self.dir / "briefs" / f"verifier-{n}.md")
-        self.assertEqual(values["proposal_file"], str(self.dir / "proposals" / "verifier-1.md"))
-        self.assertEqual(values["rulings"], "none")
-        sha = self.entry("verifier", n)["spec"]
-        self.assertEqual((self.dir / "proposals" / f"spec-{sha}.md").read_text(), SPEC)
-        self.assertNotIn("spec", self.entry("coder", self.brief(
-            "coder", as_mode="build")))
-        (self.dir / "SPEC.md").write_text(SPEC.replace("earliest first", "latest first"))
-        self.spec_eval(v1="unmet")
-        self.write("evidence/corrections.md", CORRECTION)
-        self.returned("verifier", n, next="CORRECT", tree="x", corrections="1",
-                      proposals="0")
-        self.refused(self.cmd("record", "verifier", n), "SPEC.md's condition 2 changed")
-        r = self.cmd("brief", "verifier", "--retry", str(n), "--set", "mode=first pass",
-                     "--set", "what_changed=none")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.entry("verifier", n + 1)["spec"], sha)
-
-    def test_a_well_formed_verifier_filing_is_recorded(self):
-        r = self.verifier(PROPOSAL_ON_1)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.state()["log"][-1]["data"]["proposals"], "1")
-
-    def test_a_filing_on_a_condition_the_spec_lacks_is_refused(self):
-        r = self.verifier(PROPOSAL_ON_1.replace("condition 1", "condition 9").replace(
-            "\n1. A todo", "\n9. A todo"))
-        self.refused(r, "condition 9, which SPEC.md does not have")
-
-    def test_only_the_four_filers_may_file(self):
-        self.returned("coder", self.brief("coder", as_mode="build"), next="BUILT",
-                      blocked="0", test_changes="none", proposals="1")
-        self.refused(self.cmd("record", "coder", "1"), "may not file a spec proposal")
-        n = self.brief("cleanup", scope="phase5")
-        self.write(f"proposals/cleanup-{n}.md", PROPOSAL_ON_1)
-        self.write("lint/TEST.md", "# TEST — pass\n\n- **Tree:** abc\n")
-        self.returned("cleanup", n, next="GREEN")
-        self.refused(self.cmd("record", "cleanup", n), "cleanup (no mode) may not file")
-        n = self.brief("triager", as_mode="ci", failing="unit")
-        self.write(f"proposals/triager-{n}.md", PROPOSAL_ON_1)
-        self.returned("triager", n, next="INFRA", blockers="0", acceptance_checks="0",
-                      triage_file="none", checks_file="none", proposals="1")
-        self.refused(self.cmd("record", "triager", n), "triager (ci) may not file")
-        n = self.brief("review-judge", as_mode="security-verify")
-        from test_next import SECURITY_REVIEW
-        self.write("SECURITY_REVIEW.md", SECURITY_REVIEW.format(tree="0" * 40))
-        self.write("review/security-corrections.md", "# Required changes\nNone.\n")
-        self.returned("review-judge", n, next="VERIFIED", must_fix_open="0", revote="0",
-                      proposals="0")
-        self.write(f"proposals/review-judge-{n}.md", PROPOSAL_ON_1)
-        self.refused(self.cmd("record", "review-judge", n),
-                     "review-judge (security-verify) may not file")
-        (self.dir / "proposals" / f"review-judge-{n}.md").unlink()
-        r = self.cmd("record", "review-judge", n)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    def test_a_filing_missing_a_part_is_refused(self):
-        self.refused(self.verifier(PROPOSAL_ON_1.replace(
-            "- Why: the ticket asks for the date in the detail view as well as in the "
-            "list\n", "")), "P1 has no `Why:`")
-        self.refused(self.verifier(PROPOSAL_ON_1.split("- New text:")[0]),
-                     "P1 has no `New text:`")
-        self.refused(self.verifier(PROPOSAL_ON_1.replace("- Target: condition 1",
-                                                         "- Target: the sort rule")),
-                     "names nothing")
-        self.refused(self.verifier(PROPOSAL_ON_1.replace(
-            "   - Edge: an invalid date is rejected → 400\n", "")), "no `Edge:` line")
-        self.refused(self.verifier(PROPOSAL_ON_1, count="2"), "holds 1 proposal(s)")
-        self.refused(self.verifier(None, count="1"), "there is no such file")
-
-    def test_a_filing_that_takes_out_or_renumbers_is_refused(self):
-        self.refused(self.verifier(PROPOSAL_ON_1.replace(
-            "- Target: condition 1", "- Target: delete condition 2")),
-            "never removes")
-        self.refused(self.verifier(PROPOSAL_ON_1.replace("\n1. A todo", "\n2. A todo")),
-                     "never renumbered")
-
-    def test_a_filing_on_an_existing_s_row_is_refused(self):
-        self.refused(self.verifier(PROPOSAL_ON_1.replace("condition 1", "S1")),
-                     "security criterion S1")
-        self.refused(self.verifier(PROPOSAL_ON_1.replace("- Target: condition 1",
-                                                         "- Target: conditions 1, S1")),
-                     "security criterion S1")
-
-    def test_an_addition_is_one_item_with_the_next_number(self):
-        head = "# Spec proposals\n"
-        self.refused(self.verifier(head + NEW_CONDITION.format(k=1, n=3, comment="none")
-                                   .replace("- Target: new condition",
-                                            "- Target: new condition, condition 2")),
-                     "adds and changes at once")
-        self.refused(self.verifier(head + NEW_CONDITION.format(k=1, n=4, comment="none")),
-                     "must be numbered 3")
-        two = NEW_CONDITION.format(k=1, n=3, comment="none") + (
-            "4. Another item\n   - Example: x\n   - Edge: y\n   - Verify by: unit\n")
-        self.refused(self.verifier(head + two), "adds more than one item")
-        r = self.verifier(head + NEW_CONDITION.format(k=1, n=3, comment="none")
-                          + NEW_CRITERION.format(k=2, n="S2"))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.refused(self.verifier(head + NEW_CRITERION.format(k=1, n="S1")),
-                     "must be numbered S2")
-
-    def test_new_text_equal_to_the_current_item_is_refused(self):
-        same = ("# Spec proposals\n\n## P1\n- Target: condition 2\n- Why: x\n"
-                "- New text:\n2. The list sorts todos by due date\n   with the earliest "
-                "first\n   - Example: Given two todos, when listed, then the earlier one "
-                "is first.\n   - Edge: none — every todo has a place in the order\n"
-                "   - Verify by:   unit\n")
-        self.refused(self.verifier(same), "is what it says now (spacing aside)")
-
-    def triager(self, proposal, comment, blockers="0"):
-        n = self.brief("triager", as_mode="human")
-        self.write(f"proposals/triager-{n}.md", proposal.replace(
-            "- Comment: none", f"- Comment: {comment}"))
-        self.returned("triager", n, next="TRIAGED", blockers=blockers,
-                      acceptance_checks="0", triage_file="none", checks_file="none",
-                      proposals="1")
-        return n, self.cmd("record", "triager", n)
-
-    def test_a_pr_comment_filing_needs_the_comment_id(self):
-        _, r = self.triager(PROPOSAL_ON_1, "none")
-        self.refused(r, "names no comment id")
-        _, r = self.triager(PROPOSAL_ON_1, "12345")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    def test_a_filer_that_edits_spec_md_is_refused(self):
-        n = self.brief("triager", as_mode="human")
-        cut = SPEC.split("2. The list sorts")[0] + "\n## Assumptions" + \
-            SPEC.split("## Assumptions")[1]
-        (self.dir / "SPEC.md").write_text(cut)
-        self.returned("triager", n, next="TRIAGED", blockers="0", acceptance_checks="0",
-                      triage_file="none", checks_file="none", proposals="0")
-        self.refused(self.cmd("record", "triager", n), "SPEC.md's condition 2 changed",
-                     "may only propose")
-        # Even a blocked return: the edit is refused before its status counts.
-        self.returned("triager", n, status="blocked", next="none")
-        self.refused(self.cmd("record", "triager", n), "may only propose")
-        (self.dir / "SPEC.md").write_text(SPEC.replace(
-            "A todo can carry a due date that the list shows next to its title",
-            "A todo can carry a due date\n   that the list shows next to its title"))
-        self.returned("triager", n, next="TRIAGED", blockers="0", acceptance_checks="0",
-                      triage_file="none", checks_file="none", proposals="0")
-        r = self.cmd("record", "triager", n)  # re-wrapping is no edit
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    def test_a_correction_quoting_a_proposed_statement_is_refused(self):
-        no_pending = "\n".join(ln for ln in CODE_REVIEW.splitlines()
-                               if not ln.startswith(("| C4", "| C6")))
-        n = self.brief("review-judge", as_mode="consolidate", reviewers="R1, R2, R3",
-                       scope="first", tree="a" * 40)
-        self.write(f"proposals/review-judge-{n}.md", PROPOSAL_ON_1)
-        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: make "
-                   "both the list and its detail view show the date in src/view.ts\n")
-        self.write("CODE_REVIEW.md", no_pending.format(tree="0" * 40))
-        self.returned("review-judge", n, next="MUST_FIX", must_fix_open="1", revote="0",
-                      proposals="1")
-        self.refused(self.cmd("record", "review-judge", n), "copies P1's proposed text")
-        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: guard "
-                   "the null due date in `src/sort.ts:4` before comparing\n")
-        r = self.cmd("record", "review-judge", n)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    # ------------------------------------------------------------ Define's answer
-
-    def define(self, batch, rulings, spec, nxt):
-        """Define ruling on `batch`: SPEC.md becomes `spec`; returns record's result."""
-        self.write("proposals/batch-1.md", batch)
-        n = self.brief("define", as_mode="revise",
-                       proposals=f"{self.dir}/proposals/batch-1.md\nRule on 1 proposal.",
-                       rulings_file=f"{self.dir}/proposals/batch-1-rulings.md")
-        self.assertTrue(self.entry("define", n)["spec"])
-        values = self.brief_values(self.dir / "briefs" / f"define-{n}.md")
-        self.assertEqual(values["proposals"], f"{self.dir}/proposals/batch-1.md")
-        self.assertEqual(values["rulings_file"], f"{self.dir}/proposals/batch-1-rulings.md")
-        (self.dir / "SPEC.md").write_text(spec)
-        self.write("proposals/batch-1-rulings.md", rulings)
-        self.returned("define", n, next=nxt, high_risk="yes", reading="none")
-        r = self.cmd("record", "define", n)
-        (self.dir / "SPEC.md").write_text(SPEC)
-        return r
-
-    APPLIED = "# Rulings\n\n## P1\n- Answer: applied\n- Reason: none\n"
-    STOOD = "# Rulings\n\n## P1\n- Answer: stands\n- Reason: the ticket names the list only\n"
-
-    def test_define_rulings_must_match_the_spec_diff(self):
-        new_1 = SPEC.replace("that the list shows next to its title",
-                             "that both the list and its detail view show")
-        new_2 = SPEC.replace("earliest first", "latest first")
-        cases = {
-            "only Context": (self.APPLIED, SPEC.replace("Todos have no due dates.",
-                                                       "Todos have none."), "REVISED",
-                             "condition 1 reads as before"),
-            "stands but changed": (self.STOOD, new_1, "STANDS",
-                                   "condition 1 changed, but no applied proposal"),
-            "no reason": (self.STOOD.replace("the ticket names the list only", "none"),
-                          SPEC, "STANDS", "P1 stands with no reason"),
-            "applied plus 2": (self.APPLIED, new_1.replace("earliest first",
-                                                           "latest first"),
-                               "REVISED", "condition 2 changed, but no applied"),
-            "condition 2 gone": (self.APPLIED, new_1.split("2. The list")[0]
-                                 + "## Assumptions" + SPEC.split("## Assumptions")[1],
-                                 "REVISED", "condition 2 is gone"),
-            "renumbered": (self.APPLIED, new_1.replace("2. The list", "3. The list"),
-                           "REVISED", "condition 2 is gone"),
-            "an extra item": (self.APPLIED, new_1.replace(
-                "\n## Assumptions", "3. Undated todos sort last\n   - Example: x\n"
-                "   - Edge: y\n   - Verify by: unit\n\n## Assumptions"), "REVISED",
-                "SPEC.md adds 3"),
-            "wrong token": (self.APPLIED, new_1, "STANDS", "which is REVISED"),
-        }
-        for name, (rulings, spec, nxt, said) in cases.items():
-            with self.subTest(name):
-                self.refused(self.define(PROPOSAL_ON_1, rulings, spec, nxt), said)
-        r = self.define(PROPOSAL_ON_1, self.APPLIED, new_1, "REVISED")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        r = self.define(PROPOSAL_ON_1, self.STOOD, SPEC.replace(
-            "Todos have no due dates.", "Todos have none (the list-only reading stands)."),
-            "STANDS")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIsNotNone(new_2)
-
-    def test_define_may_not_touch_an_existing_s_row(self):
-        new_1 = SPEC.replace("that the list shows next to its title",
-                             "that both the list and its detail view show")
-        reworded = new_1.replace("Only the owner can set", "Anyone can set")
-        self.refused(self.define(PROPOSAL_ON_1, self.APPLIED, reworded, "REVISED"),
-                     "security criterion S1 changed")
-        deleted = new_1.split("S1. Only")[0]
-        self.refused(self.define(PROPOSAL_ON_1, self.APPLIED, deleted, "REVISED"),
-                     "security criterion S1 is gone")
-
-    def test_check_artifact_reads_proposal_and_rulings_files(self):
-        good = self.write("proposals/verifier-1.md", PROPOSAL_ON_1)
-        self.assertEqual(self.cmd("check-artifact", good).returncode, 0)
-        bad = self.write("proposals/verifier-2.md", PROPOSAL_ON_1.replace(
-            "condition 1", "condition 9").replace("\n1. A todo", "\n9. A todo"))
-        r = self.cmd("check-artifact", bad)
-        self.refused(r, "condition 9")
-        r = self.cmd("check-artifact", self.write("proposals/triager-3.md", PROPOSAL_ON_1))
-        self.refused(r, "names no comment id")
-        self.assertEqual(self.cmd("check-artifact", self.write(
-            "proposals/batch-1.md", PROPOSAL_ON_1)).returncode, 0)
-        self.assertEqual(self.cmd("check-artifact", self.write(
-            "proposals/batch-1-rulings.md", self.STOOD)).returncode, 0)
-        r = self.cmd("check-artifact", self.write(
-            "proposals/batch-2-rulings.md", self.STOOD.replace(
-                "the ticket names the list only", "none")))
-        self.refused(r, "stands with no reason")
-
-
-# A five-step plan in its own words (example in TypeScript).
-PLAN = """# Implementation plan — due dates (example in TypeScript)
-
-Review effort: high — a small, local change
-
-## Files
-- `src/due.ts` — modify: the date field
-
-## Design
-The store keeps each date as an ISO string beside the title.
-
-## Data flow
-A request reaches the todo route, which reads the store.
-
-## Build sequence
-1. Add a `dueOn` field to the todo record in src/due.ts — test: `src/due.test.ts`
-2. Parse the incoming value with the shared ISO parser — test: `src/due.test.ts`
-3. Make the todo route pass the id to `setDue()` as a number — test: `src/route.test.ts`
-4. Return the stored value in the route's JSON body — test: `src/route.test.ts`
-5. Log each change with the acting user's id — test: `src/route.test.ts`
-
-## Test plan
-| Test | Location | Proves | Spec condition |
-|------|----------|--------|----------------|
-| stores the field | `src/due.test.ts` | the field is kept | 1 |
-
-## Migrations / config
-none
-"""
-NEW_3 = "3. Make the todo route pass the id to `setDue()` as a string — test: `src/route.test.ts`"
-NEW_5 = "5. Log each change with the acting user's id and the old value — test: `src/route.test.ts`"
-NEW_6 = "6. Reject an empty body before it reaches the store — test: `src/route.test.ts`"
-STEP_WHY = "the route receives the id as a string, so a number never matches a record"
-CHECK_WHY = "it expects the date in the title cell, but the plan puts it in its own column"
-DUE_CHECK = '`src/due.acceptance.test.ts` :: "shows the due date"'
-SORT_CHECK = '`src/sort.acceptance.test.ts` :: "sorts earliest first"'
-PROPOSAL_ON_2 = """# Spec proposals
-
-## P1
-- Target: condition 2
-- Why: the ticket asks for undated todos to come last
-- Comment: none
-- New text:
-2. The list sorts todos by due date with the earliest first and undated ones last
-   - Example: Given two todos, when listed, then the earlier one is first.
-   - Edge: an undated todo is listed after every dated one
-   - Verify by: unit
-"""
-
-
-def coder_file(*blocks):
-    return "# Plan and check proposals\n\n" + "\n".join(blocks)
-
-
-def step_block(k, target, new_text, why=STEP_WHY):
-    return f"## P{k}\n- Target: {target}\n- Why: {why}\n- New text:\n{new_text}\n"
-
-
-def check_block(k, check, why=CHECK_WHY):
-    return f"## P{k}\n- Target: check {check}\n- Why: {why}\n- New text: none\n"
-
-
-def rulings_text(*answers):
-    return "# Rulings\n" + "".join(f"\n## P{i}\n- Answer: {a}\n- Reason: {r}\n"
-                                   for i, (a, r) in enumerate(answers, 1))
-
-
-class UpstreamProposalRecordTest(WorkCase):
-    """`record` on the coder's plan and check proposals, on the planner's and
-    the acceptance tester's rulings, and on who may file against what."""
-
-    brief = SpecProposalRecordTest.brief
-    entry = SpecProposalRecordTest.entry
-    refused = SpecProposalRecordTest.refused
-
-    def setUp(self):
-        super().setUp()
-        self.write("IMPLEMENTATION.md", PLAN)
-        for rel in ("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts"):
-            self.write(f"acceptance/files/{rel}.sealed",
-                       f"test('{rel.split('/')[1].split('.')[0]} check')\n")
-
-    def ok(self, r):
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("RECORDED", r.stdout)
-
-    # ------------------------------------------------------------ the coder
-
-    def coder(self, mode, *blocks, count=None, nxt="BUILT", blocked="0", **extra):
-        sets = {}
-        if mode == "correction":
-            sets["corrections_file"] = str(self.write("evidence/corrections.md", CORRECTION))
-        n = self.brief("coder", as_mode=mode, **sets)
-        if blocks:
-            self.write(f"proposals/coder-{n}.md", coder_file(*blocks))
-        data = {"next": nxt, "blocked": blocked, "test_changes": "none", **extra}
-        if count is not False:
-            data["proposals"] = str(len(blocks) if count is None else count)
-        self.returned("coder", n, **data)
-        return n, self.cmd("record", "coder", n)
-
-    def test_a_correcting_coder_may_question_a_step_and_a_listed_check(self):
-        _, r = self.coder("correction", step_block(1, "step 3", NEW_3),
-                          check_block(2, SORT_CHECK))
-        self.ok(r)
-        self.assertEqual(self.state()["log"][-1]["data"]["proposals"], "2")
-        _, r = self.coder("correction", step_block(1, "new step", NEW_6))
-        self.ok(r)
-        _, r = self.coder("correction", step_block(
-            1, "steps 3, 5", NEW_3 + "\n" + NEW_5))
-        self.ok(r)
-
-    def test_a_coder_naming_a_spec_item_is_refused(self):
-        _, r = self.coder("correction", step_block(1, "condition 2", NEW_3))
-        self.refused(r, "P1 names a SPEC.md condition",
-                     "the coder may not propose against the spec")
-        _, r = self.coder("correction", step_block(
-            1, "new security criterion",
-            "S2. Only the owner sees the log\n   - Example: x\n   - Verify by: unit"))
-        self.refused(r, "P1 names a security criterion",
-                     "the coder may not propose against the spec")
-        _, r = self.coder("build", step_block(1, "the sort rule", NEW_3))
-        self.refused(r, "P1 names no step and no check")
-
-    def test_a_building_coder_has_no_check_to_question(self):
-        _, r = self.coder("build", check_block(1, SORT_CHECK))
-        self.refused(r, "P1 questions a check, but you were shown no check")
-        _, r = self.coder("build", step_block(1, "step 3", NEW_3))
-        self.ok(r)
-
-    def test_a_coder_naming_a_missing_step_hears_the_real_ones(self):
-        _, r = self.coder("build", step_block(1, "step 7", NEW_3.replace("3.", "7.", 1)))
-        self.refused(r, "P1 names step 7, which IMPLEMENTATION.md's build sequence lacks",
-                     "it has steps 1, 2, 3, 4, 5")
-        old_3 = next(ln for ln in PLAN.splitlines() if ln.startswith("3. "))
-        _, r = self.coder("build", step_block(1, "step 3", old_3.replace(" the id", "  the id")))
-        self.refused(r, "new text for step 3 is what it says now")
-        _, r = self.coder("build", step_block(1, "new step", NEW_6.replace("6.", "7.", 1)))
-        self.refused(r, "the new step must be numbered 6")
-
-    def test_a_coder_mixing_kinds_or_adding_while_changing_is_refused(self):
-        _, r = self.coder("correction", step_block(1, f"step 3 and check {SORT_CHECK}", NEW_3))
-        self.refused(r, "mixes a step with a check")
-        _, r = self.coder("correction", step_block(1, "new step, step 3", NEW_3))
-        self.refused(r, "adds a step and changes steps at once")
-        _, r = self.coder("correction", step_block(1, "remove step 4", NEW_3))
-        self.refused(r, "would take a step out or renumber one")
-        _, r = self.coder("correction", check_block(1, f"{SORT_CHECK} and {DUE_CHECK}"))
-        self.refused(r, "names more than one check")
-
-    def test_a_coder_naming_its_own_test_or_an_unlisted_file_is_refused(self):
-        _, r = self.coder("correction", check_block(
-            1, '`src/sort.acceptance.test.ts` :: "my own helper test"'))
-        self.refused(r, "MANIFEST.md lists as no check", "one of your own tests")
-        _, r = self.coder("correction", check_block(1, '`src/list.test.ts` :: "lists"'))
-        self.refused(r, "not one of the check files your brief listed",
-                     "src/due.acceptance.test.ts, src/sort.acceptance.test.ts")
-        _, r = self.coder("correction", check_block(1, DUE_CHECK))
-        self.ok(r)
-
-    def test_a_4_11_coder_return_reads_as_filing_nothing(self):
-        n, r = self.coder("build", count=False)
-        self.ok(r)
-        self.assertNotIn("proposals", self.state()["log"][-1]["data"])
-        self.assertFalse((self.dir / "proposals" / f"coder-{n}.md").exists())
-        _, r = self.coder("build", count=1)
-        self.refused(r, "holds 0 proposal(s)", "may not file a spec proposal")
-
-    # ------------------------------------------------------------ the spec filers
-
-    def test_spec_filers_are_sent_to_their_check_route(self):
-        from test_next import CLEAN_REVIEW
-        check = coder_file(check_block(1, DUE_CHECK))
-        step = coder_file(step_block(1, "step 3", NEW_3))
-        n = self.brief("verifier", mode="first pass", what_changed="none")
-        self.spec_eval(v1="unmet")
-        self.write("evidence/corrections.md", CORRECTION)
-        self.returned("verifier", n, next="CORRECT", tree="x", corrections="1",
-                      proposals="1")
-        for text, said in ((check, "questions a check only through `next: REPAIR`"),
-                           (step, "the verifier may not propose against the plan")):
-            self.write(f"proposals/verifier-{n}.md", text)
-            self.refused(self.cmd("record", "verifier", n), said)
-        n = self.brief("review-judge", as_mode="consolidate", reviewers="R1, R2, R3",
-                       scope="first", tree="a" * 40)
-        self.write("CODE_REVIEW.md", CLEAN_REVIEW.format(tree="0" * 40))
-        self.returned("review-judge", n, next="CLEAN", must_fix_open="0", revote="0",
-                      proposals="1")
-        for text, said in ((check, "category `acceptance-check`"),
-                           (step, "the review judge may not propose against the plan")):
-            self.write(f"proposals/review-judge-{n}.md", text)
-            self.refused(self.cmd("record", "review-judge", n), said)
-        n = self.brief("triager", as_mode="human")
-        self.returned("triager", n, next="TRIAGED", blockers="0", acceptance_checks="0",
-                      triage_file="none", checks_file="none", proposals="1")
-        for text, said in ((check, "an ACCEPTANCE_CHECK entry in its checks file"),
-                           (step, "the triager may not propose against the plan")):
-            self.write(f"proposals/triager-{n}.md", text.replace(
-                "- New text", "- Comment: 4242\n- New text"))
-            self.refused(self.cmd("record", "triager", n), said)
-        from test_next import SECURITY_REVIEW
-        n = self.brief("security-reviewer", leads="none")
-        self.write("SECURITY_REVIEW.md", SECURITY_REVIEW.format(tree="0" * 40))
-        self.returned("security-reviewer", n, next="CLEAN", must_fix="0", pre_existing="0",
-                      proposals="1")
-        for text, said in ((check, ("may not question a check; it files against SPEC.md "
-                                    "alone")),
-                           (step, "the security reviewer may not propose against the plan")):
-            self.write(f"proposals/security-reviewer-{n}.md", text)
-            self.refused(self.cmd("record", "security-reviewer", n), said)
-        self.write(f"proposals/security-reviewer-{n}.md", PROPOSAL_ON_1)
-        self.ok(self.cmd("record", "security-reviewer", n))
-
-    def test_non_filers_hear_who_files_what(self):
-        who = ("SPEC.md's are filed by the verifier, the review judge in consolidate mode, "
-               "the security reviewer and the triager in human mode; the plan's and the "
-               "checks' by the coder")
-        n = self.brief("triager", as_mode="ci", failing="unit")
-        self.write(f"proposals/triager-{n}.md", coder_file(check_block(1, DUE_CHECK)))
-        self.returned("triager", n, next="INFRA", blockers="0", acceptance_checks="0",
-                      triage_file="none", checks_file="none", proposals="1")
-        self.refused(self.cmd("record", "triager", n), "triager (ci) may not file a proposal",
-                     who)
-        n = self.brief("plan-reviewer")
-        self.write(f"proposals/plan-reviewer-{n}.md", coder_file(step_block(1, "step 3",
-                                                                          NEW_3)))
-        self.returned("plan-reviewer", n, next="CLEAN", blockers="0", fix_file="none",
-                      proposals="1")
-        self.refused(self.cmd("record", "plan-reviewer", n),
-                     "plan-reviewer (no mode) may not file a proposal", who)
-
-    def test_a_verifier_spec_proposal_and_its_repair_record_together(self):
-        n = self.brief("verifier", mode="first pass", what_changed="none")
-        self.spec_eval(v1="partial", defective=DUE_CHECK)
-        self.write(f"proposals/verifier-{n}.md", PROPOSAL_ON_2)
-        self.returned("verifier", n, next="REPAIR", tree="x", corrections="0",
-                      proposals="1")
-        self.ok(self.cmd("record", "verifier", n))
-
-    # ------------------------------------------------------------ snapshots
-
-    def test_owner_briefs_keep_a_copy_and_a_retry_reuses_it(self):
-        blocked = f"the steps listed in {self.dir}/blocked/coder-1.md"
-        n = self.brief("planner", as_mode="blocked", blocked=blocked)
-        sha = self.entry("planner", n)["plan"]
-        self.assertEqual((self.dir / "proposals" / "snapshots" / f"plan-{sha}.md")
-                         .read_text(), PLAN)
-        m = self.brief("planner", as_mode="revise",
-                       proposals=f"{self.dir}/proposals/plan-1.md\nRule on 1 proposal.",
-                       rulings_file=f"{self.dir}/proposals/plan-1-rulings.md")
-        self.assertEqual(self.entry("planner", m)["plan"], sha)
-        self.assertIn("plan", self.entry("planner", self.brief(
-            "planner", as_mode="revise", spec_change="condition 1 reads differently")))
-        self.assertNotIn("plan", self.entry("planner", self.brief(
-            "planner", as_mode="revise", direction="split step 2")))
-        self.assertNotIn("plan", self.entry("planner", self.brief("planner",
-                                                                   as_mode="write")))
-        t = self.brief("acceptance-tester", as_mode="repair", scope="ONLY conditions 2: x",
-                       report="y")
-        name = self.entry("acceptance-tester", t)["sealed"]
-        snap = self.dir / "proposals" / "snapshots" / name
-        self.assertEqual((snap / "MANIFEST.md").read_text(), MANIFEST)
-        self.assertEqual((snap / "files" / "src" / "sort.acceptance.test.ts.sealed")
-                         .read_text(), "test('sort check')\n")
-        self.assertNotIn("sealed", self.entry("acceptance-tester", self.brief(
-            "acceptance-tester", as_mode="write", scope="ALL CONDITIONS")))
-        # A refused planner answer: the retry is held to the first brief's copy.
-        self.write("IMPLEMENTATION.md", PLAN.replace("Log each", "Record each"))
-        self.write("acceptance/files/src/sort.acceptance.test.ts.sealed", "changed\n")
-        self.refused(self.cmd("record", "planner", n))
-        r = self.cmd("brief", "planner", "--mode", "blocked", "--retry", str(n),
-                     "--set", f"blocked={blocked}")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.state()["briefs"][-1]["plan"], sha)
-        self.refused(self.cmd("record", "acceptance-tester", t))
-        r = self.cmd("brief", "acceptance-tester", "--mode", "repair", "--retry", str(t),
-                     "--set", "scope=ONLY conditions 2: x", "--set", "report=y")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.state()["briefs"][-1]["sealed"], name)
-
-    def test_an_entry_point_repair_takes_a_fresh_copy_after_an_ok_one(self):
-        scope = {"scope": "ONLY conditions 2: x", "report": "y"}
-        t = self.brief("acceptance-tester", as_mode="repair", **scope)
-        name = self.entry("acceptance-tester", t)["sealed"]
-        self.returned("acceptance-tester", t, status="failed", next="none")
-        self.ok(self.cmd("record", "acceptance-tester", t))
-        # A re-spawn after the failed answer is held to the first copy.
-        self.assertEqual(self.entry("acceptance-tester", self.brief(
-            "acceptance-tester", as_mode="repair", **scope))["sealed"], name)
-        t = self.brief("acceptance-tester", as_mode="repair", **scope)
-        self.returned("acceptance-tester", t, next="STANDS", checks="1", ambiguous="none")
-        self.ok(self.cmd("record", "acceptance-tester", t))
-        # The second repair, after an ok one, starts from MANIFEST.md as it is now.
-        repaired = MANIFEST.replace("failed: unsorted", "not re-run (repair)")
-        self.write("acceptance/MANIFEST.md", repaired)
-        fresh = self.entry("acceptance-tester", self.brief(
-            "acceptance-tester", as_mode="repair", **scope))["sealed"]
-        self.assertNotEqual(fresh, name)
-        self.assertEqual((self.dir / "proposals" / "snapshots" / fresh / "MANIFEST.md")
-                         .read_text(), repaired)
-
-    def test_a_spec_change_planner_takes_a_fresh_copy_after_an_ok_one(self):
-        change = {"spec_change": "condition 1 reads differently"}
-        p = self.brief("planner", as_mode="revise", **change)
-        sha = self.entry("planner", p)["plan"]
-        self.returned("planner", p, status="failed", next="none")
-        self.ok(self.cmd("record", "planner", p))
-        self.assertEqual(self.entry("planner", self.brief(
-            "planner", as_mode="revise", **change))["plan"], sha)
-        p = self.brief("planner", as_mode="revise", **change)
-        revised = PLAN.replace("Log each", "Record each")
-        self.assertNotEqual(revised, PLAN)
-        self.write("IMPLEMENTATION.md", revised)
-        self.returned("planner", p, next="REVISED", entry_points_changed="no")
-        self.ok(self.cmd("record", "planner", p))
-        # The second spec change starts from the plan as the first one left it.
-        fresh = self.entry("planner", self.brief("planner", as_mode="revise", **change))["plan"]
-        self.assertNotEqual(fresh, sha)
-        self.assertEqual((self.dir / "proposals" / "snapshots" / f"plan-{fresh}.md")
-                         .read_text(), revised)
-
-    def blocked_coder(self, line):
-        """A building coder that stopped step 3, filed P1 on it and wrote `line`
-        as its blocked file. Returns record's result."""
-        n = self.brief("coder", as_mode="build")
-        self.write(f"proposals/coder-{n}.md", coder_file(step_block(1, "step 3", NEW_3)))
-        self.write(f"blocked/coder-{n}.md", line + "\n")
-        self.returned("coder", n, next="BLOCKED", blocked="1", test_changes="none",
-                      proposals="1")
-        return self.cmd("record", "coder", n)
-
-    def test_a_blocked_file_in_bold_names_the_step_form_it_needs(self):
-        self.refused(self.blocked_coder("- **Step 3:** the store has no lookup"),
-                     "can't be read as a stopped step", "`- step <n>: <why>`")
-
-    def test_a_blocked_file_with_words_after_the_number_is_refused(self):
-        self.refused(self.blocked_coder("- step 3 (the todo route): the store has no lookup"),
-                     "can't be read as a stopped step", "`- step <n>: <why>`")
-
-    def test_a_blocked_file_in_the_step_form_is_recorded(self):
-        self.ok(self.blocked_coder("- step 3: the store has no lookup"))
-
-    def test_a_blocked_file_naming_no_step_is_refused(self):
-        self.refused(self.blocked_coder("The store has no lookup."),
-                     "names no stopped step", "`- step <n>: <why>`")
-
-    def blocked_coder_with_no_proposal(self, text):
-        """A building coder that stopped and filed no proposal, with `text` as
-        its blocked file. Returns record's result."""
-        n = self.brief("coder", as_mode="build")
-        self.write(f"blocked/coder-{n}.md", text + "\n")
-        self.returned("coder", n, next="BLOCKED", blocked="1", test_changes="none",
-                      proposals="0")
-        return self.cmd("record", "coder", n)
-
-    def test_a_blocked_file_in_bold_with_no_proposal_is_recorded(self):
-        # With no plan proposal the planner reads the file as prose, as before.
-        self.ok(self.blocked_coder_with_no_proposal("- **Step 3:** the store has no lookup"))
-
-    def test_a_blocked_file_in_plain_prose_with_no_proposal_is_recorded(self):
-        self.ok(self.blocked_coder_with_no_proposal(
-            "Step 3 can't be built: the store has no lookup."))
-
-    def test_a_blocked_return_with_no_proposal_still_needs_its_blocked_file(self):
-        n = self.brief("coder", as_mode="build")
-        self.returned("coder", n, next="BLOCKED", blocked="1", test_changes="none",
-                      proposals="0")
-        self.refused(self.cmd("record", "coder", n), "does not exist")
-
-    def test_a_blocked_file_with_one_good_and_one_bold_step_line_is_refused(self):
-        r = self.blocked_coder("- step 3: the store has no lookup\n"
-                               "- **Step 4:** it reads the lookup")
-        self.refused(r, "'- **Step 4:** it reads the lookup'",
-                     "can't be read as a stopped step")
-        self.assertNotIn("step 3: the store", r.stdout + r.stderr)
-
-    def test_a_blocked_file_in_bold_with_only_a_check_proposal_is_recorded(self):
-        # The planner reads the stopped steps only with a plan proposal.
-        n = self.brief("coder", as_mode="correction", corrections_file=str(
-            self.write("evidence/corrections.md", CORRECTION)))
-        self.write(f"proposals/coder-{n}.md", coder_file(check_block(1, SORT_CHECK)))
-        self.write(f"blocked/coder-{n}.md", "- **Step 3:** the store has no lookup\n")
-        self.returned("coder", n, next="BLOCKED", blocked="1", test_changes="none",
-                      proposals="1")
-        self.ok(self.cmd("record", "coder", n))
-
-    # ------------------------------------------------------------ the planner
-
-    def planner(self, batch, rulings, plan, nxt="REVISED", mode="revise", stopped=None,
-                base=PLAN):
-        """The planner ruling on `batch` (plan-1.md's blocks): IMPLEMENTATION.md
-        is `base` when it is briefed and becomes `plan`. Returns record's result."""
-        self.write("IMPLEMENTATION.md", base)
-        self.write("proposals/plan-1.md", "# Plan proposals\n\n" + "\n".join(batch))
-        sets = {"proposals": f"{self.dir}/proposals/plan-1.md\nRule on {len(batch)}.",
-                "rulings_file": f"{self.dir}/proposals/plan-1-rulings.md"}
-        if mode == "blocked":
-            self.write("blocked/coder-1.md", stopped or "- step 4: no such column\n")
-            sets["blocked"] = f"the steps listed in {self.dir}/blocked/coder-1.md"
-        n = self.brief("planner", as_mode=mode, **sets)
-        self.write("IMPLEMENTATION.md", plan)
-        self.write("proposals/plan-1-rulings.md", rulings)
-        self.returned("planner", n, next=nxt, entry_points_changed="no")
-        r = self.cmd("record", "planner", n)
-        self.write("IMPLEMENTATION.md", PLAN)
-        return r
-
-    def plan_with(self, **steps):
-        """PLAN with step <n> replaced by steps['s<n>'] (None removes it), and
-        steps['extra'] appended to the build sequence."""
-        text = PLAN
-        for key, new in steps.items():
-            if key == "extra":
-                text = text.replace("\n\n## Test plan", f"\n{new}\n\n## Test plan")
-                continue
-            old = next(ln for ln in PLAN.splitlines() if ln.startswith(f"{key[1:]}. "))
-            text = text.replace(old + "\n", "" if new is None else new + "\n")
-        return text
-
-    STEP_3 = step_block(1, "step 3", NEW_3)
-    STEP_5 = step_block(2, "step 5", NEW_5)
-    ADD_6 = step_block(3, "new step", NEW_6)
-    REASON = "the log must keep the id alone, since the audit job parses that line"
-
-    def test_planner_rulings_are_held_to_the_step_diff(self):
-        both = [self.STEP_3, self.STEP_5]
-        good = rulings_text(("applied", "none"), ("stands", self.REASON))
-        cases = {
-            "step 5 changed too": (both, good, self.plan_with(s3=NEW_3, s5=NEW_5), "REVISED",
-                                   "step 5 changed, though P2, which names it, stands"),
-            "applied but unchanged": (both, good, PLAN, "REVISED",
-                                      "P1 is applied but step 3 reads as before"),
-            "no reason": (both, rulings_text(("applied", "none"), ("stands", "none")),
-                          self.plan_with(s3=NEW_3), "REVISED", "P2 stands with no reason"),
-            "no ruling": (both, rulings_text(("applied", "none")), self.plan_with(s3=NEW_3),
-                          "REVISED", "has no ruling for P2"),
-            "an extra step": (both, good, self.plan_with(s3=NEW_3, extra=NEW_6), "REVISED",
-                              "adds step(s) 6"),
-            "a missing addition": (both + [self.ADD_6], rulings_text(
-                ("applied", "none"), ("stands", self.REASON), ("applied", "none")),
-                self.plan_with(s3=NEW_3), "REVISED", "asked for 1 new step(s) (6)"),
-            "a gone step": (both, good, self.plan_with(s3=NEW_3, s4=None), "REVISED",
-                            "step 4 is gone"),
-            "an unnamed step": (both, good, self.plan_with(s3=NEW_3, s2="2. Parse it"),
-                                "REVISED", "step 2 changed, but no applied proposal"),
-            "wrong token": (both, good, self.plan_with(s3=NEW_3), "STANDS", "which is REVISED"),
-            "stands token": (both, rulings_text(("stands", self.REASON), ("stands", "x y")),
-                             PLAN, "REVISED", "which is STANDS"),
-        }
-        for name, (batch, rulings, plan, nxt, said) in cases.items():
-            with self.subTest(name):
-                self.refused(self.planner(batch, rulings, plan, nxt), said)
-        self.ok(self.planner(both, good, self.plan_with(s3=NEW_3), "REVISED"))
-        # Re-wrapping a standing step is no change.
-        self.ok(self.planner(both, good, self.plan_with(s3=NEW_3).replace(
-            "5. Log each change with the acting", "5. Log each change\n   with the  acting"),
-            "REVISED"))
-        self.ok(self.planner(both + [self.ADD_6], rulings_text(
-            ("applied", "none"), ("stands", self.REASON), ("applied", "none")),
-            self.plan_with(s3=NEW_3, extra=NEW_6), "REVISED"))
-        self.ok(self.planner(both, rulings_text(("stands", "x y"), ("stands", self.REASON)),
-                             PLAN, "STANDS"))
-
-    def test_a_combined_blocked_answer_may_touch_stopped_steps(self):
-        batch = [self.STEP_3, step_block(2, "step 4", "4. Return the value as a string"),
-                 step_block(3, "step 5", NEW_5)]
-        rulings = rulings_text(("applied", "none"), ("stands", self.REASON),
-                               ("stands", self.REASON))
-        plan = self.plan_with(s3=NEW_3, s4="4. Return the stored value under `due`",
-                              extra=NEW_6)
-        self.ok(self.planner(batch, rulings, plan, "PLAN_REVISED", mode="blocked"))
-        self.refused(self.planner(batch, rulings, self.plan_with(s3=NEW_3, s5=NEW_5),
-                                  "PLAN_REVISED", mode="blocked"),
-                     "step 5 changed, though P3")
-        self.refused(self.planner(batch, rulings, plan, "PLAN_REVISED", mode="blocked",
-                                  stopped="- step 2: the parser is async\n"),
-                     "step 4 changed, though P2")
-
-    def test_a_plan_quoting_a_stands_reason_is_refused(self):
-        batch = [self.STEP_3, self.STEP_5]
-        rulings = rulings_text(("applied", "none"), ("stands", self.REASON))
-        quoted = self.plan_with(s3=NEW_3).replace(
-            "beside the title.", "beside the title. The log must keep the id alone, since "
-            "the audit job parses that line.")
-        self.refused(self.planner(batch, rulings, quoted), "repeats P2's stands reason")
-        # A reason may quote the step it rules on: the coder could read that already.
-        quoting = rulings_text(("applied", "none"), (
-            "stands", ("step 5 says log each change with the acting user's id, and that "
-                       "is right")))
-        self.ok(self.planner(batch, quoting, self.plan_with(s3=NEW_3)))
-
-    def test_a_four_word_stands_reason_in_the_plan_is_refused(self):
-        batch = [self.STEP_3, self.STEP_5]
-        rulings = rulings_text(("applied", "none"), ("stands", "auditors parse plain ids"))
-        quoted = self.plan_with(s3=NEW_3).replace(
-            "beside the title.", "beside the title, since auditors parse plain ids.")
-        self.refused(self.planner(batch, rulings, quoted), "repeats P2's stands reason")
-
-    def test_a_three_word_stands_reason_in_the_plan_is_accepted(self):
-        batch = [self.STEP_3, self.STEP_5]
-        rulings = rulings_text(("applied", "none"), ("stands", "auditors parse ids"))
-        quoted = self.plan_with(s3=NEW_3).replace(
-            "beside the title.", "beside the title, since auditors parse ids.")
-        self.ok(self.planner(batch, rulings, quoted))
-
-    def test_other_plan_sections_may_follow_an_applied_step(self):
-        batch = [self.STEP_3, self.STEP_5]
-        rulings = rulings_text(("applied", "none"), ("stands", self.REASON))
-        followed = self.plan_with(s3=NEW_3).replace(
-            "beside the title.", "beside the title; the route keeps ids as strings.").replace(
-            "| stores the field |", "| passes the id as a string |")
-        self.ok(self.planner(batch, rulings, followed))
-        echoed = followed.replace("The store keeps", "A todo can carry a due date that the "
-                                  "list shows next to its title. The store keeps")
-        self.refused(self.planner(batch, rulings, echoed), "copies SPEC.md's wording")
-
-    # ------------------------------------------------------------ the tester
-
-    def checks_answer(self, targets, rulings, nxt, edits=(), rows=None, texts=None):
-        """The tester ruling on a batch of conditions (`targets`, each a cid or
-        None for an unnamed item): `edits` are sealed files it appends a line
-        to, `texts` sealed files it rewrites whole ({file: text}), `rows` a new
-        MANIFEST.md. Returns record's result."""
-        files = self.dir / "acceptance" / "files" / "src"
-        kept = {p: p.read_text() for p in files.iterdir()}
-        batch = "# Check proposals\n" + "".join(
-            f"\n## P{k}\n- Target: " + (f"condition {cid}" if cid else
-                                        "no condition named — the checks the report names")
-            + "\n- From: the coder (coder #1), its P1\n" for k, cid in enumerate(targets, 1))
-        self.write("proposals/checks-1.md", batch)
-        n = self.brief("acceptance-tester", as_mode="repair",
-                       scope="ONLY conditions 2: the coder questions their checks",
-                       report=f"{self.dir}/proposals/checks-1.md",
-                       proposals=f"{self.dir}/proposals/checks-1.md\nRule on it.",
-                       rulings_file=f"{self.dir}/proposals/checks-1-rulings.md")
-        for rel, line in edits:
-            path = files / f"{rel}.sealed"
-            path.write_text(path.read_text() + line + "\n")
-        for rel, text in (texts or {}).items():
-            (files / f"{rel}.sealed").write_text(text)
-        if rows is not None:
-            self.write("acceptance/MANIFEST.md", rows)
-        self.write("proposals/checks-1-rulings.md", rulings)
-        self.returned("acceptance-tester", n, next=nxt, checks="1", ambiguous="none")
-        r = self.cmd("record", "acceptance-tester", n)
-        for path, text in kept.items():
-            path.write_text(text)
-        self.write("acceptance/MANIFEST.md", MANIFEST)
-        return r
-
-    SORT = ("sort.acceptance.test.ts", "test('sorts with ties kept in order')")
-    DUE = ("due.acceptance.test.ts", "test('shows the date in its own column')")
-    TESTER_REASON = "condition two orders by the date alone, and the check does just that"
-
-    def test_tester_rulings_are_held_to_the_sealed_and_manifest_diff(self):
-        stood = rulings_text(("stands", self.TESTER_REASON))
-        repaired = rulings_text(("repaired", "none"))
-        moved = MANIFEST.replace('"sorts earliest first" | Example', '"sorts earliest first" '
-                                 '| Example and Edge')
-        cases = {
-            "stands but changed": (["2"], stood, "STANDS", [self.SORT], None,
-                                   ("sort.acceptance.test.ts.sealed changed, but it is "
-                                    "outside your scope")),
-            "repaired, nothing changed": (["2"], repaired, "REPAIRED", [], None,
-                                          "condition 2 is ruled repaired, but none"),
-            "stood rows edited": (["2"], stood, "STANDS", [], moved,
-                                  ("MANIFEST.md's rows for condition 2 changed, though "
-                                   "it stands")),
-            "no ruling": (["1", "S1"], repaired, "REPAIRED", [self.DUE], None,
-                          "has no ruling for P2"),
-            "no reason": (["2"], rulings_text(("stands", "none")), "STANDS", [], None,
-                          "P1 stands with no reason"),
-            "wrong token": (["2"], stood, "REPAIRED", [], None, "which is STANDS"),
-        }
-        for name, (targets, rulings, nxt, edits, rows, said) in cases.items():
-            with self.subTest(name):
-                self.refused(self.checks_answer(targets, rulings, nxt, edits, rows), said)
-        self.ok(self.checks_answer(["2"], stood, "STANDS"))
-        self.ok(self.checks_answer(["2"], repaired, "REPAIRED", [self.SORT]))
-        self.ok(self.checks_answer(["2"], repaired, "REPAIRED", rows=moved))
-        # A check under conditions 1 and S1: one ruling each; its file may change
-        # once either is repaired.
-        self.ok(self.checks_answer(["1", "S1"], rulings_text(("repaired", "none"),
-                                                      ("stands", self.TESTER_REASON)),
-                            "REPAIRED", [self.DUE]))
-
-    def test_a_repair_editing_a_file_outside_the_batch_is_refused(self):
-        r = self.checks_answer(["2"], rulings_text(("repaired", "none")), "REPAIRED",
-                        [self.SORT, self.DUE])
-        self.refused(r, "acceptance/files/src/due.acceptance.test.ts.sealed changed",
-                     "outside your scope")
-
-    def test_an_unnamed_item_holds_only_settled_files(self):
-        rulings = rulings_text(("repaired", "none"), ("stands", self.TESTER_REASON))
-        self.ok(self.checks_answer([None, "2"], rulings, "REPAIRED", [self.DUE]))
-        self.refused(self.checks_answer([None, "2"], rulings, "REPAIRED", [self.SORT]),
-                     "sort.acceptance.test.ts.sealed changed", "outside your scope")
-        self.ok(self.checks_answer([None], rulings_text(("repaired", "none")), "REPAIRED",
-                            [self.DUE, self.SORT]))
-
-    def test_a_check_file_quoting_a_stands_reason_is_refused(self):
-        reason = "the owner rule must stay strict for every caller of the route"
-        rulings = rulings_text(("repaired", "none"), ("stands", reason))
-        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", [
-            ("due.acceptance.test.ts", f"// {reason}")]), "repeats P2's stands reason")
-        self.ok(self.checks_answer(["1", "S1"], rulings, "REPAIRED", [
-            ("due.acceptance.test.ts", "// none")]))
-
-    def test_a_plan_writing_a_stands_reason_around_a_kept_word_is_refused(self):
-        batch = [self.STEP_3, self.STEP_5]
-        rulings = rulings_text(("applied", "none"),
-                               ("stands", "other callers depend on the number form"))
-        around = ("3. Make the todo route pass the id to `setDue()` as a string; other "
-                  "callers depend on the number form, so keep both — test: "
-                  "`src/route.test.ts`")
-        self.refused(self.planner(batch, rulings, self.plan_with(s3=around)),
-                     "repeats P2's stands reason")
-
-    # The Design line holds two phrases of the stands reason apart.
-    APART = PLAN.replace("The store keeps each date as an ISO string beside the title.",
-                         "Other callers depend on the stored date; the string form of the "
-                         "id is kept for them.")
-    JOINED_REASON = "callers depend on the string form of the id"
-
-    def test_a_plan_joining_two_kept_phrases_into_a_stands_reason_is_refused(self):
-        batch = [self.STEP_3, self.STEP_5]
-        rulings = rulings_text(("applied", "none"), ("stands", self.JOINED_REASON))
-        design = ("Other callers depend on the stored date; the string form of the id is "
-                  "kept for them.")
-        moved = self.APART.replace(design, "Other callers depend on the string form of "
-                                   "the id; the stored date is kept for them.")
-        self.refused(self.planner(batch, rulings, moved.replace(
-            "as a number", "as a string"), base=self.APART), "repeats P2's stands reason")
-        deleted = self.APART.replace(design, "Other callers depend on the string form of "
-                                     "the id; it is kept for them.")
-        self.refused(self.planner(batch, rulings, deleted.replace(
-            "as a number", "as a string"), base=self.APART), "repeats P2's stands reason")
-        # Quoting one unchanged phrase whole is text the coder could already read.
-        whole = rulings_text(("applied", "none"),
-                             ("stands", "other callers depend on the stored date"))
-        self.ok(self.planner(batch, whole, self.APART.replace("as a number", "as a string"),
-                             base=self.APART))
-
-    def test_a_check_file_joining_two_kept_phrases_into_a_stands_reason_is_refused(self):
-        reason = "the owner rule must hold for every caller of the route"
-        rulings = rulings_text(("repaired", "none"), ("stands", reason))
-        self.write("acceptance/files/src/due.acceptance.test.ts.sealed",
-                   "test('the owner rule must hold when the id is known')\n"
-                   "test('for every caller of the route')\n")
-        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", texts={
-            "due.acceptance.test.ts": f"test('{reason}')\n"}), "repeats P2's stands reason")
-        self.ok(self.checks_answer(["1", "S1"], rulings, "REPAIRED", edits=[
-            ("due.acceptance.test.ts", "test('owner only')")]))
-
-    def test_a_check_file_writing_a_stands_reason_around_a_kept_word_is_refused(self):
-        reason = "the owner rule must check every caller of the route"
-        rulings = rulings_text(("repaired", "none"), ("stands", reason))
-        # The old line is test('due check'): "check" is kept, in the reason's middle.
-        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", texts={
-            "due.acceptance.test.ts": f"test('{reason}')\n"}), "repeats P2's stands reason")
-        self.ok(self.checks_answer(["1", "S1"], rulings, "REPAIRED", texts={
-            "due.acceptance.test.ts": "test('due check')\ntest('owner only')\n"}))
-
-    def test_a_step_a_blocked_line_only_mentions_was_not_stopped(self):
-        batch = [step_block(1, "step 5", NEW_5)]
-        rulings = rulings_text(("stands", self.REASON))
-        stopped = "- step 3: needs the parser that step 5 adds first\n"
-        revised_3 = ("3. Make the todo route parse the id with the new parser — test: "
-                     "`src/route.test.ts`")
-        self.refused(self.planner(batch, rulings, self.plan_with(s3=revised_3, s5=NEW_5),
-                                  "PLAN_REVISED", mode="blocked", stopped=stopped),
-                     "step 5 changed, though P1")
-        self.ok(self.planner(batch, rulings, self.plan_with(s3=revised_3), "PLAN_REVISED",
-                             mode="blocked", stopped=stopped))
-
-    # A named batch on condition 3, whose check `due` it shares with condition 5.
-    SHARED_MANIFEST = MANIFEST.split("| 1 |")[0] + (
-        '| 2 | sorted | `src/sort.acceptance.test.ts` :: "sorts earliest first" | Example | '
-        "unit | fail-to-pass | failed: unsorted |\n"
-        '| 3 | due date shown | `src/due.acceptance.test.ts` :: "shows the due date" | '
-        "Example | integration | fail-to-pass | failed: no field |\n"
-        '| 5 | due label | `src/due.acceptance.test.ts` :: "shows the due date" | Edge | '
-        "integration | fail-to-pass | failed: no field |\n"
-    ) + "\n## Not automatable" + MANIFEST.split("\n## Not automatable")[1]
-
-    def repair_on_3(self, rows=None, new_files=None, base=None):
-        """The tester rules condition 3 repaired, appending to its file; `base`
-        is MANIFEST.md when it is briefed (SHARED_MANIFEST by default), `rows`
-        MANIFEST.md after, `new_files` sealed files it adds. Returns record's
-        result."""
-        self.write("acceptance/MANIFEST.md", base or self.SHARED_MANIFEST)
-        self.write("proposals/checks-1.md", "# Check proposals\n\n## P1\n- Target: "
-                   "condition 3\n- From: the coder (coder #1), its P1\n")
-        n = self.brief("acceptance-tester", as_mode="repair",
-                       scope="ONLY conditions 3: the coder questions their checks",
-                       report=f"{self.dir}/proposals/checks-1.md",
-                       proposals=f"{self.dir}/proposals/checks-1.md\nRule on it.",
-                       rulings_file=f"{self.dir}/proposals/checks-1-rulings.md")
-        due = self.dir / "acceptance" / "files" / "src" / "due.acceptance.test.ts.sealed"
-        due.write_text(due.read_text() + "test('shows the due date beside the title')\n")
-        for rel, text in (new_files or {}).items():
-            self.write(f"acceptance/files/{rel}.sealed", text)
-        if rows is not None:
-            self.write("acceptance/MANIFEST.md", rows)
-        self.write("proposals/checks-1-rulings.md", rulings_text(("repaired", "none")))
-        self.returned("acceptance-tester", n, next="REPAIRED", checks="1", ambiguous="none")
-        return self.cmd("record", "acceptance-tester", n)
-
-    def test_a_named_batch_may_not_add_a_file_for_a_condition_outside_it(self):
-        rows = self.SHARED_MANIFEST.replace("\n\n## Not automatable", (
-            '\n| 7 | overdue | `src/overdue.acceptance.test.ts` :: "marks it overdue" | '
-            "Example | integration | fail-to-pass | failed: no mark |\n\n## Not automatable"))
-        r = self.repair_on_3(rows, {"src/overdue.acceptance.test.ts":
-                                    "test('marks it overdue')\n"})
-        self.refused(r, "acceptance/files/src/overdue.acceptance.test.ts.sealed changed",
-                     "outside your scope")
-
-    def test_a_named_batch_may_not_rewrite_the_rows_of_a_condition_outside_it(self):
-        rows = self.SHARED_MANIFEST.replace('"sorts earliest first" | Example |',
-                                            '"sorts earliest first" | Example and Edge |')
-        self.refused(self.repair_on_3(rows), "MANIFEST.md's rows for condition 2 changed")
-
-    def test_a_named_batch_may_rename_a_check_it_shares_with_a_condition_outside_it(self):
-        rows = self.SHARED_MANIFEST.replace('"shows the due date"',
-                                            '"shows the due date beside the title"')
-        self.ok(self.repair_on_3(rows))
-
-    # Condition 5 with a check of its own in condition 3's file.
-    LABEL_ROW = ('| 5 | due label | `src/due.acceptance.test.ts` :: "shows the due label" | '
-                 "Edge | integration | fail-to-pass | failed: no label |\n")
-    LABEL_MANIFEST = SHARED_MANIFEST.split("| 5 |")[0] + LABEL_ROW + (
-        "\n## Not automatable" + MANIFEST.split("\n## Not automatable")[1])
-
-    def test_a_named_batch_may_not_delete_the_row_of_a_condition_outside_it(self):
-        rows = self.LABEL_MANIFEST.replace(self.LABEL_ROW, "")
-        self.refused(self.repair_on_3(rows, base=self.LABEL_MANIFEST),
-                     "MANIFEST.md's rows for condition 5 changed")
-
-    def test_a_named_batch_may_not_move_a_row_of_a_condition_outside_it(self):
-        rows = self.LABEL_MANIFEST.replace("| 5 | due label |", "| 3 | due label |")
-        self.refused(self.repair_on_3(rows, base=self.LABEL_MANIFEST),
-                     "MANIFEST.md's rows for condition 5 changed")
-
-    def test_a_named_batch_may_not_add_a_row_for_a_condition_outside_it(self):
-        rows = self.LABEL_MANIFEST.replace(self.LABEL_ROW, self.LABEL_ROW + (
-            '| 7 | overdue | `src/due.acceptance.test.ts` :: "marks it overdue" | Example | '
-            "integration | fail-to-pass | failed: no mark |\n"))
-        self.refused(self.repair_on_3(rows, base=self.LABEL_MANIFEST),
-                     "MANIFEST.md's rows for condition 7 changed")
-
-    def test_a_named_batch_may_move_its_own_check_into_a_new_file(self):
-        rows = self.LABEL_MANIFEST.replace(
-            '| 3 | due date shown | `src/due.acceptance.test.ts`',
-            '| 3 | due date shown | `src/due_date.acceptance.test.ts`')
-        self.ok(self.repair_on_3(rows, {"src/due_date.acceptance.test.ts":
-                                        "test('shows the due date')\n"},
-                                 base=self.LABEL_MANIFEST))
-
-    def test_an_unnamed_item_may_change_the_row_of_a_condition_the_batch_does_not_name(self):
-        rows = MANIFEST.replace('"shows the due date" | Example | integration | '
-                                "fail-to-pass | failed: no field |",
-                                '"shows the due date" | Example | integration | '
-                                "fail-to-pass | not re-run (repair) |")
-        self.assertNotEqual(rows, MANIFEST)
-        self.ok(self.checks_answer([None], rulings_text(("repaired", "none")), "REPAIRED",
-                                   [self.DUE], rows=rows))
-
-    # Each of outside_rows' clauses on its own, on SHARED_MANIFEST: conditions
-    # 3 and 5 share check X (`due` :: "shows the due date").
-    ROW_3 = ('| 3 | due date shown | `src/due.acceptance.test.ts` :: "shows the due date" | '
-             "Example | integration | fail-to-pass | failed: no field |\n")
-    ROW_5 = ('| 5 | due label | `src/due.acceptance.test.ts` :: "shows the due date" | Edge | '
-             "integration | fail-to-pass | failed: no field |\n")
-
-    def shared_rows(self, row_3=None, row_5=None):
-        """SHARED_MANIFEST with condition 3's and 5's rows replaced."""
-        rows = self.SHARED_MANIFEST
-        self.assertIn(self.ROW_3, rows)
-        self.assertIn(self.ROW_5, rows)
-        rows = rows.replace(self.ROW_3, self.ROW_3 if row_3 is None else row_3)
-        return rows.replace(self.ROW_5, self.ROW_5 if row_5 is None else row_5)
-
-    def test_a_named_batch_may_not_delete_a_row_it_shares_with_a_condition_outside_it(self):
-        self.refused(self.repair_on_3(self.shared_rows(row_5="")),
-                     "MANIFEST.md's rows for condition 5 changed")
-
-    def test_a_named_batch_may_not_renumber_a_row_it_shares(self):
-        self.refused(self.repair_on_3(self.shared_rows(
-            row_5=self.ROW_5.replace("| 5 |", "| 7 |"))),
-            "MANIFEST.md's rows for condition 5 changed")
-
-    def test_a_named_batch_may_not_add_a_row_on_a_shared_check_for_another_condition(self):
-        self.refused(self.repair_on_3(self.shared_rows(
-            row_5=self.ROW_5 + self.ROW_5.replace("| 5 | due label |", "| 7 | overdue |"))),
-            "MANIFEST.md's rows for condition 7 changed")
-
-    def test_a_named_batch_may_not_rename_a_shared_check_to_one_no_repaired_row_names(self):
-        self.refused(self.repair_on_3(self.shared_rows(
-            row_3=self.ROW_3.replace('"shows the due date"', '"shows it beside the title"'),
-            row_5=self.ROW_5.replace('"shows the due date"', '"shows it in its own column"'))),
-            "MANIFEST.md's rows for condition 5 changed")
-
-    def test_a_named_batch_may_not_point_another_conditions_own_row_at_a_shared_check(self):
-        rows = self.LABEL_MANIFEST.replace('"shows the due label"', '"shows the due date"')
-        self.refused(self.repair_on_3(rows, base=self.LABEL_MANIFEST),
-                     "MANIFEST.md's rows for condition 5 changed")
-
-    def test_a_named_batch_may_not_move_an_outside_row_onto_a_check_it_added(self):
-        # Condition 3 keeps its row on X and adds one on a new check Z; moving
-        # condition 5's row from X to Z is no rename, though the counts agree.
-        new = '"shows the due date beside the title"'
-        self.refused(self.repair_on_3(self.shared_rows(
-            row_3=self.ROW_3 + self.ROW_3.replace('"shows the due date"', new),
-            row_5=self.ROW_5.replace('"shows the due date"', new))),
-            "MANIFEST.md's rows for condition 5 changed")
-
-    def test_a_named_batch_may_change_another_cell_of_a_row_it_shares(self):
-        def rerun(row):
-            return row.replace("failed: no field", "not re-run (repair)")
-        self.ok(self.repair_on_3(self.shared_rows(row_3=rerun(self.ROW_3),
-                                                  row_5=rerun(self.ROW_5))))
-
-    def test_an_outside_row_follows_a_rename_only_to_the_check_it_was_renamed_to(self):
-        # Condition 3 renames X to Z and adds a new check W beside it.
-        z, w = '"shows the due date beside the title"', '"shows the due date in red"'
-        row_3 = self.ROW_3.replace('"shows the due date"', z) + self.ROW_3.replace(
-            '"shows the due date"', w).replace("| Example |", "| Edge |")
-        self.refused(self.repair_on_3(self.shared_rows(
-            row_3=row_3, row_5=self.ROW_5.replace('"shows the due date"', w))),
-            "MANIFEST.md's rows for condition 5 changed")
-        self.ok(self.repair_on_3(self.shared_rows(
-            row_3=row_3, row_5=self.ROW_5.replace('"shows the due date"', z))))
-
-    def test_an_ambiguous_rename_is_no_rename(self):
-        # Condition 3's row on X gives way to two new rows alike in every other
-        # cell: which one X became can't be told, so condition 5 may follow neither.
-        z, w = '"shows the due date beside the title"', '"shows the due date in red"'
-        row_3 = (self.ROW_3.replace('"shows the due date"', z)
-                 + self.ROW_3.replace('"shows the due date"', w))
-        self.refused(self.repair_on_3(self.shared_rows(
-            row_3=row_3, row_5=self.ROW_5.replace('"shows the due date"', z))),
-            "MANIFEST.md's rows for condition 5 changed")
-
-    def test_a_named_batch_may_not_change_the_fixed_cells_of_a_row_it_shares(self):
-        for name, row_5 in (
-                ("Condition", self.ROW_5.replace("| due label |", "| due date label |")),
-                ("Covers", self.ROW_5.replace("| Edge |", "| Example |")),
-                ("Kind", self.ROW_5.replace("| fail-to-pass |", "| pass-to-pass |"))):
-            with self.subTest(name):
-                self.refused(self.repair_on_3(self.shared_rows(row_5=row_5)),
-                             "MANIFEST.md's rows for condition 5 changed")
-        # Nor along with a rename.
-        z = '"shows the due date beside the title"'
-        self.refused(self.repair_on_3(self.shared_rows(
-            row_3=self.ROW_3.replace('"shows the due date"', z),
-            row_5=self.ROW_5.replace('"shows the due date"', z).replace("| Edge |",
-                                                                        "| Example |"))),
-            "MANIFEST.md's rows for condition 5 changed")
-        self.ok(self.repair_on_3(self.shared_rows(
-            row_5=self.ROW_5.replace("| integration |", "| unit |"))))
-
-    # A stands reason written into MANIFEST.md: the coder's brief quotes its
-    # test names (acceptance_paths).
-    LEAK_REASON = "the owner rule must stay strict for every caller of the route"
-
-    def test_a_manifest_row_renamed_to_a_stands_reason_is_refused(self):
-        rulings = rulings_text(("repaired", "none"), ("stands", self.LEAK_REASON))
-        rows = MANIFEST.replace('"rejects an invalid date"', f'"{self.LEAK_REASON}"')
-        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", rows=rows),
-                     "acceptance/MANIFEST.md repeats P2's stands reason")
-        # Renamed to other words, it records.
-        rows = MANIFEST.replace('"rejects an invalid date"', '"rejects a date it cannot read"')
-        self.ok(self.checks_answer(["1", "S1"], rulings, "REPAIRED", rows=rows))
-
-    def test_a_manifest_row_added_with_a_stands_reason_is_refused(self):
-        rulings = rulings_text(("repaired", "none"), ("stands", self.LEAK_REASON))
-        rows = MANIFEST.replace("\n| 2 |", (
-            f'\n| 1 | due date shown | `src/due.acceptance.test.ts` :: "{self.LEAK_REASON}" | '
-            "Edge | integration | fail-to-pass | failed: 200 |\n| 2 |"))
-        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", rows=rows),
-                     "acceptance/MANIFEST.md repeats P2's stands reason")
-
-    def test_a_manifest_row_with_a_stands_reason_is_refused_with_an_unnamed_item(self):
-        rulings = rulings_text(("repaired", "none"), ("stands", self.LEAK_REASON))
-        rows = MANIFEST.replace('"rejects an invalid date"', f'"{self.LEAK_REASON}"')
-        self.refused(self.checks_answer([None, "2"], rulings, "REPAIRED", [self.DUE],
-                                        rows=rows),
-                     "acceptance/MANIFEST.md repeats P2's stands reason")
-
-    def test_a_stands_reason_split_across_two_test_names_is_refused(self):
-        # The brief joins a file's names ("a", "b"), so the halves read as one.
-        reason = "the owner rule holds for every caller here"
-        rulings = rulings_text(("repaired", "none"), ("stands", reason))
-        rows = MANIFEST.replace('"shows the due date"', '"the owner rule holds"').replace(
-            '"rejects an invalid date"', '"for every caller here"')
-        self.refused(self.checks_answer(["1", "S1"], rulings, "REPAIRED", rows=rows),
-                     "acceptance/MANIFEST.md repeats P2's stands reason")
-
-    def test_a_stands_reason_in_a_manifest_section_no_brief_quotes_is_recorded(self):
-        rulings = rulings_text(("repaired", "none"), ("stands", self.LEAK_REASON))
-        rows = MANIFEST.replace("## Assumptions\n- none",
-                                f"## Assumptions\n- {self.LEAK_REASON}")
-        self.assertNotEqual(rows, MANIFEST)
-        self.ok(self.checks_answer(["1", "S1"], rulings, "REPAIRED", [self.DUE], rows=rows))
-
-    # ------------------------------------------------------------ the log
-
-    def test_owner_records_note_what_they_changed(self):
-        self.ok(self.planner([self.STEP_3, self.STEP_5], rulings_text(
-            ("applied", "none"), ("stands", self.REASON)), self.plan_with(s3=NEW_3)))
-        self.assertEqual(self.state()["log"][-1]["steps_changed"], ["3"])
-        self.ok(self.checks_answer(["1", "S1"], rulings_text(("repaired", "none"),
-                                                      ("stands", self.TESTER_REASON)),
-                            "REPAIRED", [self.DUE]))
-        self.assertEqual(self.state()["log"][-1]["checks_changed"], ["1", "S1"])
-        self.ok(self.checks_answer(["2"], rulings_text(("stands", self.TESTER_REASON)), "STANDS"))
-        self.assertEqual(self.state()["log"][-1]["checks_changed"], [])
-
-    # ------------------------------------------------------------ check-artifact
-
-    def test_check_artifact_reads_the_new_proposal_files(self):
-        def check(rel, text):
-            return self.cmd("check-artifact", self.write(rel, text))
-        self.assertEqual(check("proposals/coder-1.md", coder_file(
-            step_block(1, "step 3", NEW_3), check_block(2, SORT_CHECK))).returncode, 0)
-        self.refused(check("proposals/coder-2.md", coder_file(step_block(1, "step 9", NEW_3))),
-                     "names step 9")
-        self.refused(check("proposals/coder-3.md", coder_file(step_block(1, "condition 1",
-                                                                        NEW_3))),
-                     "may not propose against the spec")
-        self.refused(check("proposals/coder-4.md", coder_file(check_block(
-            1, '`src/sort.acceptance.test.ts` :: "my own test"'))), "lists as no check")
-        self.refused(check("proposals/verifier-5.md", coder_file(check_block(1, DUE_CHECK))),
-                     "`next: REPAIR`")
-        self.refused(check("proposals/review-judge-6.md", coder_file(step_block(
-            1, "step 3", NEW_3))), "may not propose against the plan")
-        for name in ("plan-1.md", "checks-1.md"):
-            self.assertEqual(check(f"proposals/{name}", coder_file(
-                step_block(1, "step 3", NEW_3))).returncode, 0)
-            self.refused(check(f"proposals/{name}", "# Plan proposals\n"), "no `## P<k>`")
-        self.assertEqual(check("proposals/plan-1-rulings.md", rulings_text(
-            ("applied", "none"), ("stands", self.REASON))).returncode, 0)
-        self.refused(check("proposals/plan-2-rulings.md", rulings_text(("repaired", "none"))),
-                     "must be applied or stands")
-        self.assertEqual(check("proposals/checks-1-rulings.md", rulings_text(
-            ("repaired", "none"), ("stands", self.TESTER_REASON))).returncode, 0)
-        self.refused(check("proposals/checks-2-rulings.md", rulings_text(("applied", "none"))),
-                     "must be repaired or stands")
-        self.refused(check("proposals/checks-3-rulings.md", rulings_text(("stands", "none"))),
-                     "stands with no reason")
-        self.assertEqual(check("proposals/snapshots/plan-abc.md", "anything").returncode, 0)
-
-
 class TicketTextTest(InitCase):
-    def test_define_gets_the_ticket_text_verbatim(self):
+    def test_the_planner_gets_the_ticket_text_verbatim(self):
         ticket = self.tmp / "ticket.txt"
         ticket.write_text("TODO-7 Due dates\nUsers can set a due date.\n"
                           "AC: overdue todos show in red.\n")
         r = self.init("--ticket", "TODO-7", "--ticket-text-file", ticket)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        r = self.autodev("brief", "define", "--mode", "write", "--dir", self.dir)
+        r = self.autodev("brief", "planner", "--mode", "write", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        text = (self.dir / "briefs" / "define-1.md").read_text()
+        text = (self.dir / "briefs" / "planner-1.md").read_text()
         self.assertIn("task: TODO-7 Due dates\n  Users can set a due date.\n"
                       "  AC: overdue todos show in red.\n", text)
 
-    def test_without_ticket_text_define_gets_the_restated_ask(self):
+    def test_without_ticket_text_the_planner_gets_the_restated_ask(self):
         r = self.init("--ticket", "TODO-7", "--ask", "Let users set a due date on a todo",
                       task="TODO-7")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.autodev("brief", "define", "--mode", "write", "--dir", self.dir)
-        text = (self.dir / "briefs" / "define-1.md").read_text()
+        self.autodev("brief", "planner", "--mode", "write", "--dir", self.dir)
+        text = (self.dir / "briefs" / "planner-1.md").read_text()
         self.assertIn("task: Let users set a due date on a todo\n", text)
 
     def test_an_empty_or_missing_ticket_file_stops_before_the_worktree(self):
@@ -2542,6 +1172,98 @@ class TicketTextTest(InitCase):
             self.assertFalse(self.worktree.exists())
 
 
+class SpecProblemAndDeviationRecordTest(WorkCase):
+    """record holds a worker's spec_problems and the coder's deviations to the
+    files they count, and a worker that judges against PLAN.md to the spec as
+    it was at its brief."""
+
+    def triage(self, problems=None, **data):
+        self.assertEqual(self.cmd("brief", "triager", "--mode", "human").returncode, 0)
+        if problems is not None:
+            self.write("spec-problems/triager-1.md", problems)
+        self.returned("triager", 1, next="TRIAGED", blockers="0", acceptance_checks="0",
+                      triage_file="none", checks_file="none", **data)
+        return self.cmd("record", "triager", "1")
+
+    def test_a_spec_problem_is_recorded_with_its_file(self):
+        r = self.triage("- condition 2: comment 77: it asks for newest first\n"
+                        "- missing: comment 78: a todo with no date sorts last\n",
+                        spec_problems="2")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_spec_problem_count_must_match_its_file(self):
+        r = self.triage(None, spec_problems="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("spec-problems/triager-1.md does not exist", r.stdout)
+        r = self.triage("- condition 2: it asks for newest first\n", spec_problems="2")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("spec_problems is 2 but triager-1.md lists 1", r.stdout)
+
+    def test_a_spec_problem_on_a_condition_the_spec_lacks_is_refused(self):
+        r = self.triage("- condition 9: it asks for something else\n", spec_problems="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("condition 9 is not in PLAN.md", r.stdout)
+        r = self.triage("- condition 2:\n", spec_problems="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("2: say what is wrong", r.stdout)
+
+    def test_a_ci_triager_never_reports_a_spec_problem(self):
+        self.assertEqual(self.cmd("brief", "triager", "--mode", "ci",
+                                  "--set", "failing=test").returncode, 0)
+        self.write("triage/ci-1.md", "# Required changes\n1. fix the sort in src/sort.ts\n")
+        self.write("spec-problems/triager-1.md", "- condition 2: the log says so\n")
+        self.returned("triager", 1, next="CODE", blockers="0", acceptance_checks="0",
+                      triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none",
+                      spec_problems="1")
+        r = self.cmd("record", "triager", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("never reports a spec problem", r.stdout)
+
+    def test_a_worker_that_edits_spec_md_is_refused_whatever_it_returns(self):
+        self.assertEqual(self.cmd("brief", "triager", "--mode", "human").returncode, 0)
+        (self.dir / "PLAN.md").write_text(PLAN.replace("earliest first", "latest first"))
+        self.returned("triager", 1, status="failed")
+        r = self.cmd("record", "triager", "1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("PLAN.md changed since your brief", r.stdout)
+
+    def coder(self, deviations, text=None):
+        self.assertEqual(self.cmd("brief", "coder", "--mode", "build").returncode, 0)
+        if text is not None:
+            self.write("deviations/coder-1.md", text)
+        self.returned("coder", 1, next="BUILT", blocked="0", test_changes="none",
+                      deviations=deviations)
+        return self.cmd("record", "coder", "1")
+
+    def test_the_coder_s_deviations_must_match_its_file(self):
+        r = self.coder("1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("deviations/coder-1.md does not exist", r.stdout)
+        r = self.coder("0", "- step 1: the field goes on the Todo type instead\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("deviations is 0 but", r.stdout)
+        r = self.coder("1", "- step 1: the field goes on the Todo type instead\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_record_refuses_a_plan_with_a_wrong_heading(self):
+        self.assertEqual(self.cmd("brief", "planner", "--mode", "write").returncode, 0)
+        self.write("PLAN.md", PLAN.replace("## Build sequence", "## Steps"))
+        self.returned("planner", 1, next="FITS", **PLANNED)
+        r = self.cmd("record", "planner", "1")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("PLAN.md: headings must be", r.stdout)
+
+    def test_check_artifact_reads_both_files(self):
+        good = self.write("spec-problems/verifier-1.md", "- condition 1: x is wrong\n")
+        self.assertEqual(self.cmd("check-artifact", good).returncode, 0)
+        bad = self.write("spec-problems/verifier-2.md", "the spec is wrong\n")
+        r = self.cmd("check-artifact", bad)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no `- condition <id>: <why>`", r.stdout + r.stderr)
+        empty = self.write("deviations/coder-2.md", "nothing\n")
+        self.assertEqual(self.cmd("check-artifact", empty).returncode, 1)
+
+
 class CheckArtifactTest(WorkCase):
     def check(self, rel, text):
         path = self.dir / rel
@@ -2549,441 +1271,102 @@ class CheckArtifactTest(WorkCase):
         path.write_text(text)
         return self.cmd("check-artifact", path)
 
-    def test_spec(self):
-        self.assertEqual(self.cmd("check-artifact", self.dir / "SPEC.md").returncode, 0)
-        no_edge = SPEC.replace("   - Edge: an invalid date is rejected → 400\n", "")
-        r = self.check("SPEC.md", no_edge)
+    def test_plan_conditions(self):
+        self.assertEqual(self.cmd("check-artifact", self.dir / "PLAN.md").returncode, 0)
+        no_edge = PLAN.replace("   - Edge: an invalid date is rejected → 400\n", "")
+        r = self.check("PLAN.md", no_edge)
         self.assertEqual(r.returncode, 1)
         self.assertIn("condition 1 has no `Edge:` line", r.stdout)
 
-    def test_implementation_headings(self):
-        good = "# Implementation plan — x\n\n" + "\n\n".join(
-            f"## {h}\nx" for h in ("Files", "Design", "Data flow", "Build sequence",
-                                   "Test plan", "Migrations / config"))
-        self.assertEqual(self.check("IMPLEMENTATION.md", good).returncode, 0)
-        self.assertEqual(self.check("IMPLEMENTATION.md", good.replace("## Design", "## How"))
-                         .returncode, 1)
+    def test_plan_headings(self):
+        self.assertEqual(self.check("PLAN.md", PLAN).returncode, 0)
+        r = self.check("PLAN.md", PLAN.replace("## Design", "## How"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("headings must be, in order", r.stdout)
 
-    def test_a_plan_review_effort_is_high_or_xhigh_or_absent(self):
-        from test_next import IMPLEMENTATION
-        title = "# Plan\n"
+    def test_an_oversized_plan_may_stop_at_its_size_check(self):
+        oversized = (PLAN.split("## Size check")[0] + "## Size check\n"
+                     "OVERSIZED: three deliverables.\n")
+        oversized = oversized.replace("Review effort: high — a small change\n", "")
+        self.assertEqual(self.check("PLAN.md", oversized).returncode, 0)
+        fits = oversized.replace("OVERSIZED: three", "FITS: three")
+        r = self.check("PLAN.md", fits)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("## Files", r.stdout)
+        self.assertIn("`Review effort:` must be", r.stdout)
+
+    def test_a_plan_s_risk_is_standard_or_high(self):
+        for line in ("Risk: standard — a local change", "**Risk:** `high` — auth"):
+            r = self.check("PLAN.md", PLAN.replace("Risk: high — only the owner may set a "
+                                                   "due date", line))
+            self.assertEqual(r.returncode, 0, line + "\n" + r.stdout)
+        for line, found in (("Risk: medium — some", "medium"),
+                            ("Risk: <standard | high> — <why>", "<standard")):
+            r = self.check("PLAN.md", PLAN.replace("Risk: high — only the owner may set a "
+                                                   "due date", line))
+            self.assertEqual(r.returncode, 1, line)
+            self.assertIn(f"`Risk:` must be standard or high (found: {found})", r.stdout)
+        r = self.check("PLAN.md", PLAN.replace("Risk: high — only the owner may set a "
+                                               "due date\n", ""))
+        self.assertIn("`Risk:` must be standard or high (found: nothing)", r.stdout)
+
+    def test_a_plan_review_effort_is_high_or_xhigh(self):
+        old = "Review effort: high — a small change"
         for line in ("Review effort: high — one local function",
                      "Review effort: xhigh — a state machine spans three modules",
                      "**Review effort:** `xhigh` — parsing",
                      "- Review effort: high—one rename"):
-            r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
-                title, f"{title}\n{line}\n", 1))
+            r = self.check("PLAN.md", PLAN.replace(old, line))
             self.assertEqual(r.returncode, 0, line + "\n" + r.stdout)
         for line, found in (("Review effort: max — be thorough", "max"),
                             ("- Review effort: max", "max"),
                             ("Review effort: <high | xhigh> — <reason>", "<high"),
-                            ("Review effort:", "nothing")):
-            r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
-                title, f"{title}\n{line}\n", 1))
+                            ("Review effort:", "nothing"),
+                            ("", "nothing")):
+            r = self.check("PLAN.md", PLAN.replace(old, line))
             self.assertEqual(r.returncode, 1, line)
             self.assertIn(f"`Review effort:` must be high or xhigh (found: {found})",
                           r.stdout)
 
-    def test_a_plan_that_copies_the_spec(self):
-        from test_next import IMPLEMENTATION
-        self.assertEqual(self.check("IMPLEMENTATION.md", IMPLEMENTATION).returncode, 0)
-        r = self.check("IMPLEMENTATION.md", IMPLEMENTATION.replace(
-            "1. add the field",
-            "1. a todo can carry a due date that the list shows next to its title"))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("copies SPEC.md's wording (condition 1", r.stdout)
+    def test_a_plan_review(self):
+        good = plan_review("REVISE", "high", [("`src/due.ts:3`", "add a step")])
+        self.assertEqual(self.check("plan-review/1.md", good).returncode, 0)
+        self.assertEqual(self.check("plan-review/2.md", plan_review()).returncode, 0)
+        for text, why in (
+                (good.replace("- Evidence: `src/due.ts:3`\n", ""),
+                 "blocker B1 has no `Evidence:` line"),
+                (good.replace("- Change: add a step\n", ""),
+                 "blocker B1 has no `Change:` line"),
+                (good.replace("Verdict: REVISE", "Verdict: APPROVE"),
+                 "verdict APPROVE but 1 blocker(s) listed"),
+                (plan_review().replace("Verdict: APPROVE", "Verdict: REVISE"),
+                 "verdict REVISE but no `### B<n>.` blocker listed"),
+                (plan_review("REVISE", "high", [("`a:1`", "x")] * 8),
+                 "8 blockers: at most 7"),
+                (good.replace("Verdict: REVISE", "Verdict: maybe"),
+                 "`Verdict:` must be APPROVE or REVISE (found: MAYBE)"),
+                (good.replace("Risk: high", "Risk: low"),
+                 "`Risk:` must be standard or high (found: low)"),
+                (good.replace("## Notes\nnone\n", ""), "no `## Notes` section")):
+            r = self.check("plan-review/3.md", text)
+            self.assertEqual(r.returncode, 1, why)
+            self.assertIn(why, r.stdout)
 
-    def test_corrections_and_fixes(self):
+    def test_a_return_that_is_not_an_object_is_a_problem_not_a_crash(self):
+        r = self.check("returns/coder-1.json", "[1, 2]")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not a JSON object", r.stdout)
+
+    def test_corrections(self):
         self.assertEqual(self.check("evidence/corrections.md", "# Required changes\nNone.\n")
                          .returncode, 0)
         self.assertEqual(self.check("triage/ci-1.md", "Fix the build\n").returncode, 1)
-        fix = "FIX B1\n<<<<<<< OLD\nold\n=======\nnew\n>>>>>>> NEW\n"
-        self.assertEqual(self.check("fixes/define-1.md", fix).returncode, 0)
-        self.assertEqual(self.check("fixes/define-2.md", fix + "FIX B2\nbroken\n")
-                         .returncode, 1)
 
     def test_reports(self):
         review = (FIXTURES / "CODE_REVIEW.md").read_text().format(tree="0" * 40)
         self.assertEqual(self.check("CODE_REVIEW.md", review).returncode, 0)
         self.assertEqual(self.check("CODE_REVIEW.md", review.replace("## Noise", "## Junk"))
                          .returncode, 1)
-        self.assertEqual(self.check("lint/TEST.md", "# TEST — pass\n\n- **Tree:** abc\n")
-                         .returncode, 0)
-
-
-CART_CHECK = '`tests/cart.test.ts` :: "rejects an empty cart"'
-FILER_WHY = "the change showed this is wrong as written"
-
-
-def filer_block(target, new_text="none", comment="none"):
-    """One proposal in a spec filer's file (templates/PROPOSAL.md's shape)."""
-    body = f"\n{new_text}" if new_text != "none" else " none"
-    return (f"# Spec proposals\n\n## P1\n- Target: {target}\n- Why: {FILER_WHY}\n"
-            f"- Comment: {comment}\n- New text:{body}\n")
-
-
-class PlanAndCheckProposalRecordTest(WorkCase):
-    """`record` on the coder's plan and check proposals, and on other workers'
-    proposals aimed at the plan or at a held-out check."""
-
-    def setUp(self):
-        super().setUp()
-        from test_next import PROPOSAL_MANIFEST, PROPOSAL_SPEC, step_plan
-        (self.dir / "SPEC.md").write_text(PROPOSAL_SPEC)
-        self.write("acceptance/MANIFEST.md", PROPOSAL_MANIFEST.replace(
-            '`src/four.acceptance.test.ts` :: "refuses a past due date"', CART_CHECK))
-        self.write("IMPLEMENTATION.md", step_plan())
-
-    def proposal_file(self, worker, n):
-        values = self.brief_values(self.dir / "briefs" / f"{worker}-{n}.md")
-        path = values.get("proposal_file", "none")
-        return Path(path) if path != "none" else self.dir / "proposals" / f"{worker}-{n}.md"
-
-    def coder_files(self, mode, *blocks):
-        """A coder in `mode` returns BUILT with `blocks` in its proposal file."""
-        from test_next import coder_proposals
-        sets = {}
-        if mode == "correction":
-            self.write("evidence/corrections.md", CORRECTION)
-            sets["corrections_file"] = f"{self.dir}/evidence/corrections.md"
-        n = self.job("coder", mode, **sets)
-        path = self.proposal_file("coder", n)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(coder_proposals(*blocks))
-        self.returned("coder", n, next="BUILT", blocked="0", test_changes="none",
-                      proposals=str(len(blocks)))
-        return n, self.cmd("record", "coder", n)
-
-    def evaluate(self, partial=("4",), defective="None."):
-        """SPEC_EVAL.md with a row per condition of the five-condition spec."""
-        from test_next import PROPOSAL_CHECKS
-        rule = "|---|-----------|---------|------|----------|\n"
-        text = SPEC_EVAL.format(tree="0" * 40, v1="met", v2="met", e2="x",
-                                judgment="Justified", defective=defective)
-        head, rest = text.split(rule, 1)
-        rows = "".join(f"| {cid} | condition {cid} | "
-                       f"{'partial' if cid in partial else 'met'} | Strong | "
-                       f"acceptance passed (`evidence/C{cid}.txt`) |\n"
-                       for cid in PROPOSAL_CHECKS)
-        self.write("SPEC_EVAL.md", head + rule + rows + "\n" + rest.split("\n\n", 1)[1])
-
-    def verifier_files(self, text, nxt="CORRECT"):
-        n = self.job("verifier", mode="first pass", what_changed="none")
-        if nxt == "REPAIR":
-            self.evaluate(defective=CART_CHECK)
-        else:
-            self.evaluate()
-            self.write("evidence/corrections.md", CORRECTION)
-        self.write(f"proposals/verifier-{n}.md", text)
-        self.returned("verifier", n, next=nxt, tree="x",
-                      corrections="1" if nxt == "CORRECT" else "0", proposals="1")
-        return self.cmd("record", "verifier", n)
-
-    def judge_files(self, text):
-        n = self.job("review-judge", "consolidate", reviewers="R1, R2, R3", scope="first",
-                     tree="a" * 40)
-        no_pending = "\n".join(ln for ln in CODE_REVIEW.splitlines()
-                               if not ln.startswith(("| C4", "| C6")))
-        self.write("CODE_REVIEW.md", no_pending.format(tree="0" * 40))
-        self.write("review/pass-1/corrections.md", "# Required changes\n1. C1: guard "
-                   "the null due date in `src/sort.ts:4` before comparing\n")
-        self.write(f"proposals/review-judge-{n}.md", text)
-        self.returned("review-judge", n, next="MUST_FIX", must_fix_open="1", revote="0",
-                      proposals="1")
-        return self.cmd("record", "review-judge", n)
-
-    def triager_files(self, mode, text):
-        n = self.job("triager", mode, **({"failing": "unit"} if mode == "ci" else {}))
-        self.write(f"proposals/triager-{n}.md", text)
-        self.returned("triager", n, next="INFRA" if mode == "ci" else "TRIAGED",
-                      blockers="0", acceptance_checks="0", triage_file="none",
-                      checks_file="none", proposals="1")
-        return self.cmd("record", "triager", n)
-
-    def security_files(self, text):
-        from test_next import SECURITY_REVIEW
-        n = self.job("security-reviewer", leads="none")
-        self.write("SECURITY_REVIEW.md", SECURITY_REVIEW.format(tree="0" * 40))
-        self.write(f"proposals/security-reviewer-{n}.md", text)
-        self.returned("security-reviewer", n, next="CLEAN", must_fix="0", pre_existing="0",
-                      proposals="1")
-        return self.cmd("record", "security-reviewer", n)
-
-    def refused(self, r, *patterns):
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        for pattern in patterns:
-            self.assertRegex(r.stdout, pattern)
-
-    # -------------------------------------------------------------- condition 1
-
-    def test_a_correcting_coder_may_question_a_step_and_a_check_its_brief_listed(self):
-        from test_next import STEP_3_NEW, check_proposal, step_proposal
-        n, r = self.coder_files("correction", step_proposal(1, {3: STEP_3_NEW}),
-                                check_proposal(2, "tests/cart.test.ts", "rejects an empty cart"))
-        self.assertIn("tests/cart.test.ts", self.brief_values(
-            self.dir / "briefs" / f"coder-{n}.md")["acceptance_paths"])
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    def test_a_coder_proposal_naming_a_spec_item_is_refused(self):
-        from test_next import NEW_S2, proposal_block
-        new_2 = ("2. The list sorts todos by due date with the latest first\n"
-                 "   - Example: Given two todos, when listed, then the later one is first.\n"
-                 "   - Edge: none — every todo has a place in the order\n"
-                 "   - Verify by: integration\n")
-        for target, text in (("condition 2", new_2), ("new security criterion", NEW_S2)):
-            with self.subTest(target):
-                _, r = self.coder_files("correction", proposal_block(1, target, text)
-                                        .replace("- Comment: none\n", ""))
-                self.refused(r, r"(?i)coder[^\n]*may not[^\n]*spec")
-
-    def test_a_building_coder_was_shown_no_check_to_question(self):
-        from test_next import STEP_3_NEW, check_proposal, step_proposal
-        _, r = self.coder_files("build", step_proposal(1, {3: STEP_3_NEW}))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        _, r = self.coder_files("build", check_proposal(1, "tests/cart.test.ts",
-                                                        "rejects an empty cart"))
-        self.refused(r, r"(?i)(shown|listed|given) no (acceptance |held-out )?check")
-
-    def test_a_coder_naming_a_step_the_plan_lacks_hears_the_steps_it_has(self):
-        from test_next import STEP_3_NEW, step_proposal
-        _, r = self.coder_files("correction", step_proposal(1, {3: STEP_3_NEW}))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        _, r = self.coder_files("correction", step_proposal(
-            1, {7: "cache the rendered due column per row"}))
-        self.refused(r, r"\b7\b", r"\b1\b\D{0,8}\b2\b\D{0,8}\b3\b\D{0,8}\b4\b\D{0,10}\b5\b"
-                              r"|\b1\s*(?:–|-|to)\s*5\b")
-
-    def test_a_coder_proposal_on_two_kinds_or_a_test_that_is_no_check_is_refused(self):
-        from test_next import STEP_3_NEW, STEP_6_NEW, check_proposal, step_proposal
-        _, r = self.coder_files("correction", check_proposal(
-            1, "tests/cart.test.ts", "rejects an empty cart"))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        both = step_proposal(1, {3: STEP_3_NEW}).replace(
-            "- Target: step 3", f"- Target: step 3 and check {CART_CHECK}")
-        adds_and_changes = step_proposal(1, {3: STEP_3_NEW}).replace(
-            "- Target: step 3", "- Target: step 3, new step") + f"6. {STEP_6_NEW}\n"
-        cases = {
-            "a step and a check at once": (both, r"(?i)step"),
-            "a change and an addition at once": (adds_and_changes, r"(?i)add"),
-            "one of the coder's own tests": (check_proposal(
-                1, "tests/cart.test.ts", "keeps the cart helper tidy"),
-                r"(?i)keeps the cart helper tidy|manifest|not a (held-out )?check"),
-            "a file the brief did not list": (check_proposal(
-                1, "tests/other.test.ts", "rejects an empty cart"), r"tests/other\.test\.ts"),
-        }
-        for name, (block, pattern) in cases.items():
-            with self.subTest(name):
-                _, r = self.coder_files("correction", block)
-                self.refused(r, pattern)
-
-    # -------------------------------------------------------------- condition 2, S2
-
-    def test_a_verifier_proposal_on_a_plan_step_is_refused(self):
-        from test_next import PLAN_STEPS
-        r = self.verifier_files(filer_block("step 2", f"2. {PLAN_STEPS[1]} in UTC"))
-        self.refused(r, r"(?i)verifier[^\n]*may not[^\n]*plan")
-
-    def test_a_verifier_spec_proposal_records_beside_its_check_repair(self):
-        from test_next import NEW_3, proposal_block, proposals
-        r = self.verifier_files(proposals(proposal_block(1, "condition 3", NEW_3)), "REPAIR")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    def test_a_proposal_file_aimed_at_a_check_names_the_filer_s_own_route(self):
-        on_check = filer_block('check `src/two.acceptance.test.ts` :: "sorts earliest first"')
-        self.refused(self.verifier_files(on_check), r"REPAIR")
-        self.refused(self.judge_files(on_check), r"acceptance-check")
-        self.refused(self.triager_files("human", on_check.replace(
-            "- Comment: none", "- Comment: 12345")), r"ACCEPTANCE_CHECK")
-
-    def test_workers_that_may_not_file_hear_who_files_what(self):
-        from test_next import PLAN_STEPS
-        on_check = filer_block('check `src/two.acceptance.test.ts` :: "sorts earliest first"')
-        on_step = filer_block("step 2", f"2. {PLAN_STEPS[1]} in UTC")
-        self.refused(self.triager_files("ci", on_check), r"(?i)coder")
-        self.refused(self.triager_files("ci", on_step), r"(?i)coder")
-        n = self.job("plan-reviewer")
-        self.write(f"proposals/plan-reviewer-{n}.md", on_step)
-        self.returned("plan-reviewer", n, next="CLEAN", blockers="0", fix_file="none",
-                      proposals="1")
-        self.refused(self.cmd("record", "plan-reviewer", n), r"(?i)coder")
-
-    def test_a_verifier_spec_proposal_accepted_before_is_still_accepted(self):
-        from test_next import NEW_3, proposal_block, proposals
-        r = self.verifier_files(proposals(proposal_block(1, "condition 3", NEW_3)))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-    def test_a_security_reviewer_may_not_propose_against_the_plan_or_a_check(self):
-        from test_next import PLAN_STEPS
-        r = self.security_files(filer_block("step 2", f"2. {PLAN_STEPS[1]} in UTC"))
-        self.refused(r, r"(?i)\bplan\b")
-        r = self.security_files(filer_block(
-            'check `src/two.acceptance.test.ts` :: "sorts earliest first"'))
-        self.refused(r, r"(?i)\bcheck\b")
-
-
-class SpecFilerTargetTest(WorkCase):
-    """A spec filer's Target is the plan's only when it names steps in the
-    plan's form; numbers that stand alone name conditions, as on 4.11."""
-
-    job = PlanAndCheckProposalRecordTest.job
-    evaluate = PlanAndCheckProposalRecordTest.evaluate
-    verifier_files = PlanAndCheckProposalRecordTest.verifier_files
-    refused = PlanAndCheckProposalRecordTest.refused
-
-    def setUp(self):
-        super().setUp()
-        from test_next import PROPOSAL_MANIFEST, PROPOSAL_SPEC, step_plan
-        (self.dir / "SPEC.md").write_text(PROPOSAL_SPEC)
-        self.write("acceptance/MANIFEST.md", PROPOSAL_MANIFEST.replace(
-            '`src/four.acceptance.test.ts` :: "refuses a past due date"', CART_CHECK))
-        self.write("IMPLEMENTATION.md", step_plan())
-
-    def test_a_verifier_target_whose_numbers_stand_alone_names_conditions(self):
-        from test_next import NEW_2, NEW_3, PLAN_STEPS, proposal_block, proposals
-        for target, text in (("3 (the wizard's address step)", NEW_3),
-                             ("2, 3: the steps of the checkout", NEW_2 + NEW_3)):
-            with self.subTest(target):
-                r = self.verifier_files(proposals(proposal_block(1, target, text)))
-                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertEqual(self.state()["log"][-1]["data"]["proposals"], "1")
-        r = self.verifier_files(filer_block("step 2", f"2. {PLAN_STEPS[1]} in UTC"))
-        self.refused(r, r"P1 names a plan step: the verifier may not propose against the plan")
-
-
-class MovedCloneCase(WorkCase):
-    """A run whose clone lies under the folders NEST inside the temp dir."""
-
-    NEST = ()
-
-    def init(self, *extra, **kw):
-        if self.NEST and self.repo.parent == self.tmp:
-            nest = self.tmp.joinpath(*self.NEST)
-            nest.mkdir(parents=True)
-            self.repo = nest / "app"
-            self.sh("git", "clone", "-q", str(self.tmp / "origin.git"), str(self.repo))
-            self.worktree = nest / "app-due-dates"
-            self.dir = self.worktree / ".auto-dev"
-        return super().init(*extra, **kw)
-
-
-class ProposalsSnapshotsInTheClonePathTest(MovedCloneCase):
-    """A clone under folders named proposals/snapshots is no snapshot."""
-
-    NEST = ("proposals", "snapshots")
-    brief = SpecProposalRecordTest.brief
-    refused = SpecProposalRecordTest.refused
-
-    def test_a_plan_missing_a_heading_is_still_refused(self):
-        self.assertIn("proposals/snapshots/app-due-dates/.auto-dev", str(self.dir))
-        path = self.write("IMPLEMENTATION.md", PLAN.replace("## Data flow", "## Flow"))
-        self.refused(self.cmd("check-artifact", path), "headings must be")
-        n = self.brief("planner", as_mode="write")
-        self.returned("planner", n, next="WRITTEN", entry_points_changed="no")
-        self.refused(self.cmd("record", "planner", n), "headings must be")
-        # The run's own snapshot folder is still exempt.
-        snap = self.write("proposals/snapshots/plan-abc.md", "anything")
-        self.assertEqual(self.cmd("check-artifact", snap).returncode, 0)
-
-
-class SpacedArtifactDirTest(MovedCloneCase):
-    """A run whose artifact dir's path holds a space."""
-
-    NEST = ("my repos",)
-    refused = SpecProposalRecordTest.refused
-    ok = UpstreamProposalRecordTest.ok
-    planner = UpstreamProposalRecordTest.planner
-    plan_with = UpstreamProposalRecordTest.plan_with
-
-    def brief(self, worker, as_mode=None, **sets):
-        args = [a for k, v in sets.items() for a in ("--set", f"{k}={v}")]
-        r = self.cmd("brief", worker, *(("--mode", as_mode) if as_mode else ()), *args)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        path = re.search(r"^BRIEF: (.*\.md)", r.stdout, re.M).group(1)
-        return int(Path(path).stem.rsplit("-", 1)[1])
-
-    def test_a_blocked_answer_may_revise_a_stopped_step_a_stood_proposal_names(self):
-        self.assertIn(" ", str(self.dir))
-        self.write("IMPLEMENTATION.md", PLAN)
-        batch = [step_block(1, "step 3", NEW_3)]
-        rulings = rulings_text(("stands", UpstreamProposalRecordTest.REASON))
-        revised = ("3. Make the todo route look the todo up by its key first — test: "
-                   "`src/route.test.ts`")
-        self.ok(self.planner(batch, rulings, self.plan_with(s3=revised), "PLAN_REVISED",
-                             mode="blocked", stopped="- step 3: the store has no lookup\n"))
-
-
-class ResealTest(WorkCase):
-    """sealed.reseal: a fixer's edit to an installed check file, sealed again."""
-
-    def setUp(self):
-        super().setUp()
-        sys.path.insert(0, str(SCRIPTS))
-        from lib import sealed
-        self.sealed = sealed
-        self.files = self.dir / "acceptance" / "files"
-        self.files.mkdir(parents=True, exist_ok=True)
-
-    def reseal(self, old_sealed, old_base, current, names=()):
-        rel = "src/list.test.ts"
-        (self.files / "src").mkdir(exist_ok=True)
-        (self.files / f"{rel}.sealed").write_text(old_sealed)
-        if old_base is not None:
-            (self.files / f"{rel}.base").write_text(old_base)
-        touched = self.sealed.reseal(self.dir, rel, old_sealed, old_base, current, names)
-        read = {s: (self.files / f"{rel}.{s}").read_text()
-                if (self.files / f"{rel}.{s}").exists() else None
-                for s in ("sealed", "base", "installed")}
-        return touched, read
-
-    def test_a_line_inserted_between_the_file_s_own_lines_is_its_own(self):
-        _, read = self.reseal("a\ncheck\nb\nc\n", "a\nb\nc\n", "a\ncheck\nb\nmine\nc\n")
-        self.assertEqual(read["base"], "a\nb\nmine\nc\n")
-        self.assertEqual(read["sealed"], "a\ncheck\nb\nmine\nc\n")
-        self.assertEqual(read["installed"], read["sealed"])
-
-    def test_a_line_that_names_a_check_s_test_is_a_check_s(self):
-        _, read = self.reseal("a\ncheck\nb\nc\n", "a\nb\nc\n",
-                              'a\ncheck\nb\ntest("sorts by due date")\nc\n',
-                              ["sorts by due date"])
-        self.assertEqual(read["base"], "a\nb\nc\n")
-
-    def test_a_line_next_to_a_check_is_a_check_s(self):
-        _, read = self.reseal("a\ncheck\nb\n", "a\nb\n", "a\ncheck\nmore\nb\n")
-        self.assertEqual(read["base"], "a\nb\n")
-
-    def test_lines_rewritten_in_place_keep_their_kind(self):
-        _, read = self.reseal("a\nmine\ncheck\nb\n", "a\nmine\nb\n",
-                              "a\nmine v2\ncheck v2\nb\n")
-        self.assertEqual(read["base"], "a\nmine v2\nb\n")
-
-    def test_a_run_with_a_check_line_rewritten_unevenly_stays_a_check(self):
-        # One own line deleted and the check rewritten: one uneven run. The
-        # check is held out still, never let go.
-        _, read = self.reseal("a\nmine\ncheck\nb\n", "a\nmine\nb\n", "a\ncheck v2\nb\n")
-        self.assertEqual(read["base"], "a\nb\n")
-        self.assertEqual(read["sealed"], "a\ncheck v2\nb\n")
-
-    def test_a_file_with_no_check_left_or_gone_is_no_longer_sealed(self):
-        touched, read = self.reseal("a\ncheck\nb\n", "a\nb\n", "a\nb\n")
-        self.assertEqual(read, {"sealed": None, "base": None, "installed": None})
-        self.assertEqual(touched, ["src/list.test.ts.sealed", "src/list.test.ts.base"])
-        _, read = self.reseal("check\n", None, None)
-        self.assertIsNone(read["sealed"])
-
-    def test_an_unchanged_file_keeps_its_seal_as_it_was(self):
-        rel = "src/list.test.ts"
-        (self.files / "src").mkdir(exist_ok=True)
-        (self.files / f"{rel}.sealed").write_text("hand edited\n")
-        (self.files / f"{rel}.base").write_text("hand edited\n")
-        touched = self.sealed.reseal(self.dir, rel, "a\ncheck\n", "a\n", "a\ncheck\n")
-        self.assertEqual(touched, [])
-        self.assertEqual((self.files / f"{rel}.sealed").read_text(), "a\ncheck\n")
-        self.assertEqual((self.files / f"{rel}.base").read_text(), "a\n")
-        self.assertEqual((self.files / f"{rel}.installed").read_text(), "a\ncheck\n")
-
-    def test_a_new_check_file_is_sealed_whole(self):
-        _, read = self.reseal("check\n", None, "check v2\n")
-        self.assertEqual((read["sealed"], read["base"]), ("check v2\n", None))
 
 
 class AmendManifestTest(WorkCase):

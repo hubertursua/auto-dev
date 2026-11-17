@@ -14,34 +14,29 @@ Subcommands:
     show      print the run's state
     phase     set a phase's status
     note      record a decision or assumption
-    size      record the Define agent's size check (FITS or OVERSIZED)
     budget    show the iteration budget, spend one round before a correction, or
               add rounds after the budget ran out
     gate      record a gate decision
     mark      record a step done outside autodev.py (a Jira move, the push)
-    handoff   write HANDOFF.md and print the message that ends the session
+    handoff   write HANDOFF.md and print the restart message (a checkpoint, or the user stops)
     commit    stage by name, check, commit, and verify the commit (Phase 6)
     ci-watch  poll the PR's checks, bounded; green, red, pending or unavailable
     merge-pr  merge the PR locked to the checked commit, never --admin
-    pr-body   generate the PR description, or --check: lint one
     pr        publish: open the one PR, or refresh its description in place
     cleanup-worktree   remove the worktree after the final report
-    check-manifest     check the acceptance tester's MANIFEST.md against SPEC.md
+    check-manifest     check the acceptance tester's MANIFEST.md against PLAN.md
     eval-status        turn SPEC_EVAL.md into ALL_MET, CORRECT, REPAIR or STOP
-    apply-fix          apply a reviewer's FIX blocks to SPEC.md or IMPLEMENTATION.md
-    spec-overlap       refuse a brief or plan that copies SPEC.md's wording
-    install-checks     install the sealed acceptance checks in the worktree
-    amend-checks       drop or reseal held-out checks for a fix the user asked for
-    security-reviewer  name the security reviewer to spawn for this SPEC.md
+    commit-tests       commit the acceptance checks as their own commit (Phase 3, repairs)
+    amend-checks       drop or add acceptance check rows for a fix the user asked for
+    security-reviewer  name the security reviewer to spawn for this PLAN.md
     votes              plan the code-review re-votes, or apply them
-    review-scope       snapshot the tree before a correction; list what it changed
-    gate-summary       check a gate's preconditions; print its summary and question
     review-build       build CODE_REVIEW.md from the review judge's JUDGMENT.md
     brief              write a worker's brief file and print the prompt to spawn it with
     record             check a worker's result against its artifacts; update state
     check-artifact     check an artifact against its template before returning it
     mutants   pick which mutants a verifier re-check runs again; record a finished pass
     run       run one of the profile's gate or test commands in the worktree
+    quality-gate       run the whole quality gate and write its lint reports
     verify    the verifier's routine steps: prep a pass, then compare the tree
     next      print the pipeline's one next action (the orchestrator's loop)
     override  answer a stop: fix it as the user says, retry, sign off, talk, leave
@@ -63,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import (
     cmd_amend,
     cmd_checks,
+    cmd_gate,
     cmd_handoff,
     cmd_init,
     cmd_mutants,
@@ -73,6 +69,7 @@ from lib import (
     cmd_run,
     cmd_ship,
     cmd_state,
+    cmd_tests,
     cmd_verify,
     cmd_work,
     overrides,
@@ -87,7 +84,6 @@ COMMANDS = {
     "show": (cmd_state, cmd_state.show),
     "phase": (cmd_state, cmd_state.phase),
     "note": (cmd_state, cmd_state.note),
-    "size": (cmd_state, cmd_state.size),
     "budget": (cmd_state, cmd_state.budget),
     "gate": (cmd_state, cmd_state.gate),
     "mark": (cmd_state, cmd_state.mark),
@@ -95,24 +91,20 @@ COMMANDS = {
     "commit": (cmd_ship, cmd_ship.commit),
     "ci-watch": (cmd_ship, cmd_ship.ci_watch),
     "merge-pr": (cmd_ship, cmd_ship.merge_pr),
-    "pr-body": (cmd_ship, cmd_ship.pr_body),
     "cleanup-worktree": (cmd_ship, cmd_ship.cleanup_worktree),
     "check-manifest": (cmd_checks, cmd_checks.check_manifest),
     "eval-status": (cmd_checks, cmd_checks.eval_status),
-    "apply-fix": (cmd_checks, cmd_checks.apply_fix),
-    "spec-overlap": (cmd_checks, cmd_checks.spec_overlap),
-    "install-checks": (cmd_checks, cmd_checks.install_checks),
+    "commit-tests": (cmd_tests, cmd_tests.main),
     "amend-checks": (cmd_amend, cmd_amend.main),
     "security-reviewer": (cmd_checks, cmd_checks.security_reviewer),
     "votes": (cmd_review, cmd_review.votes),
-    "review-scope": (cmd_review, cmd_review.review_scope),
-    "gate-summary": (cmd_review, cmd_review.gate_summary),
     "review-build": (cmd_review, cmd_review.review_build),
     "brief": (cmd_work, cmd_work.brief),
     "record": (cmd_work, cmd_work.record),
     "check-artifact": (cmd_work, cmd_work.check_artifact),
     "mutants": (cmd_mutants, cmd_mutants.main),
     "run": (cmd_run, cmd_run.main),
+    "quality-gate": (cmd_gate, cmd_gate.main),
     "verify": (cmd_verify, cmd_verify.main),
     "next": (cmd_next, cmd_next.main),
     "pr": (cmd_pr, cmd_pr.main),
@@ -123,9 +115,14 @@ NAMED = (cmd_state, cmd_ship, cmd_checks, cmd_review, cmd_work, cmd_pr)
 
 
 # One line per subcommand, from the "Subcommands:" list in this docstring.
-SUMMARIES = dict(
-    line.strip().split(None, 1) for line in
-    __doc__.split("Subcommands:")[1].split("\n\n")[0].strip().splitlines())
+# A line indented past the names continues the one above it.
+SUMMARIES = {}
+for _line in __doc__.split("Subcommands:")[1].split("\n\n")[0].strip("\n").splitlines():
+    if _line.startswith("    ") and not _line.startswith("     "):
+        _name, _, _text = _line.strip().partition(" ")
+        SUMMARIES[_name] = _text.strip()
+    elif SUMMARIES:
+        SUMMARIES[_name] += " " + _line.strip()
 
 
 class Parser(argparse.ArgumentParser):

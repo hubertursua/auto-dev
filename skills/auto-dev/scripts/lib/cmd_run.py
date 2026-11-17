@@ -35,7 +35,7 @@ that passes the command on uses the one `run` would run.
 The command's whole output (stdout and stderr together) goes to --out, or else
 to <artifact-dir>/tmp/run/<gate-<n>|test>-<k>.txt. --out must be under the
 artifact dir's evidence/, acceptance/base-run/ or tmp/, so it never replaces
-the run's state or a sealed check; a relative --out is taken from the current
+the run's state or its manifest; a relative --out is taken from the current
 directory. When `run` is stopped (a timeout, or a signal such as the Bash
 tool's own timeout), the command and everything it started are stopped too.
 The script prints one token, then the command as run, the output file, the
@@ -68,8 +68,8 @@ from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 TIMED_OUT = 3
 PLACEHOLDER = "<files>"
 TAIL = 40
-# Where --out may write, under the artifact dir: never state.json, SPEC.md or a
-# sealed check.
+# Where --out may write, under the artifact dir: never state.json, PLAN.md or
+# MANIFEST.md.
 OUT_DIRS = ("evidence", "acceptance/base-run", "tmp")
 
 

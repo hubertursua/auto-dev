@@ -1,63 +1,55 @@
-"""autodev.py show / phase / note / size / budget / gate — read and write state.json.
+"""autodev.py show / phase / note / budget / gate — read and write state.json.
 
 Usage (each takes `--dir <artifact-dir>`, default `./.auto-dev`, and `--json`):
     autodev.py show
     autodev.py phase <1-6> <pending|in-progress|done|n/a|held|stopped> [--notes TEXT]
     autodev.py note "<decision or assumption>"
-    autodev.py size <FITS|OVERSIZED> --high-risk <yes|no>
     autodev.py budget show
-    autodev.py budget spend --consumer <1-5> --id <correction-id> [--what TEXT]
+    autodev.py budget spend --id <round-id> [--what TEXT]
     autodev.py budget raise --by <n>
-    autodev.py gate <gate> <choice> [--reason TEXT] [--condition <n>]
+    autodev.py gate <gate> <choice> [--reason TEXT]
     autodev.py mark <step> [--value TEXT]
+
+`show` prints the task, the restated ask (an `ask:` line, when there is one), the
+run's state, the first open phase, the size, the budget, the worktree and the
+branch.
 
 Only these commands (and init) write state.json; WORK_LOG.md is regenerated on
 every write.
 
-`size` records the Define agent's size check. OVERSIZED also marks Phase 2
-stopped (Notes `OVERSIZED`) and Phases 3-6 n/a, and prints `STOP`.
-
-`budget spend` spends one revise round for a correction, before it is
-dispatched. Consumers (references/tables.md): 1 Define re-review,
-2 plan re-review or acceptance-tester re-spawn, 3 build/acceptance correction,
-4 review-finding correction, 5 CI-red correction. Spending an id that was
-already spent is a no-op (exit 0, `ALREADY-SPENT`), so a resumed run never pays
-twice. At zero it spends nothing, prints `EXHAUSTED` and what to do for that
-consumer, and exits 3.
+`budget spend` spends one round of the run's one iteration budget, before the
+re-review or correction it pays for is dispatched (references/tables.md, _The
+iteration budget_). Spending an id that was already spent is a no-op (exit 0,
+`ALREADY-SPENT`), so a resumed run never pays twice. At zero it spends nothing,
+prints `EXHAUSTED` and exits 3.
 
 `budget raise` adds <n> rounds (1 to 10) to a run `next` stopped because no
-round was left (references/tables.md, _The iteration budget_), and is refused
-otherwise. It also forgets the proposals the stopped step had no round to send,
-so the next `next` takes that step and sends them, spending the new rounds as
-usual. Proposals an earlier step left unsent stay unsent (the run went past
-them) and stay named in the reports. It prints `RAISED`.
+round was left, and is refused otherwise; the next `next` takes the step that
+stopped. It prints `RAISED`.
 
 `mark` records a step done outside autodev.py, so `next` moves past it. Steps:
 jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
 MCP tools, or skipped: --value skipped), pushed (--value <the sha pushed>),
 pr-ready (the draft PR marked ready for review), final-report, main-ci (CI on
 main checked after the merge); and triage-<ID> (the user's answer at
-the PR gate for a pre-existing security finding, `triage-Others` for the
+the ready-for-review gate for a pre-existing security finding, `triage-Others` for the
 grouped rest: --value separate or ignore; it is also noted in WORK_LOG.md).
 
-`gate` records a gate decision. Gates: post-plan, pr, main, profile, jira,
-cleanup, deviation. Choices: proceed, hold, stop, revise (post-plan only), leave
-(jira only: start work but leave Jira alone), already (jira only: the ticket
-is in progress already, so start work without moving it now; later milestones
-move it as after proceed), keep (cleanup only: keep the
-worktree; deviation: keep the spec and correct the code), accept (deviation
-only: accept the code's deviation from the condition). `deviation` takes
-`--condition <n>`, the condition it answers for; a security criterion (`S<n>`)
-can't be accepted. `hold` marks the gate's phase held (resuming re-fires the
-gate); `stop` marks it stopped (the run ends).
+`gate` records a gate decision. Gates: post-plan, pr (open the PR, only with
+`gates.open_pr`), ready (ready for review), main, profile, jira, cleanup.
+Choices: proceed, hold, stop, revise (post-plan only), leave (jira
+only: start work but leave Jira alone), already (jira only: the ticket is in
+progress already, so start work without moving it now; later milestones move
+it as after proceed), keep (cleanup only: keep the worktree). `hold` marks the
+gate's phase held (resuming re-fires the gate); `stop` marks it stopped (the
+run ends).
 
 Exit codes:
     0  done (and for `budget spend`, a round was spent or was already spent)
     1  refused: a bad value, a choice the gate doesn't offer, or a `mark` step
        that is not one of those above (or a triage answer not separate/ignore),
-       or a deviation gate with no condition or accepting one on a security
-       criterion, or a `budget raise` when the run is not stopped on the budget
-       or <n> is not 1 to 10
+       or a `budget raise` when the run is not stopped on the budget or <n> is
+       not 1 to 10
     2  could not run (no state.json, unreadable) — not a pass
     3  `budget spend` only: the budget is exhausted; nothing was spent
 """
@@ -70,38 +62,19 @@ from .output import FAILED, Fail, emit
 EXIT_EXHAUSTED = 3
 MAX_RAISE = 10
 
-# The deviation gate is asked in Phase 5 or 6: its phase is the run's open one.
-GATE_PHASE = {"post-plan": 3, "pr": 6, "main": 6, "profile": 1, "jira": 2,
-              "cleanup": 6, "deviation": None}
+GATE_PHASE = {"post-plan": 3, "pr": 6, "ready": 6, "main": 6, "profile": 1, "jira": 2,
+              "cleanup": 6}
 GATE_CHOICES = {"post-plan": {"proceed", "revise", "stop"},
                 "pr": {"proceed", "hold", "stop"},
+                "ready": {"proceed", "hold", "stop"},
                 "main": {"proceed", "hold", "stop"},
                 "profile": {"proceed", "stop"},
                 "jira": {"proceed", "already", "leave", "stop"},
-                "cleanup": {"proceed", "keep"},
-                "deviation": {"accept", "keep", "stop"}}
-CONDITION_RE = re.compile(r"S?\d+")
+                "cleanup": {"proceed", "keep"}}
 MARKS = ("jira-in-progress", "jira-in-review", "jira-done", "pushed", "pr-ready",
          "final-report", "main-ci")
 TRIAGE_RE = re.compile(r"triage-[A-Za-z0-9]+")
 TRIAGE_ANSWERS = ("separate", "ignore")
-CONSUMERS = {
-    1: "Define re-review",
-    2: "plan re-review or acceptance-tester re-spawn",
-    3: "build or acceptance correction",
-    4: "review-finding correction",
-    5: "CI-red correction",
-}
-# What to do at zero, per consumer (references/tables.md, _The iteration budget_).
-ON_EXHAUSTED = {
-    1: "stop and report the Define review's open blockers, one by one",
-    2: "stop and report the plan review's open blockers or the acceptance gaps, "
-       "one by one",
-    3: "stop and report each unmet condition by name and what was tried; do not "
-       "run cleanup or Phase 6",
-    4: "stop and report every open must-fix finding by name",
-    5: "stop and report each red check by name; never merge over it",
-}
 
 
 def add_arguments(parser, name):
@@ -112,12 +85,8 @@ def add_arguments(parser, name):
         parser.add_argument("--notes")
     elif name == "note":
         parser.add_argument("text")
-    elif name == "size":
-        parser.add_argument("size", choices=("FITS", "OVERSIZED"))
-        parser.add_argument("--high-risk", choices=("yes", "no"), required=True)
     elif name == "budget":
         parser.add_argument("action", choices=("show", "spend", "raise"))
-        parser.add_argument("--consumer", type=int, choices=sorted(CONSUMERS))
         parser.add_argument("--id", dest="spend_id")
         parser.add_argument("--what", default="")
         parser.add_argument("--by", type=int, help="raise only: rounds to add")
@@ -128,7 +97,6 @@ def add_arguments(parser, name):
         parser.add_argument("gate", choices=sorted(GATE_PHASE))
         parser.add_argument("choice")
         parser.add_argument("--reason", default="")
-        parser.add_argument("--condition", help="deviation only: the condition it answers for")
 
 
 def load(args):
@@ -143,7 +111,9 @@ def show(args):
     opened = st.first_open_phase(state)
     phase = (f"{opened[0]} — {st.PHASE_NAMES[opened[0]]} ({opened[1]})"
              if opened else "none")
-    emit(args.json, "STATE", state["task"].get("text", ""), run=st.run_state(state),
+    emit(args.json, "STATE", state["task"].get("text", ""),
+         ask=" ".join(str(state["task"].get("ask") or "").split()) or None,
+         run=st.run_state(state),
          phase=phase, size=state.get("size") or "—",
          budget=f"{state['budget']['remaining']} of {state['budget']['total']}",
          worktree=state["worktree"], branch=state["branch"])
@@ -167,45 +137,25 @@ def note(args):
     return 0
 
 
-def size(args):
-    state = load(args)
-    state["size"], state["high_risk"] = args.size, args.high_risk == "yes"
-    if args.size == "OVERSIZED":
-        st.set_phase(state, 2, "stopped", "OVERSIZED")
-        for number in (3, 4, 5, 6):
-            st.set_phase(state, number, "n/a", "")
-        st.save(args.dir, state)
-        emit(args.json, "STOP", "OVERSIZED: report Define's reasons, subsystems and "
-             "suggested split lines to the user; keep the worktree; leave Jira alone",
-             worktree=state["worktree"], branch=state["branch"])
-        return 0
-    if state["high_risk"]:
-        state["settings"]["post_plan_gate"] = True
-    st.save(args.dir, state)
-    emit(args.json, "SIZE", f"FITS, high risk: {args.high_risk}",
-         post_plan_gate="on" if state["settings"]["post_plan_gate"] else "off")
-    return 0
-
-
 def budget(args):
     state = load(args)
     b = state["budget"]
     if args.action == "show":
         emit(args.json, "BUDGET", f"{b['remaining']} of {b['total']} remaining",
-             spent=[f"#{s['consumer']} {s['id']}" for s in b["spends"]])
+             spent=[s["id"] for s in b["spends"]])
         return 0
     if args.action == "raise":
         return raise_budget(args, state)
-    if args.consumer is None or not args.spend_id:
-        raise Fail("budget spend needs --consumer and --id", FAILED, "ERROR")
-    outcome = spend_round(state, args.consumer, args.spend_id, args.what)
+    if not args.spend_id:
+        raise Fail("budget spend needs --id", FAILED, "ERROR")
+    outcome = spend_round(state, args.spend_id, args.what)
     if outcome == "already":
         emit(args.json, "ALREADY-SPENT", f"`{args.spend_id}` was already paid for; "
              "dispatch without spending again", remaining=b["remaining"])
         return 0
     if outcome == "exhausted":
-        emit(args.json, "EXHAUSTED", f"no revise rounds left ({CONSUMERS[args.consumer]})",
-             action=ON_EXHAUSTED[args.consumer])
+        emit(args.json, "EXHAUSTED", "no revise rounds left",
+             action="stop and report what is still open, by name")
         return EXIT_EXHAUSTED
     st.save(args.dir, state)
     emit(args.json, "SPENT", f"`{args.spend_id}` — {b['remaining']} of {b['total']} left",
@@ -223,12 +173,11 @@ def raise_budget(args, state):
         raise Fail(f"budget raise needs --by <n>, 1 to {MAX_RAISE}", FAILED, "ERROR")
     b["total"] += args.by
     b["remaining"] += args.by
-    b.setdefault("raises", []).append({"by": args.by, "consumer": stopped["consumer"],
-                                       "at": st.now(), "seq": st.seq(state)})
+    b.setdefault("raises", []).append({"by": args.by, "at": st.now(),
+                                       "seq": st.seq(state)})
     del b["stopped"]
-    forget_unsent(state, stopped["seq"])
     st.add_note(state, f"the user raised the iteration budget by {args.by} after it ran "
-                f"out ({CONSUMERS[stopped['consumer']]}): {b['remaining']} of "
+                f"out ({stopped.get('what') or 'no round left'}): {b['remaining']} of "
                 f"{b['total']} left")
     st.save(args.dir, state)
     emit(args.json, "RAISED", f"{b['remaining']} of {b['total']} left",
@@ -236,20 +185,7 @@ def raise_budget(args, state):
     return 0
 
 
-def forget_unsent(state, since):
-    """Drop the marks of proposals the stopped step had no round to send (made
-    at seq `since` or later), so `next` sends them as it takes that step.
-    Earlier marks stay: the run went past those proposals, which `next` won't
-    look at again, so the reports and gate summaries keep naming them."""
-    found = state.get("proposals") or {}
-    if found.get("unsent"):
-        found["unsent"] = [u for u in found["unsent"] if u.get("seq", 0) < since]
-    if found.get("filings"):
-        found["filings"] = [f for f in found["filings"]
-                            if f.get("status") != "unsent" or f.get("seq", 0) < since]
-
-
-def spend_round(state, consumer, spend_id, what=""):
+def spend_round(state, spend_id, what=""):
     """Spend one round in `state` (not saved): `spent`, `already` or `exhausted`."""
     b = state["budget"]
     if any(s["id"] == spend_id for s in b["spends"]):
@@ -257,8 +193,8 @@ def spend_round(state, consumer, spend_id, what=""):
     if b["remaining"] <= 0:
         return "exhausted"
     b["remaining"] -= 1
-    b["spends"].append({"id": spend_id, "consumer": consumer, "what": what,
-                        "at": st.now(), "seq": st.seq(state)})
+    b["spends"].append({"id": spend_id, "what": what, "at": st.now(),
+                        "seq": st.seq(state)})
     return "spent"
 
 
@@ -274,7 +210,8 @@ def mark(args):
     state.setdefault("marks", {})[args.step] = {"value": args.value, "at": st.now(),
                                                 "seq": st.seq(state)}
     if triage:
-        st.add_note(state, f"PR gate triage, {args.step[len('triage-'):]}: {args.value}")
+        st.add_note(state, f"ready-for-review gate triage, {args.step[len('triage-'):]}: "
+                    f"{args.value}")
     st.save(args.dir, state)
     emit(args.json, "MARKED", f"{args.step}: {args.value}")
     return 0
@@ -289,18 +226,6 @@ def gate(args):
     entry = {"gate": args.gate, "choice": choice, "reason": args.reason, "at": st.now(),
              "seq": st.seq(state)}
     number = GATE_PHASE[args.gate]
-    if args.gate == "deviation":
-        cid = str(args.condition or "").strip().upper()
-        if not CONDITION_RE.fullmatch(cid):
-            raise Fail("gate deviation needs --condition <n>, the condition it answers for",
-                       FAILED, "ERROR")
-        if cid.startswith("S") and choice == "accept":
-            raise Fail(f"{cid} is a security criterion: a deviation from one can't be "
-                       "accepted", FAILED, "ERROR")
-        entry["condition"] = cid
-        number = (st.first_open_phase(state) or (6, None))[0]
-    elif args.condition:
-        raise Fail("--condition is for the deviation gate only", FAILED, "ERROR")
     state["gates"].append(entry)
     after = "continue"
     if choice == "hold":
@@ -318,10 +243,6 @@ def gate(args):
         after = "start work without moving Jira"
     elif choice == "already":
         after = "start work without moving Jira now; later milestones move it"
-    elif args.gate == "deviation":
-        st.add_note(state, f"deviation gate, condition {entry['condition']}: " + (
-            "the user accepted the code's deviation" if choice == "accept" else
-            "the user kept the spec: the code is corrected"))
     elif st.phase(state, number)["status"] == "held":
         st.set_phase(state, number, "in-progress")
     st.save(args.dir, state)

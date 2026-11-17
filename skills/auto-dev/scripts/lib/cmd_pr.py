@@ -11,14 +11,15 @@ of the same heading:
 
  - It refuses while the description still holds a `<!-- WRITE: ... -->` line
    (the Summary, the Assumptions, any section the repo's PR template adds and
-   the boxes of its checklist are yours to write), or while `pr-body --check`
-   finds a problem. Once the PR has a description, the template's checklist
+   the boxes of its checklist are yours to write), or while its lint
+   (cmd_ship.lint_body) finds a problem. Once the PR has a description, the template's checklist
    is the live one: its boxes and items stand, and are not checked again.
  - No PR yet: it looks for an open PR from this branch first and uses that one;
    otherwise it opens a draft PR to the base branch, titled with the commit's
    subject (or --title). There is never a second PR.
  - A PR already open: it reads the live description and replaces only the
-   sections the pipeline writes (Acceptance conditions, Quality gate, Review),
+   sections the pipeline writes (Acceptance conditions, Quality gate, Review,
+   and Overrides by the user),
    so the Summary, the Assumptions and any edit made on GitHub survive, and a
    box someone ticked under "Checks for a person" stays ticked.
  - Output too long for the description goes to one PR comment, edited in place
@@ -33,7 +34,9 @@ of the same heading:
    offline, a 5xx) is exit 2 and is not recorded: run it again once gh works.
 
  - With `pr_review.inline_comments: true` in .auto-dev.yml, the first publish
-   also posts the review findings still open or advisory, once: inline at
+   after the ready-for-review gate is answered (never the draft's, opened
+   before any review) also posts the review findings still open or advisory,
+   once: inline at
    their line when it is in the PR's diff, the rest in one general comment.
    A pre-existing security finding is posted only when the user sent it to a
    separate PR at the gate. A failure to post is printed, never fatal.
@@ -58,11 +61,16 @@ from pathlib import Path
 from . import artifacts as art
 from . import overrides
 from . import state as st
-from .cmd_ship import ARTIFACTS, SECRET_RE, gh_cannot_run  # shared with the ship steps
+from .cmd_ship import (  # shared with the ship steps
+    ARTIFACTS,
+    ATTRIBUTION,
+    BODY_LIMIT,
+    SECRET_RE,
+    gh_cannot_run,
+)
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
 
-BODY_LIMIT = 60000
 TAIL = 10
 WRITE_RE = re.compile(r"<!-- WRITE: .*?-->")
 WRITE_FILE = "pr-write.md"  # only the sections with a WRITE line, for the orchestrator
@@ -76,8 +84,11 @@ WRITE_HEAD = ("<!-- The parts of the PR description you write. The quoted source
               "answer with `## `: `pr publish` puts each section into the description "
               "by its heading. -->")
 STRICT = ("Acceptance conditions", "Quality gate", "Review")
+NOT_REVIEWED = [("Not reviewed yet. This draft opened as soon as the build passed its "
+                 "checks, so CI runs"),
+                ("while the verifier and the review run; this section is "
+                 "updated when they finish.")]
 COMMENT_HEAD = "Command output for commit"
-ATTRIBUTION = "Generated with [Claude Code](https://claude.com/claude-code)"
 # The last line of every body and comment the pipeline posts: the triager
 # skips a comment that carries it.
 MARKER = "<!-- auto-dev -->"
@@ -146,20 +157,26 @@ class Body:
         return "\n".join(out) + "\n", "\n".join(comment)
 
 
-def generate(state, ad, sha):
-    """Write <ad>/pr-body.md (and pr-output-comment.md when needed); return its path."""
+def generate(state, ad, sha, reviewed=True, ready=True):
+    """Write <ad>/pr-body.md (and pr-output-comment.md when needed); return its path.
+    With `reviewed` false (the draft PR, opened before any review), its Review
+    section says the reviews have not run yet. With `ready` false (the reviews
+    have settled, the ready-for-review gate not answered yet), a finding left
+    open says the user decides at that gate, not that they shipped it."""
     ad = Path(ad)
     wt = state["worktree"]
     url = repo_url(wt)
-    conditions = art.spec_conditions(ad / "SPEC.md")
-    ev = art.spec_eval(ad / "SPEC_EVAL.md")
-    verdicts = {r["#"].strip(): r for r in ev["rows"]}
+    conditions = art.spec_conditions(ad / "PLAN.md")
+    # The draft opens before the verifier runs: its acceptance section says so.
+    ev = art.spec_eval(ad / "SPEC_EVAL.md") if reviewed or \
+        (ad / "SPEC_EVAL.md").exists() else None
+    verdicts = {r["#"].strip(): r for r in (ev or {}).get("rows", [])}
     rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
     cut = cut_sha(ad, wt)
     old = old_sha(ad, cut)
     body = Body()
     body.text("## Summary")
-    body.text("<!-- WRITE: what changed and why, 2–4 sentences, drawn from SPEC.md's "
+    body.text("<!-- WRITE: what changed and why, 2–4 sentences, drawn from PLAN.md's "
               "Context -->")
     ticket = ticket_link(state["task"])
     if ticket:
@@ -167,73 +184,33 @@ def generate(state, ad, sha):
         body.text(ticket)
     body.text("")
     body.text("## Acceptance conditions")
-    checked = [r for r in rows if r["#"].strip() in verdicts]
-    files = sorted({p for r in checked if (p := art.check_path(
-        r["Check (path :: test name)"]))})
-    if files:
-        body.text("**How this was checked.** Before any code was written, a test was "
-                  "written from")
-        body.text("the requirements alone for each requirement below that a test could "
-                  "check, and")
-        body.text(f"run on the old code (`{state['repo']['base']}` at {old}), where the "
-                  "tests for new behavior")
-        body.text("failed. The code was first written without those tests in view; then "
-                  "they were")
-        body.text("added back, and any later fix had to make them pass without changing "
-                  "them.")
-        body.text(f"Checked at commit {sha}: every result below was produced on this code.")
-        body.text("")
-        body.text("**Start review with** the tests written before the code. They state "
-                  "what this")
-        body.text("change must do: " + ", ".join(
-            f"[`{p}`]({link(url, sha, p)})" for p in files))
+    if ev is None:
+        not_verified(body, conditions, rows, url, sha, wt)
     else:
-        body.text("No requirement here could be checked by an automated test, so each "
-                  "one")
-        body.text(f"is under _Checks for a person_. Checked at commit {sha}.")
-    body.text("")
-    manual = []
-    for cond in conditions:
-        row = verdicts.get(cond["id"])
-        verdict = row["Verdict"].strip().lower() if row else "unmet"
-        if verdict == "manual":
-            manual.append((cond, row))
-            continue
-        condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha)
-    body.text("")
-    body.text("### Checks for a person")
-    person = person_checks(manual, na_rows, ev, conditions)
-    if person:
-        for line in person:
-            body.text(line)
-    else:
-        body.text("None: every requirement was checked automatically.")
-    body.text("")
-    body.text("### Changes to tests")
-    quoted_lines(body, test_changes(ev, url, sha, cut, wt))
-    body.text("")
-    body.text("### Test strength")
-    quoted_lines(body, test_strength(ev, state))
-    body.text("")
+        verified(body, state, ad, wt, url, sha, conditions, verdicts, rows, na_rows, ev,
+                 old, cut)
     body.text("## Quality gate")
     body.text(f"The repo's own checks, run on commit {sha[:12]}:")
     quality_gate(body, ad, state)
     body.text("")
     body.text("## Review")
-    for line in review_lines(ad, state):
+    for line in (review_lines(ad, state, ready) if reviewed else NOT_REVIEWED):
         body.text(line)
     body.text("")
     overridden = overrides.summary_lines(state)
     if overridden:
         body.text("## Overrides by the user")
         body.text("The run stopped at these steps, and the user chose how it went on:")
+        # The user's own words, quoted: they may name a finding ID.
+        start = body.quote()
         for line in overridden:
             body.text(f"- {line}")
+        body.unquote(start)
         body.text("")
     for line in template_sections(find_template(wt)):
         body.text(line)
     body.text("## Assumptions")
-    body.text("<!-- WRITE: the unresolved assumptions from SPEC.md a reviewer should "
+    body.text("<!-- WRITE: the unresolved assumptions from PLAN.md a reviewer should "
               "sanity-check -->")
     body.text("")
     body.text(ATTRIBUTION)
@@ -243,7 +220,7 @@ def generate(state, ad, sha):
     from .cmd_ship import quoted_digests
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
     # What generate copies word for word outside a region, as it shows it: a
-    # checkbox's title (SPEC.md's own words, kept outside so ticking it leaves
+    # checkbox's title (PLAN.md's own words, kept outside so ticking it leaves
     # the region whole) and each gate command, as clean() left it in the text.
     # The lint skips each one.
     copied = {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} | \
@@ -265,7 +242,7 @@ def generate(state, ad, sha):
 
 
 def write_slots(text, ad, task):
-    """pr-write.md: the text the WRITE lines draw on (SPEC.md's Context and
+    """pr-write.md: the text the WRITE lines draw on (PLAN.md's Context and
     Assumptions, the task, and the description's requirements, Quality gate and
     Review), each line quoted so no heading in it counts, then SLOTS_MARK and
     each section of the description that holds a WRITE line, as it stands but
@@ -281,11 +258,11 @@ def write_slots(text, ad, task):
                     *[f"> {ln}" if ln.strip() else ">" for ln in body.splitlines()], ""])
 
     try:
-        spec = art.read(ad / "SPEC.md")
+        spec = art.read(ad / "PLAN.md")
     except art.ArtifactError:
         spec = ""
     for name in ("Context", "Assumptions"):
-        source(f"SPEC.md {name}", art.find_section(spec, name) if spec else None)
+        source(f"PLAN.md {name}", art.find_section(spec, name) if spec else None)
     source("the task", task.get("text"))
     ask = (task.get("ask") or "").strip()
     if ask and ask != (task.get("text") or "").strip():
@@ -308,11 +285,11 @@ def splice_written(text, ad, slots=None):
     """The description with each section pr-write.md holds below SLOTS_MARK put
     in place of the section of the same heading (in order, when a heading
     repeats) that still holds a WRITE line; one already written in pr-body.md
-    (by hand, or by a session before 4.17) stands. Refused (UNWRITTEN, so the
+    by hand stands. Refused (UNWRITTEN, so the
     orchestrator fixes pr-write.md) when the mark line is gone, text sits
     between it and the first heading, a heading there is not one pr-write.md
-    was written with (`slots`, saved by generate; before 4.17, any of the
-    description's), or a section still holding a WRITE line has no section
+    was written with (`slots`, saved by generate), or a section still holding
+    a WRITE line has no section
     there. With no pr-write.md, the text as it is."""
     path = Path(ad) / WRITE_FILE
     if not path.exists():
@@ -329,7 +306,7 @@ def splice_written(text, ad, slots=None):
     mine = [(h, b) for h, b in split if h]
     sections = split_sections(text)
     have = Counter(h for h, _ in mine)
-    allowed = Counter(slots) if slots is not None else Counter(h for h, _ in sections if h)
+    allowed = Counter(slots or ())
     need = Counter(h for h, b in sections if h and WRITE_RE.search(b))
     problems = []
     for heading in have:
@@ -422,7 +399,7 @@ def template_sections(path):
     points at the checks; a checklist is copied with every box unticked and a
     WRITE line asking for the boxes the run shows are true to be ticked; any
     other section gets a WRITE line carrying what the template asks there (its
-    comments and plain text), so the orchestrator answers it from SPEC.md.
+    comments and plain text), so the orchestrator answers it from PLAN.md.
     """
     out = []
     for heading, lines in _sections(path):
@@ -443,14 +420,15 @@ def template_sections(path):
             out.append("See _Acceptance conditions_ and _Quality gate_ above.")
         elif boxes:
             out += boxes
-            out.append("<!-- WRITE: tick each box SPEC.md, HANDOFF.md or this description "
-                       "shows is true, and leave unticked any only a person can confirm. "
+            out.append("<!-- WRITE: tick each box PLAN.md, the task (`autodev.py show`) "
+                       "or this description shows is true, and leave unticked any only a "
+                       "person can confirm. "
                        "Keep every item's words as they are -->")
         else:
             hint = re.sub(r"-{2,}", "-", hint)  # it can't end the WRITE comment
             out.append("<!-- WRITE: the repo's PR template asks for this section"
                        + (f" ({hint})" if hint else "") + ". Answer it in plain words "
-                       "from SPEC.md, or write N/A -->")
+                       "from PLAN.md, or write N/A -->")
         out.append("")
     return out
 
@@ -530,6 +508,86 @@ def clean(text, worktree):
     if home and home != "/":
         text = text.replace(home, "~")
     return "\n".join(ln for ln in text.split("\n") if not SECRET_RE.search(ln))
+
+
+def verified(body, state, ad, wt, url, sha, conditions, verdicts, rows, na_rows, ev, old,
+             cut):
+    """The acceptance section once the verifier has run: each condition's
+    verdict, the checks written before the code, and the tests' changes."""
+    checked = [r for r in rows if r["#"].strip() in verdicts]
+    files = sorted({p for r in checked if (p := art.check_path(
+        r["Check (path :: test name)"]))})
+    if files:
+        body.text("**How this was checked.** Before any code was written, a test was "
+                  "written from")
+        body.text("the requirements alone for each requirement below that a test could "
+                  "check, and")
+        body.text(f"run on the old code (`{state['repo']['base']}` at {old}), where the "
+                  "tests for new behavior")
+        body.text("failed. They were committed on their own before the code, and no "
+                  "later change")
+        body.text("could alter them: the code had to make them pass as written.")
+        body.text(f"Checked at commit {sha}: every result below was produced on this code.")
+        body.text("")
+        body.text("**Start review with** the tests written before the code. They state "
+                  "what this")
+        body.text("change must do: " + ", ".join(
+            f"[`{p}`]({link(url, sha, p)})" for p in files))
+    else:
+        body.text("No requirement here could be checked by an automated test, so each "
+                  "one")
+        body.text(f"is under _Checks for a person_. Checked at commit {sha}.")
+    body.text("")
+    manual = []
+    for cond in conditions:
+        row = verdicts.get(cond["id"])
+        verdict = row["Verdict"].strip().lower() if row else "unmet"
+        if verdict == "manual":
+            manual.append((cond, row))
+            continue
+        condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha)
+    body.text("")
+    body.text("### Checks for a person")
+    person = person_checks(manual, na_rows, ev, conditions)
+    if person:
+        for line in person:
+            body.text(line)
+    else:
+        body.text("None: every requirement was checked automatically.")
+    body.text("")
+    body.text("### Changes to tests")
+    quoted_lines(body, test_changes(ev, url, sha, cut, wt))
+    body.text("")
+    body.text("### Test strength")
+    quoted_lines(body, test_strength(ev, state))
+    body.text("")
+
+
+def not_verified(body, conditions, rows, url, sha, wt):
+    """The draft's acceptance section: the verifier runs on the draft, so each
+    condition is listed unchecked, with the tests committed for it."""
+    body.text("Not verified yet. The tests for these requirements were written and "
+              "committed before")
+    body.text("the code; the verifier runs them on this draft while CI runs, and this "
+              "section is")
+    body.text(f"updated with its results. Checked at commit {sha}: the quality gate "
+              "below ran on this code.")
+    body.text("")
+    for cond in conditions:
+        body.text(f"- [ ] **{cond['text']}**")
+        start = body.quote()
+        for check in [r for r in rows if r["#"].strip() == cond["id"]]:
+            cell = check["Check (path :: test name)"]
+            path = art.check_path(cell) or ""
+            name = cell.split("::", 1)[-1].strip().strip('"')
+            body.text(f"  Test written before the code: [`{path}` › {name}]"
+                      f"({link(url, sha, path, test_line(wt, path, name))})")
+        body.unquote(start)
+    body.text("")
+    for heading in ("### Checks for a person", "### Changes to tests", "### Test strength"):
+        body.text(heading)
+        body.text("Not checked yet: the verifier's results fill this in.")
+        body.text("")
 
 
 def condition_entry(body, cond, row, verdict, rows, ad, wt, url, sha):
@@ -728,9 +786,9 @@ def quality_gate(body, ad, state):
         body.unquote(start)
 
 
-def review_lines(ad, state):
+def review_lines(ad, state, ready=True):
     out = []
-    for name, label in (("CODE_REVIEW.md", "Code review (3 independent reviewers)"),
+    for name, label in (("CODE_REVIEW.md", "Code review"),
                         ("SECURITY_REVIEW.md", "Security review")):
         try:
             text = art.read(ad / name)
@@ -738,6 +796,9 @@ def review_lines(ad, state):
             out.append(f"- {label}: not run")
             continue
         head = art.header_line(text, "**Overall confidence")
+        if name == "CODE_REVIEW.md":  # one reviewer, or the panel of three
+            solo = re.search(r"reviewers finished:\s*\d+/1\b", head)
+            label += " (one reviewer)" if solo else " (3 independent reviewers)"
         level = re.search(r"Overall confidence:\s*([A-Za-z]+)", head)
         reason = head.split("—", 1)[-1].strip() if "—" in head else ""
         counts = re.search(r"Must-fix:\s*(\d+) open · (\d+) fixed", text)
@@ -750,7 +811,7 @@ def review_lines(ad, state):
         out += [f"- {label} — confidence {level.group(1) if level else 'unknown'}: "
                 + QUOTE_OPEN,
                 f"  {lead}{total} {problems} that had to be fixed: {fixed} fixed, {opened} open"]
-        out += open_findings(text)
+        out += open_findings(text, ready)
         if name == "SECURITY_REVIEW.md":
             out += follow_ups(text, separate_pr(state))
         out.append(QUOTE_CLOSE)
@@ -769,7 +830,7 @@ def plain_words(text, fid):
 
 def separate_pr(state):
     """The pre-existing security findings the user sent to a separate PR at the
-    PR gate (`mark triage-<id> --value separate`); `*` stands for the ones the
+    ready-for-review gate (`mark triage-<id> --value separate`); `*` stands for the ones the
     gate grouped under "Others"."""
     ids = set()
     for step, mark in (state.get("marks") or {}).items():
@@ -803,7 +864,7 @@ def follow_ups(text, ids):
     return lines
 
 
-def open_findings(text):
+def open_findings(text, ready=True):
     lines = []
     for _, rows in art.tables(art.find_section(text, "Must-fix") or
                               art.find_section(text, "Findings") or ""):
@@ -813,8 +874,9 @@ def open_findings(text):
                 fid = row.get("ID", "").strip()
                 where = row.get("Location", "").strip()
                 what = plain_words(text, fid) or row.get("Finding", "").strip()
-                lines.append(f"  - Still open: {what} ({where}); shipped at the user's "
-                             "call at the PR gate")
+                lines.append(f"  - Still open: {what} ({where}); " + (
+                    "shipped at the user's call at the ready-for-review gate" if ready else
+                    "the user decides at the ready-for-review gate whether it ships"))
     return lines
 
 
@@ -966,7 +1028,8 @@ def publish_body(args, state):
     p6.pop("publish_attempt", None)
     st.add_note(state, f"PR #{pr} description published for {sha}")
     inline = ""
-    if state["settings"].get("inline_comments") and not p6.get("inline"):
+    if state["settings"].get("inline_comments") and not p6.get("inline") and \
+            p6["body"].get("ready"):  # once the ready-for-review gate is answered
         p6["inline"] = post_findings(state, ad, pr, sha)
         inline = describe_inline(p6["inline"])
         st.add_note(state, f"review findings on PR #{pr}: {inline}")
@@ -1044,7 +1107,7 @@ def review_findings(ad, state):
     when the user sent it to a separate PR at the gate."""
     found = []
     code = _read(ad / "CODE_REVIEW.md")
-    for section, label in (("Must-fix", "Must-fix, left open at the PR gate"),
+    for section, label in (("Must-fix", "Must-fix, left open at the ready-for-review gate"),
                            ("Advisory", "Advisory")):
         for _, rows in art.tables(art.find_section(code, section) or ""):
             for row in rows:
@@ -1058,7 +1121,8 @@ def review_findings(ad, state):
             verdict = row.get("Verdict", "").strip().lower()
             if verdict == "must-fix" and row.get("Status", "").strip().lower().startswith(
                     "open"):
-                found.append(finding(sec, row, "Security must-fix, left open at the PR gate"))
+                found.append(finding(sec, row, "Security must-fix, left open at the "
+                                     "ready-for-review gate"))
             elif verdict == "advisory":
                 found.append(finding(sec, row, "Security advisory"))
     found += [finding(sec, row, "Pre-existing security finding, left for a separate PR")
@@ -1117,8 +1181,15 @@ def existing_pr(wt, branch):
     return found[0]["number"] if found else None
 
 
+# A section the pipeline writes only when it applies: refreshed from the new
+# description, and dropped when the new one has none.
+OVERRIDES = "Overrides by the user"
+
+
 def merge_live(live, new):
-    """The live description with the pipeline's sections replaced from `new`."""
+    """The live description with the pipeline's sections replaced from `new`:
+    the strict ones, and the user's overrides (which can come after the draft
+    opened)."""
     if not live.strip():
         return new
     new_sections = split_sections(new)
@@ -1126,16 +1197,19 @@ def merge_live(live, new):
                                                                      "conditions"),
                             re.MULTILINE))
     out = []
+    owned = STRICT + (OVERRIDES,)
     for heading, body in split_sections(live):
         name = heading[3:].strip() if heading else ""
-        if name in STRICT:
+        if name == OVERRIDES and heading not in dict(new_sections):
+            continue
+        if name in owned:
             body = dict(new_sections).get(heading, body)
             if name == "Acceptance conditions":
                 body = keep_ticks(body, ticked)
         out.append((heading, body))
     present = {h for h, _ in out}
     for heading, body in new_sections:
-        if heading and heading[3:].strip() in STRICT and heading not in present:
+        if heading and heading[3:].strip() in owned and heading not in present:
             out.append((heading, body))
     text = "\n".join((f"{h}\n" if h else "") + b for h, b in out)
     # The attribution and the marker close the description, whatever moved.

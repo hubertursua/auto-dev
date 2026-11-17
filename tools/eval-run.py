@@ -42,7 +42,7 @@ in the eval's own AUTO_DEV_PROFILES_DIR. --yml appends more `.auto-dev.yml` keys
 (not `branches`). --no-config pushes nothing and writes no `.auto-dev.yml`, for
 an eval that must run without one (13, 14). The run then cuts its branch from
 the fixture's default branch and would open its PR there, so end it before the
-PR gate (both score S1 only). --workdir defaults to
+first push (both score the Plan stage only). --workdir defaults to
 $TMPDIR/auto-dev-evals; the run's clones live in <workdir>/<run>/e<id>/.
 The fixture is cloned from https://github.com/<repo>.git.
 

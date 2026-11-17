@@ -11,16 +11,18 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA = 4
+SCHEMA = 5  # 5.0: a 4.x run (schema 4) can't resume on it
 STATE_FILE = "state.json"
 LEDGER = "WORK_LOG.md"
 
-PHASES = ((1, "Setup"), (2, "Define"), (3, "Plan"), (4, "Build"), (5, "Verify"),
+PHASES = ((1, "Setup"), (2, "Plan"), (3, "Tests"), (4, "Build"), (5, "Gate"),
           (6, "Ship"))
 PHASE_NAMES = dict(PHASES)
-# Which session holds each phase.
-SESSIONS = {1: "S1", 2: "S1", 3: "S1", 4: "S2", 5: "S2", 6: "S3"}
-SESSION_NAMES = {"S1": "S1 — Plan", "S2": "S2 — Build", "S3": "S3 — Ship"}
+# The run goes straight through in one session. Its phases fall in three
+# stages, each with the runbook the orchestrator reads as the run enters it
+# (references/<stage>.md).
+STAGES = {1: "plan", 2: "plan", 3: "plan", 4: "build", 5: "build", 6: "ship"}
+STAGE_NAMES = {"plan": "Plan", "build": "Build", "ship": "Ship"}
 
 # `held` pauses the run where it is (resuming re-fires the gate that held it, or
 # for Phase 1 a failed setup, which `init --continue` runs again);
@@ -32,7 +34,7 @@ LEDGER_STATUS = {"held": "blocked", "stopped": "blocked"}
 
 
 class StateError(Exception):
-    """state.json is missing, unreadable, or not a 4.x state."""
+    """state.json is missing, unreadable, or not this version's state."""
 
 
 def now():
@@ -49,8 +51,8 @@ def new_state(task, repo, worktree, branch, settings, budget_total):
         "worktree": str(worktree),
         "branch": branch,
         "artifact_dir": str(Path(worktree) / ".auto-dev"),
-        "size": None,          # FITS | OVERSIZED, from the Define agent
-        "high_risk": None,     # True | False, from the Define agent
+        "size": None,          # FITS | OVERSIZED, from the planner
+        "high_risk": None,     # True | False: the planner's tier, raised by the critic or the diff
         "phases": {str(n): {"status": "pending", "notes": ""} for n, _ in PHASES},
         "gates": [],           # {gate, choice, reason, at}
         "notes": [],           # decisions and assumptions, {text, at}
@@ -59,7 +61,7 @@ def new_state(task, repo, worktree, branch, settings, budget_total):
         "init": {"setup": "pending"},
         "phase6": {},
         "events": 0,           # bumped on every write; `seq` stamps order events
-        "session": "S1",       # the session running now; `resume` moves it on
+        "stage": "plan",       # the stage whose runbook the orchestrator has read
     }
 
 
@@ -81,7 +83,7 @@ def load(artifact_dir):
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        raise StateError(f"no {path} — not a 4.x auto-dev run") from None
+        raise StateError(f"no {path} — not an auto-dev run") from None
     except OSError as exc:
         raise StateError(f"cannot read {path}: {exc}") from None
     try:
@@ -90,10 +92,11 @@ def load(artifact_dir):
         raise StateError(f"{path} is not valid JSON: {exc}") from None
     if not isinstance(state, dict):
         raise StateError(f"{path} holds a JSON {type(state).__name__}, not a "
-                         "4.x state object")
+                         "state object")
     if state.get("schema") != SCHEMA:
-        raise StateError(f"{path} has schema {state.get('schema')!r}, "
-                         f"expected {SCHEMA}")
+        raise StateError(f"{path} has schema {state.get('schema')!r}, expected {SCHEMA}"
+                         + (": a run started on auto-dev 4.x, which this version "
+                            "can't resume" if state.get("schema") == 4 else ""))
     return state
 
 
@@ -213,8 +216,8 @@ def render_ledger(state):
         reason = f" — {gate['reason']}" if gate.get("reason") else ""
         lines.append(f"- {gate['at']} gate `{gate['gate']}`: {gate['choice']}{reason}")
     for spend in budget["spends"]:
-        lines.append(f"- {spend['at']} round spent (consumer #{spend['consumer']}, "
-                     f"`{spend['id']}`): {spend.get('what') or 'correction'}")
+        lines.append(f"- {spend['at']} round spent (`{spend['id']}`): "
+                     f"{spend.get('what') or 'correction'}")
     for note in state["notes"]:
         lines.append(f"- {note['at']} {note['text']}")
     return "\n".join(lines) + "\n"

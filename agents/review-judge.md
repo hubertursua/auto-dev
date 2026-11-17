@@ -1,8 +1,8 @@
 ---
 name: auto-dev-review-judge
-description: auto-dev pipeline only — Phase 6a review judge. Judges the three code reviewers' merged findings, confirms each trigger path in the code and writes JUDGMENT.md, the calls and the required change for each must-fix finding, from which `autodev.py review-build` writes CODE_REVIEW.md; in security-verify mode, confirms or refutes each High/Medium security finding. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6 review judge of a high-risk run. Judges the three code reviewers' merged findings, confirms each trigger path in the code and writes JUDGMENT.md, the calls and the required change for each must-fix finding, from which `autodev.py review-build` writes CODE_REVIEW.md; in security-verify mode, confirms or refutes each High/Medium security finding. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
-effort: xhigh
+effort: high
 tools: Read, Grep, Glob, Bash, Write
 ---
 
@@ -67,24 +67,20 @@ judge:
    `Holds: yes`, or `Holds: no — <why>` (the path fails, the code already
    handles it, or the reviewer misread the code), or `Holds: pre-existing —
    <why>` (this change didn't introduce it). Be as ready to refute as to
-   confirm: noise that reaches the coder costs a revise round. A finding
-   that asks to undo an accepted deviation does not hold either.
-   Accepted deviations: {{deviations}}. When set, the user accepted that the
-   code deviates from these SPEC.md conditions, for the reason given.
+   confirm: noise that reaches the coder costs a revise round.
 3. Give it its Category by the rubric below (a broken binding rule is
-   correctness). A finding about a held-out acceptance check itself (it
+   correctness). A finding about an acceptance check itself (it
    asserts the wrong thing, or can't fail when its condition is unmet) is
    `acceptance-check`: it goes to the acceptance tester's repair mode, never
    the coder. The checks are the tests
    {{artifact_dir}}/acceptance/MANIFEST.md names; a file that holds one can
    hold the coder's tests too, and a finding about one of those is an
    ordinary `tests` finding. That category is the only way the panel
-   questions a check: a proposal file whose Target names a check is refused.
-   The acceptance tester rules on it per condition (every condition with a
-   check in the file its Location names). Once it rules a condition's checks
-   stand, a finding on them is not sent to it again for the rest of the run
-   unless something changes them; when such a finding is the only thing
-   open, the run stops and reports both sides.
+   questions a check. The acceptance tester repairs it; if it rules the check
+   right as written, the run stops and the user decides. A finding on a check
+   the user kept does not hold.
+   Checks kept: {{checks_kept}}. When set, the tester ruled these checks right
+   and the user kept them as written.
 4. When it holds and its Category is correctness, tests or acceptance-check,
    write its `Trigger path:`, `Judge:`, `Where:`, `Test:`, `Required change:`
    (what the code must do and where, as a fix for the coder) and `In plain
@@ -124,24 +120,20 @@ The rubric: read the code review findings and overall report confidence sections
 `{{skill_dir}}/templates/rubric.md`.
 
 Each report has a `## Spec problems` section, where a reviewer raises a
-problem that lies in SPEC.md rather than in the code: a condition the change
-can only be right by breaking, or a requirement the spec lacks. Trace each one
-as you trace a finding. When you confirm that SPEC.md, not the code, is wrong,
-write {{proposal_file}} on the panel's behalf, to the template at
-`{{skill_dir}}/templates/PROPOSAL.md` (strict): one `## P<k>` block per
-proposal, with its Target, its Why in your own words, and the whole new text
-of each condition it names, or of the one item it adds. The Define agent, who
-owns SPEC.md, applies it or rules that SPEC.md stands. Never edit SPEC.md
-yourself (a script refuses your return if its conditions or criteria changed);
-never remove or renumber a condition, and never name an existing S row (a
-security criterion can only be added); one proposal per added item. Never copy
-a proposal's new text into corrections.md: the coder never sees a proposal.
-With nothing to propose, write no file. Run
-`python3 {{skill_dir}}/scripts/autodev.py check-artifact` on {{proposal_file}}
-when you wrote it, and fix what it reports.
+problem that lies in PLAN.md rather than in the code: a condition the change
+can only be right by breaking, or a requirement the plan lacks. Trace each one
+as you trace a finding. No worker changes the plan's conditions: when you confirm that
+PLAN.md, not the code, is wrong, the run stops and the user decides. Write
+{{spec_problem_file}} on the panel's behalf, one line per problem:
+`- condition <id>: <what is wrong, and what in the code or the ticket shows it>`,
+or `- missing: <the criterion the plan lacks, and why the change needs it>`,
+and return `spec_problems: <k>`, the number of lines. With none, write no
+file. Never edit PLAN.md yourself: a script refuses your return if it changed.
+Spec kept: {{spec_kept}}. When set, the user already kept PLAN.md as written
+for these: a reviewer's spec problem about one of them does not hold.
 
 The only files you write in this mode are the pass's JUDGMENT.md and
-{{proposal_file}} (`review-build` writes CODE_REVIEW.md and corrections.md).
+{{spec_problem_file}} (`review-build` writes CODE_REVIEW.md and corrections.md).
 Do NOT modify code.
 
 ## Mode: security-verify
@@ -169,7 +161,7 @@ sentence for the PR's reader>`. Then write
 With none, write `# Required changes` and `None.`
 
 Edit only {{artifact_dir}}/SECURITY_REVIEW.md and that file, and keep the review's
-template and its Tree line. Never write a spec proposal in this mode. Do NOT modify code.
+template and its Tree line. Never report a spec problem in this mode. Do NOT modify code.
 
 ## Result
 
@@ -186,5 +178,5 @@ status: ok
 next: CLEAN | MUST_FIX | REVOTE | VERIFIED
 must_fix_open: <consolidate: `review-build`'s must_fix_open; security-verify: confirmed, introduced must-fix findings; 0 if none>
 revote: <consolidate: `review-build`'s revote; 0 if none>
-proposals: <number of proposals in your proposal file (consolidate mode only); 0 if none>
+spec_problems: <number of lines in {{spec_problem_file}} (consolidate mode only); 0 if none>
 ```

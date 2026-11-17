@@ -16,10 +16,9 @@ with `--retry <n>` fills it from the issues `record` saved when it refused job
 
 Each worker ends its reply with an `auto-dev-result` block and writes the same
 keys to returns/<worker>-<n>.json. RESULTS lists the `next` tokens each may
-return; `autodev.py record` checks the return against the artifacts. Every key
-of the block is required, except those in LENIENT_KEYS, which a return may
-leave out (read as none): a key added later, so a worker briefed before it
-existed can still be recorded.
+return (its agent file's block lists exactly these), and MODE_RESULTS narrows
+them for a worker briefed in a mode; `autodev.py record` checks the return
+against the artifacts. Every key of the block is required.
 """
 
 import re
@@ -30,35 +29,34 @@ SLOT_RE = re.compile(r"\{\{([a-z_]+)\}\}")
 MODE_RE = re.compile(r"^## Mode: ([a-z-]+)\s*$", re.MULTILINE)
 
 AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "ticket",
-        "binding_rules", "test_command", "test_notes", "mutation_cap",
+        "binding_rules", "test_command", "test_notes", "mutation_cap", "probes",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
         "symbol_lookup", "pass", "tree", "cut", "run", "pr", "triage_file", "checks_file",
-        "answer_file", "blocked_file", "proposal_file", "fix_report"}
+        "answer_file", "blocked_file", "deviations_file", "spec_problem_file",
+        "fix_report"}
 CALLER = {"repo", "draft_path", "scope", "mode", "reviewer", "findings", "reviewers",
           "report", "blocked", "failing", "question", "corrections_file", "leads",
           "instruction", "stopped"}
-OPTIONAL = {"fix_file", "ambiguous", "direction", "files", "since", "what_changed",
-            "previous_issues", "earlier", "focus", "proposals", "rulings_file",
-            "spec_change", "rulings", "deviations", "answers", "plan_change",
+OPTIONAL = {"review_file", "ambiguous", "direction", "files", "since", "what_changed",
+            "previous_issues", "earlier", "focus", "spec_kept", "checks_kept",
             "review_effort"}
-# fix_file is AUTO for the reviewers, who write it; OPTIONAL for the authors.
-AUTO_FOR = {"fix_file": {"define-reviewer", "plan-reviewer"}}
+# review_file is AUTO for the plan critic, who writes it; OPTIONAL for the
+# planner, who revises from it.
+AUTO_FOR = {"review_file": {"plan-critic"}}
 # tree is AUTO (the tree at spawn time) for the security reviewers; the judge
-# needs the tree the panel reviewed, which only the caller noted.
-CALLER_FOR = {"tree": {"review-judge"}}
+# needs the tree the panel reviewed, and the reviewer the tree its pass
+# started on (review-build reads it from the brief), which only the caller noted.
+CALLER_FOR = {"tree": {"review-judge", "reviewer"}}
 
 RESULTS = {
     "profiler": {"CONFIRM"},
-    "define": {"FITS", "OVERSIZED", "REVISED", "STANDS"},
-    "define-reviewer": {"CLEAN", "BLOCKERS"},
-    "planner": {"WRITTEN", "REVISED", "STANDS", "PLAN_REVISED", "UPDATE_OLD_TEST",
+    "planner": {"FITS", "OVERSIZED", "REVISED", "PLAN_REVISED", "UPDATE_OLD_TEST",
                 "SPEC_IMPOSSIBLE"},
-    "plan-reviewer": {"CLEAN", "BLOCKERS"},
-    "acceptance-tester": {"SEALED", "REPAIRED", "STANDS", "FOLDED"},
+    "plan-critic": {"APPROVE", "REVISE"},
+    "acceptance-tester": {"WRITTEN", "REPAIRED", "STANDS"},
     "coder": {"BUILT", "BLOCKED"},
-    "verifier": {"ALL_MET", "CORRECT", "REPAIR", "INSTALL_CONFLICT",
-                 "MUTATION_LEFT_CHANGES"},
-    "cleanup": {"GREEN", "RED", "ACCEPTANCE_CHECK_FAILS_GATE"},
+    "verifier": {"ALL_MET", "CORRECT", "REPAIR", "MUTATION_LEFT_CHANGES"},
+    "reviewer": {"CLEAN", "MUST_FIX"},
     "code-reviewer": {"REVIEWED", "VOTED"},
     "review-judge": {"CLEAN", "MUST_FIX", "REVOTE", "VERIFIED"},
     "security-reviewer": {"CLEAN", "MUST_FIX"},
@@ -67,11 +65,22 @@ RESULTS = {
     "lookup": {"ANSWERED", "OUT_OF_SCOPE"},
     "fixer": {"FIXED", "NEEDS_CONSENT", "CANNOT_FIX"},
 }
+# The tokens a worker briefed in a mode may return there (its agent file says
+# which mode returns which).
+MODE_RESULTS = {
+    ("planner", "write"): {"FITS", "OVERSIZED"},
+    ("planner", "revise"): {"REVISED"},
+    ("planner", "blocked"): {"PLAN_REVISED", "UPDATE_OLD_TEST", "SPEC_IMPOSSIBLE"},
+    ("acceptance-tester", "write"): {"WRITTEN"},
+    ("acceptance-tester", "repair"): {"REPAIRED", "STANDS"},
+    ("triager", "ci"): {"CODE", "INFRA", "FLAKY", "SECRET", "UNKNOWN"},
+    ("triager", "human"): {"TRIAGED"},
+    ("review-judge", "consolidate"): {"CLEAN", "MUST_FIX", "REVOTE"},
+    ("review-judge", "security-verify"): {"VERIFIED"},
+    ("code-reviewer", "review"): {"REVIEWED"},
+    ("code-reviewer", "re-vote"): {"VOTED"},
+}
 STATUSES = {"ok", "blocked", "failed"}
-# Result keys a return may leave out: `proposals` (the proposals a filer wrote)
-# came in 4.10 (and for the coder in 4.12), and a worker briefed before it
-# never writes it.
-LENIENT_KEYS = {"proposals"}
 
 
 class BriefError(Exception):

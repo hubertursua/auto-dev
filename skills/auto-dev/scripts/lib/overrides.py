@@ -28,7 +28,8 @@ question; it is refused when `next` did not just stop on such a step.
     signoff  The user accepts the result and the run goes on as if the step
              had passed. Only where the stop offers it: never on a red CI run,
              a security criterion, or a mutation that may have left changes. It
-             is named in WORK_LOG.md, the PR gate's summary and the PR body.
+             is named in WORK_LOG.md, the ready-for-review gate's summary and the
+             PR body.
     talk     Records nothing: talk the stop through with the user, then run
              `next`, which asks the question again.
     leave    The run stays stopped: `next` reports the stop without the
@@ -53,7 +54,7 @@ CHOICES = ("fix", "approve", "retry", "signoff", "talk", "leave")
 # The artifacts a fixer may change with the user's consent, besides repo
 # files: compared before and after it runs, and put back when it changes
 # nothing on purpose (NEEDS_CONSENT, CANNOT_FIX) or fails.
-WATCHED = ("SPEC.md", "IMPLEMENTATION.md", "acceptance")
+WATCHED = ("PLAN.md", "acceptance")
 FIX_DIR = "override"
 
 
@@ -173,14 +174,20 @@ def apply_retry(state, retry, seq):
     p6 = state.setdefault("phase6", {})
     for key in retry.get("clear") or []:
         p6.pop(key, None)
+    if retry.get("revote") is not None:
+        p6.get("votes", {}).pop(str(retry["revote"]), None)
     if retry.get("reopen"):
         for corr in p6.get("corrections") or []:
             if corr.get("spend_id") == retry["reopen"] and corr.get("closed"):
                 corr["aside"] = seq
     if retry.get("lift"):
         lift(state, seq)
+    if retry.get("gate"):  # the quality gate runs again, whatever it found before
+        for run in state.get("gate_runs") or []:
+            run.setdefault("aside", seq)
+        state.pop("gate_asked", None)
     if retry.get("oversized"):
-        reopen_define(state)
+        reopen_plan(state)
 
 
 def lift(state, seq):
@@ -191,9 +198,9 @@ def lift(state, seq):
     state["lifted_seq"] = seq
 
 
-def reopen_define(state):
-    """An OVERSIZED run goes back to Phase 2: Define runs again (retry), or the
-    run goes on as FITS (sign-off, or a fix that narrowed SPEC.md)."""
+def reopen_plan(state):
+    """An OVERSIZED run goes back to Phase 2: the planner runs again (retry), or
+    the run goes on as FITS (sign-off, or a fix that narrowed PLAN.md)."""
     st.set_phase(state, 2, "in-progress", "")
     for number in (3, 4, 5, 6):
         st.set_phase(state, number, "pending", "")
@@ -202,8 +209,10 @@ def reopen_define(state):
 
 def apply_signoff(state, signoff, seq):
     set_aside(state, signoff.get("aside"), seq)
-    rewrite = signoff.get("rewrite")
-    if rewrite:
+    rewrites = list(signoff.get("rewrites") or [])
+    if signoff.get("rewrite"):
+        rewrites.append(signoff["rewrite"])
+    for rewrite in rewrites:
         entry = log_entry(state, rewrite[:2])
         if entry is not None:
             entry["signed_off"] = {"from": entry.get("next"), "seq": seq}
@@ -213,9 +222,12 @@ def apply_signoff(state, signoff, seq):
     if signoff.get("drop"):
         state.setdefault("phase6", {}).setdefault("signed_off", []).append(signoff["drop"])
     if signoff.get("fits"):
-        reopen_define(state)
+        reopen_plan(state)
         state["size"] = "FITS"
-        if state.get("high_risk"):
+        plan = log_entry(state, signoff["rewrite"][:2]) if signoff.get("rewrite") else None
+        if state.get("high_risk") or (plan and str(
+                plan.get("data", {}).get("risk", "")).strip().lower() == "high"):
+            state["high_risk"] = True  # the plan's own tier: an OVERSIZED plan set none
             state["settings"]["post_plan_gate"] = True
 
 
@@ -242,8 +254,6 @@ def digests(ad):
         files = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else (
             [path] if path.is_file() else [])
         for f in files:
-            if f.name.endswith(".installed"):
-                continue  # the pipeline's own snapshot of a shared check file
             out[f.relative_to(ad).as_posix()] = hashlib.sha256(f.read_bytes()).hexdigest()
     return out
 
@@ -286,8 +296,8 @@ def put_back_artifacts(ad, n, paths):
 # ---------------------------------------------------------------- reports
 
 def summary_lines(state):
-    """One line per sign-off and per fix made at a stop, for the PR gate's
-    summary, the PR body and the final report."""
+    """One line per sign-off and per fix made at a stop, for the gate
+    summaries, the PR body and the final report."""
     out = []
     for o in state.get("overrides") or []:
         what = o["stop"].get("rule") or "a stop"

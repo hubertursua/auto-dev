@@ -15,7 +15,7 @@ class ArtifactError(Exception):
 
 
 SEPARATOR_RE = re.compile(r"^\|?[\s:|-]+\|?$")
-# `1.` and `S1.` items under SPEC.md's Conditions / Security sections.
+# `1.` and `S1.` items under PLAN.md's Conditions / Security sections.
 SPEC_ITEM_RE = re.compile(r"^(S?\d+)\.\s+(.*)$")
 SUB_LINE_RE = re.compile(r"^\s+-\s+(Example|Edge|Verify by):\s*(.*)$", re.IGNORECASE)
 LEVELS = ("unit", "integration", "end-to-end")
@@ -124,7 +124,7 @@ def first_table(body, needed, where):
 
 
 def spec_conditions(path):
-    """SPEC.md's conditions and criteria: [{id, text, example, edge, verify}]."""
+    """PLAN.md's conditions and criteria: [{id, text, example, edge, verify}]."""
     text = read(path)
     items = []
     for name in ("Conditions", "Security/Compliance criteria"):
@@ -149,157 +149,6 @@ def spec_conditions(path):
     if not items:
         raise ArtifactError(f"{path}: no numbered conditions under `## Conditions`")
     return items
-
-
-def _collapse(parts):
-    return " ".join(" ".join(parts).split())
-
-
-def numbered_items(body):
-    """The numbered items (`1.`, `S1.`) in `body`, each whole: [{id, lines,
-    statement, example, edge, verify, words}], in order.
-
-    An item runs from its numbered line over every following line that is
-    blank or indented; the first other line ends it, so prose after the last
-    item is not part of it. `statement` is the numbered line and its
-    continuation lines before the first `- Example:/Edge:/Verify by:` sub-line;
-    each sub-line's text takes its own continuation lines. `words` is the whole
-    item with every whitespace run collapsed, so re-wrapping or re-indenting it
-    changes nothing. A repeated id is an ArtifactError."""
-    items, current, field = [], None, None
-    for line in (body or "").splitlines():
-        match = SPEC_ITEM_RE.match(line)
-        if match:
-            if any(i["id"] == match.group(1) for i in items):
-                raise ArtifactError(f"item {match.group(1)} is numbered twice")
-            current = {"id": match.group(1), "lines": [line],
-                       "_parts": {"statement": [match.group(2)], "example": [],
-                                  "edge": [], "verify": []}}
-            items.append(current)
-            field = "statement"
-            continue
-        if current is None:
-            continue
-        if line.strip() and not line[:1].isspace():
-            current, field = None, None
-            continue
-        current["lines"].append(line)
-        sub = SUB_LINE_RE.match(line)
-        if sub:
-            field = {"example": "example", "edge": "edge",
-                     "verify by": "verify"}[sub.group(1).lower()]
-            current["_parts"][field].append(sub.group(2))
-        elif line.strip():
-            current["_parts"][field].append(line)
-    for item in items:
-        parts = item.pop("_parts")
-        for key, value in parts.items():
-            item[key] = _collapse(value)
-        item["words"] = _collapse(item["lines"])
-    return items
-
-
-def spec_items(text, where="SPEC.md"):
-    """{id: item} for SPEC.md's conditions, then its Security/Compliance
-    criteria, each item whole (numbered_items), in file order."""
-    found = {}
-    for name in ("Conditions", "Security/Compliance criteria"):
-        body = find_section(text, name)
-        if body is None:
-            if name == "Conditions":
-                raise ArtifactError(f"{where}: no `## Conditions` section")
-            continue
-        try:
-            items = numbered_items(body)
-        except ArtifactError as exc:
-            raise ArtifactError(f"{where}: {exc}") from None
-        for item in items:
-            if item["id"] in found:
-                raise ArtifactError(f"{where}: item {item['id']} is numbered twice")
-            found[item["id"]] = item
-    if not found or not any(not i.startswith("S") for i in found):
-        raise ArtifactError(f"{where}: no numbered conditions under `## Conditions`")
-    return found
-
-
-def plan_steps(text, where="IMPLEMENTATION.md"):
-    """{number: step} for IMPLEMENTATION.md's `## Build sequence`, each step
-    whole (numbered_items: `words` ignores spacing), in file order. A missing
-    section, no numbered step, or a number used twice is an ArtifactError."""
-    body = find_section(text or "", "Build sequence")
-    if body is None:
-        raise ArtifactError(f"{where}: no `## Build sequence` section")
-    try:
-        items = numbered_items(body)
-    except ArtifactError as exc:
-        raise ArtifactError(f"{where}: build sequence {exc}") from None
-    steps = {i["id"]: i for i in items if i["id"].isdigit()}
-    if not steps:
-        raise ArtifactError(f"{where}: no numbered step under `## Build sequence`")
-    return steps
-
-
-BLOCK_RE = re.compile(r"^## (P\d+)\b.*$", re.MULTILINE)
-FIELD_RE = re.compile(r"^- (Target|Why|Comment|From|New text|Answer|Reason):\s*(.*)$",
-                      re.IGNORECASE)
-
-
-def _blocks(text):
-    """[(pid, body)] for each `## P<k>` block."""
-    parts = BLOCK_RE.split(text or "")
-    return [(parts[i], parts[i + 1]) for i in range(1, len(parts), 2)]
-
-
-def _fields(body):
-    """({field: text}, the lines after `- New text:`) for one block."""
-    fields, rest, field = {}, None, None
-    for line in body.splitlines():
-        if rest is not None:
-            rest.append(line)
-            continue
-        match = FIELD_RE.match(line)
-        if match:
-            field = match.group(1).lower()
-            if field == "new text":
-                rest = [match.group(2)] if match.group(2).strip() else []
-                continue
-            fields[field] = [match.group(2)]
-        elif field and line[:1].isspace() and line.strip():
-            fields[field].append(line)
-        elif line.strip():
-            field = None
-    return {k: _collapse(v) for k, v in fields.items()}, rest
-
-
-def proposal_blocks(text):
-    """A proposal file's `## P<k>` blocks: [{pid, target, why, comment, from,
-    items, new_text}]. `items` are the numbered items under `- New text:`
-    (numbered_items); a missing field is ""."""
-    found = []
-    for pid, body in _blocks(text):
-        fields, rest = _fields(body)
-        new_text = "\n".join(rest or []).strip("\n")
-        found.append({"pid": pid, "target": fields.get("target", ""),
-                      "why": fields.get("why", ""), "comment": fields.get("comment", ""),
-                      "from": fields.get("from", ""),
-                      "items": numbered_items(new_text) if rest is not None else [],
-                      "new_text": new_text})
-    return found
-
-
-def rulings(text):
-    """A rulings file's answers: {pid: {answer, reason}}. `answer` is the first
-    word of `- Answer:`, lowercased; `reason` is "" when absent or `none`."""
-    found = {}
-    for pid, body in _blocks(text):
-        fields, _ = _fields(body)
-        words = fields.get("answer", "").replace("`", "").split()
-        reason = fields.get("reason", "")
-        if reason.strip("`*_. ").lower() == "none":
-            reason = ""
-        found[pid] = {"answer": words[0].strip("*_.,;").lower() if words else "",
-                      "reason": reason}
-    return found
 
 
 LEVEL_RE = re.compile(r"\b(end-to-end|e2e|integration|unit)", re.IGNORECASE)
@@ -399,8 +248,9 @@ def header_line(text, prefix):
     return ""
 
 
-# IMPLEMENTATION.md's `Review effort:` line: the effort the planner recommends for
-# the Phase 6 code reviewers. A plan without one (written before 4.3) means high.
+# PLAN.md's `Review effort:` line: the effort the planner recommends for
+# the Phase 6 code reviewers (`record` requires it on a FITS plan; anything
+# else read there, after a fix at a stop say, means high).
 REVIEW_EFFORTS = ("high", "xhigh")
 DEFAULT_REVIEW_EFFORT = "high"
 REVIEW_EFFORT_RE = re.compile(r"^[-*_\s]*review effort[*_\s]*:[*_\s]*([^\s—–]*)",
@@ -415,3 +265,67 @@ def review_effort(text):
         if m:
             return m.group(1).strip("*_`.,;").lower()
     return None
+
+
+# PLAN.md's and a plan review's `Risk:` line: the tier the planner proposes and
+# the critic confirms or raises.
+RISKS = ("standard", "high")
+RISK_RE = re.compile(r"^[-*_\s]*risk[*_\s]*:[*_\s]*([^\s—–]*)", re.IGNORECASE)
+VERDICT_RE = re.compile(r"^[-*_\s]*verdict[*_\s]*:[*_\s]*([^\s—–]*)", re.IGNORECASE)
+BLOCKER_RE = re.compile(r"^###\s+(B\d+)\.?\s*(.*)$")
+
+
+def first_word(text, pattern):
+    """The first word after a `Key:` line `pattern` matches, lowercased, or None."""
+    for line in text.splitlines():
+        m = pattern.match(line)
+        if m:
+            return m.group(1).strip("*_`.,;").lower()
+    return None
+
+
+def risk(text):
+    """The first word of a `Risk:` line, lowercased, or None when there is none.
+    The caller checks it is one of RISKS."""
+    return first_word(text, RISK_RE)
+
+
+def plan_review(path):
+    """A plan review: {verdict, risk, blockers: [{id, text, evidence, change}],
+    problems}. `problems` lists what doesn't follow the template."""
+    text = read(path)
+    verdict = (first_word(text, VERDICT_RE) or "").upper()
+    tier = risk(text)
+    problems = []
+    if verdict not in ("APPROVE", "REVISE"):
+        problems.append(f"`Verdict:` must be APPROVE or REVISE (found: {verdict or 'nothing'})")
+    if tier not in RISKS:
+        problems.append(f"`Risk:` must be {' or '.join(RISKS)} (found: {tier or 'nothing'})")
+    body = find_section(text, "Blockers")
+    if body is None:
+        problems.append("no `## Blockers` section")
+        body = ""
+    if find_section(text, "Notes") is None:
+        problems.append("no `## Notes` section")
+    blockers, current = [], None
+    for line in body.splitlines():
+        m = BLOCKER_RE.match(line.strip())
+        if m:
+            current = {"id": m.group(1), "text": m.group(2).strip(), "evidence": "",
+                       "change": ""}
+            blockers.append(current)
+            continue
+        sub = re.match(r"^\s*[-*]\s*(Evidence|Change)\s*:\s*(.*)$", line, re.IGNORECASE)
+        if sub and current is not None:
+            current[sub.group(1).lower()] = sub.group(2).strip()
+    for b in blockers:
+        problems += [f"blocker {b['id']} has no `{key.title()}:` line"
+                     for key in ("evidence", "change") if not b[key]]
+    if len(blockers) > 7:
+        problems.append(f"{len(blockers)} blockers: at most 7 (more means the plan should "
+                        "be redone; say so as one blocker)")
+    if verdict == "APPROVE" and blockers:
+        problems.append(f"verdict APPROVE but {len(blockers)} blocker(s) listed")
+    if verdict == "REVISE" and not blockers:
+        problems.append("verdict REVISE but no `### B<n>.` blocker listed")
+    return {"verdict": verdict, "risk": tier, "blockers": blockers, "problems": problems}

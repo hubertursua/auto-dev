@@ -18,7 +18,7 @@ any clone or worktree of the same repo find it.
   the right package.
 - **Repo-local override — `.auto-dev.yml`** — every key a project can override.
 
-How a run finds, researches and confirms the profile is `references/S1-plan.md`,
+How a run finds, researches and confirms the profile is `references/plan.md`,
 step 4. `autodev.py init` then validates it, applies `.auto-dev.yml` over it,
 refuses a quality gate with no test command, and writes `.auto-dev/profile.md`.
 
@@ -39,7 +39,7 @@ stack: typescript             # the stack's name, recorded in profile.md
 # creation. Run in order; stop on first failure and report.
 setup:
   - "npm ci"
-# The quality gate: the ordered checks that must all be green in Phase 5.
+# The quality gate: the ordered checks that must all be green before the push (Phase 5).
 # Each check maps to a lint/<report>.md artifact.
 # kind is advisory (compile|format|lint|typecheck|test|build); `command` is
 # what actually runs; `report` is the .auto-dev/lint/ filename; optional
@@ -85,7 +85,7 @@ Fields:
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
   before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.
-- **`test_notes`** (optional) — hints passed into the coding/cleanup briefs so
+- **`test_notes`** (optional) — hints passed into the coder's and the verifier's briefs so
   tests run at the right scope.
 - **`symbol_lookup`** (optional) — commands the `lookup` worker uses instead
   of grep to find where a module, function or class is defined (`definition`) and
@@ -224,7 +224,7 @@ Guidance to show (adapt the paths):
 > the CI and PR lookups (`gh api` can also write, so allow it only if you
 > accept that); the Jira tools, if a ticket is used
 > (`mcp__<server>__getJiraIssue` and the transition tools); and
-> `Skill(simplify)`, `Skill(code-review)` and `Skill(security-review)`.
+> `Skill(code-review)` and `Skill(security-review)`.
 
 The commands in the last snippet are an example in TypeScript; list this run's
 `setup` and `gate` commands there. Rules in `.claude/settings.json` or
@@ -237,7 +237,7 @@ the worktree you made when the run started in it.
 - **Workspaces** (example in TypeScript: `workspaces` in the root
   `package.json`, or `pnpm-workspace.yaml`): run the `gate` in the package the
   task touches (`npm test -w <package>`). Record the layout in `profile.md` and
-  pass it as a test note so the coder/cleanup run the right package's suite. The
+  pass it as a test note so the coder and the verifier run the right package's suite. The
   profiler describes the repo's layout in the profile's `test_notes`; which
   package a task touches is the run's call, so it goes in `profile.md`, never in
   the saved profile.
@@ -245,8 +245,8 @@ the worktree you made when the run started in it.
   package the task actually touches. Detect the sub-package from the task/ticket
   and the files in play, and use that package's own `gate`; record with
   `autodev.py note` that the other packages were out of scope.
-  If the task genuinely spans packages, that's a sign it is OVERSIZED (the Define
-  agent's size check).
+  If the task genuinely spans packages, that's a sign it is OVERSIZED (the planner's
+  size check).
 - When scoping is ambiguous, surface it rather than guess.
 
 ## Repo-local override — `.auto-dev.yml`
@@ -278,9 +278,10 @@ security_docs:                # the security directives every worker must obey, 
   - "SECURITY.md"             # instead of the repo defaults; [] turns them off, and
   - "docs/security/authz.md"  # a listed path that doesn't exist is dropped with a warning
 pr_review:
-  inline_comments: false      # when the PR opens, post the review findings left open or advisory on it
+  inline_comments: false      # once the reviews finish, post the findings left open or advisory on the PR
 gates:
-  post_plan: true             # force the Phase 3 post-plan gate on for this repo
+  post_plan: true             # force the post-plan gate (end of Phase 2) on for this repo
+  open_pr: false              # ask before the first push (default off: the draft PR opens before review)
 mutation:
   max: 20                     # mutants kept across the verifier's passes (0 = off; at most 50)
 jira:
@@ -294,7 +295,7 @@ Resolution order (last wins): **saved or researched profile → `.auto-dev.yml`*
 The fully-resolved values are written to `.auto-dev/profile.md`.
 
 `iteration_budget`, `ci_timeout_minutes`, `checkpoint_events`, `security_docs`,
-`pr_review`, `gates.post_plan` and `mutation.max` are not stack settings, but they resolve the
+`pr_review`, `gates.post_plan`, `gates.open_pr` and `mutation.max` are not stack settings, but they resolve the
 same way and land in the same `profile.md`: the budget is in
 `references/tables.md`; the verifier reads the mutation cap. Turn mutation off
 only for a repo whose suite cannot run a scoped subset in seconds: each mutant

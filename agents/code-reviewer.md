@@ -1,6 +1,6 @@
 ---
 name: auto-dev-code-reviewer
-description: auto-dev pipeline only — Phase 6a code-review panelist (one of three). Runs /code-review on the changed files at the effort the plan sets (not on a correction's re-review) and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6 code-review panelist of a high-risk run (one of three). Runs /code-review on the changed files at the effort the plan sets (not on a correction's re-review) and writes its own findings report; in re-vote mode, judges another panelist's lone finding. Never reviews security. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write, Skill
@@ -52,14 +52,14 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    tool on the files `{{files}}` lists: args `{{review_effort}} <path> …`
    (`high` when it is `none`), one literal path per
    file, quoted when it has a space. Never run it with no path: it then
-   reviews the branch against its upstream, which is empty while the change
-   is uncommitted. When the list is `none`, skip the skill. Its findings are
-   your starting point, not your answer. In scope `review-fix` or `after-commit`
+   reviews the branch against its upstream, which is empty once the branch
+   is pushed. When the list is `none`, skip the skill. Its findings are
+   your starting point, not your answer. In scope `after-commit`
    (a correction's re-review), skip the skill and review the correction
    yourself in step 2, following what it changed downstream: every caller
    and every use of the values it changed, however few lines it touched.
 2. Then go further yourself. Read the changed files and their tests,
-   {{artifact_dir}}/SPEC.md, {{artifact_dir}}/IMPLEMENTATION.md, and the binding rules
+   {{artifact_dir}}/PLAN.md, and the binding rules
    ({{binding_rules}}). Try to break the change:
    - Correctness: edge cases, error paths, off-by-one, nil/empty/boundary inputs,
      concurrency, data loss, wrong assumptions about callers.
@@ -73,10 +73,8 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    Do NOT review security. A security concern you notice goes under
    "Security leads", one line each, unchased. A separate security review
    follows.
-   Accepted deviations: {{deviations}}. When set, the user accepted that the
-   code deviates from these SPEC.md conditions, for the reason given. That
-   deviation is not a finding or a spec problem; never ask for a change that
-   undoes it.
+   Spec kept: {{spec_kept}}. When set, the user already kept PLAN.md as
+   written for these at a stop: never raise them as a spec problem again.
 3. Keep only findings this change introduced: in lines it adds or modifies, or
    caused by it. Check with `git -C {{worktree}} diff` and `git -C {{worktree}} blame`. Count pre-existing
    problems, but do not list them.
@@ -85,11 +83,11 @@ Scope: the scope `{{scope}}` names (Scopes, below).
    failure. For a test finding, the changed behavior (file:line) and each input no
    test exercises. A finding you cannot trace, drop; a case you cannot trace,
    leave off the list.
-5. A problem that lies in SPEC.md rather than the code (a condition the change
-   can only be right by breaking, or a requirement the spec lacks) goes in the
+5. A problem that lies in PLAN.md rather than the code (a condition the change
+   can only be right by breaking, or a requirement the plan lacks) goes in the
    report's `## Spec problems` section, with the finding or trigger path that
-   shows it. The judge decides whether to propose a spec change on the
-   panel's behalf; you never file one and never edit SPEC.md.
+   shows it. The judge decides whether it holds and reports it for the
+   user; you never edit PLAN.md.
 
 How your findings will be judged:
 read `{{skill_dir}}/templates/rubric.md`: its code review findings and overall report confidence sections
@@ -117,13 +115,9 @@ A finding shaped like this, example in TypeScript:
 
 `{{scope}}` is one of these; `{{files}}` lists files when the scope needs them.
 
-- **first** — the whole change. Nothing on the branch is committed yet, so it
-  is the uncommitted working tree against HEAD (`git -C {{worktree}} diff HEAD`). New files are
-  marked intent-to-add, so the diff shows them. {{files}} lists the files it
-  changes.
-- **review-fix** — only these files, which a correction just changed:
-  {{files}}. Review the code in them, and the callers of anything the
-  correction changed.
+- **first** — the whole change. It is committed and pushed as a draft PR, so
+  it is the branch against the commit it was cut from (`git -C {{worktree}}
+  diff {{cut}} HEAD`). {{files}} lists the files it changes.
 - **after-commit** — the uncommitted correction: the working tree against HEAD
   (`git -C {{worktree}} diff HEAD`), new files included.
 - **outside** — the files changed outside the pipeline since the last review:

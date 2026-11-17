@@ -59,6 +59,10 @@ Find, from the repo itself:
    manifest's scripts), pre-commit config and CONTRIBUTING/README. Prefer an
    aggregate the repo already defines and add the checks it omits. Use check
    modes, never fix modes: a formatter that rewrites files is not a check.
+   A check that walks the filesystem must leave out the run's scratch
+   directory, `.auto-dev/` (git ignores it, nothing in it ships): when the
+   tool doesn't skip git-ignored files, add its exclude option to the
+   command, or the gate fails on pipeline files.
    Include a check only if the repo adopted its tool (a declared dependency or
    a config file); list the rest under NOT ADOPTED. There must be at least one
    `kind: test` check; if you find no way to run the tests, say so under

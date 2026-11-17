@@ -1,6 +1,6 @@
 ---
 name: auto-dev-fixer
-description: auto-dev pipeline only — fixer, spawned when the run stopped and the user said how to fix it. Carries out the user's instruction and nothing more, in the code, the tests, the run's SPEC.md, plan or acceptance checks, as the instruction says; returns a proposal instead of acting when the fix needs more than the instruction allows. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — fixer, spawned when the run stopped and the user said how to fix it. Carries out the user's instruction and nothing more, in the code, the tests, the run's PLAN.md or acceptance checks, as the instruction says; returns a proposal instead of acting when the fix needs more than the instruction allows. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
@@ -62,7 +62,7 @@ The user's instruction:
    change the fix needs is one the instruction asks for, or follows directly
    from it (a test the changed code needs, an import, a renamed call site). It
    does not when the fix would also change something the instruction does not
-   mention: another module, a requirement in SPEC.md, a held-out check, a
+   mention: another module, a requirement in PLAN.md, an acceptance check, a
    dependency, the repo's tooling or CI.
    - If it does not, change nothing: write the extra changes the fix needs in
      your report's Proposal section, plainly enough for the user to approve as
@@ -81,39 +81,30 @@ The user's instruction:
      when the stop was about them:
      {{gate_commands}}
      Never type the test command yourself.
-   - **SPEC.md or IMPLEMENTATION.md** (`{{artifact_dir}}/SPEC.md`,
-     `{{artifact_dir}}/IMPLEMENTATION.md`), when the instruction says to change
-     a requirement or a plan step. Keep each file's sections and numbering;
+   - **PLAN.md** (`{{artifact_dir}}/PLAN.md`), when the instruction says to
+     change a requirement or a plan step. Keep its sections and numbering;
      change only what the instruction names. The pipeline re-checks the code
      against the changed contract.
-   - **A held-out acceptance check**, when the instruction says to change one.
-     Change only the lines the instruction is about. Never edit, copy over or
-     delete a file under `{{artifact_dir}}/acceptance/` yourself: the
-     pipeline's command does that, and names what it changed.
-     - If `{{artifact_dir}}/acceptance/INSTALLED` exists, the checks are
-       installed in the worktree: edit the test file at its installed path.
-       `record` seals it again from your edit; don't list its `.sealed` or
-       `.base` in your report.
-     - If the checks are not installed, write the check file as it should be
-       sealed to `{{artifact_dir}}/tmp/<file name>`, starting from a copy of
-       `{{artifact_dir}}/acceptance/files/<path>.sealed`, then run
-       `python3 {{skill_dir}}/scripts/autodev.py amend-checks --dir {{artifact_dir}} --sealed <path> --from {{artifact_dir}}/tmp/<file name>`.
-       A sealed copy may only add lines to the file in the worktree, so a
-       change to a line that file already has goes in the worktree's file.
-     - The rest goes through the same command, `amend-checks`, with one
-       option per change (they can go in one call):
+   - **An acceptance check**, when the instruction says to change one.
+     Change only the lines the instruction is about, in the test file at its
+     path in the worktree. Once your fix is recorded, the pipeline commits the
+     changed check files as a new tests commit, which `check-tests.py` then
+     guards. Never edit, copy over or delete a file under
+     `{{artifact_dir}}/acceptance/` yourself: the pipeline's command does that,
+     and names what it changed.
+     - The rest goes through one command, `python3 {{skill_dir}}/scripts/autodev.py
+       amend-checks --dir {{artifact_dir}}`, with one option per change (they
+       can go in one call):
        - `--drop "<path> :: <test name>"` removes a check's rows from
-         `MANIFEST.md`, once you took its test out of the file as above. A
-         check file left with no rows goes too, when the checks added it.
+         `MANIFEST.md`, once you took its test out of the file. A check file
+         left with no rows goes too, when the checks added it.
        - `--row "<the whole table row>"` adds a row to the checks table, as
          many cells as its header. A rename is a `--drop` and a `--row`.
        - `--not-automatable "<row>"` adds a Not automatable row, for a
-         condition the instruction leaves with no check but keeps in SPEC.md.
-       - `--add <path>`, once installed, seals a new check file you wrote in
-         the worktree.
+         condition the instruction leaves with no check but keeps in PLAN.md.
      Name each path the command prints on a `changed:` line in your report.
      When a condition loses its last check, the instruction decides: remove
-     the condition from SPEC.md if it says so, else add a Not automatable row
+     the condition from PLAN.md if it says so, else add a Not automatable row
      if it says so, else return `NEEDS_CONSENT`.
 4. Write your report to {{fix_report}}, filling in
    `{{skill_dir}}/templates/FIX_REPORT.md`. For `FIXED`, its Changed section

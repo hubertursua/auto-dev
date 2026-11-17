@@ -177,10 +177,9 @@ def check_paths():
 
 
 # Templates a script reads by name (scripts/lib/artifacts.py and cmd_*.py).
-PARSED_TEMPLATES = ("SPEC.md", "IMPLEMENTATION.md", "MANIFEST.md", "SPEC_EVAL.md",
+PARSED_TEMPLATES = ("PLAN.md", "PLAN_REVIEW.md", "MANIFEST.md", "SPEC_EVAL.md",
                     "R.md", "VOTES.md", "CODE_REVIEW.md", "SECURITY_REVIEW.md", "lint.md",
-                    "corrections.md", "fix.md", "pr-body.md", "rubric.md", "PROPOSAL.md",
-                    "RULINGS.md", "CODER_PROPOSAL.md")
+                    "corrections.md", "pr-body.md", "rubric.md")
 TEMPLATE_REF = re.compile(r"templates/([\w.-]+\.md)")
 NEXT_LINE = re.compile(r"^next: (.+)$", re.MULTILINE)
 

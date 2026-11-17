@@ -12,9 +12,8 @@ description: >-
   feature-development help for hands-off work. Unless asked to auto-dev it, do
   NOT use for one slice of the work: fixing one test/lint/type error, critiquing
   a plan, explaining code, or answering a question (about auto-dev too). Also
-  use to RESUME a run in flight — "auto-dev continue", "pick up where the plan
-  session left off" — since the pipeline stops between its plan, build and ship
-  sessions.
+  use to RESUME a run in flight — "auto-dev continue", "pick up where the last
+  session left off" — since a long run checkpoints into a fresh session.
 ---
 
 # auto-dev
@@ -28,18 +27,35 @@ comes next yourself.
 The pipeline:
 
 ```
-Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (S1 Plan)
-Phase 2  Define  → SPEC.md, the testable contract, and the size check          (S1 Plan)
-Phase 3  Plan    → IMPLEMENTATION.md, then sealed acceptance checks             (S1 Plan)
-Phase 4  Build   → the coder builds from the plan                               (S2 Build)
-Phase 5  Verify  → cleanup and the quality gate, then the verifier runs checks (S2 Build)
-Phase 6  Ship    → reviews, PR gate, commit, PR, CI, main gate, merge  (S3 Ship)
+Phase 1  Setup   → find or research the repo's profile, create (or adopt) the worktree   (Plan)
+Phase 2  Plan    → PLAN.md (conditions, size, risk, steps), checked by a critic;
+                   then the post-plan gate if it's on                            (Plan)
+Phase 3  Tests   → acceptance checks for the approved plan, committed first      (Plan)
+Phase 4  Build   → the coder builds from the plan and runs the quality gate     (Build)
+Phase 5  Gate    → you run `autodev.py quality-gate` (no worker); risk re-check  (Build)
+Phase 6  Ship    → draft PR; the verifier and the review, alongside CI;
+                   one correction for what is open and red CI; ready gate,
+                   main gate, merge                                             (Ship)
 ```
 
-It runs in three sessions: **S1 Plan**, **S2 Build**, **S3 Ship**. Each ends
-by writing `.auto-dev/HANDOFF.md` and stopping; the user starts a fresh session
-and says `auto-dev continue`. Every session runs on whatever model the user
-picked. Never ask them to switch.
+It runs straight through in one session, in three stages: **Plan**, **Build**,
+**Ship**. As the run enters a stage, `next` tells you to read that stage's
+runbook (`references/<stage>.md`). A session ends only at a checkpoint: once it
+has done enough work that a fresh session is cheaper, `next` writes
+`.auto-dev/HANDOFF.md` (exit 6), and the user starts a fresh session and says
+`auto-dev continue`. If the user asks to stop mid-run, run `autodev.py handoff`
+and give them its message. Every session runs on whatever model the user picked.
+Never ask them to switch.
+
+One planner writes `PLAN.md`, and a fresh plan critic checks it against the
+ticket and the code. With blockers, the planner revises once and the critic
+re-checks only the revision; blockers still open go to the user at the
+post-plan gate. The planner proposes the risk tier, the critic can raise it,
+and `next` re-checks it from the diff once the quality gate is green, before
+anything is pushed; it never goes down. A standard-risk run gets one verifier
+and one reviewer (code and security); a high-risk run adds the review panel
+with its judge, the separate security reviewer, mutation and the verifier's
+own probes.
 
 ## Paths
 
@@ -75,11 +91,11 @@ repo. Below, `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 | Prints | Do |
 |---|---|
-| `FRESH` | a new run: follow `references/S1-plan.md` from step 1 |
-| `RESUME <tree>` | read the runbook for the session it names (`S1-plan.md`, `S2-build.md` or `S3-ship.md`). IF it also printed an `action:` line (setup is not done), run that `init --continue` command first, as `S1-plan.md` says. Then go to **The loop** |
-| `ASK` | show the user the `candidates` lines and ask which run is theirs, or whether to start fresh. Then run `resume` again with `--task` set to the chosen run's task, or follow `S1-plan.md` for a fresh one |
+| `FRESH` | a new run: follow `references/plan.md` from step 1 |
+| `RESUME <tree>` | read the runbook its `runbook:` line names (`references/plan.md`, `build.md` or `ship.md`). IF it also printed an `action:` line (setup is not done), run that `init --continue` command first, as `plan.md` says. Then go to **The loop** |
+| `ASK` | show the user the `candidates` lines and ask which run is theirs, or whether to start fresh. Then run `resume` again with `--task` set to the chosen run's task, or follow `plan.md` for a fresh one |
 | `FINISHED <tree>` | tell the user that run already finished or was stopped; ask whether to start a fresh one |
-| `OLD-VERSION <tree>` | tell the user: "This run was started on auto-dev 3.x. Finish it on auto-dev 3.9, or remove its worktree (`git worktree remove <tree>`) and start again." Then stop |
+| `OLD-VERSION <tree>` | tell the user: "This run was started on an older auto-dev (its `action` line names the version, 3.x or 4.x, and the release to finish it on). Finish it there, or remove its worktree (`git worktree remove <tree>`) and start again." Then stop |
 
 Being given a task always means that task: `resume` never continues a run
 that doesn't match it. No task and nothing to continue means `ASK`: ask the
@@ -104,7 +120,7 @@ Its exit code says what kind of step it is:
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed. With a `QUESTION`, the user decides how to go on (_A stop_, below); without one, stop. Do nothing more (one exception: more rounds after a budget stop, below) |
 | 5 | ask the user | Show the `SUMMARY` lines, then call AskUserQuestion with the `QUESTION` JSON as given, unless `ACTION` says to read the ticket first: then follow it, and ask only when it says to. Run the `AFTER` line whose label matches the answer, filling in any `<…>` with what the user said |
-| 6 | end of session, or a checkpoint | Run the `AFTER` command, give the user the message it prints, and stop. Do not start the next phase |
+| 6 | a checkpoint | Run the `AFTER` command, give the user the message it prints, and stop |
 
 `next` never exits 1: a step it can't take is a stop (4) that says why.
 
@@ -123,8 +139,11 @@ and the same `next` briefs that job again with the issues in its
 `previous_issues` slot. Never write the retry brief yourself (`brief --retry`)
 and never fix the worker's file yourself.
 
-**A stop** is not final. When it prints a `QUESTION`, show the `SUMMARY`
-lines and ask it with AskUserQuestion. A typed answer (Other) is the user's
+**A stop** is not final. Some stops are the user's call by design: a worker
+found a PLAN.md condition wrong or missing, or the acceptance tester ruled a
+check right that another worker called wrong. Workers never settle the
+contract between themselves. When a stop prints a `QUESTION`, show the
+`SUMMARY` lines and ask it with AskUserQuestion. A typed answer (Other) is the user's
 instruction for the fixer: run the `"<a typed answer>"` `AFTER` line with
 their words, then `next`, which spawns the fixer to do exactly that. For a
 pick, run its `AFTER` line, then `next`: _I fixed it myself_ runs the step
@@ -141,8 +160,8 @@ the stop, or as `auto-dev continue with <n> more rounds`), run the `budget
 raise` command its `REPORT` names with their number, then `next`. Never add
 rounds they didn't ask for.
 
-**Never skip a step or run one `next` didn't print**, except the ones in your
-session's runbook.
+**Never skip a step or run one `next` didn't print**, except the ones in the
+runbook of the stage you are in.
 
 ## Spawning a worker
 
@@ -155,18 +174,16 @@ plugin. Each worker's model and tools are fixed by its agent file:
 | Worker | Agent type | Model · effort |
 | ------ | ---------- | -------------- |
 | Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high |
-| Define agent (Phase 2; rules on spec proposals in Phases 5–6) | `auto-dev:define` | `opus` · high |
-| Define reviewer (Phase 2) | `auto-dev:define-reviewer` | `opus` · high |
-| Planner (Phase 3; rules on the coder's plan proposals in Phases 4–6) | `auto-dev:planner` | `opus` · xhigh |
-| Plan reviewer (Phase 3) | `auto-dev:plan-reviewer` | `opus` · high |
-| Acceptance tester (Phase 3; rules on check proposals in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
+| Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · high |
+| Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high |
+| Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
 | Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
-| Verifier (Phase 5, re-spawned on every change) | `auto-dev:verifier` | `opus` · high |
-| Cleanup agent (Phase 5, re-spawned on fixes) | `auto-dev:cleanup` | `sonnet` · high |
-| Code reviewer, ×3 panel + re-votes (Phase 6) | `auto-dev:code-reviewer` | `opus` · high |
-| Review judge (Phase 6) | `auto-dev:review-judge` | `opus` · xhigh |
-| Security reviewer (Phase 6) | `auto-dev:security-reviewer` | `opus` · xhigh |
-| Security reviewer, sensitive paths (Phase 6) | `auto-dev:security-reviewer-sensitive` | `opus` · xhigh |
+| Verifier (Phase 6, with the review on every pass; first, on a high-risk run) | `auto-dev:verifier` | `opus` · high |
+| Reviewer (Phase 6, standard risk: code and security) | `auto-dev:reviewer` | `opus` · high |
+| Code reviewer, ×3 panel + re-votes (Phase 6, high risk) | `auto-dev:code-reviewer` | `opus` · high |
+| Review judge (Phase 6, high risk) | `auto-dev:review-judge` | `opus` · high |
+| Security reviewer (Phase 6, high risk) | `auto-dev:security-reviewer` | `opus` · high |
+| Security reviewer, sensitive paths (Phase 6, high risk) | `auto-dev:security-reviewer-sensitive` | `opus` · high |
 | Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high |
 | Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium |
 | Fixer: the user's instruction at a stop | `auto-dev:fixer` | `opus` · high |
@@ -190,9 +207,9 @@ for the rest of the session.
 
 | File | Read when |
 |---|---|
-| `references/S1-plan.md` | a fresh run, or a resumed run in S1 |
-| `references/S2-build.md` | a run resumed in S2 |
-| `references/S3-ship.md` | a run resumed in S3 |
+| `references/plan.md` | a fresh run, or a run resumed in the Plan stage |
+| `references/build.md` | when `next` says the run enters the Build stage, or a run resumed in it |
+| `references/ship.md` | when `next` says the run enters the Ship stage, or a run resumed in it |
 | `references/tables.md` | to explain a stop or how to override one, a gate option, the budget or a stale report; to ask a lookup |
 | `references/gates-and-jira.md` | when `next` says to move a Jira ticket |
 | `references/profiles.md` | Phase 1, when resolving the profile |

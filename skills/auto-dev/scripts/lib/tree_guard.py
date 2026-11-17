@@ -21,13 +21,14 @@ from pathlib import Path
 
 from .output import CANNOT_RUN, Fail
 
-# Workers that run alone and never change a repo file. The code reviewers and
-# the security reviewers run side by side, so a change could not be pinned on
-# one; the verifier and cleanup run the repo's tests and tools.
+# Workers that run alone and never change a repo file. (The review judge's
+# two modes can run side by side, so a refused change may be the other mode's;
+# neither may make one.) The code
+# reviewers and the security reviewers run side by side, so a change could not
+# be pinned on one; the coder, the quality gate and the verifier run the repo's tests and tools.
 # Lookups are left out: the orchestrator sends one to answer the user at a gate,
 # while the user may be editing the code.
-GUARDED = ("define", "define-reviewer", "planner", "plan-reviewer", "review-judge",
-           "triager")
+GUARDED = ("planner", "plan-critic", "review-judge", "triager")
 CLEAN = "clean"  # the path matches HEAD: `git status` doesn't list it
 SUBMODULE = "dir"
 

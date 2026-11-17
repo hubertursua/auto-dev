@@ -9,7 +9,7 @@
   case or error path.
 - **Tests:** a changed behavior with no test, a test that cannot fail, or a test
   that misses the case the change is about.
-- **Acceptance check** (`acceptance-check`): a held-out acceptance check asserts
+- **Acceptance check** (`acceptance-check`): an acceptance check asserts
   the wrong thing, or can't fail when its condition is unmet. It goes to the
   acceptance tester's repair mode, never the coder.
 
@@ -17,9 +17,9 @@
 behavior, and it lists every case of that behavior no test exercises, not just
 the first one found: each configuration value or option the behavior reads
 that no test varies, each boundary, each error path and the message it
-produces, and each value the spec says must fail closed. For a payout cap, say:
+produces, and each value the plan says must fail closed. For a payout cap, say:
 a cap above the default, the refusal message under that cap, and each missing
-value the spec says must be refused, not one of them per finding. Only cases a
+value the plan says must be refused, not one of them per finding. Only cases a
 real caller can reach count (the trigger path rule, below), and the list holds
 the separate cases, not their combinations. The judge merges tests findings
 about the same changed behavior into one, and its `Test:` and
@@ -80,7 +80,7 @@ reviewer, and must-fix still needs 2 votes.
 | Introduced by this change | **High:** a clear path from untrusted input (a request, a file, a message, anything an outside party controls) to the exploit | **must-fix**, once the judge confirms it |
 | Introduced by this change | **Medium:** the path exists but depends on a configuration or an assumption, which the finding names | **must-fix**, once the judge confirms it |
 | Introduced by this change | **Low:** speculative, with no traced path | **advisory** |
-| Pre-existing | High or Medium, confirmed by the judge | **for the user:** shown at the PR gate. It never blocks on its own |
+| Pre-existing | High or Medium, confirmed by the judge | **for the user:** shown at the ready-for-review gate. It never blocks on its own |
 | Pre-existing | Low | **advisory**, listed in the report only |
 
 A High or Medium finding the judge refutes becomes **advisory**, with the reason
@@ -96,5 +96,5 @@ report's silence is worth.
 | **Code review** | All 3 reviewers finished, the scope was fully covered, and no must-fix finding was decided 2 votes to 1 | One reviewer failed and the panel rests on 2; or some files were only partly covered; or a must-fix finding was decided 2 votes to 1 | Fewer than 2 reviewers finished |
 | **Security review** | The reviewer finished, the whole change was covered (a correction's focused re-check counts when earlier runs covered the rest), and every High or Medium finding was verified | Some files were only partly covered, or a verification could not run | The reviewer could not finish |
 
-A **Low** overall confidence is a warning at the PR gate, never a clean pass.
+A **Low** overall confidence is a warning at the ready-for-review gate, never a clean pass.
 The summary says what failed.

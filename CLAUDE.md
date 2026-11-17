@@ -49,7 +49,7 @@ that a script can check, add it there.
   `autodev.py init`, which reads YAML, may use PyYAML). Users run these with
   whatever `python3` they have.
 - **Shared code goes in `scripts/lib/`**, imported by `autodev.py` (and by
-  `check-tests.py`, which shares `lib/sealed.py` and `lib/testfiles.py`). Modules
+  `check-tests.py`, which shares `lib/protected.py` and `lib/testfiles.py`). Modules
   there aren't run directly, so they need no shebang, no executable bit and no
   README mention. A new subcommand's docstring is its `--help`, as for a script.
 - **Keep the CLI contract.** Each script's docstring is its `--help` and lists
@@ -68,7 +68,10 @@ that a script can check, add it there.
   `tests/test_eval_run.py` (`tools/eval-run.py`) or
   `tests/test_eval_fixtures.py` (the eval fixtures;
   regenerate them with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
-  tests.test_eval_fixtures`), and check that it fails without your change. Tests run the script as a subprocess,
+  tests.test_eval_fixtures`), and check that it fails without your change. A
+  library step `next` runs in-process, with no subcommand of its own (the PR
+  body's generate and lint, a gate's summary), is tested through
+  `tests/lib_cli.py`. Tests run the script as a subprocess,
   the way the pipeline does, and build throwaway git repos in a temp dir. A
   command that calls `gh` is tested against `tests/fake_gh/gh`, which plays
   back the responses the test scripts; never call the real GitHub from a test.
@@ -151,8 +154,8 @@ against this list and edit each README section it touches:
 | a phase, its order, or which worker runs it                | *Agent hierarchy* diagram, *What it does* table |
 | how the build is verified (spec format, acceptance checks, verifier, audit, mutation) | *How the build is verified* |
 | the size check or the number of worker roles               | *Size check* |
-| session boundaries or the context budget                   | *Three sessions, not one* |
-| the code review panel, security review or rubric           | *Review before the PR* |
+| stages, the checkpoint or the context budget              | *One session, with checkpoints* |
+| the code review panel, security review or rubric           | *Review on the draft PR* |
 | a gate, a conditional pause, Jira, CI, or the merge method | *Human gates & integrations* |
 | profile research, saved profiles, permissions guidance, or a `.auto-dev.yml` key | *Stack profiles* |
 | a script in `skills/auto-dev/scripts/`, or a new tool or dependency | *Dependencies* |
@@ -184,17 +187,27 @@ wrong about something? If yes, fix the README.
 - **Evals.** When behavior changes, update the expectations in
   `skills/auto-dev/evals/evals.json` that describe it. A `state.json` fixture in
   `evals/files/` sits beside the `WORK_LOG.md` generated from it.
-  `tests/test_eval_fixtures.py` checks that each pair agrees, replays S1 to
-  check that the resume-s2 fixtures (with its `HANDOFF.md`) are what S1 writes
-  now, and runs `resume` on the resume-s2 and old-version fixtures (and `next`
-  on resume-s2). When the state or the handoff changes, regenerate the resume-s2
+  `tests/test_eval_fixtures.py` checks that each pair agrees, replays the Plan stage to
+  check that the resume-build fixtures (with its `HANDOFF.md`) are what the Plan stage
+  writes now, and runs `resume` on the resume-build and old-version fixtures (and `next`
+  on resume-build). When the state or the handoff changes, regenerate the resume-build
   fixtures with `AUTODEV_WRITE_FIXTURES=1 python3 -m unittest
   tests.test_eval_fixtures`, never by hand.
 - **Briefs and results.** Each `{{slot}}` in an agent file is listed as AUTO,
   CALLER or OPTIONAL in `skills/auto-dev/scripts/lib/briefs.py`, and each agent
   file's `auto-dev-result` block lists exactly the `next` tokens `RESULTS` gives
-  it there. `tools/check-repo.py` checks both, and that every template a script
-  parses or an agent names exists.
+  it there; `MODE_RESULTS` narrows them per mode, as the agent file's prose
+  says. `tools/check-repo.py` checks the slots and `RESULTS`, and that every
+  template a script parses or an agent names exists.
+- **The spawn budget.** A default-lane happy path (standard risk, the critic
+  approves, every worker ok the first time) takes at most 5 worker spawns to
+  the first push and 7 to ready-for-review; today 4 and 6: the planner, the
+  plan critic, the acceptance tester and the coder, then the verifier and the
+  reviewer. One plan revision adds the revision and the critic's re-check (6
+  and 8). `LeanTest` in `tests/test_next.py` walks both paths and pins the
+  counts. A PR that adds a spawn to that path raises the
+  numbers in the test on purpose, says so in its Summary, and updates the
+  README's *Size check*; never add a step to the happy path without it.
 
 ## Branches, commits and PRs
 

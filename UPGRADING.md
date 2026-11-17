@@ -4,6 +4,71 @@ What changed in each release, and whether a run started on the previous version
 can resume on the new one. Newest first. The current version is in
 `.claude-plugin/plugin.json`.
 
+## Upgrading from 4.27
+
+5.0 is a lean pipeline: one session, a first push right after the build, and a
+review sized to the risk. A default-lane run takes 4 worker spawns to its first
+push and 6 to ready-for-review (6 and 8 with one plan revision), where 4.x
+took 14 or more and two session restarts.
+
+- **One session.** The run goes straight through its three stages (Plan,
+  Build, Ship) in one session; `next` names each stage's runbook as the run
+  enters it. The only session break is the event checkpoint, which ends the
+  session at a clean point with `HANDOFF.md`; `auto-dev continue` picks it up.
+- **One plan, checked by a critic.** The planner writes `PLAN.md` (the ask,
+  the conditions with their Example and Edge, assumptions, the size check,
+  the risk tier it proposes, the steps). A separate **plan critic**
+  (`auto-dev:plan-critic`) checks it against the ticket and the code; with
+  blockers the planner revises once (a round) and the critic re-checks only
+  the revision. A blocker still open goes to you at the post-plan gate, which
+  now comes at the end of Phase 2, before any check is written. `SPEC.md`,
+  `IMPLEMENTATION.md`, `define`, `define-reviewer` and `plan-reviewer` are
+  gone.
+- **The risk tier only goes up.** The planner proposes it, the critic can
+  raise it, and once the quality gate is green `next` re-checks it from the
+  diff (a sensitive path, or a large change).
+- **Tests first, in the open.** The acceptance tester's checks are ordinary
+  test files, committed as their own commit before any code. The coder sees
+  them and `PLAN.md` whole. Nothing is sealed: `check-tests.py`, `record` and
+  `commit` refuse any change to a line a tests commit added. Sealed checks,
+  fold mode, `install-checks` and `acceptance/INSTALLED` are gone.
+- **No cleanup worker.** The coder runs the quality gate to green; then you
+  run `autodev.py quality-gate` (no worker), which writes the `lint/` reports.
+  A red gate gets one coder correction (no round); red again is a stop.
+- **The draft PR opens before any review.** Once the gate is green, the build
+  is committed, pushed and opened as a draft PR, so CI runs while the review
+  does. The ready-for-review gate replaces the open-the-PR gate, which is now
+  opt-in (`gates.open_pr: true`) for repos that must not push unreviewed code.
+  CI that never reports on a draft is watched again once the PR is ready.
+- **A review sized to the risk.** A pass on the draft is the verifier and, on
+  a standard-risk run, one new **reviewer** (`auto-dev:reviewer`) for code and
+  security, which judges its own findings (`review-build --solo`). A
+  high-risk run keeps the panel of three, the judge and the security
+  reviewer, and adds mutation and the verifier's own probe per condition;
+  there the verifier goes first. Both look for code that passes a test
+  without doing what the condition asks.
+- **One fix loop.** One correction, one round, takes what a pass left open
+  (the verifier's items, the review's findings) and red CI on the pushed
+  commit together. Only the plan's revision and the fix loops spend rounds;
+  a tester re-spawn for gaps, the planner's decision on a condition that
+  reads two ways, a red gate's correction and a `BLOCKED` step's re-dispatch
+  are free, once each; the same again is a stop.
+- **No proposals or rulings.** A coder that finds a plan step wrong builds it
+  the way that works and records the deviation; the ready-for-review gate
+  lists each one. A criterion that is wrong or impossible is a stop that asks
+  you. The deviation gate, the redo cascade and the per-consumer budgets are
+  gone.
+- **Lower efforts.** The planner, the review judge and both security reviewers
+  run at `high`, not `xhigh`.
+- **Commands.** New: `autodev.py quality-gate`, `commit-tests` and
+  `review-build --solo`. Removed: `size`, `pr-body`, `gate-summary`,
+  `install-checks`, `apply-fix`, `spec-overlap`, `review-scope`,
+  `verify prep --pass`, `budget spend --consumer` and `gate … --condition`;
+  `next` runs what is left of those steps itself.
+- **Resume:** a run started on 4.x can't resume on 5.0 (`state.json` schema
+  5): `resume` reports it as `OLD-VERSION`. Finish it on 4.27, or remove its
+  worktree and start again.
+
 ## Upgrading from 4.26
 
 - **The fixer changes held-out checks through a command.** In auto mode,

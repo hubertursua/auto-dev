@@ -1,4 +1,4 @@
-"""autodev.py votes / review-scope / gate-summary / review-build.
+"""autodev.py votes / review-build, and the gate summaries `next` asks with.
 
 Each takes `--dir <artifact-dir>` (default `./.auto-dev`) and `--json`.
 
@@ -31,17 +31,7 @@ votes --apply
     ways, an `**Overall confidence` line without `reviewers finished: <n>/3`
     and `coverage:`); nothing is written.
 
-review-scope --snapshot | --files | --clear | --next-pass
-    --snapshot  marks untracked files intent-to-add, then records the working
-                tree's hash as the snapshot to diff a correction against. Keeps
-                an existing snapshot: one per pending correction, not per round.
-    --files     prints the files changed since the snapshot (the scope of the
-                cleanup re-spawn and the next panel pass).
-    --clear     forgets the snapshot once a panel pass has reviewed it.
-    --next-pass creates review/pass-<n>/ for the next pass and prints <n>.
-    Exit: 0; 1 --files with no snapshot recorded.
-
-review-build
+review-build [--solo]
     The review judge runs it once it has written review/pass-<n>/JUDGMENT.md
     (templates/JUDGMENT.md) for the panel's pass <n>, from the merged
     findings `next` wrote to review/pass-<n>/findings.md (lib/judgment.py).
@@ -63,28 +53,35 @@ review-build
     Exit: 0 built; 1 JUDGMENT.md can't be used (`MALFORMED`, a `problem:`
     line each; nothing is written); 2 no findings.md, judgment or judge brief,
     or CODE_REVIEW.md already holds this pass with no snapshot from before it.
+    --solo: a standard-risk pass's one reviewer runs it on the JUDGMENT.md it
+    wrote for its own findings (no findings.md, no `From:` lines, no security
+    leads): each that holds in a must-fix category is must-fix (Medium, 1/1)
+    and the overall confidence is Medium at best; the scope and tree come from
+    the reviewer's brief, and nothing is ever pending a re-vote.
 
-gate-summary <post-plan|pr|main> [--pr N]
-    Checks the gate's preconditions, then prints the summary and the
-    AskUserQuestion JSON to ask with (on the line after `QUESTION:`).
-    pr: every report is fresh, one passing lint report per gate command, no
-    submodule holds uncommitted edits (`git submodule foreach` lists them),
-    no Unjustified integrity finding is open; then the acceptance block and
-    the two reviews, and one triage question per pre-existing security finding
-    whose Verdict is `for the user`, most severe first (with more than three,
-    the two most severe and one question for the rest, headed `Others`). Each
-    answer is recorded with `mark triage-<ID or Others> --value separate|ignore`;
-    a finding sent to a separate PR is listed in the PR body as a follow-up.
+The gate summaries (post-plan, pr, ready, main)
+    `next` builds one when it asks a gate: it checks the gate's
+    preconditions, then shows the summary and asks the AskUserQuestion it
+    prints.
+    ready (the ready-for-review gate, on the draft PR once its reviews have
+    settled): every report is fresh, one passing lint report per gate command,
+    no submodule holds uncommitted edits (`git submodule foreach` lists them),
+    no Unjustified integrity finding is open; then the draft PR and its CI, the
+    acceptance block and the two reviews, and one triage question per
+    pre-existing security finding whose Verdict is `for the user`, most severe
+    first (with more than three, the two most severe and one question for the
+    rest, headed `Others`). Each answer is recorded with `mark triage-<ID or
+    Others> --value separate|ignore`; a finding sent to a separate PR is listed
+    in the PR body as a follow-up.
+    pr (the open-the-PR gate, before the first push, only with `gates.open_pr`
+    on): the same checks and summary, without the reviews, which have not run.
     main: the PR is open and not a draft, and every result was checked on its
     head commit.
-    pr and main also list the spec changes made during the run (each changed
-    condition or criterion and who proposed it), the spec proposals the Define
-    agent ruled to stand (with its reason), and the proposals no round was
-    left to send.
-    Exit: 0 printed; 1 a precondition failed (the reason says what to do; do
-    not ask the gate): `STALE` when a result no longer matches the code,
-    `PRECONDITION` otherwise; 2 check-fresh.py, `git submodule foreach` or gh
-    could not run.
+    Each but post-plan also lists each deviation from the plan the coder
+    recorded (deviations/coder-<n>.md), and each sign-off and fix made at a stop.
+    A precondition that fails is a stop (`STALE` when a result no longer
+    matches the code, which `next` re-checks, `PRECONDITION` otherwise);
+    check-fresh.py, `git submodule foreach` or gh that could not run is exit 2.
 
 All exit 2 when they could not run — never a pass.
 """
@@ -95,9 +92,8 @@ import sys
 from pathlib import Path
 
 from . import artifacts as art
-from . import overrides, proposals
+from . import overrides
 from . import state as st
-from .cmd_checks import git_add_intent
 from .cmd_ship import check_fresh
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
@@ -109,6 +105,7 @@ COVERAGE_RE = re.compile(r"coverage:\s*(full|partial)")
 GATE_OPTIONS = {
     "post-plan": ["Approve & build", "Revise plan (tell me what to change)", "Stop"],
     "pr": ["Open PR", "Hold (don't push yet)", "Stop"],
+    "ready": ["Mark ready for review", "Hold (keep it a draft)", "Stop"],
     "main": ["Merge PR to main", "Hold", "Stop"],
 }
 # A pre-existing security finding's triage answers, and the value `mark
@@ -120,19 +117,14 @@ TRIAGE = list(TRIAGE_VALUES)
 def add_arguments(parser, name):
     parser.add_argument("--dir", default=".auto-dev", help="the run's .auto-dev/")
     if name == "review-build":
+        parser.add_argument("--solo", action="store_true",
+                            help="the one reviewer's own judgment (a standard-risk pass)")
         parser.add_argument("--pass", dest="pass_n", type=int,
                             help="the pass (default: the run's current pass)")
     if name == "votes":
         mode = parser.add_mutually_exclusive_group(required=True)
         mode.add_argument("--plan", action="store_true")
         mode.add_argument("--apply", action="store_true")
-    elif name == "review-scope":
-        mode = parser.add_mutually_exclusive_group(required=True)
-        for flag in ("--snapshot", "--files", "--clear", "--next-pass"):
-            mode.add_argument(flag, action="store_true")
-    elif name == "gate-summary":
-        parser.add_argument("gate", choices=sorted(GATE_OPTIONS))
-        parser.add_argument("--pr", help="the PR number (default: from state)")
 
 
 def wrap(fn):
@@ -425,47 +417,6 @@ def recount(text, decided_2_1):
     return re.sub(r"^Must-fix: \d+ open.*$", counts, text, count=1, flags=re.MULTILINE)
 
 
-# ---------------------------------------------------------------- review-scope
-
-@wrap
-def review_scope(args):
-    state = st.load(args.dir)
-    wt = state["worktree"]
-    phase6 = state.setdefault("phase6", {})
-    if args.next_pass:
-        n = phase6.get("review_pass", 0) + 1
-        (Path(args.dir) / "review" / f"pass-{n}").mkdir(parents=True, exist_ok=True)
-        phase6["review_pass"] = n
-        st.save(args.dir, state)
-        emit(args.json, "PASS", str(n), dir=str(Path(args.dir) / "review" / f"pass-{n}"))
-        return 0
-    if args.clear:
-        phase6.pop("snapshot", None)
-        st.save(args.dir, state)
-        emit(args.json, "CLEARED", "snapshot forgotten")
-        return 0
-    git_add_intent(wt)
-    tree = print_tree(wt)
-    if args.snapshot:
-        if phase6.get("snapshot"):
-            emit(args.json, "KEPT", phase6["snapshot"], reason="a correction is still "
-                 "unreviewed; its snapshot covers this one too")
-            return 0
-        phase6["snapshot"] = tree
-        st.add_note(state, f"review snapshot {tree}")
-        st.save(args.dir, state)
-        emit(args.json, "SNAPSHOT", tree)
-        return 0
-    snap = phase6.get("snapshot")
-    if not snap:
-        raise Fail("no snapshot recorded: take one with --snapshot before dispatching "
-                   "the correction", FAILED, "NO-SNAPSHOT")
-    files = [f for f in git(wt, "diff", "--name-only", snap, tree).splitlines()
-             if f and not f.startswith(".auto-dev/")]
-    emit(args.json, "FILES", f"{len(files)} file(s) changed since {snap[:12]}", file=files)
-    return 0
-
-
 def print_tree(wt):
     code, out, err = run([sys.executable, str(SCRIPTS / "check-fresh.py"),
                           "--print-tree", wt], check=False)
@@ -474,43 +425,32 @@ def print_tree(wt):
     return out.strip()
 
 
-# ---------------------------------------------------------------- gate-summary
+# ---------------------------------------------------------------- the gate summaries
 
 def question(header, text, options):
     return {"question": text, "header": header, "multiSelect": False,
             "options": [{"label": o, "description": ""} for o in options]}
 
 
-@wrap
-def gate_summary(args):
-    state = st.load(args.dir)
-    ad = Path(args.dir)
-    builder = {"post-plan": post_plan_summary, "pr": pr_summary,
-               "main": main_summary}[args.gate]
-    lines, extra_questions = builder(state, ad, args)
-    questions = [question("Gate", f"{args.gate} gate: how do you want to proceed?",
-                          GATE_OPTIONS[args.gate])] + extra_questions
-    if args.json:
-        print(json.dumps({"result": "SUMMARY", "summary": lines,
-                          "questions": questions}, indent=2))
-    else:
-        print("SUMMARY:")
-        print("\n".join(f"  {ln}" for ln in lines))
-        print("QUESTION:")
-        print(json.dumps({"questions": questions}))
-    return 0
-
-
 def post_plan_summary(state, ad, args):
-    rows, na_rows = art.manifest(ad / "acceptance" / "MANIFEST.md")
-    per = {}
-    for row in rows:
-        per[row["#"].strip()] = per.get(row["#"].strip(), 0) + 1
+    """The plan, before any check is written: the tester writes them from the
+    plan the user approves here."""
+    conditions = art.spec_conditions(ad / "PLAN.md")
     lines = [f"Task: {state['task'].get('text', '')}",
-             f"Spec: {ad / 'SPEC.md'}", f"Plan: {ad / 'IMPLEMENTATION.md'}",
-             "Acceptance checks per condition: "
-             + ", ".join(f"{k}: {v}" for k, v in per.items()),
-             "Not automatable: " + (", ".join(r.get("#", "") for r in na_rows) or "none")]
+             f"Plan: {ad / 'PLAN.md'}",
+             f"Conditions ({len(conditions)}):",
+             *(f"- {c['id']}. {c['text']}" for c in conditions),
+             f"Risk: {'high' if state.get('high_risk') else 'standard'}"]
+    blockers = state.get("plan_blockers")
+    if blockers is not None:
+        review = ad / "plan-review" / f"{blockers}.md"
+        lines.append(f"The plan critic left these blockers open after the planner's one "
+                     f"revision ({review}); decide whether to build anyway:")
+        try:
+            lines += [f"- {b['id']}. {b['text']} (evidence: {b['evidence']}; change: "
+                      f"{b['change']})" for b in art.plan_review(review)["blockers"]]
+        except art.ArtifactError as exc:
+            lines.append(f"- the review can't be read: {exc}")
     return lines, []
 
 
@@ -530,8 +470,9 @@ def acceptance_block(ad):
     unjustified = [f for f in ev["integrity"]
                    if f.get("Judgment", "").strip().lower() == "unjustified"]
     if unjustified:
-        raise Fail("SPEC_EVAL.md has an Unjustified integrity finding still open: Phase 5 "
-                   "did not settle; do not ask the PR gate", FAILED, "PRECONDITION")
+        raise Fail("SPEC_EVAL.md has an Unjustified integrity finding still open: the "
+                   "review pass did not settle; do not ask the gate", FAILED,
+                   "PRECONDITION")
     justified = [f"{f.get('Location', '')} {f.get('Finding', '')} ({f.get('Reason', '')})"
                  for f in ev["integrity"]
                  if f.get("Judgment", "").strip().lower() == "justified"]
@@ -619,10 +560,36 @@ def submodule_edits(wt):
     return edits
 
 
-def pr_summary(state, ad, args):
+def open_pr_summary(state, ad, args):
+    """The opt-in gate before the first push: the checked build, no review yet."""
+    lines, _ = pr_summary(state, ad, args, reviewed=False)
+    return lines + [("Not verified or reviewed yet: the verifier and the review run on "
+                     "the draft PR, alongside CI, once it is open")], []
+
+
+def ready_summary(state, ad, args):
+    """The ready-for-review gate: the reviews on the draft, its CI, and the PR."""
+    lines, questions = pr_summary(state, ad, args)
+    p6 = state.get("phase6", {})
+    pr = p6.get("pr")
+    lines.insert(0, f"Draft PR {p6.get('pr_url') or ('#' + str(pr))}, CI on the draft: "
+                 f"{ci_text(state)}")
+    if p6.get("exhausted"):
+        open_ = "; ".join(str(x) for x in p6["exhausted"].get("open") or [] if x)
+        lines.append("No round was left to correct what is still open"
+                     + (f" ({open_})" if open_ else "") + ": marking the PR ready ships "
+                     "it, listed in its description")
+    recheck = state.get("risk_recheck") or {}
+    if recheck.get("high"):
+        lines.append("Risk: high after the build (" + "; ".join(recheck.get("why") or [])
+                     + ")")
+    return lines, questions
+
+
+def pr_summary(state, ad, args, reviewed=True):
     wt = state["worktree"]
     fresh_or_fail(wt, ad, "results are stale; re-run them first, never ask this gate "
-                  "on them:")
+                  "on them:", *(() if reviewed else ("--phase", "5")))
     missing = []
     for check in state["settings"].get("gate", []):
         report = ad / "lint" / check.get("report", "")
@@ -640,9 +607,13 @@ def pr_summary(state, ad, args):
                    "a submodule. If all are generated output this run made, delete them "
                    "and run the gate summary again:\n" + "\n".join(subs), FAILED,
                    "PRECONDITION")
-    status = git(wt, "status", "--porcelain", "--untracked-files=all", "--no-renames",
-                 "--ignore-submodules=dirty")
-    files = [ln[3:] for ln in status.splitlines() if not ln[3:].startswith(".auto-dev/")]
+    # The branch's whole change: the tests commits, any build commit, and the
+    # working tree on top (untracked files too).
+    from .cmd_work import cut_commit
+    cut = cut_commit(wt, state["repo"]["base"])
+    names = git(wt, "diff", "--name-only", "--no-renames", cut).splitlines()
+    names += git(wt, "ls-files", "--others", "--exclude-standard").splitlines()
+    files = sorted({f for f in names if f and not f.startswith(".auto-dev/")})
     lines = [f"Branch {state['branch']} → {state['repo']['base']}",
              f"Files changed: {len(files)}" + (f" ({', '.join(files[:8])}"
                                                f"{', …' if len(files) > 8 else ''})"
@@ -651,15 +622,41 @@ def pr_summary(state, ad, args):
                  f"{c.get('report', '')} " + ("failing, signed off by the user"
                                               if c.get("report", "") in missing else "pass")
                  for c in state["settings"].get("gate", []))]
-    lines += acceptance_block(ad)
-    review_lines, questions = review_block(ad)
-    lines += review_lines
+    if reviewed:
+        lines += acceptance_block(ad)
+    questions = []
+    if reviewed:
+        review_lines, questions = review_block(ad)
+        lines += review_lines
     if state["budget"]["remaining"] <= 0:
         lines.append("Budget exhausted: no round is left for a fix; an open must-fix "
                      "finding ships listed in the PR body")
-    lines += proposals.summary_lines(state)
+    lines += deviation_lines(state, ad)
     lines += overrides.summary_lines(state)
     return lines, questions
+
+
+def deviation_lines(state, ad):
+    """Each deviation from the plan a coder recorded, by result, for the gate
+    summaries: the coder built a step the way that works and said why."""
+    out = []
+    for e in state.get("log") or []:
+        if e["worker"] != "coder" or e.get("status") != "ok" or e.get("aside"):
+            continue
+        path = Path(ad) / "deviations" / f"coder-{e['n']}.md"
+        items = [ln.strip() for ln in _text(path).splitlines()
+                 if re.match(r"\s*[-*]\s+\S", ln)]
+        if items:
+            out.append(f"Coder #{e['n']} deviated from the plan ({path}):")
+            out += [f"  {item}" for item in items]
+    return out
+
+
+def _text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def pr_number(state, args):
@@ -707,12 +704,21 @@ def main_summary(state, ad, args):
               f"{comments} human review(s)/comment(s): triage them before asking"),
              f"Mergeable: {info.get('mergeable')} / {info.get('mergeStateStatus')}",
              f"Head {head}: every result was checked on it; the merge is locked to it",
-             *review_lines, *proposals.summary_lines(state),
+             *review_lines, *deviation_lines(state, ad),
              *overrides.summary_lines(state)]
     return lines, []
 
 
 # ---------------------------------------------------------------- review-build
+
+# A solo reviewer's scope, as CODE_REVIEW.md says it (the judge's brief holds
+# the same text, which `next` writes for a panel's pass).
+SOLO_SCOPES = {
+    "first": "the whole change, as committed on the branch: {files}",
+    "after-commit": "the uncommitted correction (the working tree against HEAD)",
+    "outside": ("the commits pushed to the PR branch outside the pipeline "
+                "(`git diff {since}`): {files}"),
+}
 
 @wrap
 def review_build(args):
@@ -721,13 +727,16 @@ def review_build(args):
     state = st.load(ad)
     n = args.pass_n or (state.get("phase6") or {}).get("review_pass") or 1
     folder = ad / "review" / f"pass-{n}"
+    solo = bool(getattr(args, "solo", False))
     brief = next((b for b in reversed(state.get("briefs") or [])
-                  if b.get("worker") == "review-judge" and b.get("mode") == "consolidate"),
+                  if (b.get("worker") == "reviewer" if solo else
+                      b.get("worker") == "review-judge" and b.get("mode") == "consolidate")),
                  None)
     if brief is None:
-        raise Fail("no review-judge consolidate brief in state.json", CANNOT_RUN, "ERROR")
+        raise Fail("no reviewer brief in state.json" if solo else
+                   "no review-judge consolidate brief in state.json", CANNOT_RUN, "ERROR")
     sets = brief.get("sets") or {}
-    findings = art.read(folder / "findings.md")
+    findings = "" if solo else art.read(folder / "findings.md")
     judgment_md = art.read(folder / "JUDGMENT.md")
     report = ad / "CODE_REVIEW.md"
     earlier = judgment.snapshot_before(ad, n)
@@ -739,11 +748,15 @@ def review_build(args):
     panel_tree = str(sets.get("tree") or "").strip()
     tree = panel_tree if panel_tree and print_tree(state["worktree"]) == panel_tree \
         else "changed during the run"
+    scope = sets.get("scope") or ""
+    if solo:  # the reviewer's brief holds the scope's name: the report says what it is
+        scope = SOLO_SCOPES.get(scope, scope).format(
+            files=sets.get("files") or "none", since=sets.get("since") or "HEAD")
     try:
         text, result = judgment.build(
-            branch=state.get("branch", ""), pass_n=n, scope=sets.get("scope") or "",
+            branch=state.get("branch", ""), pass_n=n, scope=scope,
             tree=tree, findings_md=findings, judgment_md=judgment_md,
-            earlier_md=earlier)
+            earlier_md=earlier, solo=solo)
     except judgment.JudgmentError as exc:
         emit(args.json, "MALFORMED", f"{folder / 'JUDGMENT.md'} can't be used; fix it and "
              "run review-build again", problem=str(exc).splitlines())

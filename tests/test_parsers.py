@@ -1,5 +1,5 @@
 """Tests for autodev.py's artifact parsers (check-manifest, eval-status,
-apply-fix, spec-overlap, votes, review-scope, gate-summary).
+votes, and the gate summaries through tests/lib_cli.py).
 
 Run: python3 -m unittest discover -s tests -v   (from the repo root)
 
@@ -20,11 +20,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_autodev import AUTODEV, SCRIPTS, RunCase
 
 sys.path.insert(0, str(SCRIPTS))
-from lib import artifacts as art
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "parsers"
 
-SPEC = (FIXTURES / "SPEC.md").read_text()
+PLAN = (FIXTURES / "PLAN.md").read_text()
 
 MANIFEST = (FIXTURES / "MANIFEST.md").read_text()
 
@@ -58,14 +57,14 @@ class ArtifactCase(unittest.TestCase):
         self.dir = self.tmp / ".auto-dev"
         acc = self.dir / "acceptance"
         (acc / "base-run").mkdir(parents=True)
-        (self.dir / "SPEC.md").write_text(SPEC)
+        (self.dir / "PLAN.md").write_text(PLAN)
         (acc / "MANIFEST.md").write_text(MANIFEST)
         for name, text in BASE_RUNS.items():
             (acc / "base-run" / name).write_text(text)
         for path in ("src/due.acceptance.test.ts", "src/sort.acceptance.test.ts"):
-            sealed = acc / "files" / f"{path}.sealed"
-            sealed.parent.mkdir(parents=True, exist_ok=True)
-            sealed.write_text("test")
+            check = self.tmp / path  # the tester leaves its checks in the worktree
+            check.parent.mkdir(parents=True, exist_ok=True)
+            check.write_text("test")
 
     def cmd(self, *args):
         return autodev(*args, "--dir", self.dir)
@@ -83,6 +82,18 @@ class ArtifactCase(unittest.TestCase):
 
 
 class CheckManifestTest(ArtifactCase):
+    def test_not_re_run_for_a_repair_needs_a_check_a_tests_commit_holds(self):
+        (self.dir / "acceptance" / "base-run" / "C2.txt").write_text(
+            BASE_RUNS["C2.txt"].replace("failed: unsorted", "not re-run (repair)"))
+        r = self.cmd("check-manifest")  # a new check: it never ran on the old code
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no tests commit holds it", r.stdout)
+        (self.dir / "state.json").write_text(json.dumps({
+            "schema": 5, "worktree": str(self.tmp),
+            "tests_commits": [{"sha": "abc", "paths": ["src/sort.acceptance.test.ts"]}]}))
+        r = self.cmd("check-manifest")  # repaired: committed before, so it ran then
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_complete_manifest_passes(self):
         r = self.cmd("check-manifest")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -113,23 +124,12 @@ class CheckManifestTest(ArtifactCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("gap: 2:", r.stdout)
 
-    def test_a_check_added_to_an_existing_file_only_adds_lines(self):
-        files = self.dir / "acceptance" / "files" / "src"
-        (files / "due.acceptance.test.ts.base").write_text("old line\n")
-        (files / "due.acceptance.test.ts.sealed").write_text("old line\ntest\n")
-        (self.tmp / "src").mkdir()
-        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\n")
-        r = self.cmd("check-manifest")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\ntest\n")
-        r = self.cmd("check-manifest")  # the tester left its test in the file
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("still differs from HEAD", r.stdout)
-        (self.tmp / "src" / "due.acceptance.test.ts").write_text("old line\n")
-        (files / "due.acceptance.test.ts.sealed").write_text("changed line\ntest\n")
+    def test_a_check_file_not_in_the_worktree_is_a_gap(self):
+        (self.tmp / "src" / "sort.acceptance.test.ts").unlink()
         r = self.cmd("check-manifest")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("may only add lines", r.stdout)
+        self.assertIn("gap: 2: src/sort.acceptance.test.ts is not in the worktree", r.stdout)
+        self.assertFalse((self.dir / "acceptance" / "files").exists())
 
     def test_each_gap_is_named(self):
         manifest = MANIFEST.replace(
@@ -141,14 +141,11 @@ class CheckManifestTest(ArtifactCase):
                                     "only\" | Example | unit |")
         self.write("acceptance/MANIFEST.md", manifest)
         (self.dir / "acceptance" / "base-run" / "C2.txt").unlink()
-        (self.tmp / "src").mkdir()
-        (self.tmp / "src" / "sort.acceptance.test.ts").write_text("left behind")
         r = self.cmd("check-manifest")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("1: its Edge has no check", r.stdout)
         self.assertIn("S1: a check is unit, below Verify by integration", r.stdout)
         self.assertIn("2: no base-run/C2.txt", r.stdout)
-        self.assertIn("still in the worktree", r.stdout)
         self.assertIn("respawn: 1, 2, S1", r.stdout)
 
     def test_a_pass_to_pass_check_must_have_passed(self):
@@ -160,7 +157,7 @@ class CheckManifestTest(ArtifactCase):
         self.assertIn("pass-to-pass but did not pass", r.stdout)
 
     def test_missing_spec_cannot_run(self):
-        (self.dir / "SPEC.md").unlink()
+        (self.dir / "PLAN.md").unlink()
         self.assertEqual(self.cmd("check-manifest").returncode, 2)
 
 
@@ -191,7 +188,7 @@ class CheckManifestTest(ArtifactCase):
     def test_the_first_level_named_in_verify_by_counts(self):
         # Example in TypeScript: the unit check satisfies "unit", although the
         # Verify by line also names the integration layer it mocks.
-        self.write("SPEC.md", SPEC.replace(
+        self.write("PLAN.md", PLAN.replace(
             "   - Verify by: unit",
             "   - Verify by: unit — the integration layer is mocked"))
         r = self.cmd("check-manifest")
@@ -277,7 +274,7 @@ class EvalStatusTest(ArtifactCase):
     def test_an_unmet_condition_with_a_defective_check_is_also_corrected(self):
         self.spec_eval(v2="unmet", e2="acceptance check failed: unsorted",
                        defective='- `src/sort.acceptance.test.ts` :: "sorts earliest '
-                                 'first" asserts an order SPEC.md does not give')
+                                 'first" asserts an order PLAN.md does not give')
         r = self.cmd("eval-status")
         self.assertTrue(r.stdout.startswith("CORRECT"), r.stdout)
         self.assertIn("repair: 2", r.stdout)
@@ -288,12 +285,6 @@ class EvalStatusTest(ArtifactCase):
                                  'first" is too weak')
         r = self.cmd("eval-status")
         self.assertTrue(r.stdout.startswith("ALL_MET"), r.stdout)
-
-    def test_an_install_conflict_is_corrected_without_spec_eval(self):
-        r = self.cmd("eval-status", "--install-conflict")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertTrue(r.stdout.startswith("CORRECT: 1 open item"), r.stdout)
-        self.assertIn("correct: install conflict", r.stdout)
 
     def test_an_escaped_pipe_in_a_code_span_keeps_the_columns(self):
         self.spec_eval()
@@ -320,13 +311,13 @@ class EvalStatusTest(ArtifactCase):
 
 class SecurityReviewerTest(ArtifactCase):
     def test_no_spec_cannot_run(self):
-        (self.dir / "SPEC.md").unlink()
+        (self.dir / "PLAN.md").unlink()
         r = self.cmd("security-reviewer")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("SPEC.md does not exist", r.stderr)
+        self.assertIn("PLAN.md does not exist", r.stderr)
 
     def test_a_spec_without_conditions_is_malformed(self):
-        (self.dir / "SPEC.md").write_text("# Spec\n\nNo conditions here.\n")
+        (self.dir / "PLAN.md").write_text("# Spec\n\nNo conditions here.\n")
         r = self.cmd("security-reviewer")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("MALFORMED", r.stderr)
@@ -334,67 +325,10 @@ class SecurityReviewerTest(ArtifactCase):
     def test_security_criteria_pick_the_sensitive_reviewer(self):
         r = self.cmd("security-reviewer")
         self.assertIn("AGENT: auto-dev:security-reviewer-sensitive", r.stdout)
-        spec = self.dir / "SPEC.md"
+        spec = self.dir / "PLAN.md"
         spec.write_text(spec.read_text().split("## Security/Compliance criteria")[0])
         r = self.cmd("security-reviewer")
         self.assertIn("AGENT: auto-dev:security-reviewer\n", r.stdout)
-
-
-class ApplyFixTest(ArtifactCase):
-    def fix(self, old, new, fix_id="1"):
-        return self.write("fix.md", f"FIX {fix_id}\n<<<<<<< OLD\n{old}\n=======\n{new}\n"
-                                    ">>>>>>> NEW\n")
-
-    def test_applies_an_exact_match(self):
-        self.fix("   - Edge: an invalid date is rejected → 400",
-                 "   - Edge: a due date of 2026-02-30 is rejected → 400")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("2026-02-30 is rejected", (self.dir / "SPEC.md").read_text())
-
-    def test_an_ambiguous_block_writes_nothing(self):
-        self.fix("   - Verify by: integration", "   - Verify by: end-to-end")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("found 2 times", r.stdout)
-        self.assertEqual((self.dir / "SPEC.md").read_text(), SPEC)
-
-
-    def test_a_malformed_block_writes_nothing(self):
-        # The first block lacks its `>>>>>>> NEW` line, so it runs into the second.
-        self.write("fix.md", "FIX 1\n<<<<<<< OLD\n   - Verify by: unit\n=======\n"
-                             "   - Verify by: integration\n"
-                             "FIX 2\n<<<<<<< OLD\nTodos have no due dates.\n=======\n"
-                             "Todos have no dates.\n>>>>>>> NEW\n")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("NO-MATCH", r.stdout)
-        self.assertEqual((self.dir / "SPEC.md").read_text(), SPEC)
-
-    def test_no_fix_block_is_refused(self):
-        self.write("fix.md", "The spec looks fine.\n")
-        r = self.cmd("apply-fix", self.dir / "SPEC.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("no FIX block", r.stderr)
-
-    def test_a_missing_target_cannot_run(self):
-        self.fix("a", "b")
-        r = self.cmd("apply-fix", self.dir / "NOPE.md", self.dir / "fix.md")
-        self.assertEqual(r.returncode, 2)
-
-
-class SpecOverlapTest(ArtifactCase):
-    def test_copied_wording_is_refused(self):
-        brief = self.write("brief.md", "Fix it so the list sorts todos by due date with "
-                                       "the earliest first.")
-        r = self.cmd("spec-overlap", brief)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("condition 2", r.stdout)
-
-    def test_concrete_behavior_passes(self):
-        brief = self.write("brief.md", "In src/todos/list.ts, order the array returned by "
-                                       "listTodos() ascending by dueAt; add a unit test.")
-        self.assertEqual(self.cmd("spec-overlap", brief).returncode, 0)
 
 
 class VotesTest(ArtifactCase):
@@ -605,7 +539,7 @@ class ReviewAndGateTest(RunCase):
     def setUp(self):
         super().setUp()
         self.assertEqual(self.init().returncode, 0)
-        for name, text in (("SPEC.md", SPEC), ("acceptance/MANIFEST.md", MANIFEST)):
+        for name, text in (("PLAN.md", PLAN), ("acceptance/MANIFEST.md", MANIFEST)):
             path = self.dir / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
@@ -628,30 +562,10 @@ class ReviewAndGateTest(RunCase):
         (self.dir / "CODE_REVIEW.md").write_text(CODE_REVIEW.format(tree=tree))
         (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=tree))
 
-    def test_review_scope_snapshot_and_files(self):
-        (self.worktree / "due.ts").write_text("export const due = 1;\n")
-        r = self.cmd("review-scope", "--snapshot")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        snap = self.state()["phase6"]["snapshot"]
-        (self.worktree / "app.ts").write_text("export const one = 2;\n")
-        r = self.cmd("review-scope", "--snapshot")
-        self.assertIn("KEPT", r.stdout)  # one snapshot per pending correction
-        r = self.cmd("review-scope", "--files")
-        self.assertIn("file: app.ts", r.stdout)
-        self.assertNotIn("due.ts", r.stdout)
-        self.assertEqual(self.state()["phase6"]["snapshot"], snap)
-        self.cmd("review-scope", "--clear")
-        self.assertEqual(self.cmd("review-scope", "--files").returncode, 1)
-
-    def test_next_pass_counts_up(self):
-        self.assertIn("PASS: 1", self.cmd("review-scope", "--next-pass").stdout)
-        self.assertIn("PASS: 2", self.cmd("review-scope", "--next-pass").stdout)
-        self.assertTrue((self.dir / "review" / "pass-2").is_dir())
-
-    def test_pr_gate_summary_and_triage_question(self):
+    def test_ready_gate_summary_and_triage_question(self):
         (self.worktree / "app.ts").write_text("export const one = 2;\n")
         self.reports()
-        r = self.cmd("gate-summary", "pr", "--json")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
         summary = "\n".join(out["summary"])
@@ -659,16 +573,30 @@ class ReviewAndGateTest(RunCase):
         self.assertIn("Test changes: 1 justified", summary)
         self.assertIn("S2 (Medium) `src/auth.ts:88`", summary)
         self.assertEqual([q["header"] for q in out["questions"]], ["Gate", "S2"])
+        self.assertEqual(out["questions"][0]["options"][0]["label"],
+                         "Mark ready for review")
+
+    def test_the_open_pr_gate_needs_no_review_and_asks_no_triage(self):
+        self.reports()
+        for name in ("CODE_REVIEW.md", "SECURITY_REVIEW.md"):  # no review has run yet
+            (self.dir / name).unlink()
+        r = self.lib("gate-summary", "--dir", self.dir, "pr", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        summary = "\n".join(out["summary"])
+        self.assertNotIn("Acceptance —", summary)  # the verifier runs on the draft
+        self.assertIn("Not verified or reviewed yet", summary)
+        self.assertEqual([q["header"] for q in out["questions"]], ["Gate"])
         self.assertEqual(out["questions"][0]["options"][0]["label"], "Open PR")
 
-    def test_pr_gate_refuses_stale_results_and_open_integrity_findings(self):
+    def test_ready_gate_refuses_stale_results_and_open_integrity_findings(self):
         self.reports()
         (self.worktree / "app.ts").write_text("export const one = 5;\n")
-        r = self.cmd("gate-summary", "pr")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 1)
         self.assertIn("stale", r.stderr)
         self.reports(judgment="Unjustified")
-        r = self.cmd("gate-summary", "pr")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 1)
         self.assertIn("Unjustified", r.stderr)
 
@@ -694,28 +622,28 @@ class ReviewAndGateTest(RunCase):
         self.env = {**self.env, **env,
                     "PATH": f"{bin_dir}:{self.env['PATH']}"}
 
-    def test_pr_gate_cannot_run_when_check_fresh_cannot(self):
+    def test_ready_gate_cannot_run_when_check_fresh_cannot(self):
         self.reports()
         self.stub_git(STUB_GIT_FAIL="-C")  # check-fresh.py runs `git -C <worktree>`
-        r = self.cmd("gate-summary", "pr")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertNotIn("stale", r.stderr)
 
-    def test_pr_gate_cannot_run_when_submodule_foreach_fails(self):
+    def test_ready_gate_cannot_run_when_submodule_foreach_fails(self):
         self.reports()
         self.stub_git(STUB_GIT_FAIL="foreach")
-        r = self.cmd("gate-summary", "pr")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("submodule", r.stderr)
 
-    def test_pr_gate_refuses_edits_inside_a_submodule(self):
+    def test_ready_gate_refuses_edits_inside_a_submodule(self):
         self.reports()
         self.stub_git(STUB_GIT_SUBMODULE="Entering 'vendor/lib'\n?? src/generated.ts")
-        r = self.cmd("gate-summary", "pr")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("vendor/lib: ?? src/generated.ts", r.stderr)
 
-    def test_pr_gate_asks_about_the_most_severe_findings_for_the_user(self):
+    def test_ready_gate_asks_about_the_most_severe_findings_for_the_user(self):
         self.reports()
         rows = [("S2", "Medium", "for the user"), ("S3", "Low", "advisory"),
                 ("S4", "High", "for the user"), ("S5", "High", "advisory"),
@@ -725,7 +653,7 @@ class ReviewAndGateTest(RunCase):
             f"| {i} | finding {i} | `src/auth.ts:{n}` | pre-existing | {conf} | confirmed "
             f"| {verdict} | — |\n" for n, (i, conf, verdict) in enumerate(rows))
         path.write_text(text)
-        r = self.cmd("gate-summary", "pr", "--json")
+        r = self.lib("gate-summary", "--dir", self.dir, "ready", "--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = json.loads(r.stdout)
         self.assertEqual([q["header"] for q in out["questions"]],
@@ -736,97 +664,9 @@ class ReviewAndGateTest(RunCase):
     def test_main_gate_refuses_a_draft(self):
         self.script_gh([{"args": ["pr", "view"], "stdout": json.dumps(
             {"state": "OPEN", "isDraft": True, "headRefOid": "a" * 40})}])
-        r = self.cmd("gate-summary", "main", "--pr", "7")
+        r = self.lib("gate-summary", "--dir", self.dir, "main", "--pr", "7")
         self.assertEqual(r.returncode, 1)
         self.assertIn("draft", r.stderr)
-
-
-class ProposalParserTest(unittest.TestCase):
-    """The whole-item SPEC.md parser and the proposal and rulings parsers."""
-
-    def test_items_keep_wrapped_lines_and_ignore_spacing(self):
-        items = art.spec_items(SPEC)
-        self.assertEqual(list(items), ["1", "2", "S1"])
-        one = items["1"]
-        self.assertEqual(one["statement"],
-                         "A todo can carry a due date that the list shows next to its title")
-        self.assertEqual(one["edge"], "an invalid date is rejected → 400")
-        self.assertEqual(one["verify"], "integration")
-        rewrapped = SPEC.replace("A todo can carry a due date that the list shows next to "
-                                 "its title", "A todo can carry a due date\n   that the "
-                                 "list shows  next to its title")
-        again = art.spec_items(rewrapped)
-        self.assertEqual(again["1"]["words"], one["words"])
-        self.assertEqual(again["1"]["statement"], one["statement"])
-        changed = art.spec_items(SPEC.replace("earliest first", "latest first"))
-        self.assertNotEqual(changed["2"]["words"], items["2"]["words"])
-        # Prose after the last item is not part of it.
-        tail = art.spec_items(SPEC + "Every criterion holds for the API too.\n")
-        self.assertNotIn("API", tail["S1"]["words"])
-        self.assertNotIn("Assumptions", items["2"]["words"])
-        with self.assertRaises(art.ArtifactError):
-            art.spec_items("## Context\nx\n")
-        with self.assertRaises(art.ArtifactError):
-            art.spec_items("## Conditions\n1. a\n1. b\n")
-
-    def test_proposal_blocks_read_each_field_and_the_new_items(self):
-        text = ("# Spec proposals\n\n## P1\n- Target: condition 1\n"
-                "- Why: the list also shows the date\n  in the detail view\n"
-                "- Comment: none\n- From: the verifier (verifier #3)\n- New text:\n"
-                "1. A todo can carry a due date that the list and detail view show\n"
-                "   - Example: Given todo 7, when set, then both show it.\n"
-                "   - Edge: an invalid date is rejected → 400\n"
-                "   - Verify by: integration\n\n"
-                "## P2\n- Target: new condition\n- Why: undated todos\n- Comment: 12345\n"
-                "- New text:\n3. Undated todos sort last\n   - Example: Given one undated, "
-                "then it is last.\n   - Edge: none\n   - Verify by: unit\n")
-        blocks = art.proposal_blocks(text)
-        self.assertEqual([b["pid"] for b in blocks], ["P1", "P2"])
-        p1, p2 = blocks
-        self.assertEqual(p1["target"], "condition 1")
-        self.assertEqual(p1["why"], "the list also shows the date in the detail view")
-        self.assertEqual(p1["from"], "the verifier (verifier #3)")
-        self.assertEqual([i["id"] for i in p1["items"]], ["1"])
-        self.assertEqual(p1["items"][0]["verify"], "integration")
-        self.assertEqual((p2["target"], p2["comment"]), ("new condition", "12345"))
-        self.assertEqual([i["id"] for i in p2["items"]], ["3"])
-        self.assertEqual(art.proposal_blocks("# Spec proposals\n\nnone\n"), [])
-        missing = art.proposal_blocks("## P1\n- Target: condition 2\n")[0]
-        self.assertEqual((missing["why"], missing["items"]), ("", []))
-
-    def test_rulings_read_answer_and_reason(self):
-        text = ("# Rulings\n\n## P1\n- Answer: `Applied`\n- Reason: none\n\n"
-                "## P2\n- Answer: stands\n- Reason: the ticket asks for the earliest\n"
-                "  first, as written\n")
-        self.assertEqual(art.rulings(text), {
-            "P1": {"answer": "applied", "reason": ""},
-            "P2": {"answer": "stands",
-                   "reason": "the ticket asks for the earliest first, as written"}})
-        self.assertEqual(art.rulings("## P1\n- Answer: stands\n")["P1"]["reason"], "")
-
-    def test_build_steps_read_whole_and_whitespace_insensitive(self):
-        plan = ("# Plan\n\n## Files\n- src/cart.ts\n\n## Build sequence\n"
-                "1. Add the cart total in src/cart.ts — test: `src/cart.test.ts`\n"
-                "2. Refuse an empty cart\n   in the checkout route\n"
-                "   - with its own test\n"
-                "3. Wire the route\n\nA note after the steps.\n\n## Test plan\nx\n")
-        steps = art.plan_steps(plan, "IMPLEMENTATION.md")
-        self.assertEqual(list(steps), ["1", "2", "3"])
-        self.assertEqual(steps["2"]["words"],
-                         "2. Refuse an empty cart in the checkout route - with its own test")
-        self.assertNotIn("note", steps["3"]["words"])
-        self.assertNotIn("Test plan", steps["3"]["words"])
-        rewrapped = plan.replace("2. Refuse an empty cart\n   in the checkout route",
-                                 "2. Refuse an  empty cart in\n      the checkout route")
-        self.assertEqual(art.plan_steps(rewrapped)["2"]["words"], steps["2"]["words"])
-        reworded = plan.replace("Wire the route", "Wire the route and its handler")
-        self.assertNotEqual(art.plan_steps(reworded)["3"]["words"], steps["3"]["words"])
-        with self.assertRaises(art.ArtifactError) as err:
-            art.plan_steps(plan.replace("3. Wire", "2. Wire"), "IMPLEMENTATION.md")
-        self.assertIn("IMPLEMENTATION.md", str(err.exception))
-        self.assertIn("numbered twice", str(err.exception))
-        with self.assertRaises(art.ArtifactError):
-            art.plan_steps("# Plan\n\n## Files\nx\n", "IMPLEMENTATION.md")
 
 
 if __name__ == "__main__":
