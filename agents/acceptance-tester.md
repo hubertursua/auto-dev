@@ -221,15 +221,11 @@ or `MALFORMED:` result is not a gap: return as you would without it.
 The task above applies, scoped to the conditions {{scope}} names, with these
 changes. Never start clean, whatever the scope says: restore or delete no file
 you did not write, since the tree may hold the coder's build.
-The tree holds the built change, or (before Phase 5) a plan revision changed
-the checks' entry points. The report that sent you here:
+The tree holds the built change, or a plan revision after a step the coder
+stopped changed the checks' entry points. The report that sent you here:
 {{report}}
 
-A quality-gate failure on a check file is never STANDS: fix its lint, format or
-types without changing what it asserts, or return `failed` naming the rule you
-can't satisfy.
-
-Any other report: first decide, against PLAN.md alone, whether it is right. If
+First decide, against PLAN.md alone, whether it is right. If
 the check is right as it is, change nothing and return `next: STANDS`, with your
 reason above the result block.
 

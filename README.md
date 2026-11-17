@@ -3,8 +3,9 @@
 An orchestration skill for autonomous development.
 
 It takes one coding task (a ticket, an idea or a spec) to a merged pull
-request. It stops to ask you only at a few gates, chiefly before it opens the
-PR and before it merges ([*Human gates*](#human-gates--integrations)).
+request. It stops to ask you only at a few gates, chiefly before the draft PR
+is marked ready for review and before it merges
+([*Human gates*](#human-gates--integrations)).
 
 Each job goes to a purpose-built **worker** (a subagent), and the workers hand
 structured artifacts to each other through a `.auto-dev/` scratch directory.
@@ -118,11 +119,12 @@ Orchestrator (main agent) ── runs the `next` loop and the human gates; never
 ├─ Phase 1  Setup ......... detect repo, profile (saved, or profiler + your OK), ticket, worktree
 ├─ Phase 2  Planner ....... PLAN.md — conditions, SIZE CHECK, risk tier, steps
 │           Plan critic ..... checks it against the ticket and the code (one revision, one re-check)
-├─ Phase 3  Acceptance tester  checks from the conditions, proven to fail, committed first [optional gate]
+│                             [optional post-plan gate]
+├─ Phase 3  Acceptance tester  checks from the approved conditions, proven to fail, committed first
 ├─ Phase 4  Coder ......... code + tests, from PLAN.md, against the committed checks; quality gate green
 ├─ Phase 5  (script) ...... `quality-gate` confirms the gate; risk tier re-checked from the diff
 └─ Phase 6  orch + workers  draft PR → verifier ∥ reviewer ∥ CI → [GATE] ready → [GATE] main
-            (high risk: verifier ∥ 3-reviewer panel + judge ∥ security reviewer ∥ CI)
+            (high risk: verifier, then 3-reviewer panel + judge ∥ security reviewer, ∥ CI)
             Triager ......... reads red CI logs and human PR comments, so the orchestrator never does
             Planner ......... settles a step the coder stopped (Phases 4–6)
             Acceptance tester  repairs a questioned check, or says why it is right (Phases 4–6)
@@ -280,7 +282,9 @@ continue` to pick up. Started inside a run's worktree, it continues that run;
 elsewhere, it asks when several runs are open. Nothing crosses a session
 boundary except `.auto-dev/` and the git tree, which also makes an interrupted
 run resumable: `autodev.py resume` finds it, and `next` picks up where it
-stopped.
+stopped. A run started on auto-dev 3.x or 4.x can't be resumed: `resume`
+names it, and you finish it on that version or remove its worktree and start
+again.
 
 ## Size check: one PR, or back to you
 
@@ -478,9 +482,9 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
     again).
 
   Re-running the stopped step costs no round. Whatever a fix changed is
-  checked again before the run goes on: the quality gate and the verifier on
-  changed code, the verifier's first pass on a changed spec or plan, and in
-  Phase 6 a review of the changed files
+  checked again before the run goes on: the quality gate on changed code,
+  and in Phase 6 a pass on it (the verifier, judging every condition again
+  when `PLAN.md` changed, with the review of the changed files)
   (`skills/auto-dev/references/tables.md`, _Overriding a stop_).
 
 ## Stack profiles
