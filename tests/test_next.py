@@ -2949,6 +2949,25 @@ class LeanTest(NextCase):
         self.assertIn("in one message, in parallel", out["ACTION"])
         self.assertNotIn("run_in_background: false", out["ACTION"])
 
+    def test_the_three_spawn_stop_on_a_pass_ends_both_workers(self):
+        # Neither worker of the pass ever returns: the stop ends both spawns, so
+        # after talk the stop is asked again, not a wait for the other worker.
+        self.draft_pr()
+        out = self.next(0)
+        self.assertEqual(sorted(w for w, _ in self.spawned(out)), ["reviewer", "verifier"],
+                         json.dumps(out, indent=2))
+        for _ in range(2):
+            self.assertEqual(len(self.spawned(self.next_reissue(0))), 2)
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        r = self.autodev("override", "talk", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), shown)
+        self.assertIn("QUESTION", out, shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+
 
 class PublishTest(NextCase):
     def test_a_refresh_brings_the_overrides_made_after_the_draft_opened(self):
@@ -4896,6 +4915,20 @@ class OverrideTest(OverrideCase):
         self.answer("fixer", 1, "NEEDS_CONSENT", fix_report="x", changed="0")
         out = self.next(4)
         self.assertEqual(self.labels(out)[0], "Approve the fixer's proposal")
+
+    def test_the_brief_a_fixed_fixer_sends_again_is_waited_for(self):
+        # The fixer's FIXED lifts the stop at the same seq the planner's brief is
+        # then sent out again at: that brief is out, not stale.
+        (self.dir / "acceptance" / "MANIFEST.md").unlink()  # the plan stage: no checks yet
+        out = self.stopped_after_three_spawns()
+        self.assertEqual(self.fix(out, "point the planner at the fixture"), ("fixer", 1))
+        self.report(1)
+        self.answer("fixer", 1, "FIXED", fix_report=str(self.dir / "override" / "fixer-1.md"),
+                    changed="0")
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("BRIEF"), [str(self.dir / "briefs" / "planner-1.md")], shown)
+        self.assert_waits_for(self.next(0), "planner #1")
 
 
 class OverrideShipTest(OverrideCase):
