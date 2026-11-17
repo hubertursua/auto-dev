@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from pathlib import Path
 
@@ -379,6 +380,58 @@ class NextCase(RunCase):
         (self.dir / "returns" / f"{worker}-{n}.json").write_text(json.dumps(
             {"worker": worker, "status": "ok", **DEFAULT_KEYS.get(worker, {}),
              **data}))
+
+    def next_reissue(self, expect=None):
+        """`next --reissue`: every agent the last wait named has returned."""
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        try:
+            out = json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --reissue printed no JSON (exit {r.returncode}):\n"
+                      f"{r.stdout}{r.stderr}")
+        if expect is not None:
+            self.assertEqual(out.get("exit"), expect, json.dumps(out, indent=2))
+        return out
+
+    def assert_waits_for(self, out, *names):
+        """`out` tells the orchestrator to wait for each of `names` (`planner #1`)
+        and spawns nothing."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertTrue(out.get("ACTION", "").startswith("wait"), shown)
+        for name in names:
+            self.assertIn(name, out["ACTION"], shown)
+        self.assertNotIn("AGENT", out, shown)
+        self.assertNotIn("BRIEF", out, shown)
+
+    def assert_spawns_planner_1_again(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:planner"], shown)
+        self.assertEqual(self.spawned(out), [("planner", 1)], shown)
+        self.assertFalse((self.dir / "briefs" / "planner-2.md").exists())
+
+    def brief_files(self):
+        return sorted(p.name for p in (self.dir / "briefs").iterdir())
+
+    def stopped_after_three_spawns(self):
+        """planner #1 spawned, then `next --reissue` three times: the third stops."""
+        self.expect("planner")
+        for _ in range(2):
+            self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
+        return out
+
+    def sent_out_ago(self, worker, n, **ago):
+        """Make `worker` #`n`'s brief look as if it was last sent out `ago` back."""
+        when = (datetime.now(timezone.utc) - timedelta(**ago)).replace(microsecond=0)
+        state = self.state()
+        brief = next(b for b in state["briefs"] if (b["worker"], b["n"]) == (worker, n))
+        brief["at"] = when.isoformat()
+        if "issued_at" in brief:
+            brief["issued_at"] = when.isoformat()
+        self.write_state(state)
 
 
 OVERSIZED_PLAN = PLAN.split("## Size check")[0] + (
@@ -969,6 +1022,84 @@ class PlanTest(NextCase):
         _, jobs = self.expect("planner")
         self.answer(*jobs[0], "", status="failed")
         self.assertIn("failed twice", " ".join(self.next(4)["REPORT"]))
+
+    def test_a_brief_out_in_this_session_is_waited_for(self):
+        self.expect("planner")
+        before = self.brief_files()
+        out = self.next(0)
+        self.assert_waits_for(out, "planner #1")
+        self.assertEqual(self.brief_files(), before)  # no brief written
+
+    def test_asking_again_and_again_while_a_worker_is_out_never_stops_the_run(self):
+        self.expect("planner")
+        events = self.state()["events"]
+        actions = []
+        for _ in range(5):
+            out = self.next()
+            self.assertNotIn("spawned 3 times", " ".join(out.get("REPORT", [])))
+            self.assert_waits_for(out, "planner #1")
+            self.assertEqual(self.state()["events"], events)
+            actions.append(out["ACTION"])
+        self.assertEqual(len(set(actions)), 1, actions)  # the same wait each time
+
+    def test_reissue_sends_the_same_brief_and_a_plain_next_then_waits(self):
+        self.expect("planner")
+        self.assert_spawns_planner_1_again(self.next_reissue(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_three_spawns_by_reissue_still_stop_the_run(self):
+        self.expect("planner")
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
+
+    def test_a_brief_from_an_earlier_session_is_sent_again(self):
+        self.expect("planner")
+        self.resume()
+        self.assert_spawns_planner_1_again(self.next(0))
+
+    def test_a_brief_sent_again_after_a_resume_is_waited_for(self):
+        self.expect("planner")
+        self.resume()
+        self.assert_spawns_planner_1_again(self.next(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_a_brief_out_over_three_hours_is_sent_again_then_waited_for(self):
+        self.expect("planner")
+        self.sent_out_ago("planner", 1, hours=3, minutes=10)
+        self.assert_spawns_planner_1_again(self.next(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_a_brief_out_under_three_hours_is_waited_for(self):
+        self.expect("planner")
+        self.sent_out_ago("planner", 1, hours=2, minutes=50)
+        before = self.brief_files()
+        self.assert_waits_for(self.next(0), "planner #1")
+        self.assertEqual(self.brief_files(), before)
+
+    def test_a_retry_at_the_three_spawn_stop_sends_the_brief_again(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_spawns_planner_1_again(self.next(0))
+
+    def test_the_brief_sent_again_after_a_retry_is_waited_for(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_spawns_planner_1_again(self.next(0))
+        before = self.brief_files()
+        self.assert_waits_for(self.next(0), "planner #1")
+        self.assertEqual(self.brief_files(), before)
+
+    def test_a_lone_spawn_is_sent_in_the_foreground(self):
+        out = self.next(0)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:planner"], json.dumps(out, indent=2))
+        self.assertIn("auto-dev:planner", out["ACTION"])
+        self.assertIn("run_in_background: false", out["ACTION"])
 
 
 class BuildTest(NextCase):
@@ -2748,6 +2879,38 @@ class LeanTest(NextCase):
         self.assertIn("spent `pass-1`", out["BUDGET"])
         self.assertEqual(self.state()["budget"]["remaining"], left - 1)  # one round
         self.assertEqual(self.state()["phase6"]["corrections"][-1]["also"], ["ci-1"])
+
+    def test_a_pass_half_returned_records_and_waits(self):
+        self.draft_pr()
+        ver, rev = self.solo(verifier=None)  # only the reviewer's result is written
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue([ln for ln in out.get("RECORDED", [])
+                         if ln.startswith(f"reviewer-{rev[1]}:")], shown)
+        self.assert_waits_for(out, f"verifier #{ver[1]}")
+        self.assertNotIn(f"reviewer #{rev[1]}", out["ACTION"], shown)
+        self.assertIn("only once every agent this wait names has returned", out["ACTION"])
+
+    def test_a_pass_whose_last_worker_returns_moves_on_without_a_respawn(self):
+        self.draft_pr()
+        ver, _ = self.solo(verifier=None)
+        self.next(0)  # the reviewer's result is recorded
+        self.verifier_answer(ver)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue([ln for ln in out.get("RECORDED", [])
+                         if ln.startswith(f"verifier-{ver[1]}:")], shown)
+        self.assertFalse([w for w, _ in self.spawned(out) if w in ("verifier", "reviewer")],
+                         shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+
+    def test_a_parallel_pass_is_sent_in_one_message_not_the_foreground(self):
+        self.draft_pr()
+        out = self.next(0)
+        self.assertEqual(sorted(w for w, _ in self.spawned(out)), ["reviewer", "verifier"],
+                         json.dumps(out, indent=2))
+        self.assertIn("in one message, in parallel", out["ACTION"])
+        self.assertNotIn("run_in_background: false", out["ACTION"])
 
 
 class PublishTest(NextCase):
@@ -4661,6 +4824,35 @@ class OverrideTest(OverrideCase):
         self.assertEqual(self.state()["size"], "FITS")
         _, jobs = self.expect("planner")  # the kept plan gets its steps first
         self.assertEqual(self.mode(*jobs[0]), "revise")
+
+    def test_the_three_spawn_stop_asks_again_after_talk_and_leave(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "talk", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), shown)
+        self.assertIn("QUESTION", out, shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+        r = self.autodev("override", "leave", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("The user chose to leave the run stopped here; the worktree stays.",
+                      " ".join(out["REPORT"]), shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+
+    def test_a_fixer_at_the_three_spawn_stop_is_waited_for_alone(self):
+        out = self.stopped_after_three_spawns()
+        job = self.fix(out, "point the planner at the fixture")
+        self.assertEqual(job, ("fixer", 1))
+        out = self.next(0)
+        self.assert_waits_for(out, "fixer #1")
+        self.assertNotIn("planner #1", out["ACTION"])
+        self.report(1, proposal="Point the planner at the fixture repo.")
+        self.answer("fixer", 1, "NEEDS_CONSENT", fix_report="x", changed="0")
+        out = self.next(4)
+        self.assertEqual(self.labels(out)[0], "Approve the fixer's proposal")
 
 
 class OverrideShipTest(OverrideCase):
