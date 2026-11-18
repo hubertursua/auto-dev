@@ -1,7 +1,29 @@
 """autodev.py next — print the pipeline's one next action.
 
 Usage:
-    autodev.py next [--dir <artifact-dir>] [--explain] [--reissue] [--json]
+    autodev.py next [--dir <artifact-dir>] [--explain] [--reissue]
+                    [--max-wait SECONDS] [--json]
+    autodev.py next --repo <checkout> --task "<task>" [--ask "<restated ask>"]
+                    [--ticket KEY] [--ticket-url URL] [--ticket-text-file PATH]
+                    [--jira "<text>"] [--reissue] [--max-wait SECONDS] [--json]
+
+Before the run exists (Phase 1, setup), run it with --repo, the checkout you
+started in, and --task (the ticket key when there is a ticket; --ask and the
+ticket flags are needed on the first call only). --ask, the task restated in
+the user's words, is stored as the run's ask: the planner gets it when there
+is no ticket text, and a later --task naming it finds the run (here and in
+`resume`) as the task text does. It prints one step at a time, in the same
+shape as below: the lookup to spawn for a saved profile (whether
+each gate check's tool is adopted: a check whose tool the repo never adopted
+is left out of this run and the user is told), or the profiler to spawn when
+there is no usable profile, then the profile question (exit 5: its AFTER
+lines run `autodev.py setup-answer`); then it creates the worktree, branch and
+run (`autodev.py init`, setup waited on for at most --max-wait seconds,
+default 90) and says to move into the worktree, with `next --dir` as AFTER. A
+`.auto-dev.yml` that sets both `setup` and `gate` needs no research. Run it
+again at any point: it waits for a worker with no result, and points to the
+run once it exists. Its files live in a private folder under the temp folder
+until then. --explain needs a run.
 
 Reads state.json (the workers' recorded results, the briefs issued, the
 gates, the marks and the Phase 6 fields) and the artifacts, and
@@ -15,7 +37,9 @@ workers need no `record` call. A brief with no result file is waited for
 while its worker may still be running: the ACTION starts with `wait`, names
 it, and spawns nothing. Run `next` only once every agent of the last spawn
 returned; `next --reissue` sends such a brief out again, and is for when
-every agent the wait names returned without writing its result file.
+every agent the wait names returned without writing its result file. In a
+run it re-sends the same brief; before the run exists (--repo) it writes the
+brief again under a new number.
 
 It does the mechanical steps itself rather than asking you to: it writes the
 brief of the worker to spawn, spends a round of the budget before a plan
@@ -92,7 +116,8 @@ so the text needs no other escaping.
 Exit codes:
     0  an action to take
     2  could not run (no state.json, an artifact unreadable, a check that could
-       not run) — never a pass
+       not run; with --repo: no --task, an unreadable ticket text file, an
+       unsafe scratch folder) — never a pass
     3  the run is complete
     4  stop and report: tell the user the REPORT lines; with a QUESTION, ask
        how to go on and run the AFTER line for the answer (an `override`
@@ -101,6 +126,15 @@ Exit codes:
     5  ask the user: show SUMMARY, ask QUESTION, run the AFTER line for the answer
     6  a checkpoint: run the AFTER command, give the user its message, stop
 `next` never exits 1: a step it could not take is a stop (4) that says why.
+
+While Phase 1's setup is not done, `next --dir` runs `init --continue`
+itself: it waits on setup (exit 0 with `next --dir` as AFTER while it still
+runs), and after a failed setup the user came back to (`resume`, then
+`next`), runs it again from the profile the run was made from
+(`.auto-dev/profile-origin.json`: the saved file read again, less the checks
+dropped at creation; the run's own profile.yml; or .auto-dev.yml). A failed
+setup is a stop with no QUESTION, as is a setup stop before the run exists:
+the REPORT says how to go on.
 
 Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
 (80, or `checkpoint_events` in .auto-dev.yml), `next` ends the session at the
@@ -125,7 +159,8 @@ stop ended is no longer waited for, so the stop is asked again. A stop on a
 worker (blocked, failed twice, never returned) is lifted by `resume`: the
 next session spawns that worker again. A stop on a result (a red quality gate, an impossible spec)
 comes back until the user overrides it. Every stop but the budget's, a gate's
-Stop, a failed setup and a merge of unknown outcome prints a QUESTION and is
+Stop, a setup stop (before the run exists, or a failed setup) and a merge of
+unknown outcome prints a QUESTION and is
 saved as state["stop"]: `autodev.py override` records the answer (the fixer
 with the user's instruction, a retry, a sign-off where the stop allows one,
 talk, leave), and the next `next` acts on it, running only the step that
@@ -194,6 +229,20 @@ FILL = ("replace each '<...>' placeholder, inside its single quotes, with text t
 
 def add_arguments(parser):
     parser.add_argument("--dir", default=".auto-dev", help="the run's .auto-dev/")
+    parser.add_argument("--repo", help="before the run exists: the checkout to set it up "
+                                       "from (Phase 1); needs --task")
+    parser.add_argument("--task", help="with --repo: the task, one line (the ticket key "
+                                       "when there is a ticket)")
+    parser.add_argument("--ask", help="with --repo: the task restated in 1-2 sentences, "
+                                      "in the user's words")
+    parser.add_argument("--ticket", help="with --repo: the Jira key, when there is a ticket")
+    parser.add_argument("--ticket-url", help="with --repo: the ticket's link")
+    parser.add_argument("--ticket-text-file", metavar="PATH",
+                        help="with --repo: a file holding the ticket's summary and "
+                             "description, given to the planner verbatim")
+    parser.add_argument("--jira", help="with --repo: Jira availability, for profile.md")
+    parser.add_argument("--max-wait", type=int, default=90,
+                        help="seconds one call waits on the run's setup (default 90)")
     parser.add_argument("--explain", action="store_true",
                         help="print the action and the rule that chose it, changing "
                              "nothing")
@@ -671,7 +720,14 @@ def undo_fix(c, brief, n):
 # ---------------------------------------------------------------- entry point
 
 def main(args):
+    if args.repo:
+        return show(setup_before_run(args), args)
+    for flag in ("task", "ask", "ticket", "ticket_url", "ticket_text_file", "jira"):
+        if getattr(args, flag):
+            raise Fail(f"--{flag.replace('_', '-')} needs --repo (it sets a run up)",
+                       CANNOT_RUN, "ERROR")
     c = Ctx(args)
+    c.max_wait = args.max_wait
     try:
         result = decide(c)
     except Preview as exc:
@@ -698,6 +754,20 @@ def main(args):
     result = stop_point(c, result)
     c.save()
     return show(result, args)
+
+
+def setup_before_run(args):
+    """`next --repo`: Phase 1, before the run exists (cmd_setup). A step it
+    could not take is a stop, as for a run, never exit 1."""
+    from . import cmd_setup
+    try:
+        return cmd_setup.run_setup(args)
+    except Fail as exc:
+        if exc.code == CANNOT_RUN:
+            raise
+        return stop([f"`next` could not take its setup step ({exc.token}): {exc}",
+                     "Tell the user; nothing more was created."],
+                    f"a setup step failed: {exc.token}")
 
 
 def show(result, args):
@@ -796,7 +866,9 @@ def decide_step(c):
     if bad:
         return bad
     if st.phase(c.state, 1)["status"] != "done":
-        return setup(c)
+        result = setup(c)
+        if result is not None:
+            return result
     if checkpoint_due(c):
         # Only at a clean point: a stop, a question or a boundary comes first.
         probe = c if c.readonly else c.probe()
@@ -835,7 +907,12 @@ def ended(c, how):
     rows = [f"Phase {n} — {name}: {st.phase(c.state, n)['status']}"
             + (f" ({st.phase(c.state, n)['notes']})" if st.phase(c.state, n)["notes"] else "")
             for n, name in st.PHASES if st.phase(c.state, n)["status"] in ("stopped", "held")]
-    if how == "held":
+    if how == "held" and st.phase(c.state, 1)["status"] == "held":
+        from .cmd_init import setup_source
+        rows.append(f"Phase 1's setup failed. Tell the user to fix the cause in "
+                    f"{setup_source(c.ad, c.state)}, then say `auto-dev continue` in a new "
+                    "session: `next` runs setup again.")
+    elif how == "held":
         rows.append("The run is held. Saying `auto-dev continue` in a new session "
                     "re-asks the gate that held it.")
     elif c.state.get("size") == "OVERSIZED":
@@ -1008,14 +1085,29 @@ def not_ok(c):
 
 
 def setup(c):
-    status = c.state["init"].get("setup")
-    if status in ("running", "pending"):
-        return action(f"run `python3 {q(AUTODEV)} init --continue {q(c.wt)}` (setup is "
-                      "still running)", "Phase 1's setup has not finished",
-                      AFTER=[c.cmd("next")])
-    return stop([(f"Phase 1 did not finish: {st.phase(c.state, 1)['notes'] or status}. "
-                 "Tell the user; fix the cause, then run init --continue.")],
-                "Phase 1 is not done")
+    """Phase 1's setup is not done: wait on it, or (after a failed setup the
+    user came back to) run it again from the profile the run was made from.
+    None once it is done, so the phases go on."""
+    from . import cmd_setup
+    c.would("wait for setup, or run it again (`init --continue`)",
+            "Phase 1's setup has not finished")
+    code, message = cmd_setup.finish_run(c.ad, c.state, getattr(c, "max_wait", 90))
+    if code == CANNOT_RUN or code not in (0, 1, 3):
+        raise Fail(f"init --continue could not run (exit {code}): {message}", CANNOT_RUN,
+                   "ERROR")
+    c.state = st.load(c.dir)  # init wrote it
+    c.p6 = c.state.setdefault("phase6", {})
+    if code == 0:
+        cmd_setup.remove_scratch(c.state["repo"]["main_checkout"],
+                                 c.state["task"].get("text", ""))
+        return None
+    if code == 3:
+        return action("setup is still running; run AFTER (it waits for it again)",
+                      "Phase 1's setup has not finished", AFTER=[c.cmd("next")])
+    return stop([f"Phase 1's setup failed: {message}",
+                 ("Tell the user to fix the cause, then say `auto-dev continue` in a new "
+                  "session: `next` runs setup again. "
+                  f"State and artifacts: {c.ad}")], "Phase 1's setup failed")
 
 
 def runbook(c, stage):

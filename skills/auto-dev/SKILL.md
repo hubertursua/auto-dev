@@ -92,7 +92,7 @@ repo. Below, `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 | Prints | Do |
 |---|---|
 | `FRESH` | a new run: follow `references/plan.md` from step 1 |
-| `RESUME <tree>` | read the runbook its `runbook:` line names (`references/plan.md`, `build.md` or `ship.md`). IF it also printed an `action:` line (setup is not done), run that `init --continue` command first, as `plan.md` says. Then go to **The loop** |
+| `RESUME <tree>` | read the runbook its `runbook:` line names (`references/plan.md`, `build.md` or `ship.md`), `cd <tree>`, then go to **The loop**. An `action:` line (setup is not done) needs nothing more: the first `next` finishes setup, or runs it again |
 | `ASK` | show the user the `candidates` lines and ask which run is theirs, or whether to start fresh. Then run `resume` again with `--task` set to the chosen run's task, or follow `plan.md` for a fresh one |
 | `FINISHED <tree>` | tell the user that run already finished or was stopped; ask whether to start a fresh one |
 | `OLD-VERSION <tree>` | tell the user: "This run was started on an older auto-dev (its `action` line names the version, 3.x or 4.x, and the release to finish it on). Finish it there, or remove its worktree (`git worktree remove <tree>`) and start again." Then stop |
@@ -105,7 +105,9 @@ user what to work on; never start a run unasked.
 
 From inside the worktree, repeat:
 
-1. Run `autodev.py next --dir <artifact-dir>`.
+1. Run `autodev.py next --dir <artifact-dir>`. Before the run exists (Phase 1),
+   it is the `autodev.py next --repo <repo> --task "<task>"` command
+   `references/plan.md` gives, run from the checkout you started in.
 2. Do what its `ACTION` line says, using the lines below it.
 3. Run each `AFTER` command, in order (for a question, only the one for the
    user's answer).
@@ -214,4 +216,4 @@ for the rest of the session.
 | `references/ship.md` | when `next` says the run enters the Ship stage, or a run resumed in it |
 | `references/tables.md` | to explain a stop or how to override one, a gate option, the budget or a stale report; to ask a lookup |
 | `references/gates-and-jira.md` | when `next` says to move a Jira ticket |
-| `references/profiles.md` | Phase 1, when resolving the profile |
+| `references/profiles.md` | Phase 1, for the permissions guidance the profile question shows, or when the user asks about profiles |

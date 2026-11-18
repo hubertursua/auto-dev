@@ -51,6 +51,25 @@ class CheckRepoTest(unittest.TestCase):
                     "evals/files/no-such-dir"):
             self.assertTrue(any(f"names {ref}," in e for e in errors), (ref, errors))
 
+    def test_runbook_setup_check_flags_setup_commands(self):
+        tool = load_tool()
+        tool.check_runbook_setup()  # the repo's own plan.md and SKILL.md
+        self.assertEqual(tool.errors, [])
+        for line in ("Run `autodev.py init --repo <repo> --slug <slug>`.",
+                     "Then run `autodev.py init --continue <tree>`.",
+                     "Run `python3 <skill-dir>/scripts/profile-path.py <repo>`.",
+                     "Run `validate-config.py --profile <path>`.",
+                     "`autodev.py brief profiler --out <tmp>`",
+                     "`autodev.py brief lookup --out <tmp>`"):
+            with self.subTest(line=line):
+                tool = load_tool()
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "plan.md"
+                    path.write_text(f"# Plan\n\n{line}\n", encoding="utf-8")
+                    tool.check_runbook_setup([path])
+                self.assertEqual(len(tool.errors), 1, tool.errors)
+                self.assertIn("plan.md:3", tool.errors[0])
+
     def check_agent_text(self, text):
         tool = load_tool()
         with tempfile.TemporaryDirectory() as tmp:

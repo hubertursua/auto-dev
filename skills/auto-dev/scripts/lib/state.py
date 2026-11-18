@@ -25,7 +25,7 @@ STAGES = {1: "plan", 2: "plan", 3: "plan", 4: "build", 5: "build", 6: "ship"}
 STAGE_NAMES = {"plan": "Plan", "build": "Build", "ship": "Ship"}
 
 # `held` pauses the run where it is (resuming re-fires the gate that held it, or
-# for Phase 1 a failed setup, which `init --continue` runs again);
+# for Phase 1 a failed setup, which `next` runs again after `resume`);
 # `stopped` ends it (nothing resumes on its own).
 STATUSES = ("pending", "in-progress", "done", "n/a", "held", "stopped")
 COMPLETE = ("done", "n/a")

@@ -241,7 +241,8 @@ class InitTest(RunCase):
         r = self.autodev("resume", "--repo", self.repo)
         self.assertTrue(r.stdout.startswith(f"RESUME: {self.worktree}"), r.stdout)
         self.assertIn("phase: 1 — Setup", r.stdout)
-        self.assertIn(f"init --continue {self.worktree}", r.stdout)
+        self.assertIn("run `next`", r.stdout)
+        self.assertNotIn("init --continue", r.stdout)
         self.profile.write_text(PROFILE)
         r = self.cont("--profile", self.profile)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -260,6 +261,55 @@ class InitTest(RunCase):
         profile_md = (self.dir / "profile.md").read_text()
         self.assertIn("1. `echo ready > setup-ran.txt`", profile_md)
         self.assertNotIn("`false`", profile_md)
+
+    def test_a_failed_setup_names_auto_dev_continue_not_init(self):
+        self.profile.write_text(PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        r = self.init()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("auto-dev continue", r.stderr)
+        self.assertNotIn("init --continue", r.stderr)
+        notes = self.state()["phases"]["1"]["notes"]
+        self.assertIn("auto-dev continue", notes)
+        self.assertNotIn("init --continue", notes)
+
+    def test_init_records_each_note(self):
+        r = self.init("--note", "dropped gate check npx eslint .: never adopted",
+                      "--note", "a second note")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        notes = [n["text"] for n in self.state()["notes"]]
+        self.assertIn("dropped gate check npx eslint .: never adopted", notes)
+        self.assertIn("a second note", notes)
+        self.assertIn("dropped gate check npx eslint .: never adopted",
+                      (self.dir / "WORK_LOG.md").read_text())
+
+    def test_init_keeps_the_profile_origin(self):
+        origin = self.tmp / "origin.json"
+        record = {"kind": "saved", "path": "/profiles/acme/app.yml",
+                  "dropped": [{"n": 2, "command": "npx eslint ."}]}
+        origin.write_text(json.dumps(record))
+        r = self.init("--profile-origin", origin)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text()), record)
+        self.assertFalse((self.dir / "profile.yml").exists())
+        # Nothing init wrote is visible to git.
+        self.assertEqual(self.sh("git", "status", "--porcelain", cwd=self.worktree), "")
+
+    def test_a_draft_origin_keeps_the_profile_in_the_run(self):
+        origin = self.tmp / "origin.json"
+        origin.write_text(json.dumps({"kind": "draft"}))
+        r = self.init("--profile-origin", origin)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.dir / "profile.yml").read_text(), PROFILE)
+
+    def test_a_malformed_profile_origin_cannot_run(self):
+        origin = self.tmp / "origin.json"
+        for text in ("not json", json.dumps({"kind": "elsewhere"}), json.dumps([1])):
+            with self.subTest(text=text):
+                origin.write_text(text)
+                r = self.init("--profile-origin", origin)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("--profile-origin", r.stderr)
+                self.assertFalse(self.worktree.exists())
 
     def test_dead_setup_runner_is_restarted(self):
         self.assertEqual(self.init().returncode, 0)
@@ -446,6 +496,21 @@ class ResumeTest(RunCase):
         self.assertTrue(r.stdout.startswith(f"OLD-VERSION: {old}"), r.stdout)
         r = self.resume("--task", "Fix the expiry message")
         self.assertTrue(r.stdout.startswith("OLD-VERSION"), r.stdout)
+
+    def test_a_run_whose_setup_failed_is_told_to_run_next(self):
+        self.profile.write_text(PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        r = self.init()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        r = self.resume()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = [ln.strip() for ln in r.stdout.splitlines()]
+        self.assertEqual(lines[0], f"RESUME: {self.worktree}", r.stdout)
+        self.assertIn("phase: 1 — Setup", lines, r.stdout)
+        self.assertIn("setup: failed", lines, r.stdout)
+        actions = [ln for ln in lines if ln.startswith("action:")]
+        self.assertEqual(len(actions), 1, r.stdout)
+        self.assertIn("next", actions[0], r.stdout)
+        self.assertFalse([ln for ln in lines if "init --continue" in ln], r.stdout)
 
 
 class AdoptWorktreeTest(RunCase):
@@ -4045,3 +4110,35 @@ class QualityGateTest(RunCase):
         r = self.autodev("quality-gate", "--dir", self.dir)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("no quality gate", r.stderr)
+
+
+class SetupAnswerTest(RunCase):
+    """`autodev.py setup-answer`: the profile question's answers, before a run exists."""
+
+    def setUp(self):
+        super().setUp()
+        self.profiles = self.tmp / "profiles"
+        temp = self.tmp / "tmpdir"
+        temp.mkdir()
+        gitconfig = self.tmp / "gitconfig"
+        gitconfig.write_text(f'[url "file://localhost{self.tmp / "origin.git"}"]\n'
+                             "\tinsteadOf = https://github.com/acme/app.git\n")
+        self.env.update(AUTO_DEV_PROFILES_DIR=str(self.profiles), TMPDIR=str(temp),
+                        GIT_CONFIG_GLOBAL=str(gitconfig))
+        self.sh("git", "remote", "set-url", "origin", "https://github.com/acme/app.git",
+                cwd=self.repo)
+
+    def test_save_with_no_open_profile_question_is_refused(self):
+        r = self.autodev("setup-answer", "save", "--repo", self.repo,
+                         "--task", "Add due dates to todos")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no profile question", (r.stdout + r.stderr).lower())
+        written = [p for p in self.profiles.rglob("*") if p.is_file()] \
+            if self.profiles.exists() else []
+        self.assertEqual(written, [])
+
+    def test_change_without_text_cannot_run(self):
+        r = self.autodev("setup-answer", "change", "--repo", self.repo,
+                         "--task", "Add due dates to todos")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("--text", r.stderr)

@@ -9,7 +9,8 @@ Usage:
     python3 <skill-dir>/scripts/autodev.py <subcommand> --help
 
 Subcommands:
-    init      Phase 1: preflight, config, worktree, seeded files, setup, state
+    init      create the run: preflight, config, worktree, seeded files, setup,
+              state (`next --repo` runs it)
     resume    find the run to continue: FRESH, RESUME, ASK, FINISHED, OLD-VERSION
     show      print the run's state
     phase     set a phase's status
@@ -38,7 +39,9 @@ Subcommands:
     run       run one of the profile's gate or test commands in the worktree
     quality-gate       run the whole quality gate and write its lint reports
     verify    the verifier's routine steps: prep a pass, then compare the tree
-    next      print the pipeline's one next action (the orchestrator's loop)
+    next      print the pipeline's one next action (the orchestrator's loop); with
+              --repo, before the run exists, Phase 1's setup
+    setup-answer       record the user's answer to the profile question (Phase 1)
     override  answer a stop: fix it as the user says, retry, sign off, talk, leave
 
 Every subcommand takes --json. Exit codes, the same for all:
@@ -67,6 +70,7 @@ from lib import (
     cmd_resume,
     cmd_review,
     cmd_run,
+    cmd_setup,
     cmd_ship,
     cmd_state,
     cmd_tests,
@@ -107,6 +111,7 @@ COMMANDS = {
     "quality-gate": (cmd_gate, cmd_gate.main),
     "verify": (cmd_verify, cmd_verify.main),
     "next": (cmd_next, cmd_next.main),
+    "setup-answer": (cmd_setup, cmd_setup.answer),
     "pr": (cmd_pr, cmd_pr.main),
     "override": (overrides, overrides.main),
 }
