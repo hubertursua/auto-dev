@@ -2835,6 +2835,31 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertIn("ran past 1s and was stopped", r.stdout)
         self.assertNotIn("warning:", r.stdout)
 
+    def test_prep_warns_when_a_failing_run_names_no_check(self):
+        py = shlex.quote(sys.executable)
+        command = f"{py} -c \"print('repo broke'); raise SystemExit(1)\""
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"] = [{"kind": "test", "command": command,
+                                      "report": "TEST.md"}]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
+        warnings = [x for x in r.stdout.splitlines() if x.startswith("  warning: ")]
+        self.assertEqual(len(warnings), 1, r.stdout)
+        self.assertIn("names none of the 2 checks MANIFEST.md lists", warnings[0])
+        acceptance = [x for x in r.stdout.splitlines() if x.startswith("  acceptance: ")]
+        self.assertEqual(len(acceptance), 1, r.stdout)
+        self.assertIn("exited 1", acceptance[0])
+
+    def test_prep_json_gives_a_null_warning_when_a_check_is_named(self):
+        r = self.verify("prep", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["result"], "PREPARED")
+        self.assertIn("warning", data)
+        self.assertIsNone(data["warning"])
+
 
 # The fake test command for MutationRunTest: fails when `limit < 5` is gone
 # (so M1 is killed), never looks at `count + 1` (M2 survives), sleeps 4 s when

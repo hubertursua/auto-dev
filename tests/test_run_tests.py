@@ -179,13 +179,9 @@ class RunTestsTest(unittest.TestCase):
 
     def test_an_interrupt_stops_the_run_and_starts_no_more(self):
         root = self.suite(**{f"test_{n}": SLOW.format(n=n) for n in "abcdef"})
-        # A terminal's foreground job gets Ctrl-C; a background job (a gate run in
-        # the background) inherits SIGINT ignored, and Python then never raises
-        # KeyboardInterrupt. Start the runner as the terminal would.
         proc = subprocess.Popen([sys.executable, str(root / "tools" / "run-tests.py"),
                                  "-j", "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, env=self.env(), start_new_session=True,
-                                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+                                text=True, env=self.env(), start_new_session=True)
         time.sleep(1.5)
         start = time.monotonic()
         os.killpg(proc.pid, signal.SIGINT)  # as Ctrl-C does: the runner and its test

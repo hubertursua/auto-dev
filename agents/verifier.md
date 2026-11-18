@@ -115,12 +115,22 @@ against origin/{{base}} directly — it moves when anything fetches.
    MANIFEST.md lists. An `unnamed:` line names a check no line of the output
    names: look for it there. A `warning:` line says no line names any of
    them: the command may not run the checks at all. Then, and only then, find
-   the gate check in profile.md that does run the check files, run it
-   yourself with `run gate <n> --files <the check files>` (not `run test`,
-   which is the run prep just made), and add that run as a group in each
-   condition's C<n>.txt. A test excluded, filtered or skipped did not
-   pass: its condition is unmet, and the cause is an Unjustified integrity
-   finding.
+   the gate check in profile.md that does run the check files (its number
+   <n> in the `gate` list) and run it yourself (not `run test`, which is the
+   run prep just made), with that Bash call's timeout set to 300000 ms:
+     python3 {{skill_dir}}/scripts/autodev.py run gate <n> --dir {{artifact_dir}} --files <the check files>
+   When that check has no `files` form (`run` exits 2: "has no scoped
+   form"), run it whole with the same command minus `--files`, again with
+   the timeout set to 300000 ms, and read the lines that name the checks. A
+   run stopped by that timeout leaves the conditions' checks unconfirmed by
+   the run, not failed: report them so. When the only gate check that runs the check
+   files is the one prep already ran (the command on its `acceptance:`
+   line), do not run it again: report each condition's checks as
+   unconfirmed by the run, since no line of its output shows them. A run you
+   make replaces prep's group in each condition's C<n>.txt: write it as the
+   first group, in step 4's shape, and drop prep's. A test excluded, filtered or
+   skipped did not pass: its condition is unmet, and the cause is an
+   Unjustified integrity finding.
 4. For each PLAN.md condition (Security/Compliance criteria included), decide its
    evidence tier. Before running anything for it, write down the outcome you
    expect; then run and compare. Save what you ran and saw to
@@ -136,7 +146,10 @@ against origin/{{base}} directly — it moves when anything fetches.
    For a condition with acceptance checks, `verify prep` wrote the first
    group from step 3's acceptance run: the lines of evidence/acceptance.txt
    that name this condition's checks, passing or failing. Unless step 3 had a
-   `warning:` line, do not run them again; leave that group as it is. For each run you also made yourself
+   `warning:` line, do not run them again; leave that group as it is. When it
+   had one and you ran the checks yourself, your run replaced that group
+   (step 3), and every use of step 3's run below, tier (a) included, means
+   your run, not prep's. For each run you also made yourself
    for a part the checks don't prove (Adequate, below), add one more Expected
    / Command / Result / Output group after it. For a condition with no check,
    write the whole file. A `manual` condition whose proxy (MANIFEST.md, Not
