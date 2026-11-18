@@ -457,7 +457,10 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   check after a grace period doesn't hold the run up. CI that timed out, never
   ran or couldn't be watched is shown as not monitored, never as green. When
   a review pass leaves findings open, CI settles first, and red CI that the
-  code caused is fixed in the same correction, on the same round.
+  code caused is fixed in the same correction, on the same round. CI is
+  watched on the pushed commit, even when an unpushed tests commit sits on top
+  of it; a watch that reported on another commit stops the run rather than
+  waiting forever.
 - **Deviations from the plan** the coder recorded are listed in the
   ready-for-review and main gate summaries and the final report, each with its
   reason.
@@ -793,7 +796,8 @@ Autonomous but bounded:
   `record`, whatever it returns.
 - **It stops and reports** rather than commit a red build, weaken a security
   control, or carry on when a planted bug may be left in the tree, the build
-  edited a submodule, or a commit holds code no result checked.
+  edited a submodule, a commit holds code no result checked, or CI reported on
+  a commit other than the one it waits for.
 - **It never acts on stale results.** No gate is asked, and no PR description
   written, on results checked against other code. A result that is stale again
   right after its own re-run stops the run.

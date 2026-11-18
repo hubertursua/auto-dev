@@ -26,14 +26,18 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     A refusal is recorded for `next` as `commit_attempt`, except "nothing to
     commit" (`next` never asks for a commit with nothing changed) and exit 2.
 
-ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
+ci-watch [--pr N] [--sha COMMIT] [--max-wait SECONDS] [--interval SECONDS]
+         [--grace SECONDS]
     Polls the PR's checks with `gh pr checks` (GitHub Actions, and CircleCI or
-    other CI that reports to GitHub). Gives up after --max-wait (default 540,
-    under the Bash tool's limit) and reports PENDING; the overall bound is
-    the profile's CI timeout, counted from the first watch of this commit (a
-    watch after a final result — green, red, timeout, unavailable — starts the
-    clock again). Checks count only once the PR's head on GitHub is the local
-    HEAD; until then the watch is pending. "No checks reported", or a PR head
+    other CI that reports to GitHub). Watches --sha (any id git resolves to a
+    commit in the worktree; the full id is recorded), or the local HEAD without
+    it: `next` names the pushed commit, so a tests commit made on top of it
+    and not yet pushed doesn't hide its checks. Gives up after --max-wait
+    (default 540, under the Bash tool's limit) and reports PENDING; the overall
+    bound is the profile's CI timeout, counted from the first watch of this
+    commit (a watch after a final result — green, red, timeout, unavailable —
+    starts the clock again). Checks count only once the PR's head on GitHub is
+    the watched commit; until then the watch is pending. "No checks reported", or a PR head
     that is still another commit, is pending for --grace seconds (default 300),
     then the watcher is unavailable. Once the PR is marked ready (`mark
     pr-ready`), green counts only when a check started after the mark, or
@@ -44,7 +48,7 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     with their links; 3 pending (PENDING: `next` watches again) or timed out
     (TIMEOUT: CI still running at the profile's CI timeout); 4 the watcher is
     unavailable (no checks after the grace period, or a provider gh cannot
-    see). Whatever
+    see); 2 could not run, as below, or --sha names no commit. Whatever
     it exits, run `next`: it asks for `ci-watch` again only while CI is
     PENDING, and after TIMEOUT or UNAVAILABLE the main gate shows CI as not
     monitored. Never assume green.
@@ -155,6 +159,7 @@ def add_arguments(parser, name):
         parser.add_argument("--body", default="")
     elif name == "ci-watch":
         parser.add_argument("--pr", help="the PR number (default: from state)")
+        parser.add_argument("--sha", help="the commit to watch (default: the local HEAD)")
         parser.add_argument("--max-wait", type=int, default=540)
         parser.add_argument("--interval", type=int, default=30)
         parser.add_argument("--grace", type=int, default=300)
@@ -326,10 +331,10 @@ def ci_watch(args):
     if provider == "none":
         emit(args.json, "SKIPPED", "CI: none — no CI to watch; say so at the gate")
         return 0
+    sha = watched_commit(wt, args.sha)
     if provider == "gitlab":
         state.setdefault("phase6", {})["ci"] = {
-            "sha": git(wt, "rev-parse", "HEAD").strip(), "status": "unavailable",
-            "failing": [], "seq": st.seq(state)}
+            "sha": sha, "status": "unavailable", "failing": [], "seq": st.seq(state)}
         st.save(args.dir, state)
         emit(args.json, "UNAVAILABLE", "ci-watch reads GitHub checks only; GitLab CI "
              "can't be watched here: run `next`; the main gate shows CI as not "
@@ -338,7 +343,6 @@ def ci_watch(args):
     pr = args.pr or state.get("phase6", {}).get("pr")
     if not pr:
         raise Fail("no PR number: pass --pr", CANNOT_RUN, "ERROR")
-    sha = git(wt, "rev-parse", "HEAD").strip()
     phase6 = state.setdefault("phase6", {})
     ci = phase6.get("ci") or {}
     if ci.get("sha") != sha or ci.get("status") in FINAL_CI:
@@ -392,6 +396,19 @@ def ci_watch(args):
     emit(args.json, "PENDING", "CI still running: run `next`, which watches again", pending=failing,
          detail=detail)
     return EXIT_PENDING
+
+
+def watched_commit(wt, sha=None):
+    """The full id of the commit to watch: `sha`, or the local HEAD."""
+    if not sha:
+        return git(wt, "rev-parse", "HEAD").strip()
+    code, out = 1, ""
+    if not sha.startswith("-"):  # never read as one of git's options
+        code, out, _ = git(wt, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}",
+                           check=False)
+    if code != 0 or not out.strip():
+        raise Fail(f"--sha {sha} names no commit in the worktree", CANNOT_RUN, "ERROR")
+    return out.strip()
 
 
 def gh_poll(cwd, deadline, *args):

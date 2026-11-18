@@ -1090,6 +1090,43 @@ class ShipTest(RunCase):
                     head="f" * 40)
         self.assertNotIn("GREEN", self.watch("--max-wait", "0").stdout)
 
+    def test_ci_watch_sha_watches_that_commit_not_head(self):
+        self.set_settings(ci="github-actions")
+        pushed = self.git("rev-parse", "HEAD").strip()
+        (self.worktree / "local.ts").write_text("export const local = 1;\n")
+        self.git("add", "local.ts")
+        self.git("commit", "-q", "-m", "test: a local commit on top")
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}],
+                    head=pushed)
+        r = self.watch("--max-wait", "0")  # the local HEAD: not the PR's head yet
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("PENDING", r.stdout)
+        r = self.watch("--max-wait", "0", "--sha", pushed[:12])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"GREEN: all checks passed on {pushed[:12]}", r.stdout)
+        ci = self.state()["phase6"]["ci"]
+        self.assertEqual((ci["sha"], ci["status"]), (pushed, "green"))
+
+    def test_ci_watch_sha_naming_no_commit_cannot_run(self):
+        self.set_settings(ci="github-actions")
+        head = self.git("rev-parse", "HEAD").strip()
+        state = self.state()
+        state["phase6"]["ci"] = {"sha": head, "status": "green", "failing": [], "seq": 1}
+        self.write_state(state)
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}])
+        for sha in ("0" * 40, "no-such-commit", "--all"):
+            with self.subTest(sha=sha):
+                r = self.watch("--max-wait", "0", f"--sha={sha}")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("names no commit", r.stdout + r.stderr)
+                self.assertEqual(self.state()["phase6"]["ci"], state["phase6"]["ci"])
+        self.set_settings(ci="gitlab")
+        r = self.watch("--max-wait", "0", "--sha", "0" * 40)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.watch("--max-wait", "0", "--sha", head[:12])
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.state()["phase6"]["ci"]["sha"], head)
+
     def test_ci_timeout_holds(self):
         self.set_settings(ci="github-actions", ci_timeout=0)
         self.checks(self.PENDING)
