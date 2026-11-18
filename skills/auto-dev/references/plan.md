@@ -31,20 +31,27 @@ user fixed the cause.
      verbatim as the task.
 - ELSE the task is the user's words.
 
+Write a one- or two-sentence restatement of the ask in the user's words
+(`--ask` below).
+
 ### 2. Set the run up with `next --repo`
 
 Run, from `<repo>`:
 
 ```
 autodev.py next --repo <repo> --task "<the ticket key, or the task in one line>" \
+  --ask "<restated ask>" \
   [--ticket <KEY> --ticket-url <link> --ticket-text-file <ticket-text>] \
   --jira "<available, cloudId <id> | unavailable: <why> | no ticket>"
 ```
 
-The ticket flags and `--jira` are needed on the first call only. Then follow
-**The loop** in `SKILL.md` with this same command (the `next --repo` line its
-`AFTER` lines name) in place of `next --dir`, until it says to move into the
-worktree. What you will see:
+The ticket flags, `--ask` and `--jira` are needed on the first call only.
+Pass `--ticket-text-file` whenever step 1 wrote one: without it, the planner
+and the plan critic work from your restated ask. The run keeps the ask, so a
+later `resume` or `next --repo` given the user's own wording finds the run by
+it. Then follow **The loop** in `SKILL.md` with this same command (the `next
+--repo` line its `AFTER` lines name) in place of `next --dir`, until it says to
+move into the worktree. What you will see:
 
 1. A saved profile: one `lookup` to spawn (whether each quality-gate check's
    tool is adopted). A check whose tool the repo never adopted is left out of
@@ -88,7 +95,7 @@ see in the Plan stage, in order:
 
 1. `planner` writes `PLAN.md`: the ask, the testable conditions, the
    assumptions, the size check, the risk tier it proposes and the build steps,
-   from the ticket text the run stored (else the task). `OVERSIZED` → exit 4:
+   from the ticket text the run stored (else your `--ask`). `OVERSIZED` → exit 4:
    tell the user the planner's reasons, the subsystems it found and its
    suggested split lines, all in the `REPORT` (copied from PLAN.md's Size
    check), then ask its `QUESTION` (`SKILL.md`, _A stop_): the user may sign it

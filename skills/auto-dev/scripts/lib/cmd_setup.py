@@ -305,11 +305,13 @@ def free_slug(repo, slug, prefix):
 
 
 def find_run(repo, task, ticket):
-    """(worktree, state) of this task's open run, or None."""
+    """(worktree, state) of this task's open run, or None: one whose task text
+    or restated ask is `task` (the user's own words find a run started from a
+    ticket key), and whose ticket is `ticket` when one is given."""
     for kind, tree, _, state in cmd_resume.candidates(repo):
         if kind != "run" or not st.resumable(state):
             continue
-        if state["task"].get("text", "").strip() != task:
+        if task not in (str(state["task"].get(key) or "").strip() for key in ("text", "ask")):
             continue
         if ticket and state["task"].get("ticket") != ticket:
             continue
@@ -731,7 +733,7 @@ class Setup:
         cmd = [sys.executable, str(AUTODEV), "init", "--repo", self.repo, "--slug", slug,
                "--task", self.task, "--prefix", prefix]
         for flag, key in (("--ticket", "ticket"), ("--ticket-url", "ticket_url"),
-                          ("--jira", "jira")):
+                          ("--ask", "ask"), ("--jira", "jira")):
             if info.get(key):
                 cmd += [flag, info[key]]
         if ticket_text:
@@ -795,7 +797,7 @@ def run_setup(args):
     repo = cmd_init.repo_root(args.repo)
     folder = open_scratch(repo, task)
     info = load_info(folder)
-    for key in ("ticket", "ticket_url", "jira"):
+    for key in ("ticket", "ticket_url", "ask", "jira"):
         value = getattr(args, key, None)
         if value:
             info[key] = value

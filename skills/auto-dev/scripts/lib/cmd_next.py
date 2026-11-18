@@ -3,14 +3,17 @@
 Usage:
     autodev.py next [--dir <artifact-dir>] [--explain] [--reissue]
                     [--max-wait SECONDS] [--json]
-    autodev.py next --repo <checkout> --task "<task>" [--ticket KEY]
-                    [--ticket-url URL] [--ticket-text-file PATH] [--jira "<text>"]
-                    [--reissue] [--max-wait SECONDS] [--json]
+    autodev.py next --repo <checkout> --task "<task>" [--ask "<restated ask>"]
+                    [--ticket KEY] [--ticket-url URL] [--ticket-text-file PATH]
+                    [--jira "<text>"] [--reissue] [--max-wait SECONDS] [--json]
 
 Before the run exists (Phase 1, setup), run it with --repo, the checkout you
-started in, and --task (the ticket key when there is a ticket; the ticket
-flags are needed on the first call only). It prints one step at a time, in
-the same shape as below: the lookup to spawn for a saved profile (whether
+started in, and --task (the ticket key when there is a ticket; --ask and the
+ticket flags are needed on the first call only). --ask, the task restated in
+the user's words, is stored as the run's ask: the planner gets it when there
+is no ticket text, and a later --task naming it finds the run (here and in
+`resume`) as the task text does. It prints one step at a time, in the same
+shape as below: the lookup to spawn for a saved profile (whether
 each gate check's tool is adopted: a check whose tool the repo never adopted
 is left out of this run and the user is told), or the profiler to spawn when
 there is no usable profile, then the profile question (exit 5: its AFTER
@@ -230,6 +233,8 @@ def add_arguments(parser):
                                        "from (Phase 1); needs --task")
     parser.add_argument("--task", help="with --repo: the task, one line (the ticket key "
                                        "when there is a ticket)")
+    parser.add_argument("--ask", help="with --repo: the task restated in 1-2 sentences, "
+                                      "in the user's words")
     parser.add_argument("--ticket", help="with --repo: the Jira key, when there is a ticket")
     parser.add_argument("--ticket-url", help="with --repo: the ticket's link")
     parser.add_argument("--ticket-text-file", metavar="PATH",
@@ -717,7 +722,7 @@ def undo_fix(c, brief, n):
 def main(args):
     if args.repo:
         return show(setup_before_run(args), args)
-    for flag in ("task", "ticket", "ticket_url", "ticket_text_file", "jira"):
+    for flag in ("task", "ask", "ticket", "ticket_url", "ticket_text_file", "jira"):
         if getattr(args, flag):
             raise Fail(f"--{flag.replace('_', '-')} needs --repo (it sets a run up)",
                        CANNOT_RUN, "ERROR")
