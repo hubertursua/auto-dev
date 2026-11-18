@@ -129,6 +129,7 @@ from pathlib import Path
 from . import artifacts as art
 from . import (
     briefs,
+    cmd_run,
     overrides,
     protected,
     tree_guard,
@@ -371,7 +372,8 @@ def issues_text(issues):
 def auto_values(worker, n, state, ad, mode):
     """Every AUTO slot's value for this run (some depend on the worker)."""
     s = state["settings"]
-    test = next((c["command"] for c in s.get("gate", []) if c.get("kind") == "test"), "")
+    found = cmd_run.test_check(s.get("gate", []))
+    test = str(found[1].get("command") or "") if found else ""
     run = f"python3 {shlex.quote(str(SCRIPTS / 'autodev.py'))} run gate"
     gate = "\n".join(f"{i}. `{c['command']}`\n"
                      f"   run: `{run} {i} --dir {shlex.quote(str(ad))}`"
