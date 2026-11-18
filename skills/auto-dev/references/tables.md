@@ -78,6 +78,10 @@ it (_Overriding a stop_, below).
 | 21 | the acceptance tester ruled a check right as written (STANDS) that the verifier, a review finding or a PR comment called wrong: the report names both sides. A sign-off keeps the check as written | `next` |
 | 22 | a free step came round a second time: the acceptance checks still have gaps after the tester's one more go, a condition still reads two ways after the planner's decision, or the coder stopped a step again after the planner's decision in the same change | `next` |
 
+`next` counts each stop it reports by this number in `.auto-dev/metrics.json`
+(`none` for a stop the table doesn't number), once while it keeps reporting
+the same stop; a hold is not a stop.
+
 ## Hold and Stop
 
 They are different states.

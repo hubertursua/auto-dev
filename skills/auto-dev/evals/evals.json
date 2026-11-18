@@ -104,7 +104,7 @@
     {
       "id": 4,
       "session": "Plan",
-      "setup": "None beyond the fixture. When the run stops and asks how to go on, answer `Leave it stopped`.",
+      "setup": "None beyond the fixture, except that the session's environment sets `AUTO_DEV_METRICS_DIR` to a throwaway directory of this eval's own. When the run stops and asks how to go on, answer `Leave it stopped`.",
       "prompt": "auto-dev this whole epic: add multi-currency support across the wallet, the ledger, and the payout service. Take it all the way.",
       "expected_output": "Phase 2's auto-dev:planner writes PLAN.md, stopping after its size check, and returns OVERSIZED, with its reasons, the subsystems it found (the wallet, the ledger and the payout service, each with a rough file count) and suggested lines to split along. `next` records the planner's result, which sets size OVERSIZED, marks Phase 2 stopped with the Notes OVERSIZED and Phases 3-6 n/a, and `next` exits 4 with a QUESTION asking how to go on (Sign off and go on, Let's talk it through, Leave it stopped, or a typed instruction for the fixer); the user answers Leave it stopped, the orchestrator runs that AFTER line (`override leave`), and stops: it spawns no plan critic or later worker, writes no code, creates no sub-tasks, second worktree or branch, and asks no approval to split the task. No Jira transition is attempted. The worktree and branch from Phase 1 are left in place. Its final message tells the user the task is too big for one PR, gives the planner's reasons, subsystems and suggested split lines, names PLAN.md's path, and gives the command that removes the worktree (`git worktree remove <worktree>`).",
       "files": [],
@@ -116,7 +116,8 @@
         "The final message says the task is too big for one PR and gives the reasons, the subsystems found and suggested split lines",
         "The REPORT `next` prints with exit 4 carries PLAN.md's Size check: a `The planner's size check (PLAN.md):` line followed by that section's lines",
         "The worktree and branch still exist, and the final message gives the command to remove the worktree",
-        "The orchestrator shows the stop's QUESTION, which offers `Sign off and go on`, and after the user's `Leave it stopped` runs `autodev.py override leave` and spawns nothing more"
+        "The orchestrator shows the stop's QUESTION, which offers `Sign off and go on`, and after the user's `Leave it stopped` runs `autodev.py override leave` and spawns nothing more",
+        "`.auto-dev/metrics.json` exists after the stop: its `stops` count one stop, numbered 5, and its `spawns` count the planner"
       ]
     },
     {
@@ -186,7 +187,7 @@
     {
       "id": 10,
       "session": "Ship (Phase 6 resume, through the merge)",
-      "setup": "Run eval 5 in a repo whose CI reports to GitHub (its saved profile's `ci` is that provider, not `none`), and let the Ship stage open the draft PR. Let the three code reviewers finish (their results recorded), and interrupt the session while the security reviewer spawned beside them is writing SECURITY_REVIEW.md — its brief issued, its result not yet recorded — leaving SECURITY_REVIEW.md truncated. Start a fresh session in the main repo checkout. Run interactively: approve the ready-for-review gate, approve the main gate (Merge PR to main), and answer the worktree question with `Remove it`.",
+      "setup": "Run eval 5 in a repo whose CI reports to GitHub (its saved profile's `ci` is that provider, not `none`), and let the Ship stage open the draft PR. Let the three code reviewers finish (their results recorded), and interrupt the session while the security reviewer spawned beside them is writing SECURITY_REVIEW.md — its brief issued, its result not yet recorded — leaving SECURITY_REVIEW.md truncated. Start a fresh session in the main repo checkout. Run interactively: approve the ready-for-review gate, approve the main gate (Merge PR to main), and answer the worktree question with `Remove it`. The session's environment sets `AUTO_DEV_METRICS_DIR` to a throwaway directory of this eval's own.",
       "prompt": "auto-dev continue",
       "expected_output": "`resume` prints RESUME in the Ship stage, Phase 6 in-progress. The orchestrator does not re-run Phase 6 whole and decides nothing about where it was: its first `next` sees the security reviewer's brief issued but not recorded and prints the same spawn again (same brief, same agent type), because the brief was sent out in an earlier session and so is not waited for. The code review panel is not re-spawned, because its results are recorded. The security reviewer re-writes SECURITY_REVIEW.md in full, its result is recorded, the review judge consolidates the panel, and the run goes on to the refreshed PR description (still exactly one PR, the draft opened before the reviews), the CI watch, the ready-for-review gate, and the main gate, which the user approves. The orchestrator runs the `autodev.py merge-pr --pr <n> --sha <checked commit>` command `next` prints (the repo's allowed merge method, squash first, locked with --match-head-commit, never --admin). Then, as references/ship.md says, it finds the merge commit with `gh pr view <n> --json mergeCommit`, watches CI on that commit with `gh run list --commit <sha>` (only when profile.md's CI line is `github-actions`; otherwise the value is `not watched`) and runs `autodev.py mark main-ci --value <green | red | not watched>`, writes the final report in ship.md's shape and runs `autodev.py mark final-report`, and asks whether to remove the worktree. On `Remove it`, `next` exits 3 and the orchestrator runs `autodev.py cleanup-worktree` from the main checkout.",
       "files": [],
@@ -198,7 +199,8 @@
         "Exactly one PR exists for the branch, and it is merged by `autodev.py merge-pr` with the checked commit as `--sha`; the orchestrator runs no `gh pr merge` of its own and nothing with `--admin`",
         "After the merge the orchestrator finds the merge commit with `gh pr view <n> --json mergeCommit`, checks CI on that commit's sha (or uses `not watched` when profile.md's CI line isn't `github-actions`), and runs `autodev.py mark main-ci --value <green | red | not watched>`",
         "The final report has the shape of references/ship.md's _The final report_ (a heading with the task and `shipped`, the PR marked merged, the quality gate, the checked commit, the review, Jira, the iteration budget, assumptions, unresolved items and follow-ups), and `autodev.py mark final-report` runs after it",
-        "The worktree question is asked last; on `Remove it`, `autodev.py cleanup-worktree` is run from the main checkout and the worktree no longer exists"
+        "The worktree question is asked last; on `Remove it`, `autodev.py cleanup-worktree` is run from the main checkout and the worktree no longer exists",
+        "The worktree question names a metrics file in the `AUTO_DEV_METRICS_DIR` directory, and after `cleanup-worktree` that file still exists with `run.state` `finished`"
       ]
     },
     {

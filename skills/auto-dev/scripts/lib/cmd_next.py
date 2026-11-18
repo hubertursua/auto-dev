@@ -147,6 +147,16 @@ instead. A new session says `auto-dev continue` and picks up where this one
 stopped; resuming after a checkpoint lifts no stop, since nothing was fixed in
 between.
 
+Metrics: whenever `next` (not --explain) exits 3 or 4 for a run, it writes
+.auto-dev/metrics.json from state.json: spawns per worker, rounds, stops by
+their number in references/tables.md (each counted once while `next` keeps
+reporting it), refused results, review findings kept and dropped, events and
+the build's diff size. It writes the same file to
+<metrics-dir>/<repo folder>/<branch>.json, so it outlives the worktree;
+<metrics-dir> is $AUTO_DEV_METRICS_DIR, else $XDG_CONFIG_HOME/auto-dev/metrics,
+else ~/.config/auto-dev/metrics. A file it can't write is said on stderr and
+changes neither the output nor the exit code.
+
 A brief issued but not yet recorded is waited for while it was sent out in
 this session, after the latest retry at a stop and less than 3 hours ago
 (IN_FLIGHT_HOURS). It is re-issued as the same spawn after a new session (a
@@ -187,6 +197,7 @@ from . import (
     cmd_tests,
     cmd_work,
     judgment,
+    metrics,
     overrides,
     tree_guard,
 )
@@ -223,6 +234,9 @@ ONLY_RE = re.compile(r"ONLY conditions ([^:]+):")
 ENTRY_POINT_SCOPE = "ALL CONDITIONS whose checks call an entry point the revised plan changed"
 GAP_NOTE = "the gaps check-manifest found:"
 HUMAN_SCOPE = "ONLY the conditions whose checks the PR comments in the report question"
+# The stop's number and whether it counts (metrics.json): main() reads it,
+# show() drops it.
+TALLY = "TALLY"
 FILL = ("replace each '<...>' placeholder, inside its single quotes, with text that "
         "holds no single quote (rephrase, or use the typographic apostrophe U+2019)")
 
@@ -384,14 +398,17 @@ def action(text, rule, **lines):
 
 
 def stop(report, rule, retry=None, signoff=None, no_signoff=None, kind=None,
-         after_fix=None):
+         after_fix=None, number=None, count=True):
     """A stop. With `retry` (what `override retry` does: results to set aside,
     phase6 keys to clear, a stop to lift, a correction to reopen), the user can
     override it: `next` asks how (stop_point). `signoff` is what a sign-off
     does (a result to rewrite as passed, results to set aside, a correction id
-    to drop); with none, `no_signoff` says why it isn't offered."""
+    to drop); with none, `no_signoff` says why it isn't offered. `number` is
+    the stop condition's number in references/tables.md (None for one it
+    doesn't number), counted in metrics.json unless `count` is false (a
+    hold); show() never prints it."""
     result = {"code": NEXT_STOP, "ACTION": "stop and report to the user; do nothing more",
-              "REPORT": report, "RULE": rule}
+              "REPORT": report, "RULE": rule, TALLY: {"number": number, "count": count}}
     if retry is not None:
         result["OVERRIDE"] = {"retry": retry, "signoff": signoff, "kind": kind,
                               "no_signoff": None if signoff else (
@@ -492,7 +509,7 @@ def exhausted(c, what, extra=""):
                  ("The user can add rounds and go on from this step: run "
                   f"`{c.cmd('budget', 'raise', '--by', '<n>')}` with the number they "
                   "give, then `next`. Or they leave the run here; the worktree stays."),
-                 f"State and artifacts: {c.ad}"], f"the budget is used up: {what}")
+                 f"State and artifacts: {c.ad}"], f"the budget is used up: {what}", number=11)
 
 
 # ---------------------------------------------------------------- overriding a stop
@@ -747,13 +764,33 @@ def main(args):
         failed = stop([f"`next` could not take its step ({exc.token}): {exc}",
                        ("Tell the user; it is a broken artifact or an auto-dev bug. "
                         f"State and artifacts: {c.ad}")],
-                      f"a step failed: {exc.token}")
+                      f"a step failed: {exc.token}", count=False)
         if c.recorded:
             failed["RECORDED"] = c.recorded
+        if not c.readonly:
+            write_metrics(c)  # the run as saved: nothing of the step was
         return show(failed, args)
     result = stop_point(c, result)
+    if not c.readonly:
+        if result["code"] == NEXT_STOP:
+            changed = metrics.note_stop(c.state, result.get(TALLY) or {},
+                                        result.get("RULE", ""),
+                                        (st.first_open_phase(c.state) or (6, None))[0])
+        else:
+            changed = metrics.clear_stop(c.state)
+        if changed:
+            c.quiet = True  # saved, but not an event of its own (as state["stop"])
     c.save()
+    if not c.readonly and result["code"] in (NEXT_COMPLETE, NEXT_STOP):
+        write_metrics(c)
     return show(result, args)
+
+
+def write_metrics(c):
+    """metrics.json and its copy (lib/metrics.py); a file it can't write is
+    said on stderr and changes neither the output nor the exit code."""
+    for error in metrics.write(c.dir):
+        print(error, file=sys.stderr)
 
 
 def setup_before_run(args):
@@ -772,6 +809,7 @@ def setup_before_run(args):
 
 def show(result, args):
     code = result.pop("code")
+    result.pop(TALLY, None)
     if not args.explain:
         result.pop("RULE", None)
     elif result.get("ACTION"):
@@ -932,8 +970,12 @@ def ended(c, how):
                     retry={"aside": [job_of(plan)], "oversized": True},
                     signoff={"rewrite": [plan["worker"], plan["n"], "FITS"],
                              "fits": True},
-                    kind="oversized", after_fix="fits")
-    return stop(rows, f"the run is {how}")
+                    kind="oversized", after_fix="fits", number=5)
+    # A hold is a pause the user chose, not a stop; a gate's Stop is #19, and a
+    # stopped OVERSIZED run whose planner result was set aside is still #5.
+    return stop(rows, f"the run is {how}", count=how != "held",
+                number=None if how == "held" else
+                5 if c.state.get("size") == "OVERSIZED" else 19)
 
 
 def size_check(c):
@@ -1025,7 +1067,7 @@ def pending_briefs(c):
                          "never left a result that `next` accepts. Tell the user; its "
                          f"brief is {c.ad}/briefs/{b['worker']}-{b['n']}.md. Once the "
                          "cause is fixed, `auto-dev continue` spawns it again.")],
-                        "a worker failed to return three times", retry={"lift": True})
+                        "a worker failed to return three times", retry={"lift": True}, number=7)
         if c.readonly:  # --explain counts nothing and writes no retry brief
             if cmd_work.job(b["worker"], b["n"]) in refused:
                 open_[i] = {"worker": b["worker"], "n": c.peek(b["worker"])}
@@ -1038,6 +1080,7 @@ def pending_briefs(c):
             open_[i] = new
         else:
             b["emitted"] = tries
+            b["resent"] = b.get("resent", 0) + 1  # a spawn of its own (metrics.json)
             b["issued_at"], b["issued_seq"] = st.now(), c.seq()
             cmd_work.fresh_tree(c.state, b)  # what changed since is not this spawn's
         c.dirty = True
@@ -1080,7 +1123,7 @@ def not_ok(c):
                      "said above its result block, and that the run is paused here: "
                      "once the cause is fixed, `auto-dev continue` spawns it again."),
                      f"State and artifacts: {c.ad}"],
-                    f"a worker returned status {latest['status']}", retry={"lift": True})
+                    f"a worker returned status {latest['status']}", retry={"lift": True}, number=6)
     return None  # failed or blocked once: the step re-spawns it
 
 
@@ -1097,6 +1140,9 @@ def setup(c):
                    "ERROR")
     c.state = st.load(c.dir)  # init wrote it
     c.p6 = c.state.setdefault("phase6", {})
+    # A setup attempt ran: a stop after it is a new one (metrics.json). Saved
+    # with whatever this call saves.
+    c.state.pop("stop_shown", None)
     if code == 0:
         cmd_setup.remove_scratch(c.state["repo"]["main_checkout"],
                                  c.state["task"].get("text", ""))
@@ -1107,7 +1153,7 @@ def setup(c):
     return stop([f"Phase 1's setup failed: {message}",
                  ("Tell the user to fix the cause, then say `auto-dev continue` in a new "
                   "session: `next` runs setup again. "
-                  f"State and artifacts: {c.ad}")], "Phase 1's setup failed")
+                  f"State and artifacts: {c.ad}")], "Phase 1's setup failed", number=3)
 
 
 def runbook(c, stage):
@@ -1298,7 +1344,7 @@ def acceptance_step(c, after):
                           f"AMBIGUOUS.md) and the planner's choice ({c.ad}/PLAN.md).")],
                         "a condition still reads two ways after the planner's decision",
                         retry={"aside": [job_of(tester)]},
-                        no_signoff="a check of an ambiguous condition tests a guess")
+                        no_signoff="a check of an ambiguous condition tests a guess", number=22)
         if planner is None:
             return spawn(c, "planner", "revise", {
                 "ambiguous": f"conditions {ambiguous}; both readings, one line each, are "
@@ -1318,7 +1364,7 @@ def acceptance_step(c, after):
                           "try. Tell the user each one:"), *lines,
                          f"State and artifacts: {c.ad}"],
                         "check-manifest found gaps twice", retry={"aside": [job_of(tester)]},
-                        no_signoff="a condition with no check is not tested")
+                        no_signoff="a condition with no check is not tested", number=22)
         return spawn(c, "acceptance-tester", "write", {
             "scope": f"ONLY conditions {', '.join(ids)}: {GAP_NOTE} " + "; ".join(lines)},
             rule="check-manifest found gaps in the tester's return: it goes once more "
@@ -1366,7 +1412,7 @@ def tests_step(c):
             return stop([f"The acceptance checks could not be committed: {exc}",
                          "Tell the user; nothing was committed."],
                         "commit-tests refused", retry={},
-                        no_signoff="the build needs its checks committed first")
+                        no_signoff="the build needs its checks committed first", number=None)
         if token == "COMMITTED":
             # The commit is in git now: state.json says so at once, whatever
             # this `next` does after (the event is counted when it ends).
@@ -1444,7 +1490,7 @@ def gate_question(c, gate, answers, rule):
             return stale_again(c, str(exc))
         return stop([f"The {gate} gate's checks failed, so it can't be asked: {exc}"],
                     f"a {gate} gate precondition failed", retry={},
-                    no_signoff="the gate's checks protect what ships")
+                    no_signoff="the gate's checks protect what ships", number=None)
     questions = [cmd_review.question("Gate", f"{gate} gate: how do you want to proceed?",
                                      cmd_review.GATE_OPTIONS[gate])] + extra
     pairs = [(label, answers[label]) for label in cmd_review.GATE_OPTIONS[gate]]
@@ -1499,7 +1545,8 @@ def risk_recheck(c):
                    + (f" and {len(sensitive) - 5} more" if len(sensitive) > 5 else ""))
     if len(paths) > LARGE_FILES or lines > LARGE_LINES:
         why.append(f"it is large ({len(paths)} files, {lines} lines changed)")
-    c.state["risk_recheck"] = {"seq": c.seq(), "high": bool(why), "why": why}
+    c.state["risk_recheck"] = {"seq": c.seq(), "high": bool(why), "why": why,
+                               "files": len(paths), "lines": lines}
     if why and not c.state.get("high_risk"):
         c.state["high_risk"] = True
         st.add_note(c.state, "risk raised to high after the build: " + "; ".join(why))
@@ -1625,7 +1672,7 @@ def gate_step(c, start):
                      f"it; never ship a red build. Tell the user which checks fail: "
                      f"{reports}.")], "the quality gate is red after its correction",
                     retry={"gate": True},
-                    signoff={"reports": failing}, kind="red-gate")
+                    signoff={"reports": failing}, kind="red-gate", number=9)
     return spawn(c, "coder", "correction", {
         "corrections_file": f"the failing quality-gate checks: {reports} (each report's "
                             f"output tail says what fails; the whole output is under "
@@ -1649,7 +1696,7 @@ def ask_gate(c, tree):
                      "the background, or the profile's slow check made faster), "
                      "`auto-dev continue` asks for it again.")],
                     "the quality gate never finished", retry={"gate": True},
-                    no_signoff="nothing says the gate is green")
+                    no_signoff="nothing says the gate is green", number=9)
     if not c.readonly:
         asked[tree] = asked.get(tree, 0) + 1
         c.dirty = True
@@ -1693,7 +1740,7 @@ def blocked_step(c, coder, start):
                       f"the first. Tell the user the steps it stopped ({listed}) and what "
                       f"the planner decided ({c.ad}/PLAN.md).")],
                     "the coder returned BLOCKED again", retry={"aside": [job_of(coder)]},
-                    no_signoff="the stopped steps aren't built")
+                    no_signoff="the stopped steps aren't built", number=22)
     if planner is None:
         listed = c.ad / "blocked" / f"coder-{coder['n']}.md"
         return spawn(c, "planner", "blocked", {"blocked": f"the steps listed in {listed}"},
@@ -1703,7 +1750,8 @@ def blocked_step(c, coder, start):
                      f"the user its reasons (its reply, and {c.ad}/PLAN.md).")],
                     "the planner returned SPEC_IMPOSSIBLE",
                     retry={"aside": [job_of(planner)]},
-                    no_signoff="the plan has no way to meet the spec; say how to change it")
+                    no_signoff="the plan has no way to meet the spec; say how to change it",
+                    number=8)
     if planner["data"].get("entry_points_changed") == "yes" and \
             c.last("acceptance-tester", after=planner["seq"]) is None:
         return spawn(c, "acceptance-tester", "repair", {
@@ -1793,7 +1841,7 @@ def spec_stop(c, recs, where, review_pass=None):
                 signoff={"rewrites": [[r["worker"], r["n"], r["next"], {"spec_problems": "0"}]
                                       for r in found],
                          "kept": kept},
-                kind="spec-problem")
+                kind="spec-problem", number=20)
 
 
 def disputed_stop(c, tester, who, where):
@@ -1812,7 +1860,7 @@ def disputed_stop(c, tester, who, where):
                 retry={"aside": [job_of(tester)]},
                 signoff={"rewrite": [tester["worker"], tester["n"], "STANDS"],
                          "kept": ids or [where]},
-                kind="disputed-check")
+                kind="disputed-check", number=21)
 
 
 def only_ids(scope):
@@ -2238,7 +2286,7 @@ def review_step(c, p):
             return stop([("No code reviewer wrote a usable report, twice. Tell the user; "
                          f"see {c.ad}/review/pass-{p['n']}/.")], "the panel produced nothing",
                         retry={"aside": [job_of(r) for r in reviews]},
-                        no_signoff="no review was written to accept")
+                        no_signoff="no review was written to accept", number=13)
         if not c.readonly:  # the panel's findings, merged for the judge
             judgment.write_findings(c.ad, p["n"], usable)
         jobs = [("review-judge", "consolidate", {
@@ -2301,7 +2349,7 @@ def verifier_part(c, p):
                                  "the verifier returned MUTATION_LEFT_CHANGES",
                                  retry={"aside": [job_of(rec)]},
                                  no_signoff="the tree may hold a planted change; check "
-                                            "it, then retry")
+                                            "it, then retry", number=10)
         return [], rec, None
     twice = failed_twice(c, recs, "verifier")
     if twice is not None:
@@ -2322,7 +2370,7 @@ def failed_twice(c, recs, who):
                  "once the cause is fixed, `auto-dev continue` spawns it again."),
                  f"State and artifacts: {c.ad}"],
                 f"the pass's {who} returned status {last['status']} twice",
-                retry={"lift": True})
+                retry={"lift": True}, number=13)
 
 
 def solo_step(c, p, vjobs, vrec):
@@ -2538,7 +2586,7 @@ def revotes(c, p, judge):
                      f"{c.ad}/CODE_REVIEW.md. Tell the user; once the cause is fixed, "
                      "`auto-dev continue` spawns those re-voters again.")],
                     "a re-voter gave no usable vote twice", retry={"lift": True},
-                    no_signoff="a lone finding's vote is still open")
+                    no_signoff="a lone finding's vote is still open", number=None)
     if pending:  # with no plan (under two usable reports) each stays advisory
         c.would("apply the re-votes to CODE_REVIEW.md", "every re-voter has voted")
         cmd_review.apply_vote_files(c.ad / "CODE_REVIEW.md", text, pass_dir, pending,
@@ -2582,7 +2630,7 @@ def must_fix(c, file, tag, rule, checks=None, coder=True, security=False, also=N
                     retry={"reopen": spend_id},
                     signoff=None if security else {"drop": spend_id},
                     no_signoff="a confirmed security finding is open" if security else None,
-                    kind="open-findings")
+                    kind="open-findings", number=None)
     return start_correction(c, "review", file if coder else None, spend_id,
                             rule, checks=checks, also=also)
 
@@ -2754,7 +2802,7 @@ def stale_twice(c, detail, since=None):
     return stop([("A report is stale again right after its own re-run: something "
                  "rewrites the code on every run. Tell the user:"), detail],
                 "stale twice running", retry={"lift": True},
-                no_signoff="a stale report says nothing about the code that ships")
+                no_signoff="a stale report says nothing about the code that ships", number=12)
 
 
 def stale_again(c, detail, since=None):
@@ -2778,7 +2826,7 @@ def commit_step(c):
         return stop([(f"The commit step failed ({attempt['result']}). Tell the user what "
                      "`autodev.py commit` printed; nothing was pushed.")],
                     "the commit failed", retry={"clear": ["commit_attempt"]},
-                    no_signoff="nothing was committed to go on with")
+                    no_signoff="nothing was committed to go on with", number=14)
     # A commit made but not yet checked (`unverified_commit`) leaves a clean tree:
     # `commit` checks it without committing again, so it is offered as usual.
     if not c.p6.get("verified_sha") and not c.p6.get("unverified_commit"):
@@ -2787,7 +2835,7 @@ def commit_step(c):
             return stop([("There is nothing to commit: the working tree holds no change "
                          "outside .auto-dev/. Tell the user; nothing was pushed.")],
                         "an empty change", retry={},
-                        no_signoff="there is no change to ship")
+                        no_signoff="there is no change to ship", number=14)
     first = not c.p6.get("verified_sha")
     return action(f"commit: run `{c.cmd('commit', '--message', '<type>(<scope>): <summary>')}`"
                   f", with a Conventional Commits subject you write for the change ({FILL})",
@@ -2828,7 +2876,7 @@ def body_step(c, sha):
                           "GitHub working again), `auto-dev continue` publishes it "
                           "again.")],
                         "pr publish was refused", retry={"lift": True},
-                        no_signoff="the PR description must pass its checks")
+                        no_signoff="the PR description must pass its checks", number=None)
         if "rewrite" not in body:
             body["rewrite"] = attempt["seq"]
             c.dirty = True
@@ -2886,7 +2934,7 @@ def ci_step(c, sha):
                          f"triager found ({triage_file(c, triage)}); never merge over it.")],
                         "a CI correction changed nothing",
                         retry={"reopen": f"ci-{triage['n']}"},
-                        no_signoff="never merge over red CI")
+                        no_signoff="never merge over red CI", number=None)
         return start_correction(c, "ci", triage_file(c, triage), f"ci-{triage['n']}",
                                 "CI is red because of the code (a round)",
                                 why=f"Red checks: {red}.")
@@ -2896,7 +2944,7 @@ def ci_step(c, sha):
                      f"({triage_file(c, triage)}). Once the secret is fixed and CI re-run, "
                      "`auto-dev continue` watches it again.")],
                     "the triager returned SECRET", retry={"lift": True},
-                    no_signoff="never merge over red CI")
+                    no_signoff="never merge over red CI", number=15)
     # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Stop here, before Jira
     # moves on a red build; a resume watches CI again.
     return stop([(f"CI is red, and the triager classed it {kind}: not something the code "
@@ -2904,7 +2952,7 @@ def ci_step(c, sha):
                  f"found ({triage_file(c, triage)}). The run stops here; once CI is fixed "
                  "or re-run, `auto-dev continue` watches it again.")],
                 f"the triager returned {kind}", retry={"lift": True},
-                no_signoff="never merge over red CI")
+                no_signoff="never merge over red CI", number=15)
 
 
 def triage_file(c, triage, key="triage_file"):
@@ -2978,7 +3026,7 @@ def main_step(c, sha):
             return stop([(f"`merge-pr` merged PR #{pr} but could not read its state, and "
                          "it still can't be read as MERGED. Never merge again: tell the "
                          f"user to check `gh pr view {q(pr)} --json state` and report "
-                         "what it says.")], "a merge whose outcome is unknown")
+                         "what it says.")], "a merge whose outcome is unknown", number=None)
         p6["merged"] = attempt.get("sha") or sha
         st.add_note(c.state, f"PR #{pr} is merged (read back after an unknown merge)")
         c.dirty = True
@@ -3000,13 +3048,13 @@ def main_step(c, sha):
             return stop([(f"GitHub did not merge the PR ({attempt['result']}). Tell the "
                          "user what `merge-pr` printed; Jira stays as it is.")],
                         "merge-pr did not merge", retry={"clear": ["merge_attempt"]},
-                        no_signoff="the PR is not merged")
+                        no_signoff="the PR is not merged", number=18)
         ci = p6.get("ci") or {}
         if ci.get("status") == "red":
             return stop(["CI is red on the PR; never merge over it. Tell the user each "
                          "red check: " + "; ".join(ci.get("failing", []))],
                         "red CI at the main gate", retry={"lift": True},
-                        no_signoff="never merge over red CI")
+                        no_signoff="never merge over red CI", number=17)
         return action(f"merge: run `{c.cmd('merge-pr', '--pr', p6.get('pr'), '--sha', sha)}`",
                       "the main gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("main-ci"):
@@ -3036,7 +3084,8 @@ def main_step(c, sha):
     gate = c.gate("cleanup")
     if gate is None:
         return ask(c, "the worktree", [(f"The run is finished. Remove the worktree {c.wt}? "
-                                       "That deletes .auto-dev/ too.")],
+                                       "That deletes .auto-dev/ too; its metrics.json "
+                                       f"stays at {metrics.saved_path(c.state)}.")],
                    [cmd_review.question("Cleanup", f"Remove the worktree {c.wt}?",
                                         ["Remove it", "Keep it"])],
                    [("Remove it", c.cmd("gate", "cleanup", "proceed")),
@@ -3047,7 +3096,8 @@ def main_step(c, sha):
         return {"code": NEXT_COMPLETE, "RULE": "the user chose to remove the worktree",
                 "ACTION": (f"run `{c.cmd('cleanup-worktree')}` from "
                            f"{q(c.state['repo']['main_checkout'])}; then the run is "
-                           "complete (its state goes with the worktree)")}
+                           "complete (its state goes with the worktree; its metrics stay "
+                           f"at {metrics.saved_path(c.state)})")}
     return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
             "RULE": "the user kept the worktree"}
 
@@ -3077,7 +3127,7 @@ def outside_push(c, sha, stale):
                   f"{q('origin/' + branch)}` and say `auto-dev continue`; the pipeline "
                   "then re-checks them (quality gate, verifier, review) and asks the "
                   "main gate again:"), stale], "the PR head moved", retry={},
-                no_signoff="the pipeline never ships commits it did not check")
+                no_signoff="the pipeline never ships commits it did not check", number=16)
 
 
 def fetch_and_check(c):

@@ -1891,6 +1891,9 @@ class ShipTest(NextCase):
         self.after(out, "Keep it")
         out = self.next(3)
         self.assertEqual(self.state()["phases"]["6"]["status"], "done")
+        # exit 3 writes the run's metrics, as it finished
+        metrics = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(metrics["run"]["state"], "finished")
         log = [json.loads(ln)["args"] for ln in
                (self.tmp / "gh.log").read_text().splitlines()]
         self.assertEqual(sum(1 for a in log if a[:2] == ["pr", "create"]), 1)
@@ -6556,3 +6559,97 @@ Every changed file.
         self.assertTrue(saved.is_file(), sorted(str(p) for p in self.metrics_dir.rglob("*"))
                         if self.metrics_dir.exists() else "no metrics folder")
         self.assertEqual(saved.read_text(), (self.dir / "metrics.json").read_text())
+
+
+class MetricsFileTest(OverrideCase):
+    """What metrics.json holds beyond the acceptance checks, through `next` and
+    tests/lib_cli.py's `metrics` (what `next` writes at exits 3 and 4)."""
+
+    def metrics(self):
+        r = self.lib("metrics", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual(out["message"], str(self.dir / "metrics.json"))
+        return json.loads((self.dir / "metrics.json").read_text()), out["copied"]
+
+    def test_a_metrics_json_that_cannot_be_written_changes_no_output(self):
+        (self.dir / "metrics.json").mkdir()
+        self.expect("planner")
+        for _ in range(2):
+            self.next_reissue(0)
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("spawned 3 times", " ".join(json.loads(r.stdout)["REPORT"]))
+        self.assertIn("metrics.json not written", r.stderr)
+        self.assertNotIn("TALLY", r.stdout)
+        saved = self.tmp / "metrics" / "app" / "feat-due-dates.json"
+        self.assertTrue(saved.is_file())  # the copy is written all the same
+
+    def test_the_text_output_of_a_stop_has_no_tally(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("next", "--reissue", "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("REPORT:", r.stdout)
+        self.assertNotIn("TALLY", r.stdout)
+        self.assertNotIn("number", r.stdout)
+
+    def test_the_copy_folder_falls_back_to_the_xdg_config_folder(self):
+        del self.env["AUTO_DEV_METRICS_DIR"]
+        self.env["XDG_CONFIG_HOME"] = str(self.tmp / "config")
+        _, copied = self.metrics()
+        self.assertEqual(copied, str(self.tmp / "config" / "auto-dev" / "metrics" / "app"
+                                     / "feat-due-dates.json"))
+        self.assertTrue(Path(copied).is_file())
+
+    def test_the_copy_folder_falls_back_to_the_home_config_folder(self):
+        del self.env["AUTO_DEV_METRICS_DIR"]
+        self.env.pop("XDG_CONFIG_HOME", None)
+        self.env["HOME"] = str(self.tmp / "home")
+        _, copied = self.metrics()
+        self.assertEqual(copied, str(self.tmp / "home" / ".config" / "auto-dev" / "metrics"
+                                     / "app" / "feat-due-dates.json"))
+
+    def test_a_branch_of_dots_stays_inside_the_metrics_folder(self):
+        state = self.state()
+        state["branch"] = "../.."
+        self.write_state(state)
+        _, copied = self.metrics()
+        self.assertEqual(Path(copied).parent, self.tmp / "metrics" / "app")
+        self.assertEqual(Path(copied).name, "-...json")
+
+    def test_a_review_file_that_cannot_be_read_gives_a_null_block(self):
+        (self.dir / "CODE_REVIEW.md").write_bytes(b"\xff\xfe not text")
+        (self.dir / "SECURITY_REVIEW.md").write_text("# Security review\n\nno table\n")
+        data, _ = self.metrics()
+        self.assertIsNone(data["code_review"])
+        self.assertIsNone(data["security_review"])
+
+    def test_a_re_check_from_before_the_upgrade_has_no_counts(self):
+        state = self.state()
+        state["risk_recheck"] = {"seq": 3, "high": False, "why": []}
+        self.write_state(state)
+        data, _ = self.metrics()
+        self.assertEqual(data["diff"], {"files": None, "lines": None, "high": False})
+
+    def test_the_numbered_stops_and_the_ones_the_table_does_not_number(self):
+        state = self.state()
+        state["stops"] = [
+            {"number": 9, "rule": "the quality gate is red after its correction",
+             "phase": 5, "at": state["created"], "seq": 4},
+            {"number": None, "rule": "commit-tests refused", "phase": 4,
+             "at": state["created"], "seq": 5}]
+        self.write_state(state)
+        data, _ = self.metrics()
+        self.assertEqual(data["stops"]["by_number"], {"9": 1, "none": 1})
+        self.assertEqual(data["stops"]["list"][1],
+                         {"number": None, "rule": "commit-tests refused", "phase": 4})
+
+    def test_a_stop_after_a_fixer_ran_counts_again(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        self.report(n, proposal="Also relax the lint rule.")
+        self.answer("fixer", n, "NEEDS_CONSENT", fix_report="x", changed="0")
+        out = self.next(4)  # the stop asked again, after the fixer ran
+        self.assertIn("still red", " ".join(out["REPORT"]))
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["by_number"], {"9": 2})

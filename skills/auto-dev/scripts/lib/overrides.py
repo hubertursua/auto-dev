@@ -147,6 +147,7 @@ def main(args):
     state.setdefault("overrides", []).append(entry)
     if choice != "leave":
         state.pop("stop", None)
+        state.pop("stop_shown", None)  # the stop after this answer counts again
     st.save(args.dir, state)
     emit(args.json, "OVERRIDE", f"{entry['choice']}: {label}", after=after)
     return 0

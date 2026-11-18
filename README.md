@@ -548,8 +548,9 @@ covers it; the orchestrator never touches the file.
 
 - With the Bash sandbox on, add
   `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }` to
-  `~/.claude/settings.json`, so the script can save there (the moved
-  directory instead, if you set `AUTO_DEV_PROFILES_DIR` or `XDG_CONFIG_HOME`).
+  `~/.claude/settings.json`, so the script can save there: the profile, and
+  each run's `metrics.json` copy (the moved directory instead, if you set
+  `AUTO_DEV_PROFILES_DIR`, `AUTO_DEV_METRICS_DIR` or `XDG_CONFIG_HOME`).
 - The directory is deliberately not under `~/.claude/`: Claude Code protects
   that folder, and every write there prompts whatever your rules say.
 
@@ -751,6 +752,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
 | `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output |
 | `HANDOFF.md` | a checkpoint, or the user asking to stop | the brief for the next session |
+| `metrics.json` | `autodev.py next`, each time it completes or stops the run | the run's numbers for tuning auto-dev: spawns per worker, rounds spent, left and added, stops by their number, refused results, review findings kept and dropped, events and the build's diff size. Counts only, no code or task text. `next` writes the same file to `~/.config/auto-dev/metrics/<repo>/<branch>.json` (or `$AUTO_DEV_METRICS_DIR`, or `$XDG_CONFIG_HOME/auto-dev/metrics`), so it outlives the worktree |
 | `PLAN.md` | Phase 2 | the plan: the conditions (the testable contract), size check, risk tier and build steps |
 | `plan-review/` | Phase 2 | the plan critic's review (`<n>.md`): verdict, risk tier, blockers with evidence |
 | `acceptance/` | Phase 3 (the tester; its repairs in Phases 4–6) | the checks' `MANIFEST.md` (the checks themselves are ordinary test files in the worktree, committed before the build), their runs on the old code (`base-run/`), and `AMBIGUOUS.md`, a condition the tester found reads two ways |
