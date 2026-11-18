@@ -4142,3 +4142,12 @@ class SetupAnswerTest(RunCase):
                          "--task", "Add due dates to todos")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("--text", r.stderr)
+
+    def test_keep_with_no_gate_check_question_is_refused(self):
+        r = self.autodev("setup-answer", "keep", "--repo", self.repo,
+                         "--task", "Add due dates to todos")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        written = [p for p in self.profiles.rglob("*") if p.is_file()] \
+            if self.profiles.exists() else []
+        self.assertEqual(written, [])
