@@ -2968,6 +2968,85 @@ class LeanTest(NextCase):
         self.assertIn("QUESTION", out, shown)
         self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
 
+    GREEN_CHECKS = ({"name": "test", "state": "SUCCESS", "bucket": "pass",
+                     "link": "https://ci/1"},)
+    RED_CHECKS = ({"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"},)
+
+    def pushed_commit_under_a_tests_commit(self, checks):
+        """A draft PR whose pushed commit has `checks` on GitHub, a tests commit
+        made on top of it locally (not pushed), and a pass that leaves one
+        must-fix finding open. Returns (pushed commit, tests commit)."""
+        self.draft_pr(extra=self.ci_on(checks))
+        pushed = self.state()["phase6"]["verified_sha"]
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        head = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        self.assertNotEqual(head, pushed)
+        self.solo(finding=True)
+        return pushed, head
+
+    def assert_watches(self, out, sha):
+        """`out` asks for a CI watch that names `sha` with --sha, and no stop."""
+        shown = json.dumps(out, indent=2)
+        self.assertIn("ci-watch", out.get("ACTION", ""), shown)
+        self.assertRegex(out["ACTION"], rf"--sha[= ]'?{sha}\b", shown)
+        self.assertNotIn("REPORT", out, shown)
+
+    def watch_as_asked(self, out):
+        """Run the CI watch command `out` asks for, without waiting."""
+        found = re.search(r"`([^`]*ci-watch[^`]*)`", out["ACTION"])
+        self.assertIsNotNone(found, out["ACTION"])
+        return subprocess.run(found.group(1) + " --max-wait 0", shell=True,
+                              capture_output=True, text=True, env=self.env, cwd=self.tmp,
+                              check=False)
+
+    def test_a_tests_commit_on_the_pushed_commit_lets_ci_settle(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        out = self.next(0)
+        self.assert_watches(out, pushed)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("GREEN", r.stdout)
+        self.assertIn(pushed[:12], r.stdout)
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertNotIn("ci-watch", out["ACTION"])
+
+    def test_red_ci_on_the_pushed_commit_under_a_tests_commit_is_triaged(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.RED_CHECKS)
+        out = self.next(0)
+        self.assert_watches(out, pushed)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        self.assertEqual(self.mode(*jobs[0]), "ci")
+
+    def test_a_watch_on_another_commit_stops_and_a_resume_watches_again(self):
+        pushed, head = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertNotIn(r.returncode, (0, 2), r.stdout + r.stderr)  # it watched the local HEAD
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn(pushed[:12], report)
+        self.assertIn(head[:12], report)
+        self.assertIn("never", report)
+        self.resume()
+        self.assert_watches(self.next(0), pushed)
+
+    def test_a_ci_result_from_an_earlier_commit_asks_for_a_watch(self):
+        self.draft_pr(extra=self.ci_on(self.GREEN_CHECKS))
+        self.solo(finding=True)
+        state = self.state()
+        pushed = state["phase6"]["verified_sha"]
+        parent = self.sh("git", "rev-parse", f"{pushed}^", cwd=self.worktree).strip()
+        state["phase6"]["ci"] = {"sha": parent, "status": "green", "failing": [],
+                                 "seq": state["phase6"]["commit_seq"] - 1}
+        self.write_state(state)
+        self.assert_watches(self.next(0), pushed)
+
 
 class PublishTest(NextCase):
     def test_a_refresh_brings_the_overrides_made_after_the_draft_opened(self):
