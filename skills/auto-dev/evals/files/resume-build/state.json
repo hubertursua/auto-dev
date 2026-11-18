@@ -197,6 +197,7 @@
     "open_pr_gate": false,
     "post_plan_gate": true,
     "security_docs": [],
+    "sensitive_paths": [],
     "setup": [
       "<the profile's setup command>"
     ],

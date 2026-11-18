@@ -320,9 +320,10 @@ payments, access control, secrets, a data migration or backward
 compatibility, else standard. The plan critic can raise it, and once the
 quality gate is green (the end of Phase 5), before anything is pushed, `next`
 re-checks it from the diff: a path with a whole word that names a sensitive area (auth,
-session, token, permission, payment, migration and the like, camelCase split)
-or a large change (over 25 files or 800 lines, lock files left out) makes it
-high. It never goes down. A high tier before the build turns on the post-plan
+session, token, permission, payment, migration and the like, camelCase split),
+a path matching one of the profile's `sensitive_paths` globs, a line the build
+adds holding one of those words, or a large change (over 25 files or 800
+lines, lock files left out) makes it high. It never goes down. A high tier before the build turns on the post-plan
 gate; one raised after the build is shown at the ready-for-review gate. The
 tier decides how much review the draft gets: a high tier adds the review
 panel with its judge, the separate security reviewer, mutation testing and
@@ -508,7 +509,10 @@ worker to spawn or the question to ask) gets one in this order:
    has declared its profile, so there is nothing to research.
 3. **Research.** Otherwise the `profiler` worker reads the repo (CI config, task
    runners, manifests, lockfiles, contributing docs) and drafts a profile, citing
-   the file and line each command came from and naming anything it guessed. The
+   the file and line each command came from and naming anything it guessed. It
+   may also propose `sensitive_paths`: globs of files that hold sign-in,
+   session, access-control, payment or secret-handling code under paths that
+   don't say so, which the risk re-check then treats as sensitive. The
    run shows you the draft and asks: save it for this repo, use it for this run
    only, change something (the profiler redoes the draft as you say, and you're
    asked again), or stop. `autodev.py` writes the saved file.
@@ -634,6 +638,7 @@ The keys most runs touch:
 | `worktree_files` | gitignored files (an `.env`, say) to copy into the run's worktree |
 | `security_docs` | the repo's security directives (default: `SECURITY.md`, `.github/SECURITY.md`, `docs/security/*.md`; `[]` = none) |
 | `symbol_lookup` | a code-index tool to use instead of `grep` |
+| `sensitive_paths` | globs of files the risk re-check treats as sensitive (replaces the profile's list) |
 | `pr_review.inline_comments` | post the open and advisory review findings on the PR, once the reviews settle |
 | `checkpoint_events` | events one session records before it checkpoints (default 80) |
 | `jira.states` | the board's state names for In Progress, In Review and Done |

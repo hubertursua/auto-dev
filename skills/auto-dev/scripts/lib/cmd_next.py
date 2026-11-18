@@ -1470,11 +1470,13 @@ def phase4(c):
     return result
 
 # The risk tier is re-checked from the diff once the quality gate is green
-# (the end of Phase 5), before anything is pushed or reviewed: a path that names a sensitive area,
-# or a large change, makes the run high-risk. The tier never goes down. A path
-# is split into whole words, at non-alphanumerics and camelCase humps
-# (`UserAuth.ts` is user, auth, ts; `author.ts` is author, ts), and each word
-# is looked up in SENSITIVE_WORDS. Lock files are left out of the line count.
+# (the end of Phase 5), before anything is pushed or reviewed: a path that names a
+# sensitive area or matches a glob the repo declares sensitive (settings'
+# sensitive_paths), a sensitive word on a line the build adds, or a large change
+# makes the run high-risk. The tier never goes down. A path or an added line is
+# split into whole words, at non-alphanumerics and camelCase humps (`UserAuth.ts`
+# is user, auth, ts; `author.ts` is author, ts), and each word is looked up in
+# SENSITIVE_WORDS. Lock files are left out of the line count and the word scan.
 SENSITIVE_WORDS = frozenset((
     "auth", "authn", "authz", "authentication", "authorization", "login", "logout",
     "signin", "signup", "session", "sessions", "password", "passwords", "passwd",
@@ -1491,12 +1493,21 @@ def risk_recheck(c):
     """Re-check the tier from the build's diff, once (state's risk_recheck)."""
     if "risk_recheck" in c.state or c.readonly:
         return  # --explain shows the step after it; the next `next` re-checks
-    paths, lines = build_diff(c)
+    paths, lines, added = build_diff(c)
+    # .get: a run started before 5.1 has no sensitive_paths in its settings.
+    declared = [glob_regex(g) for g in c.state["settings"].get("sensitive_paths") or []
+                if isinstance(g, str) and g.strip("/")]
     why = []
-    sensitive = [p for p in paths if sensitive_path(p)]
+    sensitive = [p for p in paths if sensitive_path(p) or declared_path(p, declared)]
     if sensitive:
         why.append("it touches " + ", ".join(sensitive[:5])
                    + (f" and {len(sensitive) - 5} more" if len(sensitive) > 5 else ""))
+    hits = [(p, sorted(words)[:3]) for p, words in sorted(added.items())
+            if words and p not in sensitive]
+    if hits:
+        why.append("it adds lines naming a sensitive area: "
+                   + ", ".join(f"{p} ({', '.join(w)})" for p, w in hits[:5])
+                   + (f" and {len(hits) - 5} more" if len(hits) > 5 else ""))
     if len(paths) > LARGE_FILES or lines > LARGE_LINES:
         why.append(f"it is large ({len(paths)} files, {lines} lines changed)")
     c.state["risk_recheck"] = {"seq": c.seq(), "high": bool(why), "why": why}
@@ -1523,9 +1534,115 @@ def lock_file(path):
     return bool(LOCK_FILE_RE.search(Path(path).name))
 
 
+def glob_regex(pattern):
+    """A declared glob as a regex to fullmatch against a repo path. A pattern
+    with a `/` anywhere is anchored at the repo root (a trailing `/` means
+    everything under it); one without matches a file name at any depth. `*` and
+    `?` stop at `/`; a whole `**` segment spans any number of folders, none
+    included. Anything else, `[` included, is literal."""
+    anchored = "/" in pattern
+    body = pattern.lstrip("/")
+    if body.endswith("/"):
+        body += "**"
+    segments = body.split("/")
+    out = []
+    for i, seg in enumerate(segments):
+        last = i == len(segments) - 1
+        if seg == "**":
+            out.append(".*" if last else "(?:[^/]+/)*")
+            continue
+        out.append("".join("[^/]*" if ch == "*" else "[^/]" if ch == "?"
+                           else re.escape(ch) for ch in seg))
+        if not last:
+            out.append("/")
+    return re.compile(("" if anchored else "(?:.*/)?") + "".join(out), re.DOTALL)
+
+
+def declared_path(path, regexes):
+    return any(r.fullmatch(path) for r in regexes)
+
+
+GIT_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13,
+               '"': 34, "\\": 92}
+
+
+def diff_name(text):
+    """The path in a `+++ b/<path>` header, as `git status` names it: one
+    trailing tab dropped (git adds it after a name holding a space), and a
+    C-quoted name unquoted. None for `/dev/null` (a deletion)."""
+    if text.endswith("\t"):
+        text = text[:-1]
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        raw, body, i = bytearray(), text[1:-1], 0
+        while i < len(body):
+            ch = body[i]
+            if ch == "\\" and i + 1 < len(body):
+                nxt = body[i + 1]
+                if re.fullmatch(r"[0-7]{3}", body[i + 1:i + 4]):
+                    raw.append(int(body[i + 1:i + 4], 8) & 0xFF)
+                    i += 4
+                    continue
+                if nxt in GIT_ESCAPES:
+                    raw.append(GIT_ESCAPES[nxt])
+                    i += 2
+                    continue
+            raw += ch.encode("utf-8", "surrogateescape")
+            i += 1
+        text = raw.decode("utf-8", "surrogateescape")
+    if text == "/dev/null" or not text.startswith("b/"):
+        return None
+    return text[2:]
+
+
+def line_words(line):
+    return {w for w in path_words(line) if w in SENSITIVE_WORDS}
+
+
+def added_words(c, base, untracked):
+    """{path: the SENSITIVE_WORDS on the lines the build adds}: the `+` lines of
+    the diff from `base` to the working tree, and every line of an untracked
+    file. Lock files, binary files and .auto-dev/ are left out."""
+    def counted(p):
+        return p and not p.startswith(".auto-dev/") and not lock_file(p)
+
+    found = {}
+    # The prefixes, colour and quoting are pinned, so the user's diff config
+    # (diff.noprefix, diff.mnemonicPrefix) can't change the headers parsed here.
+    code, text, _ = git(c.wt, "-c", "core.quotePath=false", "diff", "-U0", "--no-color",
+                        "--no-ext-diff", "--no-textconv", "--src-prefix=a/",
+                        "--dst-prefix=b/", base or "HEAD", check=False,
+                        errors="surrogateescape")
+    current, in_hunk = None, False
+    for line in (text.split("\n") if code == 0 else ()):
+        if line.startswith("diff --git "):
+            current, in_hunk = None, False
+        elif not in_hunk and line.startswith("+++ "):
+            name = diff_name(line[4:])
+            current = name if counted(name) else None
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and current and line.startswith("+"):
+            found.setdefault(current, set()).update(line_words(line[1:]))
+    for p in untracked:
+        if not counted(p):
+            continue
+        try:
+            body = (Path(c.wt) / p).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "\0" in body:
+            continue  # binary
+        words = set()
+        for line in body.splitlines():
+            words |= line_words(line)
+        found[p] = words
+    return found
+
+
 def build_diff(c):
-    """(changed paths outside .auto-dev/, lines changed) between the branch's
-    merge base and the working tree, untracked files included."""
+    """(changed paths outside .auto-dev/, lines changed, {path: the sensitive
+    words on its added lines}) between the branch's merge base and the working
+    tree, untracked files included."""
     def out(*args):
         code, text, _ = git(c.wt, *args, check=False)
         return text if code == 0 else ""
@@ -1549,7 +1666,7 @@ def build_diff(c):
                                                           errors="replace").splitlines())
             except OSError:
                 pass
-    return paths, lines
+    return paths, lines, added_words(c, base, [p for p in add if p not in tracked])
 
 
 # ---------------------------------------------------------------- the change loop

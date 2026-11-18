@@ -4363,6 +4363,83 @@ class AddedLineWordsTest(NextCase):
         self.assertFalse(state["high_risk"])
 
 
+class SensitiveScanTest(NextCase):
+    """More of the risk re-check's declared globs and added-line scan."""
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+    declare = RiskRecheckTest.declare
+
+    def committed(self, rel, before, after):
+        """The build commits `rel` holding `before`, then changes it to `after`."""
+        self.write(rel, before)
+        self.sh("git", "add", "--", rel, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "add", cwd=self.worktree)
+        self.write(rel, after)
+
+    def test_a_trailing_slash_a_question_mark_and_a_bracket(self):
+        self.standard_session()
+        self.declare("users/", "src/v?.ts", "src/[ab].ts")
+        for rel in ("users/a/b.ts", "api/users/x.ts", "src/v1.ts", "src/v10.ts",
+                    "src/a.ts", "src/[ab].ts"):
+            self.write(rel)
+        state = self.verified()
+        # `users/` is anchored at the root; `?` is one character; `[` is literal.
+        self.assertEqual(state["risk_recheck"]["why"],
+                         ["it touches src/[ab].ts, src/v1.ts, users/a/b.ts"])
+
+    def test_a_lock_file_s_words_do_not_count(self):
+        self.standard_session()
+        self.write("package-lock.json", '{"node_modules/@auth0/auth0-spa-js": {}}\n')
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_binary_file_s_words_do_not_count(self):
+        self.standard_session()
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "blob.bin").write_bytes(b"\0token session\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_file_named_by_both_signals_is_reported_once(self):
+        self.standard_session()
+        self.write("src/auth/login.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/login.ts"])
+
+    def test_an_added_line_that_starts_with_plus_signs_is_scanned(self):
+        self.standard_session()
+        self.committed("src/notes.txt", "notes\n", "notes\n++ session\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: src/notes.txt (session)"])
+
+    def test_a_tracked_name_with_a_space_is_named_as_built(self):
+        self.standard_session()
+        self.committed("src/my file.ts", "export const x = 1;\n",
+                       "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: src/my file.ts (session)"])
+
+    def test_a_tracked_name_git_quotes_is_named_as_built(self):
+        self.standard_session()
+        self.committed('src/say"hi".ts', "export const x = 1;\n",
+                       "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            'it adds lines naming a sensitive area: src/say"hi".ts (session)'])
+
+    def test_three_words_a_file_and_five_files_at_most(self):
+        self.standard_session()
+        for i in range(6):
+            self.write(f"src/f{i}.ts", "token(); logout(); session; login(auth);\n")
+        state = self.verified()
+        listed = ", ".join(f"src/f{i}.ts (auth, login, logout)" for i in range(5))
+        self.assertEqual(state["risk_recheck"]["why"], [
+            f"it adds lines naming a sensitive area: {listed} and 1 more"])
+
+
 class RiskAtTheReadyGateTest(NextCase):
     ship_ready = ShipTest.ship_ready
     to_body = ShipTest.to_body
