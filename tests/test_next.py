@@ -6267,3 +6267,292 @@ class SetupFlowTest(RunCase):
                 self.ready(out, made[text_run])
                 self.assertNotIn("AGENT", out)
                 self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
+
+
+class MetricsTest(OverrideCase):
+    """`next` writes .auto-dev/metrics.json, and a copy outside the worktree,
+    whenever it completes a run's step (exit 3) or stops it (exit 4)."""
+
+    ship_ready = ShipTest.ship_ready
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    open_pr = ShipTest.open_pr
+    merge_ready = ShipTest.merge_ready
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def setUp(self):
+        super().setUp()
+        self.metrics_dir = self.tmp / "metrics"
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)
+
+    def metrics(self):
+        path = self.dir / "metrics.json"
+        self.assertTrue(path.is_file(), f"no {path}")
+        return json.loads(path.read_text())
+
+    def stopped_at_the_post_plan_gate(self):
+        """The user answers Stop at the post-plan gate; `next` reports it."""
+        out = self.next(5)
+        self.assertIn("post-plan gate", out["QUESTION"])
+        self.after(out, "Stop")
+        return self.next(4)
+
+    def test_a_stop_writes_metrics_json_with_the_run_and_its_events(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertEqual(data["metrics"], 1)
+        self.assertEqual(data["run"]["state"], "open")
+        self.assertEqual(data["run"]["phase"], 2)
+        self.assertEqual(data["events"], self.state()["events"])
+
+    def test_explain_and_a_plain_action_write_no_metrics(self):
+        out = self.next(0)  # the first step only spawns the planner
+        self.assertEqual(self.spawned(out), [("planner", 1)])
+        self.assertFalse((self.dir / "metrics.json").exists())
+        for _ in range(2):
+            self.next_reissue(0)
+        self.next_reissue(4)
+        self.assertTrue((self.dir / "metrics.json").is_file())
+        (self.dir / "metrics.json").unlink()
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertFalse((self.dir / "metrics.json").exists())
+
+    def test_spawns_count_each_time_a_brief_was_sent_out(self):
+        self.stopped_after_three_spawns()
+        self.assertEqual(self.metrics()["spawns"], {"total": 3, "by_worker": {"planner": 3}})
+
+    def test_a_refused_planner_and_its_retry_each_count_as_a_spawn_and_one_refusal(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        _, jobs = self.expect("planner")
+        self.assertEqual(jobs, [("planner", 1)])
+        self.answer("planner", 1, "FITS", reading="none", entry_points_changed="no")
+        out = self.next(0, refused_ok=True)  # no `risk`: refused, and briefed again
+        self.assertEqual(self.spawned(out), [("planner", 2)], json.dumps(out, indent=2))
+        self.answer("planner", 2, "FITS", **PLANNED)
+        self.critic()
+        self.stopped_at_the_post_plan_gate()
+        data = self.metrics()
+        self.assertEqual(data["spawns"]["by_worker"]["planner"], 2)
+        self.assertEqual(data["refused"], {"total": 1, "by_worker": {"planner": 1},
+                                           "by_token": {"MALFORMED": 1}})
+
+    def test_rounds_count_what_was_spent_left_and_added(self):
+        state = self.state()
+        state["budget"].update(total=1, remaining=0, spends=[
+            {"id": "fix-0", "what": "an earlier correction", "at": state["created"],
+             "seq": 1}])
+        self.write_state(state)
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic("REVISE", blockers=1)
+        self.next(4)  # no round left for the plan's revision
+        out = self.next(4)  # the same stop, reported again
+        self.raise_from_report(out, 2)
+        self.expect("planner", "REVISED", **PLANNED)
+        self.critic("APPROVE", mode="recheck")
+        self.stopped_at_the_post_plan_gate()
+        data = self.metrics()
+        self.assertEqual(data["rounds"], {
+            "total": 3, "spent": 2, "remaining": 1, "raised": 2,
+            "spends": [{"id": "fix-0", "what": "an earlier correction"},
+                       {"id": "plan-critic-1", "what": "plan revision"}]})
+        self.assertEqual(data["stops"]["by_number"], {"11": 1, "19": 1})
+
+    def test_a_run_that_spent_nothing_still_has_every_rounds_key(self):
+        self.stopped_after_three_spawns()
+        rounds = self.metrics()["rounds"]
+        self.assertEqual((rounds["spent"], rounds["spends"], rounds["raised"]), (0, [], 0))
+        self.assertEqual(rounds["remaining"], rounds["total"])
+
+    def test_a_stop_reported_twice_counts_once_by_its_number(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic()
+        first = self.stopped_at_the_post_plan_gate()
+        second = self.next(4)
+        for shown in (first, second):  # the same stop both times
+            self.assertIn("stopped at the post-plan gate", " ".join(shown["REPORT"]))
+        data = self.metrics()
+        self.assertEqual(data["stops"]["total"], 1)
+        self.assertEqual(data["stops"]["by_number"], {"19": 1})
+        self.assertEqual(len(data["stops"]["list"]), 1)
+        self.assertEqual(data["stops"]["list"][0]["number"], 19)
+        self.assertEqual(data["stops"]["list"][0]["rule"], "the run is stopped")
+        self.assertEqual(data["run"]["state"], "stopped")
+
+    def test_a_red_gate_stop_after_the_user_s_fix_counts_again(self):
+        out, _ = self.red_gate()
+        self.next(4)  # the same stop, reported again
+        r = self.answer_stop(out, "I fixed it myself", "I fixed the lint config")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.quality_gate(red=True)
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.quality_gate(red=True)
+        out = self.next(4)
+        self.assertIn("still red after the coder's correction", " ".join(out["REPORT"]))
+        self.assertEqual(self.metrics()["stops"]["by_number"], {"9": 2})
+
+    def test_a_run_held_at_a_gate_has_no_stop(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.after(out, "Hold (keep it a draft)")
+        out = self.next(4)
+        self.assertIn("held", " ".join(out["REPORT"]))
+        self.assertEqual(self.metrics()["stops"]["total"], 0)
+
+    def review_files(self):
+        """The fixture's review files, with condition-shaped rows."""
+        code = """\
+# Code review — feat/due-dates
+
+**Overall confidence: High** — reviewers finished: 3/3; coverage: full; must-fix decided 2–1: none
+Latest pass: 2 — scope: the correction
+Tree: {tree}
+Must-fix: 1 open · 1 fixed   ·   Advisory: 1   ·   Noise: 2   ·   Dropped (pre-existing): 1
+
+## Must-fix
+| ID | Finding | Location | Category | Votes | Confidence | Status |
+|----|---------|----------|----------|-------|------------|--------|
+| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | 3/3 | High | open |
+| C2 | blank title saved | `src/save.ts:18` | tests | 2/3 (re-vote) | Medium | fixed (pass 2) |
+
+## Pending re-vote
+| ID | Finding | Location | Category | Raised by | Re-voters | Votes |
+|----|---------|----------|----------|-----------|-----------|-------|
+
+## Advisory
+| ID | Finding | Location | Category | Votes | Confidence | Why advisory |
+|----|---------|----------|----------|-------|------------|--------------|
+| C3 | the sort could be cached | `src/sort.ts:9` | performance | 2/3 | Low | no user impact |
+
+## Noise
+| ID | Finding | Raised by | Why dismissed |
+|----|---------|-----------|---------------|
+| C4 | a due date in the past | R1 | allowed by the spec |
+| C5 | a long title | R2 | the field has a limit |
+
+## Security leads
+none
+
+## Passes
+| Pass | Scope | Reviewers finished | Must-fix found | Re-votes |
+|------|-------|--------------------|----------------|----------|
+| 1 | whole change | 3/3 | 2 | 1 |
+| 2 | the correction | 3/3 | 0 | 0 |
+""".format(tree="0" * 40)
+        security = """\
+# Security review — feat/due-dates
+
+**Overall confidence: High** — finished: yes; coverage: full; High/Medium verified: 2/2
+Run 1 — reviewer: security-reviewer — scope: the whole change since `abc`
+Tree: {tree}
+Must-fix: 1 open · 0 fixed   ·   For the user (pre-existing): 1   ·   Advisory: 0
+
+## Findings
+| ID | Finding | Location | Origin | Confidence | Verified | Verdict | Status |
+|----|---------|----------|--------|------------|----------|---------|--------|
+| S1 | anyone sets a due date | `src/due.ts:9` | introduced | High | confirmed | must-fix | open |
+| S2 | token not rotated | `src/auth.ts:88` | pre-existing | Medium | confirmed | for the user | — |
+| S3 | a date in a log | `src/log.ts:3` | introduced | Medium | refuted | advisory | — |
+
+## Coverage
+Every changed file.
+""".format(tree="0" * 40)
+        (self.dir / "CODE_REVIEW.md").write_text(code)
+        (self.dir / "SECURITY_REVIEW.md").write_text(security)
+
+    def test_review_findings_are_counted_kept_and_dropped(self):
+        self.stopped_after_three_spawns()
+        self.review_files()
+        state = self.state()
+        state["phase6"]["passes"] = [{"n": 1, "scope": "first"},
+                                     {"n": 2, "scope": "correction"}]
+        self.write_state(state)
+        self.next_reissue(4)  # the same stop, reported again: metrics written again
+        data = self.metrics()
+        self.assertEqual(data["code_review"], {
+            "passes": 2, "must_fix": 2, "advisory": 1, "pending": 0, "noise": 2,
+            "pre_existing": 1, "kept": 3, "dropped": 3})
+        self.assertEqual(data["security_review"],
+                         {"findings": 3, "refuted": 1, "kept": 2, "dropped": 1})
+
+    def test_a_run_with_no_review_has_null_review_blocks(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertIn("code_review", data)
+        self.assertIn("security_review", data)
+        self.assertIsNone(data["code_review"])
+        self.assertIsNone(data["security_review"])
+
+    def test_the_diff_size_comes_from_the_risk_re_check(self):
+        self.standard_session()
+        for i in range(30):
+            self.write(f"src/part{i}.ts")
+        state = self.verified()
+        lines = int(re.search(r"(\d+) lines", state["risk_recheck"]["why"][0]).group(1))
+        state["settings"]["open_pr_gate"] = True
+        self.write_state(state)
+        self.lint()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.after(out, "Hold (don't push yet)")
+        self.next(4)
+        self.assertEqual(self.metrics()["diff"], {"files": 32, "lines": lines, "high": True})
+
+    def test_a_run_stopped_in_the_plan_stage_has_no_diff(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertIn("diff", data)
+        self.assertIsNone(data["diff"])
+
+    def test_removing_the_worktree_keeps_the_run_s_metrics(self):
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        saved = self.metrics_dir / "app" / "feat-due-dates.json"
+        out = self.next(5)
+        self.assertIn("Remove the worktree", json.dumps(out))
+        self.assertIn(str(saved), json.dumps(out))
+        self.after(out, "Remove it")
+        out = self.next(3)
+        last = (self.dir / "metrics.json").read_text()
+        r = self.autodev("cleanup-worktree", "--dir", self.dir, cwd=self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.worktree.exists())
+        self.assertTrue(saved.is_file(), f"no {saved}")
+        self.assertEqual(saved.read_text(), last)
+        self.assertEqual(json.loads(saved.read_text())["run"]["state"], "finished")
+
+    def test_a_metrics_copy_that_cannot_be_written_changes_no_output(self):
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        self.expect("planner")
+        for _ in range(2):
+            self.next_reissue(0)
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        report = json.loads(r.stdout)["REPORT"]
+        self.assertIn("spawned 3 times", " ".join(report))
+        self.assertIn("metrics copy not written", r.stderr)
+        self.assertTrue((self.dir / "metrics.json").is_file())
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)
+        self.assertEqual(self.next(4)["REPORT"], report)  # the stop as it reads when written
+
+    def test_the_copy_s_file_name_replaces_unsafe_branch_characters(self):
+        state = self.state()
+        state["branch"] = "feat/a b+c_d.e"
+        self.write_state(state)
+        self.stopped_after_three_spawns()
+        saved = self.metrics_dir / "app" / "feat-a-b-c_d.e.json"
+        self.assertTrue(saved.is_file(), sorted(str(p) for p in self.metrics_dir.rglob("*"))
+                        if self.metrics_dir.exists() else "no metrics folder")
+        self.assertEqual(saved.read_text(), (self.dir / "metrics.json").read_text())
