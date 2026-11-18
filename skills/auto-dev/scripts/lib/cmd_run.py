@@ -20,7 +20,8 @@ gate <n | REPORT>
     table numbers them), or the one whose report is REPORT (`LINT.md` or
     `LINT`, any case), else the first whose kind is REPORT (`lint`).
 test
-    Runs the first `kind: test` check (`run gate <n>` runs any other).
+    Runs the test check: the first `kind: test` check with a `files` form,
+    else the first `kind: test` check (`run gate <n>` runs any other).
 --dir is required: it names the run, and a worker's shell isn't in the
 worktree, so a default would find no run, or an old one.
 --files <path> ...
@@ -94,15 +95,24 @@ def add_arguments(parser):
                         help="how many of the output's last lines to print")
 
 
+def test_check(gate):
+    """(number, check) of the test check: the first `kind: test` check whose
+    `files` form holds <files> (it runs the given files and names each test),
+    else the first `kind: test` check; None when the gate has none."""
+    tests = [(i, c) for i, c in enumerate(gate, 1) if c.get("kind") == "test"]
+    scoped = [(i, c) for i, c in tests if PLACEHOLDER in str(c.get("files") or "")]
+    return (scoped or tests or [None])[0]
+
+
 def pick(gate, what, check):
     """(the check's number, the check) the arguments name."""
     if what == "test":
         if check:
             raise Fail("`run test` takes no check name; use `run gate <n>`",
                        CANNOT_RUN, "ERROR")
-        for i, c in enumerate(gate, 1):
-            if c.get("kind") == "test":
-                return i, c
+        found = test_check(gate)
+        if found:
+            return found
         raise Fail("the profile's gate has no `kind: test` check", CANNOT_RUN, "ERROR")
     if not check:
         raise Fail("`run gate` needs the check's number or report name", CANNOT_RUN,

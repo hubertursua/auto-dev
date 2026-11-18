@@ -113,7 +113,12 @@ against origin/{{base}} directly — it moves when anything fetches.
    condition with checks can be met on it.
    Read evidence/acceptance.txt and confirm the runner executed every test
    MANIFEST.md lists. An `unnamed:` line names a check no line of the output
-   names: look for it there. A test excluded, filtered or skipped did not
+   names: look for it there. A `warning:` line says no line names any of
+   them: the command may not run the checks at all. Then, and only then, find
+   the gate check in profile.md that does run the check files, run it
+   yourself with `run gate <n> --files <the check files>` (not `run test`,
+   which is the run prep just made), and add that run as a group in each
+   condition's C<n>.txt. A test excluded, filtered or skipped did not
    pass: its condition is unmet, and the cause is an Unjustified integrity
    finding.
 4. For each PLAN.md condition (Security/Compliance criteria included), decide its
@@ -130,8 +135,8 @@ against origin/{{base}} directly — it moves when anything fetches.
      <the last 30 lines or fewer, enough to show the result>
    For a condition with acceptance checks, `verify prep` wrote the first
    group from step 3's acceptance run: the lines of evidence/acceptance.txt
-   that name this condition's checks, passing or failing. Do not run them
-   again, and leave that group as it is. For each run you also made yourself
+   that name this condition's checks, passing or failing. Unless step 3 had a
+   `warning:` line, do not run them again; leave that group as it is. For each run you also made yourself
    for a part the checks don't prove (Adequate, below), add one more Expected
    / Command / Result / Output group after it. For a condition with no check,
    write the whole file. A `manual` condition whose proxy (MANIFEST.md, Not

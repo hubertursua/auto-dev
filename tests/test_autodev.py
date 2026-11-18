@@ -2627,6 +2627,8 @@ class VerifyPrepTest(unittest.TestCase):
         # Condition 2's check isn't in the check file: no line names it.
         self.assertIn('  unnamed: 2: flags an overdue todo', r.stdout)
         self.assertIn("C1.txt, C2.txt", r.stdout)
+        # One check is named, so prep doesn't warn that none is.
+        self.assertNotIn("warning:", r.stdout)
 
     def test_an_edited_check_is_audited_against_every_tests_commit(self):
         self.write("tests/due.test.ts", "test: an old test\ntest: keeps the date\n")
@@ -2689,6 +2691,7 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("acceptance run ran past 1s and was stopped", r.stdout)
         self.assertIn("Result: the run ran past 1s and was stopped;", self.evidence("C1.txt"))
+        self.assertNotIn("warning:", r.stdout)
 
     def test_without_a_scoped_form_the_whole_test_check_runs(self):
         state = json.loads((self.ad / "state.json").read_text())
