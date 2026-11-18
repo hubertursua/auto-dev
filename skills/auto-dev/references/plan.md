@@ -54,11 +54,17 @@ it. Then follow **The loop** in `SKILL.md` with this same command (the `next
 move into the worktree. What you will see:
 
 1. A saved profile: one `lookup` to spawn (whether each quality-gate check's
-   tool is adopted). A check whose tool the repo never adopted is left out of
-   this run only; the final action's `SUMMARY` names it and the saved file to
-   fix: tell the user. When that would leave no test check, setup stops and
-   names the saved file instead. A saved file changed since its lookup is
-   looked up again.
+   tool is adopted). When it finds one or more not adopted, the gate-check
+   question comes before the run exists (exit 5): show the `SUMMARY` (each
+   flagged check, the lookup's reason, the saved file), ask the `QUESTION`
+   and run the `AFTER` line for the answer. `Keep them` keeps every check (one
+   that fails stops the run at the quality gate, where the user can sign it
+   off); `Leave them out of this run` creates the run without them; `Stop`
+   ends setup with nothing created. When leaving them out would leave no
+   test check, only `Keep them` and `Stop` are offered. `autodev.py` makes
+   the run's profile from the answer and never changes the saved file: never
+   edit a profile yourself. A saved file changed since its lookup is looked
+   up again, and the question asked anew.
 2. No usable profile (none saved, an invalid one, or a `.auto-dev.yml` that
    doesn't set both `setup` and `gate`): the `profiler` to spawn, then the
    profile question (exit 5). Show the `SUMMARY` (the profiler's questions
@@ -71,7 +77,8 @@ move into the worktree. What you will see:
    setup with nothing created. A `.auto-dev.yml` that sets both `setup` and
    `gate` needs neither.
 3. The run is created: the action says to tell the user its `SUMMARY` lines
-   (the profile in use, a check left out, a profile that could not be saved,
+   (the profile in use, a check left out or kept at the gate-check question,
+   a profile that could not be saved,
    commits already on a worktree you made), then `cd <worktree>` (the path it
    names; the one you are in when the run uses yours). Every later step runs
    there, with the `next --dir` command its `AFTER` names.

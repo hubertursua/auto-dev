@@ -4137,6 +4137,14 @@ class SetupAnswerTest(RunCase):
             if self.profiles.exists() else []
         self.assertEqual(written, [])
 
+    def test_stop_with_no_setup_question_is_refused(self):
+        r = self.autodev("setup-answer", "stop", "--repo", self.repo,
+                         "--task", "Add due dates to todos")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        said = (r.stdout + r.stderr).lower()
+        self.assertIn("no setup question", said)
+        self.assertIn("gate-check question", said)
+
     def test_change_without_text_cannot_run(self):
         r = self.autodev("setup-answer", "change", "--repo", self.repo,
                          "--task", "Add due dates to todos")

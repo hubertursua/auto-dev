@@ -5285,6 +5285,12 @@ class SetupFlowTest(RunCase):
         return sorted(p.name for p in self.temp.rglob("*.md")
                       if re.match(r"(profiler|lookup)-\d+\.md$", p.name))
 
+    def leave_out(self, out):
+        """Answer `out`'s gate-check question with Leave them out; the next `next`."""
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        self.answered(out, "Leave them out of this run")
+        return self.setup_next()
+
     def failed_setup(self):
         """A saved profile whose setup is `false`: the run is made and stops."""
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
@@ -5335,13 +5341,15 @@ class SetupFlowTest(RunCase):
                 self.assertNotIn("dropped gate check", self.work_log())
 
     def test_a_check_the_repo_never_adopted_is_left_out_of_this_run(self):
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config or dependency\n")
+        out = self.leave_out(self.with_saved_profile(
+            "check 1: adopted — package.json:9\n"
+            "check 2: not adopted — no eslint config or dependency\n"))
         self.ready(out, self.tmp / "app-add-due-dates-to-todos")
         self.assertEqual(self.gate(), ["true"])
         self.assertEqual(self.profile_line(), f"saved profile {self.saved}, without npx eslint .")
-        self.assertIn(f"dropped gate check npx eslint .: the repo never adopted its tool "
-                      f"(saved profile {self.saved})", self.work_log())
+        self.assertIn(f"dropped gate check npx eslint .: the user left it out of this run; the "
+                      f"lookup found its tool not adopted (saved profile {self.saved})",
+                      self.work_log())
         self.assertTrue([ln for ln in out.get("SUMMARY", [])
                          if "npx eslint ." in ln and str(self.saved) in ln],
                         json.dumps(out, indent=2))
@@ -5717,9 +5725,9 @@ class SetupFlowTest(RunCase):
 
     def test_retry_keeps_the_checks_dropped_at_creation(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config\n",
-                                      text=self.saved.read_text())
+        out = self.leave_out(self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                                     "check 2: not adopted — no eslint config\n",
+                                                     text=self.saved.read_text()))
         self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
         self.save_profile()  # the user fixes the setup; the lint check is still listed
         self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
@@ -5902,26 +5910,65 @@ class SetupFlowTest(RunCase):
 
     # C3, C4: a saved profile that changes, goes, or loses its test check
 
-    def test_a_lookup_that_leaves_no_test_check_stops_naming_the_saved_file(self):
+    def test_a_gate_question_with_no_test_check_left_names_the_check_and_saved_file(self):
         out = self.with_saved_profile("check 1: not adopted — no jest dependency\n"
                                       "check 2: adopted — .eslintrc.json:1\n",
                                       text=self.JEST_PROFILE)
-        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
-        report = out.get("REPORT", [])
-        self.assertTrue([ln for ln in report if "npx jest" in ln and "not adopted" in ln], report)
-        self.assertTrue([ln for ln in report if str(self.saved) in ln], report)
-        self.assertFalse([ln for ln in report if "profile.yml" in ln], report)
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        summary = out.get("SUMMARY", [])
+        self.assertTrue([ln for ln in summary if "npx jest" in ln and "not adopted" in ln],
+                        summary)
+        self.assertTrue([ln for ln in summary if str(self.saved) in ln], summary)
+        self.assertFalse([ln for ln in summary if "profile.yml" in ln], summary)
         self.no_run_made()
 
     def test_a_changed_saved_profile_is_looked_up_again(self):
         self.with_saved_profile("check 1: not adopted — no jest dependency\n"
                                 "check 2: adopted — .eslintrc.json:1\n", text=self.JEST_PROFILE)
-        self.assertEqual(self.outs[-1].get("exit"), 4)
+        self.assertEqual(self.outs[-1].get("exit"), 5)
         self.save_profile()  # the user makes check 1 another test command
         values = self.lookup_answers(self.setup_next(expect=0), BOTH_ADOPTED)
         self.assertIn("`true`", values["question"])
         self.ready(self.setup_next())
         self.assertEqual(self.gate(), ["true", "npx eslint ."])
+
+    def test_each_setup_question_refuses_the_other_s_answers(self):
+        self.save_profile()
+        self.lookup_answers(self.setup_next(expect=0),
+                            "check 1: adopted — package.json:9\n"
+                            "check 2: not adopted — no eslint config\n")
+        self.setup_next(expect=5)
+        r = self.autodev("setup-answer", "run-only", "--repo", self.repo, "--task", self.TASK)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no profile question", (r.stdout + r.stderr).lower())
+        self.saved.unlink()
+        self.to_question(task="Add due dates researched")
+        r = self.autodev("setup-answer", "keep", "--repo", self.repo,
+                         "--task", "Add due dates researched")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no gate-check question", (r.stdout + r.stderr).lower())
+
+    def test_a_gate_question_answered_once_is_closed(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n")
+        self.answered(out, "Keep them")
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text())["kept"],
+                         [{"n": 2, "command": "npx eslint ."}])
+
+    def test_a_gate_answer_given_before_the_saved_file_changed_is_asked_again(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n")
+        self.answered(out, "Leave them out of this run")
+        self.save_profile(SAVED_PROFILE.replace("echo ready", "echo set up"))  # same gate
+        out = self.setup_next(expect=5)
+        self.assertNotIn("AGENT", out)  # the same gate: its lookup's answer still holds
+        self.assertEqual(self.options(out), ("Keep them", "Leave them out of this run", "Stop"))
+        self.no_run_made()
 
     def test_a_saved_profile_removed_after_its_lookup_is_researched(self):
         self.save_profile()
@@ -5933,9 +5980,9 @@ class SetupFlowTest(RunCase):
 
     def test_a_kept_run_s_failed_setup_names_the_dropped_check(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config\n",
-                                      text=self.saved.read_text())
+        out = self.leave_out(self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                                     "check 2: not adopted — no eslint config\n",
+                                                     text=self.saved.read_text()))
         self.kept_failed_run(out)
         self.assertTrue([ln for ln in out["REPORT"] if "npx eslint ." in ln
                          and str(self.saved) in ln], self.report(out))
@@ -6068,9 +6115,9 @@ class SetupFlowTest(RunCase):
 
     def test_a_saved_profile_unreadable_at_retry_stops_with_the_validator_s_errors(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        self.kept_failed_run(self.with_saved_profile(
+        self.kept_failed_run(self.leave_out(self.with_saved_profile(
             "check 1: adopted — package.json:9\ncheck 2: not adopted — no eslint config\n",
-            text=self.saved.read_text()))
+            text=self.saved.read_text())))
         self.saved.write_text("gate: [unclosed\n")
         self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
         out = self.next_dir(4)

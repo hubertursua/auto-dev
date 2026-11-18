@@ -1,25 +1,33 @@
-"""autodev.py setup-answer — record the user's answer to the profile question.
+"""autodev.py setup-answer — record the user's answer to a setup question.
 
 Usage:
-    autodev.py setup-answer <save|run-only|change|stop> --repo <repo>
+    autodev.py setup-answer <save|run-only|change|keep|drop|stop> --repo <repo>
                             --task "<task>" [--text "<what to change>"] [--json]
 
 Before a run exists, `autodev.py next --repo <repo> --task "<task>"` sets it
 up (Phase 1): it finds the repo's saved profile (or a `.auto-dev.yml` that sets
-both `setup` and `gate`), asks a lookup whether each saved gate check's tool is
-adopted, or has the profiler research a draft and asks the user about it (the
-profile question, exit 5). Each answer's AFTER line runs this command, which
-only records the answer; the next `next --repo` acts on it:
+both `setup` and `gate`), or has the profiler research a draft and asks the
+user about it (the profile question, exit 5). For a saved profile a lookup
+says whether each gate check's tool is adopted; when it finds one or more not
+adopted, the user is asked before the run is created (the gate-check question,
+exit 5). Each answer's AFTER line runs this command, which only records the
+answer; the next `next --repo` acts on it:
 
-    save      write the draft to the repo's saved-profile path (the one
-              profile-path.py prints), with a first-line comment naming the
-              repo and today's date, and validate it there; then the run is
-              created with it. A write that fails is recorded, not a stop:
-              the run is created anyway and its summary holds the YAML
-    run-only  create the run with the draft, saving nothing
-    change    the profiler redoes its draft with --text (the user's words),
-              and the question is asked again
-    stop      setup ends: nothing is created
+    save      (profile question) write the draft to the repo's saved-profile
+              path (the one profile-path.py prints), with a first-line comment
+              naming the repo and today's date, and validate it there; then
+              the run is created with it. A write that fails is recorded, not
+              a stop: the run is created anyway and its summary holds the YAML
+    run-only  (profile question) create the run with the draft, saving nothing
+    change    (profile question) the profiler redoes its draft with --text
+              (the user's words), and the question is asked again
+    keep      (gate-check question) create the run with every check of the
+              saved profile; a kept check that fails stops the run at the
+              quality gate, where the user can sign it off
+    drop      (gate-check question) create the run without the checks the
+              lookup flagged; the saved profile file is never changed, so the
+              next run asks again
+    stop      (either question) setup ends: nothing is created
 
 Files before the run exists live in a private scratch folder,
 `<temp>/auto-dev-setup-<uid>/<repo>-<hash of the repo and the task>`; the run
@@ -32,7 +40,10 @@ Exit codes:
     0  recorded
     1  refused: no profile question is open for this task (no researched
        draft awaiting an answer, or one whose answer the run could not be
-       created with), or `save` for a repo with no save path
+       created with), or `save` for a repo with no save path; for `keep` or
+       `drop`, no gate-check question is open (never asked, already answered,
+       or the saved profile changed since its lookup); `drop` when leaving
+       the flagged checks out would leave the gate with no test check
     2  could not run (bad arguments, the scratch folder unsafe)
 """
 
@@ -57,7 +68,9 @@ AUTODEV = SCRIPTS / "autodev.py"
 SKILL_DIR = SCRIPTS.parent
 SCRATCH = "auto-dev-setup"
 SETUP_FILE = "setup.json"
-ANSWERS = ("save", "run-only", "change", "stop")
+PROFILE_ANSWERS = ("save", "run-only", "change", "stop")
+GATE_ANSWERS = ("keep", "drop", "stop")
+ANSWERS = ("save", "run-only", "change", "keep", "drop", "stop")
 OPTIONS = {"save": ("Looks right — save it for this repo",
                     "Save the draft as this repo's profile, then set up the run with it."),
            "run-only": ("Looks right — use it for this run only",
@@ -65,6 +78,14 @@ OPTIONS = {"save": ("Looks right — save it for this repo",
            "change": ("Change something (tell me what)",
                       "The profiler redoes the draft as you say, and you are asked again."),
            "stop": ("Stop", "End setup here; nothing is created.")}
+GATE_OPTIONS = {"keep": ("Keep them",
+                         ("The run runs every check of the saved profile. If a kept check "
+                          "fails, the quality gate stops the run and you can sign it off "
+                          "there.")),
+                "drop": ("Leave them out of this run",
+                         ("The run never runs these checks. The saved profile is not changed, "
+                          "so the next run asks again.")),
+                "stop": ("Stop", "End setup here; nothing is created.")}
 CHANGE_TEXT = "<what the user wants changed>"
 REPORT_SECTIONS = ("PROFILE", "EVIDENCE", "NOT ADOPTED", "NOT INSTALLED", "QUESTIONS")
 # A lookup's line about gate check <n>; "not adopted" is tried first.
@@ -96,20 +117,42 @@ def command(*words):
 
 # ---------------------------------------------------------------- the decision
 
-def checks_to_drop(gate, answer_text):
-    """The 1-based numbers of the saved profile's gate checks to leave out of
-    this run, from the lookup's answer: the one place that decides it.
+def checks_not_adopted(gate, answer_text):
+    """The saved profile's gate checks the user is asked about, from the
+    lookup's answer: the one place that decides it. [{n, command, kind, why}],
+    `why` being the lookup's own line (shown to the user, never run).
 
-    A check is dropped only when some line says `check <n>: not adopted` and
+    A check is flagged only when some line says `check <n>: not adopted` and
     none says `check <n>: adopted`; a number outside the gate, or an answer in
-    any other form, drops nothing (no check is dropped on doubt)."""
-    said = {}
+    any other form, flags nothing (no question is asked on doubt)."""
+    said, why = {}, {}
     for line in (answer_text or "").splitlines():
         m = CHECK_LINE_RE.match(line)
         if m:
-            said.setdefault(int(m.group(1)), set()).add(m.group(2).lower())
-    return sorted(n for n, words in said.items()
-                  if 1 <= n <= len(gate) and words == {"not adopted"})
+            n, word = int(m.group(1)), m.group(2).lower()
+            said.setdefault(n, set()).add(word)
+            if word == "not adopted":
+                why.setdefault(n, line.strip()[:200])
+    return [{"n": n, "command": gate[n - 1].get("command"), "kind": gate[n - 1].get("kind"),
+             "why": why[n]}
+            for n in sorted(said) if 1 <= n <= len(gate) and said[n] == {"not adopted"}]
+
+
+def leaves_a_test_check(gate, flagged):
+    """Whether the gate keeps a test check once the flagged checks are out."""
+    gone = {f["n"] for f in flagged}
+    return any(c.get("kind") == "test" for i, c in enumerate(gate, 1) if i not in gone)
+
+
+def saved_gate(path):
+    """The saved profile's gate checks (it validated when setup chose it)."""
+    import yaml
+    try:
+        gate = (cmd_init.load_yaml(path) or {}).get("gate") or []
+    except (OSError, yaml.YAMLError) as exc:
+        raise Fail(f"cannot read the saved profile {path}: {exc}", CANNOT_RUN,
+                   "ERROR") from None
+    return [c if isinstance(c, dict) else {} for c in gate]
 
 
 # ---------------------------------------------------------------- the scratch folder
@@ -370,11 +413,16 @@ def origin_summary(artifact_dir, state):
         lines.append(f"Saved the confirmed profile to {path}; the run uses it."
                      if origin.get("saved_now") else f"Using the saved profile at {path}.")
         for check in origin.get("dropped") or []:
-            lines.append(f"Left out of this run: gate check {check.get('command')} (check "
+            lines.append(f"Left out of this run at your answer: gate check "
+                         f"`{check.get('command')}` (check {check.get('n')} of the saved "
+                         "profile), whose tool the lookup found not adopted. The saved "
+                         f"profile {path} is unchanged and still lists it, so the next run "
+                         "asks again.")
+        for check in origin.get("kept") or []:
+            lines.append(f"Kept at your answer: gate check `{check.get('command')}` (check "
                          f"{check.get('n')} of the saved profile), whose tool the lookup "
-                         "found the repo never adopted. The saved file is unchanged: fix "
-                         f"the saved profile {path} (drop the check, or keep it if the "
-                         "repo does use the tool).")
+                         "found not adopted. If it fails, the quality gate stops the run and "
+                         "you can sign it off there.")
     elif kind == "draft" and origin.get("save_error"):
         lines.append(f"The profile was not saved to {origin.get('save_path')}: "
                      f"{origin['save_error']}. The run uses it anyway. To keep it for this "
@@ -438,11 +486,13 @@ class Setup:
             return self.ready(*found)
         last = self.info["answers"][-1] if self.info["answers"] else None
         if last and last.get("answer") == "stop":
+            which = ("the gate-check question" if last.get("question") == "gate"
+                     else "the profile question")
             self.start_over()
-            return stop([("Setup stopped at the profile question: the user chose Stop. "
+            return stop([(f"Setup stopped at {which}: the user chose Stop. "
                           "Nothing was created (no worktree, branch or run)."),
                          f"To start over, run `{self.again()}`."],
-                        "the user stopped setup at the profile question")
+                        f"the user stopped setup at {which}")
         try:
             cmd_init.preflight(self.repo)
         except Fail as exc:
@@ -598,15 +648,8 @@ class Setup:
     # ------------------------------------------------------------ a saved profile
 
     def lookup_step(self, profile):
-        import yaml
-
-        from .cmd_next import stop
         saved = profile["save_path"]
-        try:
-            gate = (cmd_init.load_yaml(saved) or {}).get("gate") or []
-        except (OSError, yaml.YAMLError) as exc:
-            raise Fail(f"cannot read the saved profile {saved}: {exc}",
-                       CANNOT_RUN, "ERROR") from None
+        gate = saved_gate(saved)
         checks = "; ".join(f"check {i}: `{c.get('command')}` ({c.get('kind')})"
                            for i, c in enumerate(gate, 1))
         question = ("for each quality-gate check below, has the repo adopted its tool (a "
@@ -621,25 +664,59 @@ class Setup:
                                   "adopted")
         if act:
             return act
-        dropped = []
-        if data.get("status") == "ok" and data.get("next") == "ANSWERED":
-            spawn = self.spawns(job)[-1]
-            dropped = checks_to_drop(gate, read_text(answer_file(self.folder, spawn)) or "")
-        profile["dropped"] = [{"n": n, "command": gate[n - 1].get("command")} for n in dropped]
-        kept = [c for i, c in enumerate(gate, 1) if i not in dropped]
-        if dropped and not any(c.get("kind") == "test" for c in kept):
-            return stop([("Setup stopped before the run was created: leaving out the checks "
-                          "whose tool the lookup found the repo never adopted would leave the "
-                          f"quality gate of the saved profile {saved} with no test check."),
-                         *(f"Left out: gate check `{d['command']}` (check {d['n']} of the "
-                           "saved profile): the lookup found its tool not adopted."
-                           for d in profile["dropped"]),
-                         (f"Nothing was created. Fix the saved profile {saved} (give it a "
-                          "test check whose tool the repo uses), or remove it to have the "
-                          f"profiler research a new one; then run `{self.again()}`: it looks "
-                          "at the changed file again.")],
-                        "a saved profile's lookup left no test check")
-        return None
+        if profile.get("lookup_job") != job or "flagged" not in profile:
+            flagged = []
+            if data.get("status") == "ok" and data.get("next") == "ANSWERED":
+                spawn = self.spawns(job)[-1]
+                flagged = checks_not_adopted(
+                    gate, read_text(answer_file(self.folder, spawn)) or "")
+            profile["lookup_job"], profile["flagged"] = job, flagged
+            self.save()  # setup-answer reads the same list
+        flagged = profile["flagged"]
+        profile["dropped"], profile["kept"] = [], []
+        if not flagged:
+            return None
+        reply = gate_answer(self.info, job, profile.get("saved_hash"))
+        named = [{"n": f["n"], "command": f["command"]} for f in flagged]
+        if reply and reply["answer"] == "keep":
+            profile["kept"] = named
+            return None
+        if reply and reply["answer"] == "drop" and leaves_a_test_check(gate, flagged):
+            profile["dropped"] = named
+            return None
+        return self.gate_question(saved, gate, flagged)
+
+    def gate_question(self, saved, gate, flagged):
+        """Ask the user about the checks whose tool the lookup found not
+        adopted, before the run exists: keep them, leave them out, or stop."""
+        from .cmd_next import ask
+        can_drop = leaves_a_test_check(gate, flagged)
+        summary = [(f"The lookup found the tool of these quality-gate checks of the saved "
+                    f"profile {saved} not adopted in this repo:")]
+        summary += [f"    check {f['n']}: `{f['command']}` ({f['kind']}) — {f['why']}"
+                    for f in flagged]
+        summary.append("A lookup can be wrong. Leaving a check out means this run never runs "
+                       "it; a kept check that fails stops the run at the quality gate, where "
+                       "you can sign it off. The saved profile is not changed either way.")
+        if not can_drop:
+            summary.append("Leaving them out would leave the quality gate with no test check, "
+                           "so that answer is not offered: keep them, or stop and fix the "
+                           f"saved profile {saved}.")
+        keys = [k for k in GATE_ANSWERS if k != "drop" or can_drop]
+        question = {"question": ("The lookup found these gate checks' tools not adopted "
+                                 "(above). Keep them in this run's quality gate?"),
+                    "header": "Gate checks", "multiSelect": False,
+                    "options": [{"label": GATE_OPTIONS[k][0], "description": GATE_OPTIONS[k][1]}
+                                for k in keys]}
+        answers = [(GATE_OPTIONS[k][0],
+                    command("setup-answer", k, "--repo", self.repo, "--task", self.task))
+                   for k in keys]
+        result = ask(None, "the gate-check question", summary, [question], answers,
+                     "a saved profile's lookup found a gate check not adopted: the user decides")
+        result["ACTION"] = ("show the user SUMMARY, then ask QUESTION with AskUserQuestion and "
+                            "run the AFTER line for their answer; then run "
+                            f"`{self.again()}`")
+        return result
 
     # ------------------------------------------------------------ research
 
@@ -778,7 +855,7 @@ class Setup:
         summary.append("Paths for the permissions guidance: profiles folder "
                        f"{profile.get('profiles_dir') or 'none'}; skill folder {SKILL_DIR}; "
                        f"the run's worktree goes in {Path(self.repo).parent}")
-        keys = [k for k in ANSWERS if k != "save" or profile.get("save_path")]
+        keys = [k for k in PROFILE_ANSWERS if k != "save" or profile.get("save_path")]
         commands = {k: command("setup-answer", k, "--repo", self.repo, "--task", self.task)
                     for k in keys}
         if "change" in commands:
@@ -805,7 +882,8 @@ class Setup:
         kind = profile["kind"]
         if kind == "saved":
             return {"kind": "saved", "path": profile["save_path"],
-                    "dropped": profile.get("dropped") or []}
+                    "dropped": profile.get("dropped") or [],
+                    "kept": profile.get("kept") or []}
         if kind == "override":
             return {"kind": "override"}
         answer = profile.get("answer") or {}
@@ -829,15 +907,18 @@ class Setup:
                     "--profile-source", "researched by the profiler, confirmed by the user"], []
         saved, dropped = profile["save_path"], profile.get("dropped") or []
         if not dropped:
-            return ["--profile", saved, "--profile-source", f"saved profile {saved}"], []
+            notes = [f"kept gate check {k['command']}: the user kept it; the lookup found its "
+                     f"tool not adopted (saved profile {saved})"
+                     for k in profile.get("kept") or []]
+            return ["--profile", saved, "--profile-source", f"saved profile {saved}"], notes
         data = cmd_init.load_yaml(saved)
         gone = {d["n"] for d in dropped}
         data["gate"] = [c for i, c in enumerate(data.get("gate") or [], 1) if i not in gone]
         filtered = self.folder / "profile.yml"
         dump_yaml(data, filtered)
         commands = [d["command"] for d in dropped]
-        notes = [f"dropped gate check {cmd}: the repo never adopted its tool (saved profile "
-                 f"{saved})" for cmd in commands]
+        notes = [f"dropped gate check {cmd}: the user left it out of this run; the lookup "
+                 f"found its tool not adopted (saved profile {saved})" for cmd in commands]
         return ["--profile", filtered, "--profile-source",
                 f"saved profile {saved}, without {', '.join(commands)}"], notes
 
@@ -1010,6 +1091,27 @@ def latest_answer(info, n):
     return next((a for a in reversed(info["answers"]) if a.get("after") == n), None)
 
 
+def gate_answer(info, job, saved_hash):
+    """The user's latest answer to the gate-check question lookup `job` led
+    to, asked about the saved file as it reads now (`saved_hash`)."""
+    return next((a for a in reversed(info["answers"])
+                 if a.get("question") == "gate" and a.get("lookup") == job
+                 and a.get("saved_hash") == saved_hash), None)
+
+
+def open_gate_question(info):
+    """(profile, lookup job) when the gate-check question awaits an answer:
+    a saved profile whose lookup flagged a check, unchanged since, and no
+    answer recorded for it. Else None."""
+    profile = info.get("profile") or {}
+    job = profile.get("lookup_job")
+    if (profile.get("kind") != "saved" or not profile.get("flagged") or not job
+            or file_hash(profile.get("save_path") or "") != profile.get("saved_hash")
+            or gate_answer(info, job, profile.get("saved_hash")) is not None):
+        return None
+    return profile, job
+
+
 def open_question(folder, info):
     """(profiler n, draft) when a valid draft awaits an answer, else None. An
     answer the run could not be created with leaves the question open again."""
@@ -1065,7 +1167,14 @@ def answer(args):
     repo = cmd_init.repo_root(args.repo)
     folder = existing_scratch(repo, task)
     info = load_info(folder) if folder else None
+    gate = open_gate_question(info) if info else None
+    if args.choice in ("keep", "drop") or (args.choice == "stop" and gate):
+        return answer_gate(args, folder, info, gate)
     found = open_question(folder, info) if info else None
+    if found is None and args.choice == "stop":
+        raise Fail("no setup question is open for this task (no profile question or "
+                   "gate-check question awaits an answer); run `next --repo … --task …` and "
+                   "answer the question it asks", FAILED, "REFUSED")
     if found is None:
         raise Fail("no profile question is open for this task (no researched profile awaits "
                    "an answer); run `next --repo … --task …` and answer the question it asks",
@@ -1084,3 +1193,23 @@ def answer(args):
          not_saved=entry.get("save_error"))
     return 0
 
+
+def answer_gate(args, folder, info, gate):
+    """Record keep, drop or stop for the open gate-check question."""
+    if gate is None:
+        raise Fail("no gate-check question is open for this task (never asked, already "
+                   "answered, or the saved profile changed since its lookup); run `next "
+                   "--repo … --task …` and answer the question it asks", FAILED, "REFUSED")
+    profile, job = gate
+    if args.choice == "drop":
+        flagged = profile["flagged"]
+        if not leaves_a_test_check(saved_gate(profile["save_path"]), flagged):
+            raise Fail("leaving out " + ", ".join(f"`{f['command']}`" for f in flagged)
+                       + " would leave the quality gate with no test check; answer keep or "
+                       "stop", FAILED, "REFUSED")
+    info["answers"].append({"answer": args.choice, "question": "gate", "lookup": job,
+                            "saved_hash": profile.get("saved_hash"), "text": "",
+                            "at": st.now()})
+    save_info(folder, info)
+    emit(args.json, "RECORDED", args.choice)
+    return 0

@@ -21,8 +21,11 @@ any clone or worktree of the same repo find it.
 `autodev.py next --repo` finds, researches and confirms the profile
 (`references/plan.md`, step 2): it runs `profile-path.py` and
 `validate-config.py` itself, asks a lookup whether a saved profile's gate tools
-are adopted, spawns the profiler when there is no usable profile, asks the user
-the profile question and writes the saved file on their `save` answer. `autodev.py
+are adopted and, when one is not, asks the user the gate-check question (keep the
+checks, leave them out of this run, or stop) before the run exists, spawns the
+profiler when there is no usable profile, asks the user the profile question and
+writes the saved file on their `save` answer. A saved profile is never edited to
+leave a check out: the run gets its own copy without it. `autodev.py
 init`, which it runs, then validates the profile, applies `.auto-dev.yml` over it,
 refuses a quality gate with no test command, and writes `.auto-dev/profile.md`.
 

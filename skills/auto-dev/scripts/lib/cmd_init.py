@@ -23,7 +23,8 @@ verbatim as its task (without it, the planner gets --ask, else --task).
 `--note` records a decision in the new run's WORK_LOG.md (repeatable), as
 `autodev.py note` would. `--profile-origin` names a JSON file saying where the
 profile came from, `{"kind": "saved", "path": <saved file>, "dropped":
-[{"n": <check number>, "command": <command>}]}`, `{"kind": "draft"}` or
+[{"n": <check number>, "command": <command>}], "kept": [same]}` (the checks
+the user left out or kept at the gate-check question), `{"kind": "draft"}` or
 `{"kind": "override"}`; it is kept as `.auto-dev/profile-origin.json`, so a
 failed setup is retried from the same profile (for kind `draft`, `--profile`
 is kept as `.auto-dev/profile.yml`, the file to fix).
