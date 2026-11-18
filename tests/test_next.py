@@ -5637,6 +5637,29 @@ class SetupFlowTest(RunCase):
         self.brief(self.setup_next("--ticket", "PROJ-123", "--ticket-text-file", readable,
                                    task="PROJ-123", expect=0), "lookup")
 
+    def test_a_ticket_run_keeps_the_ask_in_the_user_s_words(self):
+        ask = "Add due dates to todos"
+        self.save_profile()
+        out = self.setup_next("--ticket", "PROJ-123", "--ask", ask,
+                              "--jira", "unavailable: no Atlassian MCP",
+                              task="PROJ-123", expect=0)
+        self.lookup_answers(out, BOTH_ADOPTED)
+        self.ready(self.setup_next(task="PROJ-123"))
+        tree = self.worktree
+        self.assertEqual(self.state()["task"]["ask"], ask)
+        # With Jira unavailable there is no ticket text: the planner gets the ask.
+        values = self.brief(self.to_the_planner(), "planner")
+        self.assertEqual(values["task"], ask)
+        # The user's own wording finds the run again.
+        r = self.autodev("resume", "--repo", self.repo, "--task", ask)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"^(RESUME|ASK)\b", r.stdout)
+        before = self.sh("git", "worktree", "list", cwd=self.repo)
+        out = self.setup_next(task=ask)
+        self.ready(out, tree)
+        self.assertNotIn("AGENT", out)
+        self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
+
     # -------------------------------------------------------------- safety
 
     @unittest.skipUnless(hasattr(os, "getuid"), "POSIX folder ownership")
