@@ -4246,6 +4246,122 @@ class RiskRecheckTest(NextCase):
         self.next(0)
         self.assertEqual(self.state()["risk_recheck"]["seq"], seq)
 
+    def declare(self, *globs):
+        """The run's settings declare `globs` sensitive, as a profile would."""
+        state = self.state()
+        state["settings"]["sensitive_paths"] = list(globs)
+        self.write_state(state)
+
+    def test_a_file_under_a_declared_glob_raises_the_risk(self):
+        self.standard_session()
+        self.declare("src/middleware.ts", "src/users/**")
+        self.write("src/users/controller.ts")
+        state = self.verified()
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/controller.ts"])
+        self.assertIn("risk raised to high after the build: it touches "
+                      "src/users/controller.ts", [n["text"] for n in state["notes"]])
+
+    def test_a_file_beside_a_declared_directory_stays_standard(self):
+        self.standard_session()
+        self.declare("src/middleware.ts", "src/users/**")
+        self.write("src/users.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+    def test_a_bare_name_matches_at_any_depth_and_a_double_star_spans_folders(self):
+        self.standard_session()
+        self.declare("middleware.ts", "src/**/guard.ts", "/lib/app.ts")
+        for rel in ("api/v2/middleware.ts", "src/guard.ts", "src/a/b/guard.ts",
+                    "lib/app.ts"):
+            self.write(rel)
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches api/v2/middleware.ts, lib/app.ts, src/a/b/guard.ts, src/guard.ts"])
+
+    def test_a_star_stops_at_a_slash_and_a_slashed_glob_is_anchored(self):
+        self.standard_session()
+        self.declare("src/*.ts", "lib/app.ts")
+        self.write("src/users/controller.ts")
+        self.write("vendor/lib/app.ts")
+        state = self.verified()
+        # Neither built file matches. The run's two acceptance checks sit
+        # directly in src/, so `src/*.ts` names them and nothing else.
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches " + ", ".join(sorted(self.CHECKS))])
+
+    MIDDLEWARE = ("export function check(req) { return req.headers.authorization "
+                  "&& req.session; }\n")
+    WORDS_WHY = ("it adds lines naming a sensitive area: src/middleware.ts "
+                 "(authorization, session)")
+
+    def test_a_sensitive_word_on_an_added_line_raises_the_risk(self):
+        self.standard_session()
+        self.write("src/middleware.ts", self.MIDDLEWARE)
+        state = self.verified()
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def committed_middleware_with(self, key):
+        """The repo's git config sets `key`; the build commits src/middleware.ts,
+        so the words are found through the diff, not by reading a new file."""
+        self.standard_session()
+        self.sh("git", "config", key, "true", cwd=self.worktree)
+        self.write("src/middleware.ts", "export const x = 1;\n")
+        self.sh("git", "add", "src/middleware.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "middleware", cwd=self.worktree)
+        self.write("src/middleware.ts", self.MIDDLEWARE)
+        return self.verified()
+
+    def test_the_added_line_scan_ignores_a_mnemonic_diff_prefix(self):
+        state = self.committed_middleware_with("diff.mnemonicPrefix")
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_diff_noprefix(self):
+        state = self.committed_middleware_with("diff.noprefix")
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def test_a_run_without_the_sensitive_paths_setting_still_rechecks(self):
+        self.standard_session()
+        state = self.state()
+        state["settings"].pop("sensitive_paths", None)
+        self.write_state(state)
+        self.write("src/users/controller.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+
+class AddedLineWordsTest(NextCase):
+    """The base branch holds src/legacy.ts with `export const token = 1;`,
+    which the build rewrites: a word only on a removed line does not count."""
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def init(self, *extra, **kw):
+        seed = self.tmp / "seed"
+        (seed / "src").mkdir(exist_ok=True)
+        (seed / "src" / "legacy.ts").write_text("export const token = 1;\n")
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "legacy", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "pull", "-q", "--ff-only", "origin", "main", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+    def test_longer_words_and_words_on_removed_lines_do_not_count(self):
+        self.standard_session()
+        self.assertIn("token", self.sh("git", "show", "main:src/legacy.ts",
+                                       cwd=self.worktree))
+        self.write("src/legacy.ts", "export const one = 1;\n")
+        self.write("src/name.ts", "export const author = tokenizer();\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
 
 class RiskAtTheReadyGateTest(NextCase):
     ship_ready = ShipTest.ship_ready
@@ -4265,6 +4381,31 @@ class RiskAtTheReadyGateTest(NextCase):
         out = self.next(5)
         self.assertIn("ready gate", out["QUESTION"])
         self.assertIn("Risk: high after the build (it touches src/auth/token.ts)",
+                      out["SUMMARY"])
+
+
+class DeclaredPathAtTheReadyGateTest(NextCase):
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    reviewed_pr = ShipTest.reviewed_pr
+    refresh_body = ShipTest.refresh_body
+    published = ShipTest.published
+
+    def build_session(self):
+        state = self.state()
+        state["settings"]["sensitive_paths"] = ["src/middleware.ts", "src/users/**"]
+        self.write_state(state)
+        (self.worktree / "src" / "users").mkdir(parents=True, exist_ok=True)
+        (self.worktree / "src" / "users" / "controller.ts").write_text(
+            "export const x = 1;\n")
+        super().build_session()
+
+    def test_the_ready_gate_names_a_file_under_a_declared_glob(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertIn("Risk: high after the build (it touches src/users/controller.ts)",
                       out["SUMMARY"])
 
 

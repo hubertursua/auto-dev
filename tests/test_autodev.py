@@ -415,6 +415,33 @@ class InitTest(RunCase):
                          "--task", "x", "--profile", self.profile)
         self.assertEqual(r.returncode, 2)
 
+    def test_declared_sensitive_paths_reach_profile_md_and_the_settings(self):
+        self.profile.write_text(
+            PROFILE + 'sensitive_paths: ["src/middleware.ts", "src/users/**"]\n')
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Sensitive paths:** `src/middleware.ts`, `src/users/**`\n",
+                      (self.dir / "profile.md").read_text())
+        self.assertEqual(self.state()["settings"]["sensitive_paths"],
+                         ["src/middleware.ts", "src/users/**"])
+
+    def test_the_override_s_sensitive_paths_replace_the_profile_s(self):
+        self.profile.write_text(
+            PROFILE + 'sensitive_paths: ["src/middleware.ts", "src/users/**"]\n')
+        (self.repo / ".auto-dev.yml").write_text('sensitive_paths: ["api/guard.ts"]\n')
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Sensitive paths:** `api/guard.ts`\n",
+                      (self.dir / "profile.md").read_text())
+        self.assertEqual(self.state()["settings"]["sensitive_paths"], ["api/guard.ts"])
+
+    def test_a_profile_without_sensitive_paths_reads_none_declared(self):
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Sensitive paths:** none declared\n",
+                      (self.dir / "profile.md").read_text())
+        self.assertEqual(self.state()["settings"]["sensitive_paths"], [])
+
 
 class ResumeTest(RunCase):
     def resume(self, *extra):
