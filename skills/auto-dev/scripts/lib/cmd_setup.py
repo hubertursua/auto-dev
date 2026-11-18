@@ -31,7 +31,8 @@ Output: `RECORDED: <answer>`, or `REFUSED: <why>`.
 Exit codes:
     0  recorded
     1  refused: no profile question is open for this task (no researched
-       draft awaiting an answer), or `save` for a repo with no save path
+       draft awaiting an answer, or one whose answer the run could not be
+       created with), or `save` for a repo with no save path
     2  could not run (bad arguments, the scratch folder unsafe)
 """
 
@@ -69,6 +70,12 @@ REPORT_SECTIONS = ("PROFILE", "EVIDENCE", "NOT ADOPTED", "NOT INSTALLED", "QUEST
 # A lookup's line about gate check <n>; "not adopted" is tried first.
 CHECK_LINE_RE = re.compile(r"^\W*check\s+(\d+)\s*:\s*(not adopted|adopted)\b", re.IGNORECASE)
 SLUG_WORDS = 5
+# A profiler spawn whose reason is one of these starts a new count of unusable
+# returns: the job's first spawn, the user's change, the user's --reissue.
+FRESH_STARTS = ("first", "change", "reissue")
+# What a Stop answer keeps: what the first `next --repo` call was given.
+KEPT_ON_STOP = ("ticket", "ticket_url", "ask", "jira", "ticket_text")
+TICKET_FILE = "ticket.txt"
 
 
 def add_arguments(parser):
@@ -228,6 +235,14 @@ def read_text(path):
         return None
 
 
+def file_hash(path):
+    """The sha256 of the file's bytes, or None when it can't be read."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def read_result(folder, spawn):
     path = folder / f"{spawn['worker']}-{spawn['n']}.json"
     if not path.exists():
@@ -256,15 +271,26 @@ def fresh(spawn):
     return age.total_seconds() < IN_FLIGHT_HOURS * 3600
 
 
+def section_heading(line):
+    """The report section `line` starts, or None: a heading is the section's
+    name in capitals, alone or followed by ` —`, `-` or `:` (markdown marks
+    aside), never a sentence that starts with the same word."""
+    head = line.strip().lstrip("#*_ ")
+    for name in REPORT_SECTIONS:
+        if head.startswith(name):
+            rest = head[len(name):].lstrip("*_").strip()
+            if not rest or rest[0] in "—-:":
+                return name
+    return None
+
+
 def report_sections(text):
-    """The profiler's report split into its sections, by heading word."""
+    """The profiler's report split into its sections, by heading."""
     sections, name, fenced = {}, None, False
     for line in (text or "").splitlines():
         if line.strip().startswith("```"):
             fenced = not fenced
-        head = line.lstrip("#*_ ").upper()
-        found = None if fenced else next(
-            (s for s in REPORT_SECTIONS if head.startswith(s)), None)
+        found = None if fenced else section_heading(line)
         if found:
             name = found
         if name:
@@ -306,16 +332,17 @@ def free_slug(repo, slug, prefix):
 
 def find_run(repo, task, ticket):
     """(worktree, state) of this task's open run, or None: one whose task text
-    or restated ask is `task` (the user's own words find a run started from a
-    ticket key), and whose ticket is `ticket` when one is given."""
-    for kind, tree, _, state in cmd_resume.candidates(repo):
-        if kind != "run" or not st.resumable(state):
-            continue
-        if task not in (str(state["task"].get(key) or "").strip() for key in ("text", "ask")):
-            continue
-        if ticket and state["task"].get("ticket") != ticket:
-            continue
-        return tree, state
+    is `task`, else one whose restated ask is (the user's own words find a run
+    started from a ticket key), and whose ticket is `ticket` when one is
+    given."""
+    runs = [(tree, state) for kind, tree, _, state in cmd_resume.candidates(repo)
+            if kind == "run" and st.resumable(state)
+            and not (ticket and state["task"].get("ticket") != ticket)]
+    # A run whose task text is `task` comes first, whatever the worktree order.
+    for key in ("text", "ask"):
+        for tree, state in runs:
+            if str(state["task"].get(key) or "").strip() == task:
+                return tree, state
     return None
 
 
@@ -387,6 +414,21 @@ class Setup:
     def save(self):
         save_info(self.folder, self.info)
 
+    def start_over(self):
+        """After a Stop answer: forget the profile, the spawns and the answers,
+        keeping only what the first call was given (the ticket's details and
+        the ask), so the start-over command reaches a run with them."""
+        keep = {k: self.info[k] for k in KEPT_ON_STOP if k in self.info}
+        for path in self.folder.iterdir():
+            if path.name in (SETUP_FILE, TICKET_FILE):
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink()
+        self.info = {**keep, "spawns": [], "answers": []}
+        self.save()
+
     # ------------------------------------------------------------ the step
 
     def decide(self):
@@ -396,7 +438,7 @@ class Setup:
             return self.ready(*found)
         last = self.info["answers"][-1] if self.info["answers"] else None
         if last and last.get("answer") == "stop":
-            shutil.rmtree(self.folder, ignore_errors=True)
+            self.start_over()
             return stop([("Setup stopped at the profile question: the user chose Stop. "
                           "Nothing was created (no worktree, branch or run)."),
                          f"To start over, run `{self.again()}`."],
@@ -441,12 +483,16 @@ class Setup:
 
     def resolve(self):
         """Which profile the run gets: {kind: saved | research | override, …},
-        or a stop. Decided once and kept in setup.json."""
+        or a stop. Decided once and kept in setup.json, until the saved
+        profile it chose changes or goes."""
         from .cmd_next import stop
         bad = self.read_override()
         if bad:
             return bad
         profile = self.info.get("profile")
+        if profile and profile.get("kind") == "saved" and file_hash(
+                profile["save_path"]) != profile.get("saved_hash"):
+            profile = None  # the saved file changed or is gone: decide again
         if profile:
             return profile
         profile = profile_path(self.repo)
@@ -457,6 +503,7 @@ class Setup:
             code, lines = validate(profile["save_path"], profile=True)
             if code == 0:
                 profile["kind"] = "saved"
+                profile["saved_hash"] = file_hash(profile["save_path"])
             elif code == 1:
                 profile["kind"] = "research"
                 profile["saved_errors"] = lines
@@ -483,7 +530,7 @@ class Setup:
     def spawns(self, job):
         return [s for s in self.info["spawns"] if s["job"] == job]
 
-    def spawn(self, job, worker, sets, emitted=1, reason="first", rule=""):
+    def spawn(self, job, worker, sets, emitted=1, reason="first", rule="", request=None):
         from .cmd_next import spawn_lines
         sets = dict(sets)
         if worker == "profiler":
@@ -491,9 +538,11 @@ class Setup:
             sets["draft_path"] = str(self.folder / f"draft-{n}.yml")
         path, _ = cmd_work.write_brief(None, self.folder, worker, None, dict(sets))
         n = int(path.stem.rsplit("-", 1)[1])
-        self.info["spawns"].append({"job": job, "worker": worker, "n": n, "sets": sets,
-                                    "emitted": emitted, "reason": reason,
-                                    "issued_at": st.now()})
+        record = {"job": job, "worker": worker, "n": n, "sets": sets, "emitted": emitted,
+                  "reason": reason, "issued_at": st.now()}
+        if request:
+            record["request"] = request  # the user's change, kept through retries
+        self.info["spawns"].append(record)
         self.save()
         result = spawn_lines([f"auto-dev:{worker}"], [str(path)], [cmd_work.prompt_for(path)],
                              rule or f"setup needs the {worker}")
@@ -527,7 +576,8 @@ class Setup:
             if not self.reissue:
                 return None, self.never_returned(latest)
             return None, self.spawn(job, worker, latest["sets"], reason=latest["reason"],
-                                    rule="the user asked to spawn it again (--reissue)")
+                                    rule="the user asked to spawn it again (--reissue)",
+                                    request=latest.get("request"))
         if not self.reissue and fresh(latest):
             return None, action(
                 f"wait: {worker} #{latest['n']} (sent out {latest['issued_at']}) has not "
@@ -542,16 +592,20 @@ class Setup:
             return None, self.never_returned(latest)
         return None, self.spawn(job, worker, latest["sets"],
                                 emitted=latest.get("emitted", 1) + 1, reason=latest["reason"],
-                                rule="a setup brief has no result: spawn it again")
+                                rule="a setup brief has no result: spawn it again",
+                                request=latest.get("request"))
 
     # ------------------------------------------------------------ a saved profile
 
     def lookup_step(self, profile):
         import yaml
+
+        from .cmd_next import stop
+        saved = profile["save_path"]
         try:
-            gate = (cmd_init.load_yaml(profile["save_path"]) or {}).get("gate") or []
+            gate = (cmd_init.load_yaml(saved) or {}).get("gate") or []
         except (OSError, yaml.YAMLError) as exc:
-            raise Fail(f"cannot read the saved profile {profile['save_path']}: {exc}",
+            raise Fail(f"cannot read the saved profile {saved}: {exc}",
                        CANNOT_RUN, "ERROR") from None
         checks = "; ".join(f"check {i}: `{c.get('command')}` ({c.get('kind')})"
                            for i, c in enumerate(gate, 1))
@@ -559,27 +613,68 @@ class Setup:
                     "declared dependency or a config file)? Answer one line per check, "
                     "exactly `check <n>: adopted — <file:line evidence>` or `check <n>: not "
                     f"adopted — <what you looked for>`. The checks: {checks}")
-        data, act = self.job("lookup", "lookup", {"worktree": self.repo, "question": question},
+        # One lookup per gate as it reads: a changed gate is asked about again.
+        key = hashlib.sha256(json.dumps(gate, sort_keys=True, default=str).encode())
+        job = f"lookup-{key.hexdigest()[:12]}"
+        data, act = self.job(job, "lookup", {"worktree": self.repo, "question": question},
                              rule="a saved profile: ask whether each gate check's tool is "
                                   "adopted")
         if act:
             return act
         dropped = []
         if data.get("status") == "ok" and data.get("next") == "ANSWERED":
-            spawn = self.spawns("lookup")[-1]
+            spawn = self.spawns(job)[-1]
             dropped = checks_to_drop(gate, read_text(answer_file(self.folder, spawn)) or "")
         profile["dropped"] = [{"n": n, "command": gate[n - 1].get("command")} for n in dropped]
+        kept = [c for i, c in enumerate(gate, 1) if i not in dropped]
+        if dropped and not any(c.get("kind") == "test" for c in kept):
+            return stop([("Setup stopped before the run was created: leaving out the checks "
+                          "whose tool the lookup found the repo never adopted would leave the "
+                          f"quality gate of the saved profile {saved} with no test check."),
+                         *(f"Left out: gate check `{d['command']}` (check {d['n']} of the "
+                           "saved profile): the lookup found its tool not adopted."
+                           for d in profile["dropped"]),
+                         (f"Nothing was created. Fix the saved profile {saved} (give it a "
+                          "test check whose tool the repo uses), or remove it to have the "
+                          f"profiler research a new one; then run `{self.again()}`: it looks "
+                          "at the changed file again.")],
+                        "a saved profile's lookup left no test check")
         return None
 
     # ------------------------------------------------------------ research
 
-    def respawn(self, latest, reason, issues, rule):
-        sets = {k: v for k, v in latest["sets"].items() if k != "draft_path"}
-        sets["previous_issues"] = issues
-        return self.spawn("profiler", "profiler", sets, reason=reason, rule=rule)
+    def respawn(self, latest, reason, issue, rule, request=None):
+        """The profiler again, from `latest`'s sets: its brief holds the user's
+        change request it carried (or `request`, a new one), then `issue`."""
+        sets = {k: v for k, v in latest["sets"].items()
+                if k not in ("draft_path", "previous_issues")}
+        if request is None:
+            request = latest.get("request")
+        sets["previous_issues"] = "\n\n".join(t for t in (request, issue) if t)
+        return self.spawn("profiler", "profiler", sets, reason=reason, rule=rule,
+                          request=request)
+
+    def unusable(self, spawn, data):
+        """None when the profiler's return is a usable draft, else what was
+        wrong: {reason: not-ok | invalid, said, lines}."""
+        if data.get("status") != "ok" or data.get("next") != "CONFIRM":
+            said = f"status {data.get('status')} {data.get('next') or ''}".rstrip()
+            return {"reason": "not-ok", "said": f"returned {said}", "lines": []}
+        draft = spawn["sets"].get("draft_path")
+        code, lines = validate(draft, profile=True)
+        if code != 0:
+            return {"reason": "invalid", "lines": lines,
+                    "said": f"wrote a draft ({draft}) that is not a valid saved profile"}
+        return None
+
+    def streak(self):
+        """The profiler spawns since its first, the user's latest change or
+        the user's latest --reissue."""
+        spawns = self.spawns("profiler")
+        starts = [i for i, s in enumerate(spawns) if s.get("reason") in FRESH_STARTS]
+        return spawns[starts[-1] if starts else 0:]
 
     def research_step(self, profile):
-        from .cmd_next import stop
         spawns = self.spawns("profiler")
         sets = spawns[-1]["sets"] if spawns else None
         if sets is None:
@@ -591,45 +686,68 @@ class Setup:
         if act:
             return act
         latest = self.spawns("profiler")[-1]
-        name = f"profiler #{latest['n']}"
-        if data.get("status") != "ok" or data.get("next") != "CONFIRM":
-            said = f"status {data.get('status')} {data.get('next') or ''}".rstrip()
-            if latest["reason"] == "not-ok":
-                return stop([(f"{name} did not return ok twice running ({said}). Tell the "
-                              "user what it said above its result block; nothing was created."),
-                             (f"Once the cause is fixed, run `{self.again(reissue=True)}`: "
-                              "it spawns the profiler again.")],
-                            "the profiler did not return ok twice")
-            return self.respawn(latest, "not-ok",
-                                f"Your last spawn for this job returned {said}. Do the job "
-                                "again: write the draft and return status ok with CONFIRM.",
-                                "the profiler did not return ok: spawn it again")
+        problem = self.unusable(latest, data)
+        if problem is not None:
+            return self.retry_research(latest, problem)
         draft = latest["sets"]["draft_path"]
-        code, lines = validate(draft, profile=True)
-        if code != 0:
-            if latest["reason"] == "invalid":
-                return stop([f"{name}'s draft {draft} is invalid again; validate-config.py says:",
-                             *lines, "Nothing was created. Tell the user.",
-                             f"To have the profiler try again, run `{self.again(reissue=True)}`."],
-                            "the profiler's draft is invalid twice")
-            return self.respawn(latest, "invalid",
-                                f"Your draft at {draft} is not a valid saved profile. "
-                                "`validate-config.py --profile` says:\n" + "\n".join(lines)
-                                + "\nFix each error and write the whole draft again.",
-                                "the profiler's draft is invalid: spawn it again once")
-        answer = next((a for a in self.info["answers"] if a.get("after") == latest["n"]), None)
+        answer = latest_answer(self.info, latest["n"])
         if answer is None:
             return self.question(profile, latest, draft)
         if answer["answer"] == "change":
             return self.respawn(
-                latest, "change",
-                f"The user reviewed your draft at {draft} and asked for this change: "
-                f"{answer.get('text', '')}\nStart from that draft, make this change and "
-                "nothing else, and write the result to your draft_path.",
-                "the user asked to change the draft: the profiler redoes it")
+                latest, "change", None,
+                "the user asked to change the draft: the profiler redoes it",
+                request=(f"The user reviewed your draft at {draft} and asked for this change: "
+                         f"{answer.get('text', '')}\nStart from that draft, make this change "
+                         "and nothing else, and write the result to your draft_path."))
         profile["draft"] = draft
         profile["answer"] = answer
         return None
+
+    def retry_research(self, latest, problem):
+        """The profiler's latest return is unusable: spawn it again once, and
+        stop at the second unusable return since its first spawn, the user's
+        change or --reissue (of either kind: not ok, or an invalid draft)."""
+        from .cmd_next import stop
+        failures = []
+        for spawn in self.streak():
+            if spawn is latest:
+                failures.append((spawn, problem))
+                continue
+            data = read_result(self.folder, spawn)
+            found = self.unusable(spawn, data) if data is not None else None
+            if found is not None:
+                failures.append((spawn, found))
+        if len(failures) < 2:
+            if problem["reason"] == "not-ok":
+                issue = (f"Your last spawn for this job {problem['said']}. Do the job "
+                         "again: write the draft and return status ok with CONFIRM.")
+            else:
+                issue = (f"Your draft at {latest['sets'].get('draft_path')} is not a valid "
+                         "saved profile. `validate-config.py --profile` says:\n"
+                         + "\n".join(problem["lines"])
+                         + "\nFix each error and write the whole draft again.")
+            return self.respawn(latest, problem["reason"], issue,
+                                f"the profiler's return is unusable ({problem['reason']}): "
+                                "spawn it again once")
+        said = []
+        for spawn, found in failures:
+            said.append(f"profiler #{spawn['n']} {found['said']}"
+                        + ("; validate-config.py says:" if found["lines"] else ""))
+            said += [f"    {ln}" for ln in found["lines"]]
+        if self.reissue:
+            return self.respawn(latest, "reissue",
+                                "Your last spawns for this job left no usable draft:\n"
+                                + "\n".join(said) + "\nThe user asked for another try: "
+                                "do the job again, write a valid draft and return status ok "
+                                "with CONFIRM.",
+                                "the user asked to spawn the profiler again (--reissue)")
+        return stop([("The profiler left no usable draft twice running; nothing was created. "
+                     "Tell the user what each spawn said (for a status other than ok, what it "
+                     "said above its result block):"), *said,
+                     (f"Once the cause is fixed, run `{self.again(reissue=True)}`: it spawns "
+                      "the profiler again.")],
+                    "the profiler's return was unusable twice")
 
     def question(self, profile, latest, draft):
         from .cmd_next import FILL, ask
@@ -704,8 +822,11 @@ class Setup:
         if profile["kind"] == "override":
             return [], []
         if profile["kind"] == "research":
-            return ["--profile", profile["draft"], "--profile-source",
-                    "researched by the profiler, confirmed by the user"], []
+            answer = profile.get("answer") or {}
+            saved_now = answer.get("answer") == "save" and not answer.get("save_error")
+            # A saved draft runs from the saved file, so a fix made there counts.
+            return ["--profile", answer["save_path"] if saved_now else profile["draft"],
+                    "--profile-source", "researched by the profiler, confirmed by the user"], []
         saved, dropped = profile["save_path"], profile.get("dropped") or []
         if not dropped:
             return ["--profile", saved, "--profile-source", f"saved profile {saved}"], []
@@ -724,7 +845,7 @@ class Setup:
         from .cmd_next import stop
         prefix = self.branches().get("prefix") or "feat"
         info = self.info
-        ticket_text = read_text(self.folder / "ticket.txt") if info.get("ticket_text") else ""
+        ticket_text = read_text(self.folder / TICKET_FILE) if info.get("ticket_text") else ""
         slug = free_slug(self.repo, derive_slug(self.task, info.get("ticket"), ticket_text),
                          prefix)
         origin_file = self.folder / "origin.json"
@@ -737,7 +858,7 @@ class Setup:
             if info.get(key):
                 cmd += [flag, info[key]]
         if ticket_text:
-            cmd += ["--ticket-text-file", self.folder / "ticket.txt"]
+            cmd += ["--ticket-text-file", self.folder / TICKET_FILE]
         cmd += [*profile_args, "--profile-origin", origin_file]
         for note in notes:
             cmd += ["--note", note]
@@ -752,14 +873,36 @@ class Setup:
                        "ERROR")
         if found is None:
             return stop([f"Setup stopped before the run was created: {message}",
-                         f"Nothing was created. Once the cause is fixed, run `{self.again()}`."],
-                        "init stopped")
+                         *self.reopen(profile)], "init stopped")
         tree, state = found
-        source = cmd_init.setup_source(Path(tree) / ".auto-dev", state)
-        return stop([f"Setup failed: {message}",
+        ad = Path(tree) / ".auto-dev"
+        source = cmd_init.setup_source(ad, state)
+        return stop([f"Setup failed: {message}", *origin_summary(ad, state),
                      (f"The run is kept in {tree}. Fix the setup in {source}, then say "
                       "`auto-dev continue`: `next` runs setup again from that file.")],
                     "Phase 1's setup failed")
+
+    def reopen(self, profile):
+        """After init stopped before the run existed: what the user can do.
+        For a researched draft the profile question is open again, so a
+        `change` answer is taken; with no new answer, the next call creates
+        the run with the same one again."""
+        answer = profile.get("answer")
+        if profile["kind"] != "research" or not answer:
+            return [f"Nothing was created. Once the cause is fixed, run `{self.again()}`."]
+        answer["reopened"] = True
+        self.save()
+        draft = profile["draft"]
+        change = command("setup-answer", "change", "--text", CHANGE_TEXT, "--repo", self.repo,
+                         "--task", self.task)
+        saved = answer.get("answer") == "save" and not answer.get("save_error")
+        where = (f"from the saved file {answer['save_path']}, so a fix made there counts"
+                 if saved else f"from the draft {draft}")
+        return [(f"Nothing was created. The profile question is open again for the draft "
+                f"{draft}."),
+                (f"Once the cause is fixed, run `{self.again()}`: the run is created again "
+                 f"{where}. Or have the profiler change the draft: run `{change}` with the "
+                 f"user's words, then `{self.again()}`; the user is asked again.")]
 
     def ready(self, tree, state, running=False):
         from .cmd_next import action
@@ -802,7 +945,7 @@ def run_setup(args):
         if value:
             info[key] = value
     if ticket_text:
-        (folder / "ticket.txt").write_text(ticket_text, encoding="utf-8")
+        (folder / TICKET_FILE).write_text(ticket_text, encoding="utf-8")
         info["ticket_text"] = True
     save_info(folder, info)
     return Setup(args, repo, task, folder, info).decide()
@@ -862,8 +1005,14 @@ def finish_run(artifact_dir, state, max_wait):
 
 # ---------------------------------------------------------------- setup-answer
 
+def latest_answer(info, n):
+    """The user's latest answer to the question about profiler #n's draft."""
+    return next((a for a in reversed(info["answers"]) if a.get("after") == n), None)
+
+
 def open_question(folder, info):
-    """(profiler n, draft) when a valid draft awaits an answer, else None."""
+    """(profiler n, draft) when a valid draft awaits an answer, else None. An
+    answer the run could not be created with leaves the question open again."""
     spawns = [s for s in info["spawns"] if s["job"] == "profiler"]
     if not spawns:
         return None
@@ -871,7 +1020,8 @@ def open_question(folder, info):
     data = read_result(folder, latest)
     if not data or data.get("status") != "ok" or data.get("next") != "CONFIRM":
         return None
-    if any(a.get("after") == latest["n"] for a in info["answers"]):
+    answer = latest_answer(info, latest["n"])
+    if answer is not None and not answer.get("reopened"):
         return None
     draft = latest["sets"].get("draft_path")
     if not draft or validate(draft, profile=True)[0] != 0:

@@ -501,7 +501,8 @@ worker to spawn or the question to ask) gets one in this order:
 1. **A saved profile.** If you saved one for this repo on an earlier run, Phase 1
    loads it without asking. A `lookup` worker checks that the repo still uses
    each gate check's tool; a check whose tool it never adopted is left out of
-   this run, and you're told, so you can fix the file. An invalid saved profile
+   this run, and you're told, so you can fix the file (setup stops instead when
+   that would leave no test check). An invalid saved profile
    is researched again, and you're offered to overwrite it.
 2. **A committed `.auto-dev.yml` that sets both `setup` and `gate`.** The repo
    has declared its profile, so there is nothing to research.

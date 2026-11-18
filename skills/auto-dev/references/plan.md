@@ -56,7 +56,9 @@ move into the worktree. What you will see:
 1. A saved profile: one `lookup` to spawn (whether each quality-gate check's
    tool is adopted). A check whose tool the repo never adopted is left out of
    this run only; the final action's `SUMMARY` names it and the saved file to
-   fix: tell the user.
+   fix: tell the user. When that would leave no test check, setup stops and
+   names the saved file instead. A saved file changed since its lookup is
+   looked up again.
 2. No usable profile (none saved, an invalid one, or a `.auto-dev.yml` that
    doesn't set both `setup` and `gate`): the `profiler` to spawn, then the
    profile question (exit 5). Show the `SUMMARY` (the profiler's questions

@@ -5807,3 +5807,463 @@ class SetupFlowTest(RunCase):
         self.to_the_planner()
         self.assertTrue((self.worktree / "setup-ran.txt").exists())
         self.assertEqual(self.state()["phases"]["1"]["status"], "done")
+
+    # -------------------------------------------------------------- more of setup (corrections)
+
+    BAD_DRAFT = 'stack: typescript\nsetup: ["true"]\n'
+    JEST_PROFILE = SAVED_PROFILE.replace('command: "true"', 'command: "npx jest"')
+    NOT_SAVED = r"not (been )?saved"
+
+    def profiler_fails(self, out, status="failed"):
+        values = self.brief(out, "profiler")
+        self.returns(values, "profiler", status, None, next="CONFIRM",
+                     draft=values["draft_path"], questions="0")
+        return values
+
+    def unusable(self, out, kind):
+        """The profiler `out` spawns returns `kind`: failed, or an invalid draft."""
+        if kind == "failed":
+            return self.profiler_fails(out)
+        return self.profiler_returns(out, draft=self.BAD_DRAFT)
+
+    def next_in(self, repo, *extra, task=None, wait="5"):
+        """`next --repo <repo>` from another checkout than self.repo."""
+        r = self.autodev("next", "--repo", repo, "--task", task or self.TASK,
+                         "--max-wait", wait, *extra, "--json")
+        out = json.loads(r.stdout)
+        self.assertEqual(out.get("exit"), r.returncode, r.stdout + r.stderr)
+        return out
+
+    def next_dir_with(self, *extra):
+        r = self.autodev("next", "--dir", self.dir, *extra, "--json")
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --dir printed no JSON (exit {r.returncode}):\n{r.stdout}{r.stderr}")
+
+    def report(self, out):
+        return "\n".join(out.get("REPORT", []))
+
+    def kept_failed_run(self, out):
+        """`out` stops on a failed setup with the run kept: move into it."""
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        self.assertIn("The run is kept", self.report(out))
+        runs = [p for p in self.tmp.glob("app-*") if (p / ".auto-dev" / "state.json").exists()]
+        self.assertEqual(len(runs), 1, runs)
+        self.worktree, self.dir = runs[0], runs[0] / ".auto-dev"
+
+    def resume_to_the_planner(self):
+        r = self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.assertIn("RESUME", r.stdout, r.stdout + r.stderr)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+
+    # C1, C2: a profiler that leaves no usable draft
+
+    def test_reissue_at_the_unusable_profiler_stop_spawns_it_again(self):
+        for kind in ("failed", "invalid"):
+            with self.subTest(kind=kind):
+                task = f"Add due dates {kind}"
+                for _ in range(2):
+                    self.unusable(self.setup_next(task=task, expect=0), kind)
+                self.assertIn("--reissue", self.report(self.setup_next(task=task, expect=4)))
+                self.setup_next(task=task, expect=4)  # without --reissue it stays stopped
+                out = self.setup_next("--reissue", task=task, expect=0)
+                self.assertEqual(Path(self.brief(out, "profiler")["path"]).name, "profiler-3.md")
+                # A fresh count: one more unusable return is sent back, not a stop.
+                self.unusable(out, kind)
+                out = self.setup_next(task=task, expect=0)
+                self.assertEqual(Path(self.brief(out, "profiler")["path"]).name, "profiler-4.md")
+
+    def test_unusable_returns_of_either_kind_stop_at_the_second(self):
+        for order in (("failed", "invalid"), ("invalid", "failed")):
+            with self.subTest(order=order):
+                task = f"Add due dates {order[0]} first"
+                self.unusable(self.setup_next(task=task, expect=0), order[0])
+                self.unusable(self.setup_next(task=task, expect=0), order[1])
+                report = self.report(self.setup_next(task=task, expect=4))
+                self.assertIn("status failed", report)
+                self.assertIn("must set `gate`", report)
+                self.assertIn("--reissue", report)
+                self.assertNotIn("profiler-3.md", self.worker_briefs())
+        self.no_run_made()
+
+    # C5: a retry after the user's change keeps the change
+
+    def test_a_retry_after_a_change_keeps_the_user_s_request(self):
+        for kind, why in (("failed", "status failed"), ("invalid", "must set `gate`")):
+            with self.subTest(kind=kind):
+                task = f"Add due dates {kind}"
+                self.answered(self.to_question(task=task), self.OPTIONS[2], "drop the lint check")
+                self.unusable(self.setup_next(task=task, expect=0), kind)
+                values = self.brief(self.setup_next(task=task, expect=0), "profiler")
+                for part in ("drop the lint check", "Start from that draft", why):
+                    self.assertIn(part, values["previous_issues"])
+
+    # C3, C4: a saved profile that changes, goes, or loses its test check
+
+    def test_a_lookup_that_leaves_no_test_check_stops_naming_the_saved_file(self):
+        out = self.with_saved_profile("check 1: not adopted — no jest dependency\n"
+                                      "check 2: adopted — .eslintrc.json:1\n",
+                                      text=self.JEST_PROFILE)
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        report = out.get("REPORT", [])
+        self.assertTrue([ln for ln in report if "npx jest" in ln and "not adopted" in ln], report)
+        self.assertTrue([ln for ln in report if str(self.saved) in ln], report)
+        self.assertFalse([ln for ln in report if "profile.yml" in ln], report)
+        self.no_run_made()
+
+    def test_a_changed_saved_profile_is_looked_up_again(self):
+        self.with_saved_profile("check 1: not adopted — no jest dependency\n"
+                                "check 2: adopted — .eslintrc.json:1\n", text=self.JEST_PROFILE)
+        self.assertEqual(self.outs[-1].get("exit"), 4)
+        self.save_profile()  # the user makes check 1 another test command
+        values = self.lookup_answers(self.setup_next(expect=0), BOTH_ADOPTED)
+        self.assertIn("`true`", values["question"])
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+
+    def test_a_saved_profile_removed_after_its_lookup_is_researched(self):
+        self.save_profile()
+        self.brief(self.setup_next(expect=0), "lookup")
+        self.saved.unlink()
+        self.brief(self.setup_next(expect=0), "profiler")
+
+    # C6: a kept run's failed setup says what its profile left out or didn't save
+
+    def test_a_kept_run_s_failed_setup_names_the_dropped_check(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n",
+                                      text=self.saved.read_text())
+        self.kept_failed_run(out)
+        self.assertTrue([ln for ln in out["REPORT"] if "npx eslint ." in ln
+                         and str(self.saved) in ln], self.report(out))
+
+    def test_a_kept_run_s_failed_setup_shows_a_draft_that_was_not_saved(self):
+        blocker = self.profiles / self.saved.relative_to(self.profiles).parts[0]
+        self.profiles.mkdir()
+        blocker.write_text("a file where the folder should be\n")
+        draft = PROFILER_DRAFT.replace("echo ready > setup-ran.txt", "false")
+        self.profiler_returns(self.setup_next(expect=0), draft=draft)
+        self.answered(self.setup_next(expect=5), self.OPTIONS[0])
+        out = self.setup_next(expect=4)
+        self.kept_failed_run(out)
+        report = self.report(out)
+        self.assertRegex(report, self.NOT_SAVED)
+        self.assertIn(str(blocker), report)
+        self.assertIn('setup: ["false"]', report)
+
+    # C7, C16: Stop, then the start-over command
+
+    def stop_then_start_over(self, *flags):
+        """Answer Stop, run the start-over command the REPORT prints, then take
+        setup to the run (run-only)."""
+        self.profiler_returns(self.setup_next(*flags, task="PROJ-123", expect=0))
+        self.answered(self.setup_next(task="PROJ-123", expect=5), "Stop")
+        out = self.setup_next(task="PROJ-123", expect=4)
+        line = next((ln for ln in out["REPORT"] if "start over" in ln), None)
+        self.assertIsNotNone(line, self.report(out))
+        argv = shlex.split(re.search(r"`([^`]*)`", line).group(1))
+        r = subprocess.run([*argv, "--max-wait", "5", "--json"], capture_output=True,
+                           text=True, env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.profiler_returns(json.loads(r.stdout))
+        self.answered(self.setup_next(task="PROJ-123", expect=5), self.OPTIONS[1])
+        self.ready(self.setup_next(task="PROJ-123"))
+
+    def test_start_over_after_stop_keeps_the_ticket_details(self):
+        text = "Add due dates\n\nTodos get an optional due date."
+        url = "https://acme.atlassian.net/browse/PROJ-123"
+        ticket = self.tmp / "t.txt"
+        ticket.write_text(text)
+        self.stop_then_start_over("--ticket", "PROJ-123", "--ticket-url", url,
+                                  "--ticket-text-file", ticket,
+                                  "--jira", "available, cloudId abc")
+        task = self.state()["task"]
+        self.assertEqual((task["ticket"], task["ticket_url"], task["ticket_text"]),
+                         ("PROJ-123", url, text))
+        self.assertIn("- **Jira:** available, cloudId abc\n",
+                      (self.dir / "profile.md").read_text())
+
+    def test_start_over_after_stop_keeps_the_ask(self):
+        ask = "Add due dates to todos"
+        self.stop_then_start_over("--ticket", "PROJ-123", "--ask", ask,
+                                  "--jira", "unavailable: no Atlassian MCP")
+        self.assertEqual(self.state()["task"]["ask"], ask)
+        self.assertEqual(self.brief(self.to_the_planner(), "planner")["task"], ask)
+        r = self.autodev("resume", "--repo", self.repo, "--task", ask)
+        self.assertNotIn("FRESH", r.stdout, r.stdout + r.stderr)
+
+    # C14: init refuses a confirmed draft before the run exists
+
+    def draft_init_refuses(self, label):
+        (self.repo / "notes.txt").write_text("not ignored\n")
+        values = self.profiler_returns(self.setup_next(expect=0),
+                                       draft=PROFILER_DRAFT + 'worktree_files: ["notes.txt"]\n')
+        question = self.setup_next(expect=5)
+        self.answered(question, label)
+        out = self.setup_next(expect=4)
+        self.assertTrue(out["REPORT"][0].startswith("Setup stopped before the run was created"),
+                        self.report(out))
+        self.assertIn(values["draft_path"], self.report(out))
+        self.no_run_made()
+        return question
+
+    def test_init_refusing_a_draft_opens_the_profile_question_again(self):
+        question = self.draft_init_refuses(self.OPTIONS[1])
+        self.answered(question, self.OPTIONS[2], "drop notes.txt from worktree_files")
+        values = self.brief(self.setup_next(expect=0), "profiler")
+        self.assertIn("drop notes.txt from worktree_files", values["previous_issues"])
+
+    def test_init_refusing_a_saved_draft_runs_from_the_fixed_saved_file(self):
+        self.draft_init_refuses(self.OPTIONS[0])
+        self.saved.write_text(self.saved.read_text().replace('worktree_files: ["notes.txt"]\n',
+                                                             ""))
+        self.ready(self.setup_next())
+        self.assertEqual(self.state()["settings"].get("worktree_files", []), [])
+
+    # C8: a failed setup retried from where the profile came from
+
+    def test_a_run_only_draft_s_failed_setup_is_retried_from_its_profile_yml(self):
+        self.profiler_returns(self.setup_next(expect=0), draft=PROFILER_DRAFT.replace(
+            "echo ready > setup-ran.txt", "false"))
+        self.answered(self.setup_next(expect=5), self.OPTIONS[1])
+        out = self.setup_next(expect=4)
+        self.kept_failed_run(out)
+        self.assertIn(str(self.dir / "profile.yml"), self.report(out))
+        (self.dir / "profile.yml").write_text(PROFILER_DRAFT)
+        self.resume_to_the_planner()
+
+    def test_an_override_run_s_failed_setup_is_retried_from_auto_dev_yml(self):
+        self.commit_override(FULL_OVERRIDE.replace('setup: ["true"]', 'setup: ["false"]'))
+        out = self.setup_next(expect=4)
+        self.kept_failed_run(out)
+        self.assertIn(str(self.repo / ".auto-dev.yml"), self.report(out))
+        (self.repo / ".auto-dev.yml").write_text(FULL_OVERRIDE.replace(
+            'setup: ["true"]', 'setup: ["echo ready > setup-ran.txt"]'))
+        self.resume_to_the_planner()
+
+    def test_a_profile_saved_at_the_question_is_retried_from_the_saved_file(self):
+        self.profiler_returns(self.setup_next(expect=0), draft=PROFILER_DRAFT.replace(
+            "echo ready > setup-ran.txt", "false"))
+        self.answered(self.setup_next(expect=5), self.OPTIONS[0])
+        out = self.setup_next(expect=4)
+        self.kept_failed_run(out)
+        self.assertIn(str(self.saved), self.report(out))
+        self.saved.write_text(self.saved.read_text().replace('"false"',
+                                                             '"echo ready > setup-ran.txt"'))
+        self.resume_to_the_planner()
+
+    def test_a_run_with_no_origin_and_no_saved_profile_retries_its_own_setup(self):
+        flag = ".auto-dev/go.txt"
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt",
+                                                f"test -f {flag} && echo ready > setup-ran.txt"))
+        self.kept_failed_run(self.with_saved_profile(BOTH_ADOPTED, text=self.saved.read_text()))
+        (self.dir / "profile-origin.json").unlink()
+        self.saved.unlink()
+        (self.worktree / flag).write_text("go\n")
+        self.resume_to_the_planner()
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+
+    def test_a_saved_profile_unreadable_at_retry_stops_with_the_validator_s_errors(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        self.kept_failed_run(self.with_saved_profile(
+            "check 1: adopted — package.json:9\ncheck 2: not adopted — no eslint config\n",
+            text=self.saved.read_text()))
+        self.saved.write_text("gate: [unclosed\n")
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        out = self.next_dir(4)
+        self.assertIn("not valid YAML", self.report(out))
+
+    def test_next_dir_with_setup_still_running_at_its_wait_limit_waits_again(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "sleep 6"))
+        self.lookup_answers(self.setup_next(expect=0, wait="0"), BOTH_ADOPTED)
+        self.ready(self.setup_next(wait="0"))
+        out = self.next_dir_with("--max-wait", "1")
+        self.assertEqual(out.get("exit"), 0, json.dumps(out, indent=2))
+        self.assertNotIn("AGENT", out)
+        self.assertTrue([ln for ln in out.get("AFTER", []) if "next --dir" in ln
+                         or ("next" in shlex.split(ln) and "--dir" in shlex.split(ln))], out)
+
+    def test_a_retried_setup_that_fails_again_stops_with_phase_1_held(self):
+        self.failed_setup()
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        out = self.next_dir(4)
+        report = self.report(out)
+        self.assertIn("exited 1", report)
+        self.assertIn("false", report)
+        self.assertEqual(self.state()["phases"]["1"]["status"], "held")
+
+    def test_init_continue_that_cannot_run_is_an_error(self):
+        self.profiler_returns(self.setup_next(expect=0), draft=PROFILER_DRAFT.replace(
+            "echo ready > setup-ran.txt", "false"))
+        self.answered(self.setup_next(expect=5), self.OPTIONS[1])
+        self.kept_failed_run(self.setup_next(expect=4))
+        (self.dir / "profile.yml").unlink()
+        (self.dir / "profile.yml").mkdir()  # validate-config.py can't read it: exit 2
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        r = self.autodev("next", "--dir", self.dir)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR: init --continue could not run", r.stdout + r.stderr)
+
+    def test_a_held_phase_1_names_the_file_to_fix_and_auto_dev_continue(self):
+        self.failed_setup()
+        report = self.report(self.next_dir(4))
+        self.assertIn(str(self.saved), report)
+        self.assertIn("auto-dev continue", report)
+
+    # C9: what the SUMMARY says about the run's profile and worktree
+
+    def test_the_summary_names_a_profile_saved_at_the_question(self):
+        self.answered(self.to_question(), self.OPTIONS[0])
+        self.assertIn(f"Saved the confirmed profile to {self.saved}",
+                      self.summary(self.setup_next(expect=0)))
+
+    def test_the_summary_names_a_profile_kept_for_this_run_only(self):
+        self.answered(self.to_question(), self.OPTIONS[1])
+        self.assertIn("Using the profile the user confirmed, for this run only",
+                      self.summary(self.setup_next(expect=0)))
+
+    def test_the_summary_names_a_full_override(self):
+        self.commit_override(FULL_OVERRIDE)
+        self.assertIn("Using the setup and quality gate the repo's .auto-dev.yml sets",
+                      self.summary(self.setup_next(expect=0)))
+
+    def test_a_worktree_the_user_made_is_adopted_and_named_in_the_summary(self):
+        self.commit_override(FULL_OVERRIDE)
+        for ahead in (0, 1):
+            with self.subTest(ahead=ahead):
+                mine = self.tmp / f"mine-{ahead}"
+                self.sh("git", "worktree", "add", "-q", str(mine), "-b", f"feat/mine-{ahead}",
+                        "origin/main", cwd=self.repo)
+                if ahead:
+                    (mine / "early.ts").write_text("export const e = 1;\n")
+                    self.sh("git", "add", "early.ts", cwd=mine)
+                    self.sh("git", "commit", "-q", "-m", "early", cwd=mine)
+                task = f"Add due dates in mine {ahead}"
+                out = self.next_in(mine, task=task)
+                self.ready(out, mine)
+                summary = self.summary(out)
+                self.assertIn("uses the worktree the user made", summary)
+                if ahead:
+                    self.assertIn("already holds 1 commit(s)", summary)
+                else:
+                    self.assertNotIn("already holds", summary)
+
+    def test_the_summary_says_setup_is_still_running(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "sleep 3"))
+        self.lookup_answers(self.setup_next(expect=0, wait="1"), BOTH_ADOPTED)
+        out = self.setup_next(wait="1")
+        self.ready(out)
+        self.assertIn("Setup is still running", self.summary(out))
+
+    # C10: the branch name
+
+    def test_the_branch_name_takes_at_most_five_words(self):
+        self.commit_override(FULL_OVERRIDE)
+        cases = [("Add due dates to the todo list", "feat/add-due-dates-to-the"),
+                 ("!!! ???", "feat/task")]
+        for task, branch in cases:
+            with self.subTest(task=task):
+                self.ready(self.setup_next(task=task))
+                self.assertEqual(self.state()["branch"], branch)
+
+    def test_a_ticket_text_that_starts_with_its_key_does_not_repeat_it(self):
+        self.commit_override(FULL_OVERRIDE)
+        ticket = self.tmp / "t.txt"
+        ticket.write_text("PROJ-123 Add due dates\n\nTodos get an optional due date.")
+        self.ready(self.setup_next("--ticket", "PROJ-123", "--ticket-text-file", ticket,
+                                   task="PROJ-123"))
+        self.assertEqual(self.state()["branch"], "feat/proj-123-add-due-dates")
+
+    # C11: a report line that only starts with a section's word
+
+    def test_a_question_starting_with_a_section_word_stays_a_question(self):
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        Path(values["draft_path"]).write_text(PROFILER_DRAFT)
+        report = ("PROFILE\n```yaml\n" + PROFILER_DRAFT + "```\n"
+                  "QUESTIONS — the e2e suite in CI is left out of the gate; keep it out?\n"
+                  "Profile assumes Node 20 from .nvmrc; confirm the version.\n"
+                  "Evidence for the build step is thin.\n"
+                  "NOT INSTALLED — jq: not on PATH\n"
+                  "EVIDENCE\n- true: package.json:9\n")
+        self.returns(values, "profiler", "ok", report, next="CONFIRM",
+                     draft=values["draft_path"], questions="3")
+        summary = self.setup_next(expect=5)["SUMMARY"]
+        later = min(summary.index("NOT INSTALLED — jq: not on PATH"), summary.index("EVIDENCE"))
+        for line in ("Profile assumes Node 20 from .nvmrc; confirm the version.",
+                     "Evidence for the build step is thin."):
+            self.assertIn(line, summary)
+            self.assertLess(summary.index(line), later)
+
+    # C12: init stopping or failing before the run exists
+
+    def test_init_stopping_before_the_run_exists_names_the_command_to_run_again(self):
+        (self.repo / "notes.txt").write_text("not ignored\n")
+        out = self.with_saved_profile(BOTH_ADOPTED,
+                                      text=SAVED_PROFILE + 'worktree_files: ["notes.txt"]\n')
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        self.assertTrue(out["REPORT"][0].startswith("Setup stopped before the run was created"))
+        self.assertTrue([ln for ln in out["REPORT"] if "next" in ln and "--repo" in ln],
+                        self.report(out))
+        self.no_run_made()
+        self.assertEqual(self.sh("git", "branch", "--list", "feat/*", cwd=self.repo), "")
+
+    def test_init_that_cannot_run_is_an_error(self):
+        self.script_gh([*GH_OK[:2], {"args": ["repo", "view", "--json", "defaultBranchRef"],
+                                     "stdout": "{}"}])
+        self.save_profile()
+        self.lookup_answers(self.setup_next(expect=0), BOTH_ADOPTED)
+        r = self.autodev("next", "--repo", self.repo, "--task", self.TASK, "--max-wait", "5")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR: autodev.py init could not run", r.stdout + r.stderr)
+        self.no_run_made()
+
+    # C13: branches.prefix and branches.base
+
+    def test_branches_prefix_names_the_branch_and_its_suffix_check(self):
+        self.commit_override(FULL_OVERRIDE + "branches:\n  prefix: fix\n")
+        self.sh("git", "branch", "feat/add-due-dates-to-todos", cwd=self.repo)
+        self.ready(self.setup_next())
+        self.assertEqual(self.state()["branch"], "fix/add-due-dates-to-todos")
+        self.sh("git", "branch", "fix/add-due-dates-today", cwd=self.repo)
+        self.ready(self.setup_next(task="Add due dates today"))
+        self.assertEqual(self.state()["branch"], "fix/add-due-dates-today-2")
+
+    def test_branches_base_is_the_profiler_s_base(self):
+        self.commit_override("branches:\n  base: develop\n")
+        self.assertEqual(self.brief(self.setup_next(expect=0), "profiler")["base"], "develop")
+
+    # C17: --ask needs --repo
+
+    def test_ask_without_repo_cannot_run(self):
+        for args in (("next", "--dir", self.dir, "--ask", self.TASK), ("next", "--ask", self.TASK)):
+            with self.subTest(args=args[:2]):
+                r = self.autodev(*args)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("ERROR: --ask needs --repo (it sets a run up)", r.stderr)
+        self.assertEqual(self.worker_briefs(), [])
+
+    # C19: a run whose task text matches comes before one whose ask does
+
+    def test_a_run_whose_task_text_matches_comes_before_one_whose_ask_does(self):
+        for task, (first, second) in (("Fix login", ("aaa-fix-login", "zzz-abc-1")),
+                                      ("Fix logout", ("zzz-fix-logout", "aaa-abc-2"))):
+            with self.subTest(task=task):
+                ticket = "ABC-1" if task == "Fix login" else "ABC-2"
+                made = {}
+                for slug in (first, second):
+                    extra = (("--task", task) if "fix" in slug else
+                             ("--task", ticket, "--ticket", ticket, "--ask", task))
+                    r = self.autodev("init", "--repo", self.repo, "--slug", slug, *extra,
+                                     "--profile", self.profile, "--max-wait", "30")
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    made[slug] = self.tmp / f"app-{slug}"
+                before = self.sh("git", "worktree", "list", cwd=self.repo)
+                out = self.setup_next(task=task)
+                text_run = first if "fix" in first else second
+                self.ready(out, made[text_run])
+                self.assertNotIn("AGENT", out)
+                self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
