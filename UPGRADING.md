@@ -6,6 +6,18 @@ can resume on the new one. Newest first. The current version is in
 
 ## Upgrading from 5.0
 
+- **The test check is the one that runs the test files.** `autodev.py run
+  test`, `verify prep`'s acceptance run, `mutants run` and the briefs'
+  `{{test_command}}` used the gate's first `kind: test` check, so a profile
+  whose first test check had no scoped form (a repo-wide consistency check,
+  say) ran it for the acceptance checks, and its output named none of them.
+  They now use the first test check with a `files` form, else the first test
+  check. A saved profile whose first test check runs the unit tests unscoped,
+  with a later test check that has a `files` form, now runs that later check:
+  move the `files` form to the check that runs the test files, or reorder the
+  gate. `verify prep` also prints a `warning:` line when its run finished and
+  its output names none of the checks MANIFEST.md lists; the verifier then
+  runs them itself. A 5.0 run in flight resumes on it.
 - **The risk re-check reads declared globs and added lines.** A saved profile
   or `.auto-dev.yml` can list `sensitive_paths`, globs of files that hold
   sensitive code under paths that don't say so (`.auto-dev.yml`'s list

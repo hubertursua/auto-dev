@@ -76,6 +76,9 @@ Find, from the repo itself:
    they changed or wrote, through `autodev.py run`). For
    the test check, the form must also name every test it runs and its result
    (the runner's verbose reporter, if its default only counts passing tests).
+   When the gate has several test checks, give the `files` form to the one
+   that runs the test files: `run test`, the acceptance run and the mutation
+   run use the first test check that has one.
    Take it from how the repo or its runner's docs run one file; omit `files`
    for a check that can't be scoped (a whole-program type check, say).
 4. Test scope: databases or services the suite needs, how to start them, the
