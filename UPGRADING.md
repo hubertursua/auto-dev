@@ -18,6 +18,19 @@ can resume on the new one. Newest first. The current version is in
   gate. `verify prep` also prints a `warning:` line when its run finished and
   its output names none of the checks MANIFEST.md lists; the verifier then
   runs them itself. A 5.0 run in flight resumes on it.
+- **The risk re-check reads declared globs and added lines.** A saved profile
+  or `.auto-dev.yml` can list `sensitive_paths`, globs of files that hold
+  sensitive code under paths that don't say so (`.auto-dev.yml`'s list
+  replaces the profile's); `validate-config.py` accepts the key, and a run
+  records it in `profile.md` (a `Sensitive paths` line) and `state.json`'s
+  `settings.sensitive_paths`. Once the quality gate is green, a changed file
+  matching one raises the tier, and so does a sensitive word on a line the
+  build adds (`it adds lines naming a sensitive area: …`). The profiler may
+  propose the globs when it researches a repo. It does not research a repo
+  that already has a saved profile, so there, add `sensitive_paths` to the
+  saved profile or to `.auto-dev.yml` yourself; the added-line scan applies at
+  once. A 5.0 run in flight resumes on it: a `state.json` without the key
+  reads as no globs, and a run past the re-check keeps its recorded result.
 - **A worker still out is waited for, not spawned again.** `next` used to
   send a brief with no result file out again on every call, so a `next` run
   before a background worker returned started a second one in the same

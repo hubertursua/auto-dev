@@ -12,8 +12,8 @@ Usage:
 
 --profile checks a saved profile (the file scripts/profile-path.py names)
 instead: only the profile keys are allowed (stack, setup, gate, test_notes,
-worktree_files, symbol_lookup, ci), and `setup` and `gate` are required. A
-missing or empty saved profile is invalid (exit 1), not a pass.
+worktree_files, symbol_lookup, sensitive_paths, ci), and `setup` and `gate` are
+required. A missing or empty saved profile is invalid (exit 1), not a pass.
 
 <skill-dir> is the auto-dev skill's own directory, not the target repo. The config
 path defaults to ./.auto-dev.yml relative to the current directory, so pass the
@@ -73,6 +73,7 @@ TOP_LEVEL = {
     "test_notes": (str, "how tests are scoped"),
     "symbol_lookup": (dict, "definition / references commands"),
     "worktree_files": (list, "gitignored files to seed each worktree with"),
+    "sensitive_paths": (list, "globs of files the risk re-check treats as sensitive"),
     "branches": (dict, "base / prefix"),
     "ci": (str, "CI provider"),
     "ci_timeout_minutes": (int, "bound on CI watching"),
@@ -87,7 +88,7 @@ TOP_LEVEL = {
 # The keys a saved profile may hold (--profile): how the stack installs and
 # checks itself. Repo policy (branches, budget, gates, Jira) stays in .auto-dev.yml.
 PROFILE_KEYS = ("stack", "setup", "gate", "test_notes", "worktree_files",
-                "symbol_lookup", "ci")
+                "symbol_lookup", "sensitive_paths", "ci")
 PROFILE_REQUIRED = ("setup", "gate")
 assert set(PROFILE_KEYS) <= set(TOP_LEVEL), "PROFILE_KEYS must be TOP_LEVEL keys"
 BRANCHES = {"base": str, "prefix": str}
@@ -264,7 +265,7 @@ def main() -> int:
         expected, _ = TOP_LEVEL[key]
         if key == "gate":
             check_gate(value, profile)
-        elif key in ("setup", "security_docs", "worktree_files"):
+        elif key in ("setup", "security_docs", "worktree_files", "sensitive_paths"):
             check_str_list(value, key)
         elif key == "branches":
             if isinstance(value, dict) and "staging" in value:

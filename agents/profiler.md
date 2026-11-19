@@ -88,8 +88,18 @@ Find, from the repo itself:
    exist in {{repo}} and `git -C {{repo}} check-ignore -q -- <file>` exits 0.
 6. A code-index tool for finding a symbol's definition and callers, if the repo
    or its ecosystem uses one and it is on PATH. Omit symbol_lookup otherwise.
-7. The CI provider: github-actions, circleci, gitlab, or none.
-8. For each tool the profile uses, whether it is on PATH (`command -v`). An
+7. Files whose paths name no sensitive area but that hold sign-in, session,
+   access-control, payment or secret-handling code (a request middleware that
+   checks the signed-in user, a controller that grants roles): list globs for
+   them under sensitive_paths, relative to the repo root, only for files that
+   exist, each with an EVIDENCE line citing the `path:line` that shows it. A
+   path whose words already name the area (`auth/`, `billing/`, `session`)
+   needs none: the run's risk re-check already counts it. Omit sensitive_paths
+   when there is none. A glob with a `/` is anchored at the repo root; one
+   without matches a file name at any depth; `*` stops at `/`, `**` spans
+   folders.
+8. The CI provider: github-actions, circleci, gitlab, or none.
+9. For each tool the profile uses, whether it is on PATH (`command -v`). An
    adopted tool that is missing goes under NOT INSTALLED; keep its check.
 
 Commands run verbatim from the repo root, in order. Write each exactly as a
@@ -112,9 +122,10 @@ worktree_files: [<paths>]            # omit if none
 symbol_lookup:                       # omit if none
   definition: "<command with <symbol>>"
   references: "<command with <symbol>>"
+sensitive_paths: [<globs>]           # omit if none
 ci: <provider>
 ```
-EVIDENCE — one line per command: where you found it (`path:line`).
+EVIDENCE — one line per command, and per sensitive_paths glob: where you found it (`path:line`).
 NOT ADOPTED — conventional checks for this ecosystem the repo doesn't use, and why.
 NOT INSTALLED — adopted tools missing from PATH (setup will fail on these).
 QUESTIONS — every guess the user should confirm, most important first; "none" if none.
