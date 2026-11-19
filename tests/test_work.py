@@ -1415,6 +1415,23 @@ class CheckArtifactTest(WorkCase):
         self.assertEqual(self.check("CODE_REVIEW.md", review.replace("## Noise", "## Junk"))
                          .returncode, 1)
 
+    def test_a_code_review_report_stating_its_lens_in_its_header_passes(self):
+        report = ("# Code review R3 — pass 1\n\n"
+                  "Scope: first\n"
+                  "Lens: callers and compatibility\n"
+                  "/code-review high: ran   ·   Coverage: full\n\n"
+                  "## Findings\n"
+                  "1. **A caller still reads the old exit code** — `src/run.ts:12` — "
+                  "correctness\n"
+                  "   Trigger path: `main` (`src/cli.ts:4`) runs a failing step; "
+                  "`src/run.ts:12` treats exit 1 as success\n"
+                  "   Why it is wrong: the failure is reported as a pass.\n\n"
+                  "## Security leads\nnone\n\n"
+                  "## Spec problems\nnone\n\n"
+                  "## Pre-existing\n0 problems seen in code this change did not introduce.\n")
+        r = self.check("review/pass-1/R3.md", report)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
 
 class AmendManifestTest(WorkCase):
     """cmd_amend.amend_manifest: rows split as the artifact parser splits them."""

@@ -21,6 +21,9 @@ Checks:
   or (outside profiler, lookup and triager, whose reply is read) to end with a
   prose summary (`Return: …`, `Say what you changed`), which nothing reads: a
   worker's reply is its result block;
+- agents/code-reviewer.md gives each panel slot in scripts/lib/cmd_next.py
+  SLOTS one lens of its own (a `- **R<k> — <lens>.**` line), and no lens to a
+  slot the panel lacks;
 - every template a script parses exists in templates/;
 - every evals/files/ path a string in evals/evals.json names exists (the
   setup and expectations as well as each eval's `files`);
@@ -224,6 +227,51 @@ def check_briefs(agents_dir=ROOT / "agents"):
             fail(f"templates/{name} is missing: a script parses it")
 
 
+
+# A panel reviewer's lens in agents/code-reviewer.md: `- **R1 — <lens>.** …`.
+LENS_LINE = re.compile(r"^[ \t]*- \*\*(R\d+) — (.+?)\.?\*\*", re.MULTILINE)
+
+
+def panel_lenses(text):
+    """The (slot, lens) pairs an agent file's lens lines give, in file order."""
+    return [(slot, lens.strip()) for slot, lens in LENS_LINE.findall(text)]
+
+
+def load_panel_slots():
+    sys.path.insert(0, str(SKILL_DIR / "scripts"))
+    from lib import cmd_next  # the scripts dir is only on sys.path from here
+    return cmd_next.SLOTS
+
+
+def check_panel_lenses(agents_dir=ROOT / "agents", slots=None):
+    rel = "agents/code-reviewer.md"
+    slots = tuple(load_panel_slots() if slots is None else slots)
+    try:
+        text = (Path(agents_dir) / "code-reviewer.md").read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"{rel}: unreadable, so the panel's lenses can't be checked: {exc}")
+        return
+    lenses = {}
+    for slot, lens in panel_lenses(text):
+        lenses.setdefault(slot, []).append(lens)
+    for slot in slots:
+        given = lenses.get(slot, [])
+        if not given:
+            fail(f"{rel}: panel slot {slot} has no lens (a `- **{slot} — <lens>.**` line)")
+        elif len(given) > 1:
+            fail(f"{rel}: panel slot {slot} has {len(given)} lenses: {'; '.join(given)}")
+    for slot in sorted(set(lenses) - set(slots)):
+        fail(f"{rel}: gives a lens to {slot}, which is not a panel slot "
+             f"(scripts/lib/cmd_next.py SLOTS: {', '.join(slots)})")
+    owners = {}
+    for slot in slots:
+        for lens in lenses.get(slot, []):
+            owners.setdefault(lens.lower(), []).append(slot)
+    for lens, shared in sorted(owners.items()):
+        if len(set(shared)) > 1:
+            fail(f"{rel}: panel slots {', '.join(sorted(set(shared)))} share the lens "
+                 f"{lens!r}; give each its own")
+
 # An eval fixture path, wherever it appears in evals.json. It ends on a name
 # character, so a sentence's closing period isn't part of it. A path with a
 # placeholder or glob (`<slug>`, `*`) is checked only up to that character.
@@ -356,6 +404,7 @@ def main():
     check_agent_commands()
     check_paths()
     check_briefs()
+    check_panel_lenses()
     check_eval_paths()
     check_skill_description()
     check_runbook_setup()

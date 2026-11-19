@@ -199,6 +199,9 @@ wrong about something? If yes, fix the README.
   it there; `MODE_RESULTS` narrows them per mode, as the agent file's prose
   says. `tools/check-repo.py` checks the slots and `RESULTS`, and that every
   template a script parses or an agent names exists.
+- **Panel lenses.** `agents/code-reviewer.md` gives each panel slot in
+  `skills/auto-dev/scripts/lib/cmd_next.py` `SLOTS` one lens of its own;
+  `tools/check-repo.py` checks it.
 - **The spawn budget.** A default-lane happy path (standard risk, the critic
   approves, every worker ok the first time) takes at most 5 worker spawns to
   the first push and 7 to ready-for-review; today 4 and 6: the planner, the
