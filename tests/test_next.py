@@ -5914,6 +5914,12 @@ class SetupFlowTest(RunCase):
         return sorted(p.name for p in self.temp.rglob("*.md")
                       if re.match(r"(profiler|lookup)-\d+\.md$", p.name))
 
+    def leave_out(self, out):
+        """Answer `out`'s gate-check question with Leave them out; the next `next`."""
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        self.answered(out, "Leave them out of this run")
+        return self.setup_next()
+
     def failed_setup(self):
         """A saved profile whose setup is `false`: the run is made and stops."""
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
@@ -5964,13 +5970,15 @@ class SetupFlowTest(RunCase):
                 self.assertNotIn("dropped gate check", self.work_log())
 
     def test_a_check_the_repo_never_adopted_is_left_out_of_this_run(self):
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config or dependency\n")
+        out = self.leave_out(self.with_saved_profile(
+            "check 1: adopted — package.json:9\n"
+            "check 2: not adopted — no eslint config or dependency\n"))
         self.ready(out, self.tmp / "app-add-due-dates-to-todos")
         self.assertEqual(self.gate(), ["true"])
         self.assertEqual(self.profile_line(), f"saved profile {self.saved}, without npx eslint .")
-        self.assertIn(f"dropped gate check npx eslint .: the repo never adopted its tool "
-                      f"(saved profile {self.saved})", self.work_log())
+        self.assertIn(f"dropped gate check npx eslint .: the user left it out of this run; the "
+                      f"lookup found its tool not adopted (saved profile {self.saved})",
+                      self.work_log())
         self.assertTrue([ln for ln in out.get("SUMMARY", [])
                          if "npx eslint ." in ln and str(self.saved) in ln],
                         json.dumps(out, indent=2))
@@ -6346,9 +6354,9 @@ class SetupFlowTest(RunCase):
 
     def test_retry_keeps_the_checks_dropped_at_creation(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config\n",
-                                      text=self.saved.read_text())
+        out = self.leave_out(self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                                     "check 2: not adopted — no eslint config\n",
+                                                     text=self.saved.read_text()))
         self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
         self.save_profile()  # the user fixes the setup; the lint check is still listed
         self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
@@ -6531,26 +6539,65 @@ class SetupFlowTest(RunCase):
 
     # C3, C4: a saved profile that changes, goes, or loses its test check
 
-    def test_a_lookup_that_leaves_no_test_check_stops_naming_the_saved_file(self):
+    def test_a_gate_question_with_no_test_check_left_names_the_check_and_saved_file(self):
         out = self.with_saved_profile("check 1: not adopted — no jest dependency\n"
                                       "check 2: adopted — .eslintrc.json:1\n",
                                       text=self.JEST_PROFILE)
-        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
-        report = out.get("REPORT", [])
-        self.assertTrue([ln for ln in report if "npx jest" in ln and "not adopted" in ln], report)
-        self.assertTrue([ln for ln in report if str(self.saved) in ln], report)
-        self.assertFalse([ln for ln in report if "profile.yml" in ln], report)
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        summary = out.get("SUMMARY", [])
+        self.assertTrue([ln for ln in summary if "npx jest" in ln and "not adopted" in ln],
+                        summary)
+        self.assertTrue([ln for ln in summary if str(self.saved) in ln], summary)
+        self.assertFalse([ln for ln in summary if "profile.yml" in ln], summary)
         self.no_run_made()
 
     def test_a_changed_saved_profile_is_looked_up_again(self):
         self.with_saved_profile("check 1: not adopted — no jest dependency\n"
                                 "check 2: adopted — .eslintrc.json:1\n", text=self.JEST_PROFILE)
-        self.assertEqual(self.outs[-1].get("exit"), 4)
+        self.assertEqual(self.outs[-1].get("exit"), 5)
         self.save_profile()  # the user makes check 1 another test command
         values = self.lookup_answers(self.setup_next(expect=0), BOTH_ADOPTED)
         self.assertIn("`true`", values["question"])
         self.ready(self.setup_next())
         self.assertEqual(self.gate(), ["true", "npx eslint ."])
+
+    def test_each_setup_question_refuses_the_other_s_answers(self):
+        self.save_profile()
+        self.lookup_answers(self.setup_next(expect=0),
+                            "check 1: adopted — package.json:9\n"
+                            "check 2: not adopted — no eslint config\n")
+        self.setup_next(expect=5)
+        r = self.autodev("setup-answer", "run-only", "--repo", self.repo, "--task", self.TASK)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no profile question", (r.stdout + r.stderr).lower())
+        self.saved.unlink()
+        self.to_question(task="Add due dates researched")
+        r = self.autodev("setup-answer", "keep", "--repo", self.repo,
+                         "--task", "Add due dates researched")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no gate-check question", (r.stdout + r.stderr).lower())
+
+    def test_a_gate_question_answered_once_is_closed(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n")
+        self.answered(out, "Keep them")
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text())["kept"],
+                         [{"n": 2, "command": "npx eslint ."}])
+
+    def test_a_gate_answer_given_before_the_saved_file_changed_is_asked_again(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n")
+        self.answered(out, "Leave them out of this run")
+        self.save_profile(SAVED_PROFILE.replace("echo ready", "echo set up"))  # same gate
+        out = self.setup_next(expect=5)
+        self.assertNotIn("AGENT", out)  # the same gate: its lookup's answer still holds
+        self.assertEqual(self.options(out), ("Keep them", "Leave them out of this run", "Stop"))
+        self.no_run_made()
 
     def test_a_saved_profile_removed_after_its_lookup_is_researched(self):
         self.save_profile()
@@ -6562,9 +6609,9 @@ class SetupFlowTest(RunCase):
 
     def test_a_kept_run_s_failed_setup_names_the_dropped_check(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config\n",
-                                      text=self.saved.read_text())
+        out = self.leave_out(self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                                     "check 2: not adopted — no eslint config\n",
+                                                     text=self.saved.read_text()))
         self.kept_failed_run(out)
         self.assertTrue([ln for ln in out["REPORT"] if "npx eslint ." in ln
                          and str(self.saved) in ln], self.report(out))
@@ -6697,9 +6744,9 @@ class SetupFlowTest(RunCase):
 
     def test_a_saved_profile_unreadable_at_retry_stops_with_the_validator_s_errors(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        self.kept_failed_run(self.with_saved_profile(
+        self.kept_failed_run(self.leave_out(self.with_saved_profile(
             "check 1: adopted — package.json:9\ncheck 2: not adopted — no eslint config\n",
-            text=self.saved.read_text()))
+            text=self.saved.read_text())))
         self.saved.write_text("gate: [unclosed\n")
         self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
         out = self.next_dir(4)
@@ -6896,3 +6943,280 @@ class SetupFlowTest(RunCase):
                 self.ready(out, made[text_run])
                 self.assertNotIn("AGENT", out)
                 self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
+
+    # -------------------------------------------------------------- the gate-check question
+
+    ESLINT_NOT_ADOPTED = ("check 1: adopted — package.json:9\n"
+                          "check 2: not adopted — no eslint config\n")
+    JEST_NOT_ADOPTED = ("check 1: not adopted — no jest dependency\n"
+                        "check 2: adopted — .eslintrc.json:1\n")
+    GATE_QUESTION_OPTIONS = ("Keep them", "Leave them out of this run", "Stop")
+
+    def nothing_set_up_yet(self):
+        """No worktree, branch or run for the task exists."""
+        self.no_run_made()
+        self.assertEqual(len(self.sh("git", "worktree", "list", cwd=self.repo).splitlines()), 1)
+        self.assertEqual(self.sh("git", "branch", "--list", "*due-dates*", cwd=self.repo).strip(),
+                         "")
+
+    def at_the_gate_check_question(self, answer=None, text=SAVED_PROFILE):
+        """A saved profile whose lookup flags a check: the question it asks."""
+        out = self.with_saved_profile(answer or self.ESLINT_NOT_ADOPTED, text=text)
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        return out
+
+    def after_line(self, out, label):
+        return next((ln for ln in out.get("AFTER", []) if ln.startswith(f'"{label}" → ')), "")
+
+    def test_a_not_adopted_check_is_asked_about_before_the_run_exists(self):
+        out = self.at_the_gate_check_question()
+        shown = json.dumps(out, indent=2)
+        summary = self.summary(out)
+        for part in ("npx eslint .", "no eslint config", str(self.saved)):
+            self.assertIn(part, summary, shown)
+        self.assertEqual(self.options(out), self.GATE_QUESTION_OPTIONS)
+        self.assertEqual(len(out["AFTER"]), 3, shown)
+        for label, line in zip(self.GATE_QUESTION_OPTIONS, out["AFTER"]):
+            self.assertTrue(line.startswith(f'"{label}" → '), shown)
+        self.nothing_set_up_yet()
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_a_lookup_that_flags_nothing_usable_asks_nothing_and_keeps_every_check(self):
+        cases = [("every check adopted", "ok", "ANSWERED", BOTH_ADOPTED),
+                 ("contradicting lines", "ok", "ANSWERED",
+                  ("check 1: adopted — package.json:9\ncheck 2: adopted — package.json:12\n"
+                   "check 2: not adopted — no eslint config\n")),
+                 ("outside the gate", "ok", "ANSWERED", "check 7: not adopted — no such tool\n"),
+                 ("prose only", "ok", "ANSWERED", "Neither eslint nor the tests look adopted.\n"),
+                 ("failed", "failed", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("blocked", "blocked", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("out of scope", "ok", "OUT_OF_SCOPE",
+                  "check 2: not adopted — no eslint config\n")]
+        self.save_profile()
+        for i, (case, status, nxt, answer) in enumerate(cases, 1):
+            with self.subTest(case=case):
+                task = f"Add due dates lookup case {i}"
+                self.lookup_answers(self.setup_next(task=task, expect=0), answer,
+                                    status=status, nxt=nxt)
+                out = self.setup_next(task=task)
+                self.assertNotEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+                self.assertNotIn("QUESTION", out)
+                self.ready(out)
+                self.assertEqual(self.gate(), ["true", "npx eslint ."])
+                self.assertNotIn("dropped gate check", self.work_log())
+
+    def test_keep_runs_every_check_and_says_a_failing_one_stops_for_sign_off(self):
+        out = self.at_the_gate_check_question()
+        self.assertIn("setup-answer keep", self.after_line(out, "Keep them"))
+        self.answered(out, "Keep them")
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}")
+        kept = [ln for ln in out.get("SUMMARY", []) if "npx eslint ." in ln
+                and "quality gate" in ln.lower() and "sign" in ln.lower()]
+        self.assertTrue(kept, json.dumps(out, indent=2))
+        self.assertIn("kept gate check npx eslint .", self.work_log())
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_after_keep_a_further_next_points_to_the_run_without_asking(self):
+        self.answered(self.at_the_gate_check_question(), "Keep them")
+        self.ready(self.setup_next(), self.tmp / "app-add-due-dates-to-todos")
+        lookups = len([p for p in self.worker_briefs() if p.startswith("lookup-")])
+        out = self.setup_next()
+        self.assertNotIn("QUESTION", out)
+        self.assertNotIn("AGENT", out)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(len([p for p in self.worker_briefs() if p.startswith("lookup-")]),
+                         lookups)
+
+    def test_leave_out_creates_the_run_without_the_check_and_keeps_the_saved_file(self):
+        out = self.at_the_gate_check_question()
+        self.assertIn("setup-answer drop", self.after_line(out, "Leave them out of this run"))
+        self.answered(out, "Leave them out of this run")
+        out = self.setup_next()
+        shown = json.dumps(out, indent=2)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}, without npx eslint .")
+        notes = [ln.split("dropped gate check npx eslint .:", 1)[1]
+                 for ln in self.work_log().splitlines()
+                 if "dropped gate check npx eslint .:" in ln]
+        self.assertEqual(len(notes), 1, self.work_log())
+        self.assertIn("user", notes[0].lower(), self.work_log())
+        self.assertRegex(notes[0].lower(), r"\bleft\b.*\bout\b")
+        named = [ln for ln in out.get("SUMMARY", [])
+                 if "npx eslint ." in ln and str(self.saved) in ln]
+        self.assertTrue(named, shown)
+        summary = self.summary(out).lower()
+        self.assertRegex(summary, r"unchanged|not changed")
+        self.assertRegex(summary, r"\bask")
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_a_check_left_out_stays_out_when_a_failed_setup_is_retried(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        self.answered(self.at_the_gate_check_question(text=self.saved.read_text()),
+                      "Leave them out of this run")
+        self.kept_failed_run(self.setup_next())
+        self.save_profile()  # the user fixes the setup; the lint check is still listed
+        self.resume_to_the_planner()
+        self.assertEqual(self.gate(), ["true"])
+
+    def test_with_no_test_check_left_only_keep_and_stop_are_offered(self):
+        out = self.at_the_gate_check_question(self.JEST_NOT_ADOPTED, text=self.JEST_PROFILE)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.options(out), ("Keep them", "Stop"))
+        self.assertEqual(len(out["AFTER"]), 2, shown)
+        self.assertTrue([ln for ln in out.get("SUMMARY", [])
+                         if re.search(r"no `?test`? check", ln.lower())], shown)
+        self.nothing_set_up_yet()
+        self.answered(out, "Keep them")
+        self.ready(self.setup_next(), self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["npx jest", "npx eslint ."])
+
+    def test_leave_out_with_no_test_check_left_is_refused_and_asked_again(self):
+        out = self.at_the_gate_check_question(self.JEST_NOT_ADOPTED, text=self.JEST_PROFILE)
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertIn("test check", said.lower())
+        again = self.setup_next(expect=5)
+        self.assertEqual(self.options(again), self.options(out))
+        self.assertEqual(self.options(again), ("Keep them", "Stop"))
+        self.nothing_set_up_yet()
+
+    def test_stop_at_the_gate_check_question_creates_nothing(self):
+        self.answered(self.at_the_gate_check_question(), "Stop")
+        out = self.setup_next(expect=4)
+        report = self.report(out).lower()
+        self.assertRegex(report, r"gate[- ]check question")
+        self.assertIn("stop", report)
+        self.assertIn("nothing", report)
+        self.nothing_set_up_yet()
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+        self.brief(self.setup_next(expect=0), "lookup")  # a later call starts over
+
+    def test_a_gate_answer_after_the_saved_profile_changed_is_refused(self):
+        self.at_the_gate_check_question()
+        self.save_profile(PROFILER_DRAFT)  # the user removes check 2 themselves
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertRegex(said.lower(), r"no gate[- ]check question")
+        values = self.brief(self.setup_next(expect=0), "lookup")
+        self.assertIn("`true`", values["question"])
+        self.assertNotIn("npx eslint .", values["question"])
+        self.nothing_set_up_yet()
+
+    # -------------------------------------------------------------- review corrections
+
+    GATE_ONLY_OVERRIDE = 'gate:\n  - { kind: test, command: "true", report: "TEST.md" }\n'
+    THREE_CHECKS = (SAVED_PROFILE
+                    + '  - { kind: typecheck, command: "npx tsc", report: "TYPES.md" }\n')
+    TWO_NOT_ADOPTED = ("check 1: adopted — package.json:9\n"
+                       "check 2: not adopted — no eslint config\n"
+                       "check 3: not adopted — no typescript dependency\n")
+
+    def no_gate_answer_traces(self, out):
+        log = self.work_log()
+        self.assertNotIn("kept gate check", log)
+        self.assertNotIn("dropped gate check", log)
+        summary = self.summary(out)
+        self.assertNotIn("Kept at your answer", summary)
+        self.assertNotIn("Left out of this run", summary)
+
+    def test_a_gate_the_auto_dev_yml_sets_skips_the_saved_profile_s_lookup(self):
+        for override, saved in ((FULL_OVERRIDE, SAVED_PROFILE),
+                                (self.GATE_ONLY_OVERRIDE, self.JEST_PROFILE)):
+            with self.subTest(saved=saved):
+                self.commit_override(override)
+                self.save_profile(saved)
+                task = f"Add due dates override {len(self.outs)}"
+                out = self.setup_next(task=task, expect=0)
+                shown = json.dumps(out, indent=2)
+                self.assertNotIn("AGENT", out, shown)
+                self.assertNotIn("QUESTION", out, shown)
+                self.ready(out)
+                self.assertEqual(self.worker_briefs(), [])
+                self.assertEqual(self.gate(), ["true"])
+                self.no_gate_answer_traces(out)
+
+    def asks_after_the_lookup_despite(self, override):
+        """A committed `.auto-dev.yml` that leaves `gate` out: the saved profile
+        is still looked up, and the flagged check asked about."""
+        self.commit_override(override)
+        self.save_profile()
+        first = self.setup_next(expect=0)
+        self.lookup_answers(first, self.ESLINT_NOT_ADOPTED)
+        out = self.setup_next(expect=5)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.options(out), self.GATE_QUESTION_OPTIONS, shown)
+        self.assertIn("check 2: `npx eslint .`", self.summary(out), shown)
+        self.nothing_set_up_yet()
+
+    def test_an_auto_dev_yml_setting_only_setup_still_gets_the_lookup_and_question(self):
+        self.asks_after_the_lookup_despite('setup: ["true"]\n')
+
+    def test_an_auto_dev_yml_setting_neither_setup_nor_gate_still_gets_the_question(self):
+        self.asks_after_the_lookup_despite("branches:\n  base: main\n")
+
+    def test_the_keep_promise_says_the_coder_tries_to_make_a_failing_check_green_first(self):
+        promise = r"coder.*green.*still (red|fail).*quality gate stops.*sign"
+        out = self.at_the_gate_check_question()
+        keep = next(o["description"] for o in json.loads(out["QUESTION"])["questions"][0]
+                    ["options"] if o["label"] == "Keep them")
+        self.assertRegex(keep.lower(), promise)
+        self.assertRegex(self.summary(out).lower().replace("\n", " "), promise)
+        self.answered(out, "Keep them")
+        out = self.setup_next()
+        self.ready(out)
+        kept = [ln for ln in out.get("SUMMARY", []) if "npx eslint ." in ln]
+        self.assertEqual(len(kept), 1, json.dumps(out, indent=2))
+        self.assertRegex(kept[0].lower(), promise)
+
+    def test_one_answer_leaves_out_every_flagged_check(self):
+        out = self.at_the_gate_check_question(self.TWO_NOT_ADOPTED, text=self.THREE_CHECKS)
+        summary = self.summary(out)
+        for part in ("npx eslint .", "no eslint config", "npx tsc", "no typescript dependency"):
+            self.assertIn(part, summary)
+        self.answered(out, "Leave them out of this run")
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(),
+                         f"saved profile {self.saved}, without npx eslint ., npx tsc")
+        log = self.work_log()
+        for cmd in ("npx eslint .", "npx tsc"):
+            self.assertEqual(log.count(f"dropped gate check {cmd}:"), 1, log)
+        self.assertEqual(self.saved.read_text(), self.THREE_CHECKS)
+
+    def test_one_answer_keeps_every_flagged_check(self):
+        out = self.at_the_gate_check_question(self.TWO_NOT_ADOPTED, text=self.THREE_CHECKS)
+        self.answered(out, "Keep them")
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint .", "npx tsc"])
+        log = self.work_log()
+        for cmd in ("npx eslint .", "npx tsc"):
+            self.assertEqual(log.count(f"kept gate check {cmd}:"), 1, log)
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text())["kept"],
+                         [{"n": 2, "command": "npx eslint ."}, {"n": 3, "command": "npx tsc"}])
+
+    def test_leaving_out_a_flagged_test_and_lint_check_is_refused_naming_both(self):
+        self.at_the_gate_check_question("check 1: not adopted — no jest dependency\n"
+                                        "check 2: not adopted — no eslint config\n",
+                                        text=self.JEST_PROFILE)
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertIn("npx jest", said)
+        self.assertIn("npx eslint .", said)
+        self.nothing_set_up_yet()
+
+    def test_a_long_lookup_reason_is_cut_to_200_characters(self):
+        line = "check 2: not adopted — " + "no eslint config anywhere " * 12
+        out = self.at_the_gate_check_question("check 1: adopted — package.json:9\n" + line + "\n")
+        summary = self.summary(out)
+        self.assertIn(line.strip()[:200], summary)
+        self.assertNotIn(line.strip()[:201], summary)

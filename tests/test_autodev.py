@@ -4406,8 +4406,25 @@ class SetupAnswerTest(RunCase):
             if self.profiles.exists() else []
         self.assertEqual(written, [])
 
+    def test_stop_with_no_setup_question_is_refused(self):
+        r = self.autodev("setup-answer", "stop", "--repo", self.repo,
+                         "--task", "Add due dates to todos")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        said = (r.stdout + r.stderr).lower()
+        self.assertIn("no setup question", said)
+        self.assertIn("gate-check question", said)
+
     def test_change_without_text_cannot_run(self):
         r = self.autodev("setup-answer", "change", "--repo", self.repo,
                          "--task", "Add due dates to todos")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("--text", r.stderr)
+
+    def test_keep_with_no_gate_check_question_is_refused(self):
+        r = self.autodev("setup-answer", "keep", "--repo", self.repo,
+                         "--task", "Add due dates to todos")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        written = [p for p in self.profiles.rglob("*") if p.is_file()] \
+            if self.profiles.exists() else []
+        self.assertEqual(written, [])

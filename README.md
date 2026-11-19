@@ -423,9 +423,11 @@ runs while the change is reviewed. The pipeline pauses for approval:
   or with `gates.post_plan`) and an optional **open-the-PR gate** before the first
   push (with `gates.open_pr`, for repos that must not push unreviewed code).
 
-Three more pauses fire only when their situation arises: the **profile
+Four more pauses fire only when their situation arises: the **profile
 question** (a repo with no valid saved profile and no `.auto-dev.yml`
-that declares one; `next --repo` asks it), the **Jira In Progress confirmation** (only with a ticket, once
+that declares one; `next --repo` asks it), the **gate-check question** (a
+saved profile whose lookup finds a gate check's tool not adopted: keep it,
+leave it out of this run, or stop, before the run exists), the **Jira In Progress confirmation** (only with a ticket, once
 the size check says the task fits, and skipped when the ticket is already in
 progress; you can also answer that it is), and the
 **worktree cleanup offer** (after the final report; never for a worktree you
@@ -504,9 +506,15 @@ worker to spawn or the question to ask) gets one in this order:
 
 1. **A saved profile.** If you saved one for this repo on an earlier run, Phase 1
    loads it without asking. A `lookup` worker checks that the repo still uses
-   each gate check's tool; a check whose tool it never adopted is left out of
-   this run, and you're told, so you can fix the file (setup stops instead when
-   that would leave no test check). An invalid saved profile
+   each gate check's tool. When it finds one not adopted, you're asked before
+   the run is created: keep the check (if it fails, the coder first tries to
+   make it green, which may change the repo; if it is still red, the run stops
+   at the quality gate and you can sign it off), leave it out of this run, or
+   stop.
+   The saved file is never changed (only offered keep or stop when leaving
+   the checks out would leave no test check). When the repo's `.auto-dev.yml`
+   sets `gate`, its gate replaces the saved one, so there is no lookup and no
+   question. An invalid saved profile
    is researched again, and you're offered to overwrite it.
 2. **A committed `.auto-dev.yml` that sets both `setup` and `gate`.** The repo
    has declared its profile, so there is nothing to research.
@@ -671,7 +679,7 @@ library, except where they read YAML:
 
 | Script | What it does |
 | ------ | ------------ |
-| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action (from Phase 1's setup, with `--repo`, on; `autodev.py setup-answer` records the answer to the profile question). `autodev.py quality-gate` runs the profile's whole quality gate before the push. `autodev.py --help` lists every subcommand |
+| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action (from Phase 1's setup, with `--repo`, on; `autodev.py setup-answer` records the answer to the profile question or the gate-check question). `autodev.py quality-gate` runs the profile's whole quality gate before the push. `autodev.py --help` lists every subcommand |
 | `validate-config.py` | checks `.auto-dev.yml`, or a saved profile with `--profile` (setup runs it) |
 | `profile-path.py` | prints the saved profile's path for a repo and whether it exists (setup runs it) |
 | `exclude-artifacts.py` | makes `.auto-dev/` ignore itself and checks it with git |
@@ -755,7 +763,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `state.json` | `autodev.py` only | the run's state: phases, size check, gates, budget and every round spent, and each quality-gate run (`gate_runs`) |
 | `WORK_LOG.md` | generated from `state.json` | the same, for people to read |
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
-| `profile-origin.json`, `profile.yml`, `profile-retry.yml` | Phase 1 (`next`) | where the run's profile came from (the saved file and the checks left out of this run, a draft kept for this run only in `profile.yml`, or `.auto-dev.yml`), so a failed setup is retried from it; `profile-retry.yml` is the profile a retry re-read |
+| `profile-origin.json`, `profile.yml`, `profile-retry.yml` | Phase 1 (`next`) | where the run's profile came from (the saved file and the checks left out of this run or kept at the gate-check question, a draft kept for this run only in `profile.yml`, or `.auto-dev.yml`), so a failed setup is retried from it; `profile-retry.yml` is the profile a retry re-read |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
 | `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output |
 | `HANDOFF.md` | a checkpoint, or the user asking to stop | the brief for the next session |

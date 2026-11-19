@@ -45,8 +45,11 @@ can resume on the new one. Newest first. The current version is in
   `autodev.py next --repo <repo> --task "<task>"` (with the ticket flags on the
   first call), in the same ACTION/AFTER shape as the rest of the run: it runs
   `profile-path.py` and `validate-config.py` itself, prints the adopted-tool
-  lookup for a saved profile (a check whose tool the repo never adopted is
-  still left out of this run only, and named in the summary), or the profiler
+  lookup for a saved profile (when it finds a check's tool not adopted, the
+  new gate-check question asks you, before the run exists, to keep the check,
+  leave it out of this run, or stop; it is no longer left out without
+  asking; when the repo's `.auto-dev.yml` sets `gate`, its gate
+  replaces the saved one: no lookup, no question), or the profiler
   and then the profile question (exit 5), whose AFTER lines run the new
   `autodev.py setup-answer`; then it runs `init` and says to move into the
   worktree. The orchestrator no longer runs `profile-path.py`,

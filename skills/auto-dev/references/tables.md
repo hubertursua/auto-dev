@@ -56,7 +56,7 @@ it (_Overriding a stop_, below).
 | # | Condition | Detected by |
 |---|---|---|
 | 1 | `gh` missing or signed out, `origin` not on GitHub, python3 < 3.9 or no PyYAML | `next` (setup) exit 4 |
-| 2 | invalid `.auto-dev.yml`, the profiler leaving no usable draft twice running (not ok, an invalid draft, or one of each), no test command in the quality gate (or none left once a lookup drops the checks the repo never adopted), the user's Stop at the profile question, a setup worker that never returned | `next` (setup) exit 4 |
+| 2 | invalid `.auto-dev.yml`, the profiler leaving no usable draft twice running (not ok, an invalid draft, or one of each), no test command in the quality gate, the user's Stop at the profile question or the gate-check question, a setup worker that never returned | `next` (setup) exit 4 |
 | 3 | a seeded file not gitignored, a setup command missing or failing (the run is kept: once the file the `REPORT` names is fixed, `auto-dev continue` runs setup again); in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `next` (setup) exit 4 |
 | 4 | the run was started on auto-dev 3.x or 4.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | the planner returns `OVERSIZED` |
@@ -171,6 +171,18 @@ only` · `Change something (tell me what)` · `Stop`. Each answer's `AFTER` line
 --repo` acts on it: save writes the saved profile, change has the profiler redo
 the draft and asks again, Stop ends setup with nothing created (the ticket details
 and the ask given on the first call are kept for the start-over command).
+
+The gate-check question (Phase 1, exit 5 from `next --repo`, asked when a saved
+profile's lookup finds a gate check's tool not adopted) has its own options:
+`Keep them` · `Leave them out of this run` · `Stop`. Each answer's `AFTER` line is
+`autodev.py setup-answer keep|drop|stop --repo <repo> --task "<task>"`; the next
+`next --repo` acts on it: keep creates the run with every saved check (a kept check
+that fails is first handed to the coder to make green, which may change the repo;
+if it is still red, the run stops at the quality gate, stop 9, where the user can
+sign it off), drop creates it without the flagged checks (the saved file is unchanged, so
+the next run asks again), Stop ends setup with nothing created. When leaving them
+out would leave no test check, only `Keep them` and `Stop` are offered, and a `drop`
+answer is refused.
 
 ## Freshness: when a report no longer matches the code
 

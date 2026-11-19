@@ -41,7 +41,8 @@ Subcommands:
     verify    the verifier's routine steps: prep a pass, then compare the tree
     next      print the pipeline's one next action (the orchestrator's loop); with
               --repo, before the run exists, Phase 1's setup
-    setup-answer       record the user's answer to the profile question (Phase 1)
+    setup-answer       record the user's answer to the profile or gate-check question
+                       (Phase 1)
     override  answer a stop: fix it as the user says, retry, sign off, talk, leave
 
 Every subcommand takes --json. Exit codes, the same for all:
