@@ -1500,13 +1500,13 @@ def risk_recheck(c):
     why = []
     sensitive = [p for p in paths if sensitive_path(p) or declared_path(p, declared)]
     if sensitive:
-        why.append("it touches " + ", ".join(sensitive[:5])
+        why.append("it touches " + ", ".join(printable(p) for p in sensitive[:5])
                    + (f" and {len(sensitive) - 5} more" if len(sensitive) > 5 else ""))
     hits = [(p, sorted(words)[:3]) for p, words in sorted(added.items())
             if words and p not in sensitive]
     if hits:
         why.append("it adds lines naming a sensitive area: "
-                   + ", ".join(f"{p} ({', '.join(w)})" for p, w in hits[:5])
+                   + ", ".join(f"{printable(p)} ({', '.join(w)})" for p, w in hits[:5])
                    + (f" and {len(hits) - 5} more" if len(hits) > 5 else ""))
     if len(paths) > LARGE_FILES or lines > LARGE_LINES:
         why.append(f"it is large ({len(paths)} files, {lines} lines changed)")
@@ -1515,6 +1515,12 @@ def risk_recheck(c):
         c.state["high_risk"] = True
         st.add_note(c.state, "risk raised to high after the build: " + "; ".join(why))
     c.dirty = True
+
+
+def printable(path):
+    """`path` as text the ledger can write: a byte that isn't UTF-8 (read with
+    surrogateescape) shows as `\\xe9`, so state.json and WORK_LOG.md save."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
 
 
 def path_words(path):
@@ -1606,12 +1612,14 @@ def added_words(c, base, untracked):
         return p and not p.startswith(".auto-dev/") and not lock_file(p)
 
     found = {}
-    # The prefixes, colour and quoting are pinned, so the user's diff config
-    # (diff.noprefix, diff.mnemonicPrefix) can't change the headers parsed here.
+    # The prefixes, colour, quoting, renames and submodule format are pinned, so
+    # the user's diff config (diff.noprefix, diff.mnemonicPrefix, diff.renames,
+    # diff.submodule) can't change the headers and lines parsed here. A moved
+    # file's lines count as added, as an untracked move's do.
     code, text, _ = git(c.wt, "-c", "core.quotePath=false", "diff", "-U0", "--no-color",
-                        "--no-ext-diff", "--no-textconv", "--src-prefix=a/",
-                        "--dst-prefix=b/", base or "HEAD", check=False,
-                        errors="surrogateescape")
+                        "--no-ext-diff", "--no-textconv", "--no-renames",
+                        "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
+                        base or "HEAD", check=False, errors="surrogateescape")
     current, in_hunk = None, False
     for line in (text.split("\n") if code == 0 else ()):
         if line.startswith("diff --git "):
@@ -1644,12 +1652,15 @@ def build_diff(c):
     words on its added lines}) between the branch's merge base and the working
     tree, untracked files included."""
     def out(*args):
-        code, text, _ = git(c.wt, *args, check=False)
+        code, text, _ = git(c.wt, *args, check=False, errors="surrogateescape")
         return text if code == 0 else ""
 
+    # Names are read NUL-separated and unquoted, as `changed_paths` reads them,
+    # so a name git quotes (non-ASCII, `"`, `\`) is the same string everywhere.
     add, remove = changed_paths(c.wt)
     base = out("merge-base", c.state["repo"]["base"], "HEAD").strip()
-    committed = out("diff", "--name-only", f"{base}..HEAD").splitlines() if base else []
+    committed = out("-c", "core.quotePath=false", "diff", "--name-only", "-z",
+                    "--no-renames", f"{base}..HEAD").split("\0") if base else []
     paths = sorted({p for p in add + remove + committed
                     if p and not p.startswith(".auto-dev/")})
     lines = 0
@@ -1658,7 +1669,7 @@ def build_diff(c):
         if len(cells) == 3 and not cells[2].startswith(".auto-dev/") and \
                 not lock_file(cells[2]):
             lines += sum(int(n) for n in cells[:2] if n.isdigit())
-    tracked = set(out("ls-files").splitlines())
+    tracked = set(out("ls-files", "-z").split("\0"))
     for p in add:
         if p not in tracked and not lock_file(p):
             try:

@@ -4370,12 +4370,65 @@ class SensitiveScanTest(NextCase):
     verified = RiskRecheckTest.verified
     declare = RiskRecheckTest.declare
 
+    def commit(self, rel, text):
+        """The build commits `rel` holding `text` (a name with `\\` or `*` is literal)."""
+        self.write(rel, text)
+        self.sh("git", "--literal-pathspecs", "add", "--", rel, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "add", cwd=self.worktree)
+
     def committed(self, rel, before, after):
         """The build commits `rel` holding `before`, then changes it to `after`."""
-        self.write(rel, before)
-        self.sh("git", "add", "--", rel, cwd=self.worktree)
-        self.sh("git", "commit", "-q", "-m", "add", cwd=self.worktree)
+        self.commit(rel, before)
         self.write(rel, after)
+
+    # A name that is not UTF-8 (`caf` and the byte 0xE9), as Python passes it to git.
+    NOT_UTF8 = "caf" + b"\xe9".decode("utf-8", "surrogateescape")
+
+    def commit_unwritten(self, rel, text):
+        """Commit `rel` holding `text` through the index alone, marked
+        skip-worktree: no file is written, so a name that is not UTF-8 commits
+        on any file system, and the working tree stays as it was."""
+        blob = self.tmp / "blob.txt"
+        blob.write_text(text)
+        sha = self.sh("git", "hash-object", "-w", str(blob), cwd=self.worktree).strip()
+        self.sh("git", "update-index", "--add", "--cacheinfo", f"100644,{sha},{rel}",
+                cwd=self.worktree)
+        self.sh("git", "update-index", "--skip-worktree", "--", rel, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "add", cwd=self.worktree)
+
+    def test_a_committed_name_that_is_not_utf8_is_named_printably(self):
+        self.standard_session()
+        self.commit_unwritten(f"src/auth/{self.NOT_UTF8}.ts", "export const x = 1;\n")
+        state = self.verified()  # `next` exits 0 past the re-check
+        why = "it touches src/auth/caf\\xe9.ts"
+        self.assertEqual(state["risk_recheck"]["why"], [why])
+        self.assertIn(why, (self.dir / "WORK_LOG.md").read_text(encoding="utf-8"))
+
+    def test_an_added_line_in_a_name_that_is_not_utf8_is_named_printably(self):
+        self.standard_session()
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.ts", "export const session = 1;\n")
+        state = self.verified()
+        why = "it adds lines naming a sensitive area: lib/caf\\xe9.ts (session)"
+        self.assertEqual(state["risk_recheck"]["why"], [why])
+        self.assertIn(why, (self.dir / "WORK_LOG.md").read_text(encoding="utf-8"))
+
+    def test_a_committed_name_that_is_not_utf8_outside_a_sensitive_area(self):
+        self.standard_session()
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.txt", "plain\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_base_branch_name_that_is_not_utf8_is_read(self):
+        # The base branch tracks the name: committed before the session, with
+        # main and origin/main moved to that commit, so it is in `ls-files`
+        # but not in the build's diff.
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.txt", "plain\n")
+        for ref in ("refs/heads/main", "refs/remotes/origin/main"):
+            self.sh("git", "update-ref", ref, "HEAD", cwd=self.worktree)
+        self.standard_session()
+        self.write("src/due.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
 
     def test_a_trailing_slash_a_question_mark_and_a_bracket(self):
         self.standard_session()
@@ -4438,6 +4491,213 @@ class SensitiveScanTest(NextCase):
         listed = ", ".join(f"src/f{i}.ts (auth, login, logout)" for i in range(5))
         self.assertEqual(state["risk_recheck"]["why"], [
             f"it adds lines naming a sensitive area: {listed} and 1 more"])
+
+    def test_a_committed_quoted_name_under_a_declared_glob_is_named_raw(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        self.commit("src/users/café.ts", "export const x = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/café.ts"])
+
+    # The next three commit with a clean working tree, so each name reaches the
+    # re-check only through the committed diff, never through `git status`.
+    def test_a_committed_name_with_a_quote_under_a_declared_glob_is_named_raw(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        self.commit('src/users/say"hi".ts', "export const x = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ['it touches src/users/say"hi".ts'])
+
+    def test_a_committed_name_with_a_backslash_is_reported_once(self):
+        self.standard_session()
+        self.commit("src/auth/back\\slash.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/back\\slash.ts"])
+
+    def test_committed_names_with_a_tab_and_a_control_byte_are_reported_once(self):
+        self.standard_session()
+        for rel in ("src/auth/ctl\x01.ts", "src/auth/a\tb.ts"):
+            self.commit(rel, "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches src/auth/a\tb.ts, src/auth/ctl\x01.ts"])
+
+    def test_a_committed_quoted_sensitive_path_is_reported_once(self):
+        self.standard_session()
+        self.commit("src/auth/café.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/café.ts"])
+
+    def test_a_committed_quoted_name_is_scanned_through_the_diff(self):
+        self.standard_session()
+        self.commit('src/say"hi".ts', "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            'it adds lines naming a sensitive area: src/say"hi".ts (session)'])
+
+    def test_names_with_a_backslash_a_tab_and_a_control_byte_are_named_as_built(self):
+        self.standard_session()
+        names = ("src/back\\slash.ts", "src/a\tb.ts", "src/ctl\x01.ts")
+        for rel in names:
+            self.committed(rel, "export const x = 1;\n", "export const session = 1;\n")
+        state = self.verified()
+        listed = ", ".join(f"{rel} (session)" for rel in sorted(names))
+        self.assertEqual(state["risk_recheck"]["why"], [
+            f"it adds lines naming a sensitive area: {listed}"])
+
+    def committed_middleware_under(self, *config, attributes=None):
+        """The repo's git config sets each (key, value) in `config`; the build
+        commits src/middleware.ts (and a .gitattributes holding `attributes`),
+        then adds the middleware's sensitive line to it."""
+        self.standard_session()
+        for key, value in config:
+            self.sh("git", "config", key, value, cwd=self.worktree)
+        if attributes:
+            self.commit(".gitattributes", attributes)
+        self.committed("src/middleware.ts", "export const x = 1;\n",
+                       RiskRecheckTest.MIDDLEWARE)
+        return self.verified()
+
+    def test_the_added_line_scan_ignores_a_forced_colour(self):
+        state = self.committed_middleware_under(("color.ui", "always"))
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_an_external_diff(self):
+        state = self.committed_middleware_under(("diff.external", "true"))
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_a_textconv_driver(self):
+        state = self.committed_middleware_under(("diff.strip.textconv", "true"),
+                                                attributes="*.ts diff=strip\n")
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+
+class BaseFilesCase(NextCase):
+    """The base branch holds BASE ((path, text) pairs) before the run starts."""
+    BASE = ()
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def seed(self, seed):
+        """Anything more to commit on the base branch, in the clone `seed`."""
+
+    def init(self, *extra, **kw):
+        seed = self.tmp / "seed"
+        for rel, text in self.BASE:
+            (seed / rel).parent.mkdir(parents=True, exist_ok=True)
+            (seed / rel).write_text(text)
+        self.seed(seed)
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "base", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "pull", "-q", "--ff-only", "origin", "main", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+
+class TrackedQuotedNameTest(BaseFilesCase):
+    """A tracked file whose name git quotes is scanned through its diff, as any
+    tracked file is: a word already on the base branch does not count."""
+    TWO_LINES = "const session = 1;\nconst a = 1;\n"
+    BASE = (("lib/café.ts", TWO_LINES), ('src/say"hi".ts', TWO_LINES),
+            ("package-lock.json", "{}\n"))
+
+    def test_a_non_ascii_name_changed_off_its_sensitive_line_stays_standard(self):
+        self.standard_session()
+        self.write("lib/café.ts", "const session = 1;\nconst a = 2;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_quoted_name_changed_off_its_sensitive_line_stays_standard(self):
+        self.standard_session()
+        self.write('src/say"hi".ts', "const session = 1;\nconst a = 2;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_word_added_to_a_non_ascii_name_comes_from_its_diff(self):
+        self.standard_session()
+        self.write("lib/café.ts", "const session = 1;\nconst a = 1;\nconst token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: lib/café.ts (token)"])
+
+    def test_a_tracked_lock_file_s_added_words_do_not_count(self):
+        self.standard_session()
+        self.write("package-lock.json", '{"node_modules/@auth0/auth0-spa-js": {}}\n')
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+
+class MovedFileTest(BaseFilesCase):
+    """A file the build moves has its lines counted as added, whatever the
+    repo's diff.renames says, as an untracked move's lines already are."""
+    BASE = (("src/store.ts", "const session = 1;\n"),)
+    MOVED_WHY = "it adds lines naming a sensitive area: src/data/store.ts (session)"
+
+    def moved_under(self, renames):
+        self.standard_session()
+        self.sh("git", "config", "diff.renames", renames, cwd=self.worktree)
+        (self.worktree / "src" / "data").mkdir()
+        self.sh("git", "mv", "src/store.ts", "src/data/store.ts", cwd=self.worktree)
+        return self.verified()
+
+    def test_a_moved_file_s_lines_count_with_renames_off(self):
+        state = self.moved_under("false")
+        self.assertEqual(state["risk_recheck"]["why"], [self.MOVED_WHY])
+
+    def test_a_moved_file_s_lines_count_with_renames_on(self):
+        state = self.moved_under("true")
+        self.assertEqual(state["risk_recheck"]["why"], [self.MOVED_WHY])
+
+
+class CommittedMoveTest(BaseFilesCase):
+    """A move the build commits names the file's old path, under git's default
+    diff.renames, with the working tree left as committed."""
+    BASE = (("src/auth/guard.ts", "export const x = 1;\n"),
+            ("src/users/a.ts", "export const x = 1;\n"))
+    declare = RiskRecheckTest.declare
+
+    def committed_move(self, old, new):
+        self.sh("git", "mv", old, new, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "move", cwd=self.worktree)
+        return self.verified()
+
+    def test_a_committed_move_out_of_a_sensitive_word_directory(self):
+        self.standard_session()
+        state = self.committed_move("src/auth/guard.ts", "src/guard.ts")
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/guard.ts"])
+
+    def test_a_committed_move_out_of_a_declared_glob(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        state = self.committed_move("src/users/a.ts", "src/a.ts")
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/a.ts"])
+
+
+class SubmoduleBumpTest(BaseFilesCase):
+    """The base branch holds a submodule at lib/; a bump shows as one changed
+    path, never as lines of the files inside it."""
+    FILE_PROTOCOL = ("-c", "protocol.file.allow=always")
+
+    def seed(self, seed):
+        sub = self.tmp / "sublib"
+        self.sh("git", "init", "-q", "-b", "main", str(sub))
+        (sub / "a.txt").write_text("plain\n")
+        self.sh("git", "add", "-A", cwd=sub)
+        self.sh("git", "commit", "-q", "-m", "sub", cwd=sub)
+        self.sh("git", *self.FILE_PROTOCOL, "submodule", "add", "-q", str(sub), "lib",
+                cwd=seed)
+
+    def test_a_bumped_submodule_s_inner_lines_are_not_scanned(self):
+        self.standard_session()
+        self.sh("git", "config", "diff.submodule", "diff", cwd=self.worktree)
+        self.sh("git", *self.FILE_PROTOCOL, "submodule", "update", "-q", "--init", "lib",
+                cwd=self.worktree)
+        inner = self.worktree / "lib"
+        (inner / "a.txt").write_text("plain\nconst session = 1;\n")
+        self.sh("git", "commit", "-q", "-am", "bump", cwd=inner)
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [], state["risk_recheck"])
 
 
 class RiskAtTheReadyGateTest(NextCase):
