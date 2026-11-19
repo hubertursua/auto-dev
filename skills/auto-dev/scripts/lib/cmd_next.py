@@ -16,8 +16,9 @@ is no ticket text, and a later --task naming it finds the run (here and in
 shape as below: the lookup to spawn for a saved profile (whether
 each gate check's tool is adopted; when it finds one not adopted, the
 gate-check question, exit 5: keep the checks, leave them out of this run, or
-stop), or the profiler to spawn when there is no usable profile, then the
-profile question (exit 5); each question's AFTER lines run `autodev.py
+stop; when the repo's `.auto-dev.yml` sets `gate`, its gate replaces the
+saved one: no lookup, no question), or the profiler to spawn when there is
+no usable profile, then the profile question (exit 5); each question's AFTER lines run `autodev.py
 setup-answer`; then it creates the worktree, branch and
 run (`autodev.py init`, setup waited on for at most --max-wait seconds,
 default 90) and says to move into the worktree, with `next --dir` as AFTER. A

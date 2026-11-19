@@ -58,13 +58,15 @@ move into the worktree. What you will see:
    question comes before the run exists (exit 5): show the `SUMMARY` (each
    flagged check, the lookup's reason, the saved file), ask the `QUESTION`
    and run the `AFTER` line for the answer. `Keep them` keeps every check (one
-   that fails stops the run at the quality gate, where the user can sign it
-   off); `Leave them out of this run` creates the run without them; `Stop`
+   that fails is first handed to the coder to make green, which may change the
+   repo; if it is still red, the run stops at the quality gate, where the user
+   can sign it off); `Leave them out of this run` creates the run without them; `Stop`
    ends setup with nothing created. When leaving them out would leave no
    test check, only `Keep them` and `Stop` are offered. `autodev.py` makes
    the run's profile from the answer and never changes the saved file: never
    edit a profile yourself. A saved file changed since its lookup is looked
-   up again, and the question asked anew.
+   up again, and the question asked anew. When the repo's `.auto-dev.yml`
+   sets `gate`, it replaces the saved gate: no lookup, no question.
 2. No usable profile (none saved, an invalid one, or a `.auto-dev.yml` that
    doesn't set both `setup` and `gate`): the `profiler` to spawn, then the
    profile question (exit 5). Show the `SUMMARY` (the profiler's questions

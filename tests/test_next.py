@@ -6480,3 +6480,114 @@ class SetupFlowTest(RunCase):
         self.assertIn("`true`", values["question"])
         self.assertNotIn("npx eslint .", values["question"])
         self.nothing_set_up_yet()
+
+    # -------------------------------------------------------------- review corrections
+
+    GATE_ONLY_OVERRIDE = 'gate:\n  - { kind: test, command: "true", report: "TEST.md" }\n'
+    THREE_CHECKS = (SAVED_PROFILE
+                    + '  - { kind: typecheck, command: "npx tsc", report: "TYPES.md" }\n')
+    TWO_NOT_ADOPTED = ("check 1: adopted — package.json:9\n"
+                       "check 2: not adopted — no eslint config\n"
+                       "check 3: not adopted — no typescript dependency\n")
+
+    def no_gate_answer_traces(self, out):
+        log = self.work_log()
+        self.assertNotIn("kept gate check", log)
+        self.assertNotIn("dropped gate check", log)
+        summary = self.summary(out)
+        self.assertNotIn("Kept at your answer", summary)
+        self.assertNotIn("Left out of this run", summary)
+
+    def test_a_gate_the_auto_dev_yml_sets_skips_the_saved_profile_s_lookup(self):
+        for override, saved in ((FULL_OVERRIDE, SAVED_PROFILE),
+                                (self.GATE_ONLY_OVERRIDE, self.JEST_PROFILE)):
+            with self.subTest(saved=saved):
+                self.commit_override(override)
+                self.save_profile(saved)
+                task = f"Add due dates override {len(self.outs)}"
+                out = self.setup_next(task=task, expect=0)
+                shown = json.dumps(out, indent=2)
+                self.assertNotIn("AGENT", out, shown)
+                self.assertNotIn("QUESTION", out, shown)
+                self.ready(out)
+                self.assertEqual(self.worker_briefs(), [])
+                self.assertEqual(self.gate(), ["true"])
+                self.no_gate_answer_traces(out)
+
+    def asks_after_the_lookup_despite(self, override):
+        """A committed `.auto-dev.yml` that leaves `gate` out: the saved profile
+        is still looked up, and the flagged check asked about."""
+        self.commit_override(override)
+        self.save_profile()
+        first = self.setup_next(expect=0)
+        self.lookup_answers(first, self.ESLINT_NOT_ADOPTED)
+        out = self.setup_next(expect=5)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.options(out), self.GATE_QUESTION_OPTIONS, shown)
+        self.assertIn("check 2: `npx eslint .`", self.summary(out), shown)
+        self.nothing_set_up_yet()
+
+    def test_an_auto_dev_yml_setting_only_setup_still_gets_the_lookup_and_question(self):
+        self.asks_after_the_lookup_despite('setup: ["true"]\n')
+
+    def test_an_auto_dev_yml_setting_neither_setup_nor_gate_still_gets_the_question(self):
+        self.asks_after_the_lookup_despite("branches:\n  base: main\n")
+
+    def test_the_keep_promise_says_the_coder_tries_to_make_a_failing_check_green_first(self):
+        promise = r"coder.*green.*still (red|fail).*quality gate stops.*sign"
+        out = self.at_the_gate_check_question()
+        keep = next(o["description"] for o in json.loads(out["QUESTION"])["questions"][0]
+                    ["options"] if o["label"] == "Keep them")
+        self.assertRegex(keep.lower(), promise)
+        self.assertRegex(self.summary(out).lower().replace("\n", " "), promise)
+        self.answered(out, "Keep them")
+        out = self.setup_next()
+        self.ready(out)
+        kept = [ln for ln in out.get("SUMMARY", []) if "npx eslint ." in ln]
+        self.assertEqual(len(kept), 1, json.dumps(out, indent=2))
+        self.assertRegex(kept[0].lower(), promise)
+
+    def test_one_answer_leaves_out_every_flagged_check(self):
+        out = self.at_the_gate_check_question(self.TWO_NOT_ADOPTED, text=self.THREE_CHECKS)
+        summary = self.summary(out)
+        for part in ("npx eslint .", "no eslint config", "npx tsc", "no typescript dependency"):
+            self.assertIn(part, summary)
+        self.answered(out, "Leave them out of this run")
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(),
+                         f"saved profile {self.saved}, without npx eslint ., npx tsc")
+        log = self.work_log()
+        for cmd in ("npx eslint .", "npx tsc"):
+            self.assertEqual(log.count(f"dropped gate check {cmd}:"), 1, log)
+        self.assertEqual(self.saved.read_text(), self.THREE_CHECKS)
+
+    def test_one_answer_keeps_every_flagged_check(self):
+        out = self.at_the_gate_check_question(self.TWO_NOT_ADOPTED, text=self.THREE_CHECKS)
+        self.answered(out, "Keep them")
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint .", "npx tsc"])
+        log = self.work_log()
+        for cmd in ("npx eslint .", "npx tsc"):
+            self.assertEqual(log.count(f"kept gate check {cmd}:"), 1, log)
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text())["kept"],
+                         [{"n": 2, "command": "npx eslint ."}, {"n": 3, "command": "npx tsc"}])
+
+    def test_leaving_out_a_flagged_test_and_lint_check_is_refused_naming_both(self):
+        self.at_the_gate_check_question("check 1: not adopted — no jest dependency\n"
+                                        "check 2: not adopted — no eslint config\n",
+                                        text=self.JEST_PROFILE)
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertIn("npx jest", said)
+        self.assertIn("npx eslint .", said)
+        self.nothing_set_up_yet()
+
+    def test_a_long_lookup_reason_is_cut_to_200_characters(self):
+        line = "check 2: not adopted — " + "no eslint config anywhere " * 12
+        out = self.at_the_gate_check_question("check 1: adopted — package.json:9\n" + line + "\n")
+        summary = self.summary(out)
+        self.assertIn(line.strip()[:200], summary)
+        self.assertNotIn(line.strip()[:201], summary)

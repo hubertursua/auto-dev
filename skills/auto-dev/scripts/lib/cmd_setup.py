@@ -8,7 +8,8 @@ Before a run exists, `autodev.py next --repo <repo> --task "<task>"` sets it
 up (Phase 1): it finds the repo's saved profile (or a `.auto-dev.yml` that sets
 both `setup` and `gate`), or has the profiler research a draft and asks the
 user about it (the profile question, exit 5). For a saved profile a lookup
-says whether each gate check's tool is adopted; when it finds one or more not
+says whether each gate check's tool is adopted (unless `.auto-dev.yml` sets
+`gate`, which replaces the saved gate); when it finds one or more not
 adopted, the user is asked before the run is created (the gate-check question,
 exit 5). Each answer's AFTER line runs this command, which only records the
 answer; the next `next --repo` acts on it:
@@ -22,8 +23,10 @@ answer; the next `next --repo` acts on it:
     change    (profile question) the profiler redoes its draft with --text
               (the user's words), and the question is asked again
     keep      (gate-check question) create the run with every check of the
-              saved profile; a kept check that fails stops the run at the
-              quality gate, where the user can sign it off
+              saved profile; a kept check that fails is first handed to the
+              coder to make green (which may change the repo); if it is still
+              red, the quality gate stops the run, where the user can sign it
+              off
     drop      (gate-check question) create the run without the checks the
               lookup flagged; the saved profile file is never changed, so the
               next run asks again
@@ -80,8 +83,9 @@ OPTIONS = {"save": ("Looks right — save it for this repo",
            "stop": ("Stop", "End setup here; nothing is created.")}
 GATE_OPTIONS = {"keep": ("Keep them",
                          ("The run runs every check of the saved profile. If a kept check "
-                          "fails, the quality gate stops the run and you can sign it off "
-                          "there.")),
+                          "fails, the coder first tries to make it green, which may change "
+                          "the repo; if it is still red after that, the quality gate stops "
+                          "the run and you can sign it off there.")),
                 "drop": ("Leave them out of this run",
                          ("The run never runs these checks. The saved profile is not changed, "
                           "so the next run asks again.")),
@@ -421,8 +425,9 @@ def origin_summary(artifact_dir, state):
         for check in origin.get("kept") or []:
             lines.append(f"Kept at your answer: gate check `{check.get('command')}` (check "
                          f"{check.get('n')} of the saved profile), whose tool the lookup "
-                         "found not adopted. If it fails, the quality gate stops the run and "
-                         "you can sign it off there.")
+                         "found not adopted. If it fails, the coder first tries to make it "
+                         "green, which may change the repo; if it is still red after that, "
+                         "the quality gate stops the run and you can sign it off there.")
     elif kind == "draft" and origin.get("save_error"):
         lines.append(f"The profile was not saved to {origin.get('save_path')}: "
                      f"{origin['save_error']}. The run uses it anyway. To keep it for this "
@@ -504,7 +509,11 @@ class Setup:
         profile = self.resolve()
         if "code" in profile:
             return profile
-        if profile["kind"] == "saved":
+        if profile["kind"] == "saved" and (self.override or {}).get("gate"):
+            # init replaces the saved gate with .auto-dev.yml's: nothing to ask.
+            profile["dropped"], profile["kept"] = [], []
+            result = None
+        elif profile["kind"] == "saved":
             result = self.lookup_step(profile)
         elif profile["kind"] == "research":
             result = self.research_step(profile)
@@ -696,8 +705,10 @@ class Setup:
         summary += [f"    check {f['n']}: `{f['command']}` ({f['kind']}) — {f['why']}"
                     for f in flagged]
         summary.append("A lookup can be wrong. Leaving a check out means this run never runs "
-                       "it; a kept check that fails stops the run at the quality gate, where "
-                       "you can sign it off. The saved profile is not changed either way.")
+                       "it. A kept check that fails is first handed to the coder to make "
+                       "green, which may change the repo; if it is still red after that, the "
+                       "quality gate stops the run, where you can sign it off. The saved "
+                       "profile is not changed either way.")
         if not can_drop:
             summary.append("Leaving them out would leave the quality gate with no test check, "
                            "so that answer is not offered: keep them, or stop and fix the "

@@ -23,7 +23,8 @@ can resume on the new one. Newest first. The current version is in
   lookup for a saved profile (when it finds a check's tool not adopted, the
   new gate-check question asks you, before the run exists, to keep the check,
   leave it out of this run, or stop; it is no longer left out without
-  asking), or the profiler
+  asking; when the repo's `.auto-dev.yml` sets `gate`, its gate
+  replaces the saved one: no lookup, no question), or the profiler
   and then the profile question (exit 5), whose AFTER lines run the new
   `autodev.py setup-answer`; then it runs `init` and says to move into the
   worktree. The orchestrator no longer runs `profile-path.py`,

@@ -503,10 +503,14 @@ worker to spawn or the question to ask) gets one in this order:
 1. **A saved profile.** If you saved one for this repo on an earlier run, Phase 1
    loads it without asking. A `lookup` worker checks that the repo still uses
    each gate check's tool. When it finds one not adopted, you're asked before
-   the run is created: keep the check (if it fails, the run stops at the
-   quality gate and you can sign it off), leave it out of this run, or stop.
+   the run is created: keep the check (if it fails, the coder first tries to
+   make it green, which may change the repo; if it is still red, the run stops
+   at the quality gate and you can sign it off), leave it out of this run, or
+   stop.
    The saved file is never changed (only offered keep or stop when leaving
-   the checks out would leave no test check). An invalid saved profile
+   the checks out would leave no test check). When the repo's `.auto-dev.yml`
+   sets `gate`, its gate replaces the saved one, so there is no lookup and no
+   question. An invalid saved profile
    is researched again, and you're offered to overwrite it.
 2. **A committed `.auto-dev.yml` that sets both `setup` and `gate`.** The repo
    has declared its profile, so there is nothing to research.

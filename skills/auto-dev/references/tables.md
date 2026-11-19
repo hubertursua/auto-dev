@@ -176,8 +176,9 @@ profile's lookup finds a gate check's tool not adopted) has its own options:
 `Keep them` · `Leave them out of this run` · `Stop`. Each answer's `AFTER` line is
 `autodev.py setup-answer keep|drop|stop --repo <repo> --task "<task>"`; the next
 `next --repo` acts on it: keep creates the run with every saved check (a kept check
-that fails stops the run at the quality gate, stop 9, where the user can sign it
-off), drop creates it without the flagged checks (the saved file is unchanged, so
+that fails is first handed to the coder to make green, which may change the repo;
+if it is still red, the run stops at the quality gate, stop 9, where the user can
+sign it off), drop creates it without the flagged checks (the saved file is unchanged, so
 the next run asks again), Stop ends setup with nothing created. When leaving them
 out would leave no test check, only `Keep them` and `Stop` are offered, and a `drop`
 answer is refused.
