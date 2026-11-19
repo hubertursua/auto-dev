@@ -180,8 +180,9 @@ wrong about something? If yes, fix the README.
   table in `README.md` (_Models and effort_), and each `agents/<name>.md`
   frontmatter must agree.
 - **Version.** Bump `.claude-plugin/plugin.json` as _Branches, commits and
-  PRs_ says. An *Upgrading from X.Y* section in `UPGRADING.md` (newest first)
-  says what changed and whether a run in flight can resume on the new version.
+  PRs_ says (a PR into a release branch doesn't: see **Versioning** there). An
+  *Upgrading from X.Y* section in `UPGRADING.md` (newest first) says what
+  changed and whether a run in flight can resume on the new version.
 - **Descriptions.** `plugin.json` and `marketplace.json` carry the same plugin
   description.
 - **Evals.** When behavior changes, update the expectations in
@@ -279,6 +280,15 @@ Bring in `main` by merging it, not rebasing, once a review has started.
 **Versioning.** The version in `.claude-plugin/plugin.json` follows the bump in
 the types table, in the same PR. A minor or major bump also adds an
 *Upgrading from X.Y* section to `UPGRADING.md`.
+
+The one exception is a PR into a release branch (`feat/release-<x>-<y>-<z>`,
+which gathers several PRs into one release): it doesn't bump `plugin.json` or
+edit `UPGRADING.md`. The release branch carries the version, and its upgrade
+notes are written once, in the release PR, so parallel PRs don't collide in
+`UPGRADING.md`. When the change needs an upgrade note, the PR's Summary carries
+its text on an `Upgrade note:` line, for the release PR to collect. The release
+PR itself, into `main` and naming the version in its title, bumps the version
+and writes the *Upgrading from X.Y* section as above.
 
 ## Writing style
 

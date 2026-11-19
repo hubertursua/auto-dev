@@ -1103,6 +1103,27 @@ class ShipTest(RunCase):
         r = self.watch("--max-wait", "0")
         self.assertIn("TIMEOUT", r.stdout)
 
+    def test_a_conflict_is_recorded_and_a_rewatch_restarts_the_clock(self):
+        self.set_settings(ci="github-actions", ci_timeout=30)
+        head = self.git("rev-parse", "HEAD").strip()
+        self.script_gh([{"args": ["pr", "view"],
+                         "stdout": json.dumps({"headRefOid": head,
+                                               "mergeable": "CONFLICTING"})},
+                        {"args": ["pr", "checks"], "exit": 1,
+                         "stderr": "no checks reported on the 'feat/due-dates' branch"}])
+        r = self.watch("--max-wait", "0", "--grace", "300")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("bring the base in", r.stdout)
+        self.assertEqual(self.state()["phase6"]["ci"]["status"], "conflict")
+        state = self.state()
+        state["phase6"]["ci"]["started"] = 1.0
+        self.write_state(state)
+        self.checks(self.PENDING)  # the base brought in: checks run again
+        r = self.watch("--max-wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("PENDING", r.stdout)
+        self.assertGreater(self.state()["phase6"]["ci"]["started"], 1.0)
+
     def test_ci_ignores_checks_for_another_head(self):
         self.set_settings(ci="github-actions")
         self.checks([{"name": "test", "bucket": "fail", "state": "FAILURE", "link": "l"}],

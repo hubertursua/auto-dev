@@ -70,7 +70,7 @@ it (_Overriding a stop_, below).
 | 13 | no code reviewer of the panel wrote a usable report, twice; or the pass's verifier or reviewer did not return ok twice running (lifted by `auto-dev continue`) | `next` |
 | 14 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
 | 15 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), infrastructure (`INFRA`), a flaky test (`FLAKY`) or no clear cause (`UNKNOWN`). Reported before Jira moves to In Review. Lifted by `auto-dev continue` once the cause is fixed and CI re-run: CI is watched again | triager's CI mode |
-| 16 | someone pushed commits to the PR branch the pipeline didn't check. Lifted once the user fast-forwards the worktree to `origin/<branch>` (`git merge --ff-only`, which the report names) and says `auto-dev continue`: the commits are re-checked, then the main gate is asked again | `check-fresh --ref`, inside `next` |
+| 16 | someone pushed commits to the PR branch the pipeline didn't check, seen before a CI watch, a push or a gate (and at the main gate). Lifted once the user fast-forwards the worktree to `origin/<branch>` (`git merge --ff-only`, which the report names) and says `auto-dev continue`: the commits are re-checked, then the run goes on. A head pushed from the worktree is re-checked with no stop | `next` (the PR branch fetched; `check-fresh --ref` at the main gate) |
 | 17 | CI is red at the main gate | `next` |
 | 18 | GitHub refused or only queued the merge | `merge-pr` exit 3 or 4, then `next` |
 | 19 | the user chose Stop at a gate or pause | `gate … stop` |
@@ -201,7 +201,7 @@ points; you never run it yourself.
 | Start of Phase 6, nothing committed yet | the code changed outside the pipeline since the Build stage | the quality gate runs again before the first commit; the verifier and the review then run on the draft PR |
 | `commit` | the code changed after its checks | re-checked as above, then committed |
 | The ready-for-review gate | the code changed after the reviews | the quality gate runs again, then a pass (the verifier and the review) on the change; it is committed on top and the gate is asked again |
-| Before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#16); once the user brings the commits into the worktree, the quality gate runs again, a pass (the verifier and the review) covers what they changed, `commit` verifies the new head, or commits the re-check's edits on top, and the main gate is asked again |
+| Before a CI watch, a push or a gate (the PR branch's head), and before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#16), or no stop when the worktree's HEAD is that head already; once the commits are in the worktree, the quality gate runs again, a pass (the verifier and the review) covers what they changed, `commit` verifies the new head, or commits the re-check's edits on top, and the run goes on: CI is watched on the new head and the gate is asked again |
 | The same check, stale twice running | the re-run didn't settle it | stop (#12) |
 
 ## Lookups

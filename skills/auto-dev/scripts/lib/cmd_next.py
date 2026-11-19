@@ -2578,10 +2578,21 @@ def settle_pass(c, p, vrec, rows, sec, spent_out):
 def ci_fold(c):
     """(an action or stop to take first, or None; the CI triage to fold into
     the correction, or None). Before a pass's correction, CI settles on the
-    pushed commit, so one correction takes red CI too."""
+    pushed commit, so one correction takes red CI too; not while a PR head
+    pushed outside the run is under re-check, and a newly moved head is
+    re-checked (moved_head) before any wait."""
     if c.state["settings"].get("ci", "none") == "none":
         return None, None
+    outside = next((k for k in reversed(c.p6["corrections"]) if k["entry"] == "outside"),
+                   None)
+    if outside and outside.get("since") and outside["seq"] > c.p6.get("commit_seq", 0):
+        # A moved PR head is under re-check: CI on the old commit never reports,
+        # and the new head is watched once `commit` verifies it.
+        return None, None
     sha = c.p6.get("verified_sha")
+    moved = moved_head(c, sha)
+    if moved:
+        return moved, None
     ci = c.p6.get("ci") or {}
     if ci.get("sha") != sha or ci.get("status") == "pending":
         return ci_watch(c, "findings are open: CI settles on the pushed commit first, so "
@@ -2863,6 +2874,11 @@ def publish_step(c):
                 return open_pr_gate(c)
         return commit_step(c)
     if (c.mark("pushed") or {}).get("value") != sha:
+        # A pushed value the run didn't record may be a head someone else
+        # pushed: re-check it rather than push and record `sha` again.
+        moved = moved_head(c, sha)
+        if moved:
+            return moved
         return action(f"push the branch: `git -C {q(c.wt)} push -u origin HEAD` (never "
                       "--force)", "the verified commit is not pushed yet",
                       AFTER=[c.cmd("mark", "pushed", "--value", sha)])
@@ -2882,7 +2898,11 @@ def reviewed_pass(c):
 def ship_step(c, sha):
     """After the reviews: CI on the draft, the ready-for-review gate, the PR
     marked ready, Jira In Review, CI once more, people's comments, the main gate
-    and the merge."""
+    and the merge. A commit pushed to the PR branch outside the run is
+    re-checked (or stops the run) before any of them."""
+    moved = moved_head(c, sha)
+    if moved:
+        return moved
     p6 = c.p6
     ready = marked_ready(c)
     if not ready:
@@ -3309,12 +3329,45 @@ def remove_worktree(c):
                       "and the worktree stays")}
 
 
+def moved_head(c, sha):
+    """The step for a PR branch moved to a commit the run did not make (see
+    outside_push), or None. Fetches the branch (also when probing for a
+    checkpoint; a failed fetch uses the last one fetched) and compares commits,
+    not trees: during a correction the reports describe the corrected working
+    tree, which is no outside push. None when the branch is at `sha` or at the
+    commit under re-check, behind `sha` (the run's own commit not pushed yet),
+    or past it by the run's own tests commits alone."""
+    if not sha:
+        return None
+    branch = c.state["branch"]
+    if not c.readonly or c.probing:
+        git(c.wt, "fetch", "-q", "origin", branch, check=False)
+    code, out, _ = git(c.wt, "rev-parse", "--verify", "--quiet",
+                       f"origin/{branch}^{{commit}}", check=False)
+    remote = out.strip() if code == 0 else ""
+    if not remote or remote in (sha, c.p6.get("unverified_commit")):
+        return None
+    code, _, _ = git(c.wt, "merge-base", "--is-ancestor", remote, sha, check=False)
+    if code == 0:
+        return None
+    code, out, _ = git(c.wt, "rev-list", f"{sha}..{remote}", check=False)
+    revs = out.split() if code == 0 else []
+    if revs and set(revs) <= set(cmd_work.tests_shas(c.state)):
+        return None
+    _, out, _ = git(c.wt, "diff", "--name-only", sha, remote, check=False)
+    files = [f for f in out.splitlines() if f and not f.startswith(".auto-dev/")]
+    detail = (f"the PR's branch is at {remote[:12]}, past the checked commit {sha[:12]}; "
+              "files changed since it: " + (", ".join(files) or "none"))
+    return outside_push(c, sha, detail)
+
+
 def outside_push(c, sha, stale):
-    """The PR's branch moved past the verified commit. Once the user has brought
-    those commits into the worktree, they are re-checked like any outside
-    change (the quality gate, the verifier, then a review pass on what they
-    changed since `sha`), and `commit` then verifies HEAD, or commits the
-    re-check's edits on top."""
+    """The PR's branch moved past the verified commit: seen by moved_head before
+    a CI watch, a push or a gate, and by the main gate's freshness check. Once
+    the user has brought those commits into the worktree, they are re-checked
+    like any outside change (the quality gate, the verifier, then a review pass
+    on what they changed since `sha`), and `commit` then verifies HEAD, or
+    commits the re-check's edits on top. `stale` names what changed."""
     branch = c.state["branch"]
     head = git(c.wt, "rev-parse", "HEAD").strip()
     code, remote, _ = git(c.wt, "rev-parse", f"origin/{branch}", check=False)
@@ -3332,8 +3385,8 @@ def outside_push(c, sha, stale):
                   "pushed to it). Tell the user: to ship them, they bring them into the "
                   f"worktree with `git -C {q(c.wt)} merge --ff-only "
                   f"{q('origin/' + branch)}` and say `auto-dev continue`; the pipeline "
-                  "then re-checks them (quality gate, verifier, review) and asks the "
-                  "main gate again:"), stale], "the PR head moved", retry={},
+                  "then re-checks them (quality gate, verifier, review) before it goes "
+                  "on:"), stale], "the PR head moved", retry={},
                 no_signoff="the pipeline never ships commits it did not check", number=16)
 
 

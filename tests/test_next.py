@@ -4595,6 +4595,75 @@ class OutsidePushTest(NextCase):
         self.assert_never_watched(verified)
 
 
+class MovedHeadTest(NextCase):
+    """More on a PR head pushed outside the run: the CI fold, and the push of
+    the old commit after the new head was recorded as pushed."""
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    published = ShipTest.published
+    github_ci = CiTest.github_ci
+    GREEN = CiTest.GREEN
+    push_outside = HumanAndMainGateTest.push_outside
+    verify_only = HumanAndMainGateTest.verify_only
+    URL = OutsidePushTest.URL
+    FIX = OutsidePushTest.FIX
+    head = OutsidePushTest.head
+    reviewed_with_ci = OutsidePushTest.reviewed_with_ci
+    base_merged_and_pushed = OutsidePushTest.base_merged_and_pushed
+    asks_for_the_re_check = OutsidePushTest.asks_for_the_re_check
+    re_check = OutsidePushTest.re_check
+    asked_push_of = OutsidePushTest.asked_push_of
+    publish_the_new_head = OutsidePushTest.publish_the_new_head
+
+    def setUp(self):
+        self.seen = []
+        super().setUp()
+
+    def next(self, expect=None, refused_ok=False, reissue=False):
+        out = super().next(expect, refused_ok, reissue)
+        self.seen.append(out)
+        return out
+
+    def test_once_an_outside_head_is_marked_pushed_the_old_push_never_comes_back(self):
+        verified = self.reviewed_with_ci()
+        self.assertTrue([o for o in self.seen if self.asked_push_of(o, verified)])
+        merged = self.base_merged_and_pushed()
+        r = self.autodev("mark", "pushed", "--value", merged, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.seen = []  # the setup's own push of `verified` was right
+        self.asks_for_the_re_check(self.next(0))
+        self.re_check()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)
+        out = self.publish_the_new_head(merged, lambda o: "ci-watch" in o.get("ACTION", ""))
+        self.assertIn(merged[:12], out["ACTION"])
+        self.assertFalse([o for o in self.seen if self.asked_push_of(o, verified)],
+                         f"the push of {verified[:12]} was asked for again")
+
+    def test_a_push_from_another_clone_stops_the_ci_fold_before_its_watch(self):
+        self.github_ci()
+        self.draft_pr(extra=self.GREEN)
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(self.FIX)
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("someone pushed", report)
+        self.assertIn("app.ts", report)
+        self.assertIn(f"origin/{branch}", report)
+        self.assertNotIn("ci-watch", json.dumps(out))
+        self.assert_counted(16, "the PR head moved", 6)
+
+
 class ReVoteTest(NextCase):
     ship_ready = ShipTest.ship_ready
     to_body = ShipTest.to_body
