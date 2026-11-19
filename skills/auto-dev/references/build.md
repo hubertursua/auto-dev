@@ -1,7 +1,7 @@
 # Build stage (Phases 4–5)
 
-`autodev.py next` drives the Build stage; the one step it hands you is running
-the quality gate. `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
+`autodev.py next` drives the Build stage; the steps it hands you are in section
+2. `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 ## 1. Enter the worktree
 
@@ -31,11 +31,11 @@ Every stop is exit 4 with its reason in `REPORT`
 (`references/tables.md`, _Stop conditions_), and most ask how to go on
 (`SKILL.md`, _A stop_). The usual ones here:
 
-- the quality gate is still red after the coder's correction, or `next` asked
-  for the gate 3 times on the same code with no run recorded (#9): the user
+- the quality gate is still red after the coder's correction (#9): the user
   fixes it (the fixer, or themselves), retries (_I fixed it myself_ runs the
   gate again), or signs the failing checks off, which counts them green for
-  the rest of the run;
+  the rest of the run. A gate `next` asked for 3 times on the same code with no
+  run recorded is #9 too, with no sign-off offered;
 - the coder stopped a step and the planner found the conditions can't be met
   as written (#8), or the coder stopped a step again after the planner's
   decision (#22).

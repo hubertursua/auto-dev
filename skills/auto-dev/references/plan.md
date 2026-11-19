@@ -69,7 +69,7 @@ the `REPORT`; it says how to go on. A setup command that failed keeps the run:
 once the user fixed the file the `REPORT` names, they say `auto-dev continue`,
 and `next` runs setup again.
 
-Setup adopts a worktree you made (and stops if it has uncommitted changes) and
+Setup adopts a worktree the user made (and stops if it has uncommitted changes) and
 finds the security directives by itself: do neither by hand.
 
 ## Phases 2–3 — Plan and Tests, the loop

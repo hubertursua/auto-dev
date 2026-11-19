@@ -110,8 +110,8 @@ Fields:
 - **`sensitive_paths`** (optional) — globs of files the repo declares
   sensitive: sign-in, session, access-control, payment or secret-handling code
   under a path whose words don't name the area (`src/middleware.ts`). Once the
-  build's quality gate is green, the risk re-check `next` runs makes the run
-  high-risk when a changed file matches one. A glob is matched, case-sensitively, against the path from the repo
+  build's quality gate is green, the risk re-check `next` runs makes the
+  run high-risk when a changed file matches one. A glob is matched, case-sensitively, against the path from the repo
   root: a pattern with no `/` matches a file name at any depth; a pattern with
   a `/` anywhere (leading, inner or trailing) is anchored at the repo root, so
   unlike gitignore `users/` matches only the root `users/` directory (write

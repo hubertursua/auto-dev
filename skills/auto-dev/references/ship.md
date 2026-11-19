@@ -1,8 +1,9 @@
 # Ship stage (Phase 6)
 
 `autodev.py next` drives the Ship stage too, but here it hands you a few steps to do with
-your own tools: writing a commit subject and two PR paragraphs, pushing,
-moving Jira, watching CI after the merge, and the final report. Each is below.
+your own tools: writing a commit subject and the PR body's sections, pushing,
+moving Jira, watching CI after the merge, the final report and the worktree
+question, plus the few in section 2. Each is below.
 `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 ## 1. Enter the worktree
@@ -18,9 +19,10 @@ each worker to spawn, each command to run and each gate to ask. The steps that
 are yours, besides steps 3–9 below:
 
 - **The quality gate**, when a correction runs: `autodev.py quality-gate`, as
-  in the Build stage (`references/build.md`).
-- **`ci-watch`.** Whatever it exits, run its `AFTER` line (`next`). CI that
-  never ran is shown as not monitored, never as green.
+  printed, with the Bash tool's timeout at 600000 ms. Whatever it exits, run
+  its `AFTER` line.
+- **`ci-watch`.** Whatever it exits, run its `AFTER` line (`next`). Never
+  report CI as green when it never ran.
 - **The ready-for-review gate (exit 5).** With pre-existing security findings
   it asks one more question per finding (_What each gate option does_ in
   `references/tables.md`): run the `mark triage-<ID>` line for each answer.
