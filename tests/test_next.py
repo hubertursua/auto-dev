@@ -6550,6 +6550,32 @@ Every changed file.
         self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)
         self.assertEqual(self.next(4)["REPORT"], report)  # the stop as it reads when written
 
+    def test_a_copy_that_cannot_be_written_is_told_before_the_worktree_goes(self):
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        inside = str(self.dir / "metrics.json")
+        out = self.next(5)
+        question = json.dumps(out)
+        self.assertIn("Remove the worktree", question)
+        self.assertIn("the metrics copy could not be written", question)
+        self.assertIn(inside, question)
+        self.assertNotIn("stays at", question)
+        self.after(out, "Remove it")
+        out = self.next(3)
+        self.assertIn("the metrics copy could not be written", out["ACTION"])
+        self.assertIn(inside, out["ACTION"])
+        self.assertIn("cleanup-worktree", out["ACTION"])
+        self.assertNotIn("metrics stay at", out["ACTION"])
+        self.assertTrue((self.dir / "metrics.json").is_file())
+
     def test_the_copy_s_file_name_replaces_unsafe_branch_characters(self):
         state = self.state()
         state["branch"] = "feat/a b+c_d.e"
