@@ -4132,6 +4132,52 @@ class CiTest(NextCase):
         self.assertIn("CI: not monitored (timeout) — never assume green",
                       " ".join(out["SUMMARY"]))
 
+    def no_checks_on_the_draft(self, mergeable):
+        """The reviewed draft with GitHub CI; GitHub says the PR is `mergeable`
+        (CONFLICTING or MERGEABLE) and reports no check on its head, for the
+        next poll only. Returns the draft's commit."""
+        self.github_ci()
+        sha, _ = self.reviewed_pr()
+        responses = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([
+            {"args": ["pr", "view", "12", "--json"], "times": 1,
+             "stdout": json.dumps({"headRefOid": sha, "mergeable": mergeable})},
+            {"args": ["pr", "checks"], "times": 1, "exit": 1,
+             "stderr": "no checks reported on the 'feat/due-dates' branch"},
+            *responses])
+        return sha
+
+    def test_a_conflict_is_named_at_the_ready_gate(self):
+        sha = self.no_checks_on_the_draft("CONFLICTING")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--sha", sha, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertTrue([ln for ln in r.stdout.splitlines() if ln.startswith("CONFLICT:")],
+                        r.stdout + r.stderr)
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        summary = " ".join(out["SUMMARY"])
+        self.assertNotIn("not monitored", summary)
+        line = next((ln for ln in out["SUMMARY"]
+                     if "conflicts with its base" in ln.lower()), None)
+        self.assertIsNotNone(line, summary)
+        self.assertIn("not run", line.lower())
+        self.assertRegex(line, r"\bmain\b")
+
+    def test_no_checks_on_a_draft_that_does_not_conflict_is_not_monitored_at_the_ready_gate(
+            self):
+        sha = self.no_checks_on_the_draft("MERGEABLE")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--sha", sha, "--max-wait", "0", "--grace", "0",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("UNAVAILABLE", r.stdout)
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        summary = " ".join(out["SUMMARY"])
+        self.assertIn("not monitored (unavailable)", summary)
+        self.assertNotIn("conflicts with its base", summary.lower())
+
 
 class HumanAndMainGateTest(NextCase):
     ship_ready = ShipTest.ship_ready
@@ -4292,6 +4338,260 @@ class HumanAndMainGateTest(NextCase):
         second, p = self.recheck(head, branch)  # not "stale twice running"
         self.assertEqual(p["files"], ["app.ts"])
         self.verify_only(second)
+
+
+class OutsidePushTest(NextCase):
+    """A commit on the PR branch that the run did not make, pushed after the
+    run's own push: `next` re-checks it (or stops, when the worktree doesn't
+    have it) before it watches CI, asks for a push or asks the ready gate."""
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    published = ShipTest.published
+    github_ci = CiTest.github_ci
+    GREEN = CiTest.GREEN
+    push_outside = HumanAndMainGateTest.push_outside
+    verify_only = HumanAndMainGateTest.verify_only
+    URL = "https://github.com/acme/app"
+    FIX = "# Required changes\n1. C1: guard the sort in src/sort.ts against a missing due date\n"
+
+    def setUp(self):
+        self.seen = []  # every `next` output, to check what was never asked
+        super().setUp()
+
+    def next(self, expect=None, refused_ok=False, reissue=False):
+        out = super().next(expect, refused_ok, reissue)
+        self.seen.append(out)
+        return out
+
+    def head(self):
+        return self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+
+    def reviewed_with_ci(self):
+        """The draft PR at its pushed, reviewed commit, CI on GitHub and not
+        watched yet. Returns the commit."""
+        self.github_ci()
+        sha, _ = self.reviewed_pr(extra=self.GREEN)
+        return sha
+
+    def base_merged_and_pushed(self):
+        """base.ts lands on main; the user merges main into the worktree by
+        hand and pushes the merge. Returns the merge commit."""
+        base = self.tmp / "base-clone"
+        self.sh("git", "clone", "-q", "-b", "main", str(self.tmp / "origin.git"), str(base))
+        (base / "base.ts").write_text("export const base = 1;\n")
+        self.sh("git", "add", "base.ts", cwd=base)
+        self.sh("git", "commit", "-q", "-m", "add base.ts", cwd=base)
+        self.sh("git", "push", "-q", "origin", "main", cwd=base)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+        self.sh("git", "merge", "-q", "--no-edit", "origin/main", cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        return self.head()
+
+    def asks_for_the_re_check(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertIn("quality-gate", out.get("ACTION", ""), shown)
+        self.assertNotIn("ci-watch", out["ACTION"], shown)
+        self.assertNotIn("push -u origin HEAD", out["ACTION"], shown)
+
+    def re_check(self, review=None, judged="CLEAN", corrections=None):
+        """Run the quality gate the re-check asks for, then its review pass.
+        Returns what the last code reviewer was told to review."""
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.panel(review=review, judged=judged, corrections=corrections)
+        n = max(b["n"] for b in self.state()["briefs"] if b["worker"] == "code-reviewer")
+        return self.sets("code-reviewer", n)
+
+    def watched(self, out, sha):
+        return re.search(rf"ci-watch[^`]*--sha[= ]'?{sha[:12]}", out.get("ACTION", ""))
+
+    def assert_never_watched(self, sha):
+        asked = [o["ACTION"] for o in self.seen if self.watched(o, sha)]
+        self.assertFalse(asked, f"a CI watch on {sha[:12]} was asked for: {asked}")
+
+    def asked_push_of(self, out, sha):
+        return "push -u origin HEAD" in out.get("ACTION", "") and re.search(
+            rf"pushed'?\s+'?--value'?\s+'?{sha[:12]}", " ".join(out.get("AFTER", [])))
+
+    def publish_the_new_head(self, head, until):
+        """Take `next`'s push and description steps for `head` until
+        `until(out)`; returns that output."""
+        self.script_gh(GH_OK + [
+            {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": self.URL})},
+            {"args": ["pr", "view", "12", "--json", "body"],
+             "stdout": json.dumps({"body": self.published()})},
+            {"args": ["pr", "edit"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json", "number,url,body"],
+             "stdout": json.dumps({"number": 12, "url": f"{self.URL}/pull/12",
+                                   "body": f"Checked at commit {head}"})},
+            {"args": ["pr", "view", "12", "--json"],
+             "stdout": json.dumps({"url": f"{self.URL}/pull/12", "isDraft": True,
+                                   "state": "OPEN", "headRefOid": head})},
+            *self.GREEN])
+        for _ in range(8):
+            out = self.next()
+            shown = json.dumps(out, indent=2)
+            self.assertIn(out.get("exit"), (0, 5), shown)
+            if until(out):
+                return out
+            action = out.get("ACTION", "")
+            if "push -u origin HEAD" in action:
+                self.sh("git", "push", "-q", "-u", "origin", "HEAD", cwd=self.worktree)
+                self.after(out)
+            elif "pr publish" in action + " ".join(out.get("AFTER", [])):
+                body = self.dir / "pr-body.md"
+                if body.exists():
+                    body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                                           body.read_text()))
+                write = self.dir / "pr-write.md"
+                if write.exists() and ShipTest.MARK in write.read_text():
+                    sources, mine = write.read_text().split(ShipTest.MARK)
+                    write.write_text(sources + ShipTest.MARK + re.sub(
+                        r"<!-- WRITE: .*?-->", "Todos can carry a due date.", mine))
+                r = self.autodev("pr", "publish", "--dir", self.dir)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            else:
+                self.fail(f"a step other than the push or the description:\n{shown}")
+        self.fail("the push and the description never settled")
+
+    def corrected_and_committed(self):
+        """The draft at its pushed commit, CI on GitHub and green there; the
+        review's must-fix is corrected, re-reviewed and committed, not pushed.
+        Returns (the pushed commit, the new commit)."""
+        self.github_ci()
+        pushed, _ = self.draft_pr(extra=self.GREEN)
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(self.FIX)
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.review_clean()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "fix: guard the sort", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        corrected = self.head()
+        self.assertNotEqual(corrected, pushed)
+        return pushed, corrected
+
+    def test_a_base_merge_pushed_from_the_worktree_is_re_checked_not_waited_on(self):
+        verified = self.reviewed_with_ci()
+        merged = self.base_merged_and_pushed()
+        self.asks_for_the_re_check(self.next(0))
+        sets = self.re_check()
+        self.assertEqual(sets["scope"], "outside")
+        self.assertIn("base.ts", sets["files"])
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)  # COMMITTED: the merge commit, no new commit
+        out = self.publish_the_new_head(merged, lambda o: "ci-watch" in o.get("ACTION", ""))
+        self.assertTrue(self.watched(out, merged), out["ACTION"])
+        self.assert_never_watched(verified)
+
+    def test_a_finding_in_the_re_check_goes_to_the_coder_without_a_ci_watch(self):
+        verified = self.reviewed_with_ci()
+        self.base_merged_and_pushed()
+        self.asks_for_the_re_check(self.next(0))
+        self.re_check(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        out, _ = self.expect("coder")
+        self.assertNotIn("ci-watch", out.get("ACTION", ""))
+        self.assert_never_watched(verified)
+
+    def test_the_run_s_own_tests_commit_not_pushed_starts_no_re_check(self):
+        verified = self.reviewed_with_ci()
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        self.assertNotEqual(self.head(), verified)
+        out = self.next(0)
+        self.assertTrue(self.watched(out, verified), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_the_run_s_own_verified_commit_not_pushed_is_pushed_not_re_checked(self):
+        self.corrected_and_committed()
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("push -u origin HEAD", out.get("ACTION", ""), shown)
+        self.assertNotIn("quality-gate", out["ACTION"], shown)
+        self.assertNotIn("REPORT", out)
+
+    def test_a_pushed_mark_for_a_head_the_run_did_not_make_does_not_loop(self):
+        verified = self.reviewed_with_ci()
+        merged = self.base_merged_and_pushed()
+        r = self.autodev("mark", "pushed", "--value", merged, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.asks_for_the_re_check(self.next(0))
+        self.re_check()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)
+        self.publish_the_new_head(merged, lambda o: "ci-watch" in o.get("ACTION", ""))
+        self.assertFalse([o for o in self.seen if self.asked_push_of(o, verified)],
+                         f"the push of {verified[:12]} was asked for again")
+
+    def test_a_push_the_run_still_owes_is_asked_for_with_its_own_commit(self):
+        _, corrected = self.corrected_and_committed()
+        out = self.next(0)  # the PR branch is behind the new commit
+        self.assertTrue(self.asked_push_of(out, corrected), json.dumps(out, indent=2))
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        out = self.next(0)  # pushed, not recorded: the PR branch is at it
+        self.assertTrue(self.asked_push_of(out, corrected), json.dumps(out, indent=2))
+
+    def test_without_ci_a_head_pushed_after_the_review_is_re_checked_before_the_ready_gate(
+            self):
+        self.reviewed_pr()
+        (self.worktree / "app.ts").write_text("export const one = 2;\n")
+        self.sh("git", "commit", "-q", "-am", "tweak app.ts", cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        pushed = self.head()
+        self.asks_for_the_re_check(self.next())
+        self.re_check()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(pushed)  # COMMITTED: the pushed commit, not "nothing to commit"
+        out = self.publish_the_new_head(pushed, lambda o: o.get("exit") == 5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertFalse([o for o in self.seen if o.get("exit") == 4])
+
+    def test_without_ci_and_nothing_pushed_the_ready_gate_is_asked(self):
+        self.reviewed_pr()
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def test_a_push_from_another_clone_stops_before_any_ci_watch(self):
+        verified = self.reviewed_with_ci()
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("someone pushed", report)
+        self.assertIn("app.ts", report)
+        self.assertRegex(report, rf"git -C '?{re.escape(str(self.worktree))}'? merge "
+                                 rf"--ff-only '?origin/{re.escape(branch)}")
+        self.assertNotIn("ci-watch", json.dumps(out))
+        self.assert_counted(16, "the PR head moved", 6)
+        self.assert_never_watched(verified)
+
+    def test_an_outside_push_brought_in_as_the_stop_says_is_re_checked(self):
+        verified = self.reviewed_with_ci()
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        self.next(4)
+        self.sh("git", "-C", str(self.worktree), "merge", "-q", "--ff-only",
+                f"origin/{branch}")
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+        self.assert_never_watched(verified)
 
 
 class ReVoteTest(NextCase):
