@@ -36,8 +36,11 @@ see in the Ship stage, in order:
    test without doing what the condition asks.
    What the pass leaves open (the verifier's items, must-fix findings, a
    confirmed security finding) runs **one correction, one round**. First,
-   with CI configured, `next` has CI settle on the pushed commit (`ci-watch`):
-   red CI the `triager` puts on the code joins the same correction. The
+   with CI configured, `next` has CI settle on the pushed commit (`ci-watch
+   --sha <the pushed commit>`, named even when an unpushed tests commit sits on
+   top of it): red CI the `triager` puts on the code joins the same correction.
+   A watch that reported on another commit since that commit was made (one run
+   without `--sha`) stops the run (#23) rather than waiting forever. The
    correction is the `coder` (a finding that an acceptance check is wrong goes
    to the `acceptance-tester` in repair mode first, on the same round; it
    repairs the check, or answers `STANDS`, which stops the run and asks the

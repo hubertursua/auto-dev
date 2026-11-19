@@ -14,10 +14,12 @@ the user's words, is stored as the run's ask: the planner gets it when there
 is no ticket text, and a later --task naming it finds the run (here and in
 `resume`) as the task text does. It prints one step at a time, in the same
 shape as below: the lookup to spawn for a saved profile (whether
-each gate check's tool is adopted: a check whose tool the repo never adopted
-is left out of this run and the user is told), or the profiler to spawn when
-there is no usable profile, then the profile question (exit 5: its AFTER
-lines run `autodev.py setup-answer`); then it creates the worktree, branch and
+each gate check's tool is adopted; when it finds one not adopted, the
+gate-check question, exit 5: keep the checks, leave them out of this run, or
+stop; when the repo's `.auto-dev.yml` sets `gate`, its gate replaces the
+saved one: no lookup, no question), or the profiler to spawn when there is
+no usable profile, then the profile question (exit 5); each question's AFTER lines run `autodev.py
+setup-answer`; then it creates the worktree, branch and
 run (`autodev.py init`, setup waited on for at most --max-wait seconds,
 default 90) and says to move into the worktree, with `next --dir` as AFTER. A
 `.auto-dev.yml` that sets both `setup` and `gate` needs no research. Run it
@@ -1547,11 +1549,13 @@ def phase4(c):
     return result
 
 # The risk tier is re-checked from the diff once the quality gate is green
-# (the end of Phase 5), before anything is pushed or reviewed: a path that names a sensitive area,
-# or a large change, makes the run high-risk. The tier never goes down. A path
-# is split into whole words, at non-alphanumerics and camelCase humps
-# (`UserAuth.ts` is user, auth, ts; `author.ts` is author, ts), and each word
-# is looked up in SENSITIVE_WORDS. Lock files are left out of the line count.
+# (the end of Phase 5), before anything is pushed or reviewed: a path that names a
+# sensitive area or matches a glob the repo declares sensitive (settings'
+# sensitive_paths), a sensitive word on a line the build adds, or a large change
+# makes the run high-risk. The tier never goes down. A path or an added line is
+# split into whole words, at non-alphanumerics and camelCase humps (`UserAuth.ts`
+# is user, auth, ts; `author.ts` is author, ts), and each word is looked up in
+# SENSITIVE_WORDS. Lock files are left out of the line count and the word scan.
 SENSITIVE_WORDS = frozenset((
     "auth", "authn", "authz", "authentication", "authorization", "login", "logout",
     "signin", "signup", "session", "sessions", "password", "passwords", "passwd",
@@ -1568,12 +1572,21 @@ def risk_recheck(c):
     """Re-check the tier from the build's diff, once (state's risk_recheck)."""
     if "risk_recheck" in c.state or c.readonly:
         return  # --explain shows the step after it; the next `next` re-checks
-    paths, lines = build_diff(c)
+    paths, lines, added = build_diff(c)
+    # .get: a run started before 5.1 has no sensitive_paths in its settings.
+    declared = [glob_regex(g) for g in c.state["settings"].get("sensitive_paths") or []
+                if isinstance(g, str) and g.strip("/")]
     why = []
-    sensitive = [p for p in paths if sensitive_path(p)]
+    sensitive = [p for p in paths if sensitive_path(p) or declared_path(p, declared)]
     if sensitive:
-        why.append("it touches " + ", ".join(sensitive[:5])
+        why.append("it touches " + ", ".join(printable(p) for p in sensitive[:5])
                    + (f" and {len(sensitive) - 5} more" if len(sensitive) > 5 else ""))
+    hits = [(p, sorted(words)[:3]) for p, words in sorted(added.items())
+            if words and p not in sensitive]
+    if hits:
+        why.append("it adds lines naming a sensitive area: "
+                   + ", ".join(f"{printable(p)} ({', '.join(w)})" for p, w in hits[:5])
+                   + (f" and {len(hits) - 5} more" if len(hits) > 5 else ""))
     if len(paths) > LARGE_FILES or lines > LARGE_LINES:
         why.append(f"it is large ({len(paths)} files, {lines} lines changed)")
     c.state["risk_recheck"] = {"seq": c.seq(), "high": bool(why), "why": why,
@@ -1582,6 +1595,12 @@ def risk_recheck(c):
         c.state["high_risk"] = True
         st.add_note(c.state, "risk raised to high after the build: " + "; ".join(why))
     c.dirty = True
+
+
+def printable(path):
+    """`path` as text the ledger can write: a byte that isn't UTF-8 (read with
+    surrogateescape) shows as `\\xe9`, so state.json and WORK_LOG.md save."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
 
 
 def path_words(path):
@@ -1601,16 +1620,127 @@ def lock_file(path):
     return bool(LOCK_FILE_RE.search(Path(path).name))
 
 
+def glob_regex(pattern):
+    """A declared glob as a regex to fullmatch against a repo path. A pattern
+    with a `/` anywhere is anchored at the repo root (a trailing `/` means
+    everything under it); one without matches a file name at any depth. `*` and
+    `?` stop at `/`; a whole `**` segment spans any number of folders, none
+    included. Anything else, `[` included, is literal."""
+    anchored = "/" in pattern
+    body = pattern.lstrip("/")
+    if body.endswith("/"):
+        body += "**"
+    segments = body.split("/")
+    out = []
+    for i, seg in enumerate(segments):
+        last = i == len(segments) - 1
+        if seg == "**":
+            out.append(".*" if last else "(?:[^/]+/)*")
+            continue
+        out.append("".join("[^/]*" if ch == "*" else "[^/]" if ch == "?"
+                           else re.escape(ch) for ch in seg))
+        if not last:
+            out.append("/")
+    return re.compile(("" if anchored else "(?:.*/)?") + "".join(out), re.DOTALL)
+
+
+def declared_path(path, regexes):
+    return any(r.fullmatch(path) for r in regexes)
+
+
+GIT_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13,
+               '"': 34, "\\": 92}
+
+
+def diff_name(text):
+    """The path in a `+++ b/<path>` header, as `git status` names it: one
+    trailing tab dropped (git adds it after a name holding a space), and a
+    C-quoted name unquoted. None for `/dev/null` (a deletion)."""
+    if text.endswith("\t"):
+        text = text[:-1]
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        raw, body, i = bytearray(), text[1:-1], 0
+        while i < len(body):
+            ch = body[i]
+            if ch == "\\" and i + 1 < len(body):
+                nxt = body[i + 1]
+                if re.fullmatch(r"[0-7]{3}", body[i + 1:i + 4]):
+                    raw.append(int(body[i + 1:i + 4], 8) & 0xFF)
+                    i += 4
+                    continue
+                if nxt in GIT_ESCAPES:
+                    raw.append(GIT_ESCAPES[nxt])
+                    i += 2
+                    continue
+            raw += ch.encode("utf-8", "surrogateescape")
+            i += 1
+        text = raw.decode("utf-8", "surrogateescape")
+    if text == "/dev/null" or not text.startswith("b/"):
+        return None
+    return text[2:]
+
+
+def line_words(line):
+    return {w for w in path_words(line) if w in SENSITIVE_WORDS}
+
+
+def added_words(c, base, untracked):
+    """{path: the SENSITIVE_WORDS on the lines the build adds}: the `+` lines of
+    the diff from `base` to the working tree, and every line of an untracked
+    file. Lock files, binary files and .auto-dev/ are left out."""
+    def counted(p):
+        return p and not p.startswith(".auto-dev/") and not lock_file(p)
+
+    found = {}
+    # The prefixes, colour, quoting, renames and submodule format are pinned, so
+    # the user's diff config (diff.noprefix, diff.mnemonicPrefix, diff.renames,
+    # diff.submodule) can't change the headers and lines parsed here. A moved
+    # file's lines count as added, as an untracked move's do.
+    code, text, _ = git(c.wt, "-c", "core.quotePath=false", "diff", "-U0", "--no-color",
+                        "--no-ext-diff", "--no-textconv", "--no-renames",
+                        "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
+                        base or "HEAD", check=False, errors="surrogateescape")
+    current, in_hunk = None, False
+    for line in (text.split("\n") if code == 0 else ()):
+        if line.startswith("diff --git "):
+            current, in_hunk = None, False
+        elif not in_hunk and line.startswith("+++ "):
+            name = diff_name(line[4:])
+            current = name if counted(name) else None
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and current and line.startswith("+"):
+            found.setdefault(current, set()).update(line_words(line[1:]))
+    for p in untracked:
+        if not counted(p):
+            continue
+        try:
+            body = (Path(c.wt) / p).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "\0" in body:
+            continue  # binary
+        words = set()
+        for line in body.splitlines():
+            words |= line_words(line)
+        found[p] = words
+    return found
+
+
 def build_diff(c):
-    """(changed paths outside .auto-dev/, lines changed) between the branch's
-    merge base and the working tree, untracked files included."""
+    """(changed paths outside .auto-dev/, lines changed, {path: the sensitive
+    words on its added lines}) between the branch's merge base and the working
+    tree, untracked files included."""
     def out(*args):
-        code, text, _ = git(c.wt, *args, check=False)
+        code, text, _ = git(c.wt, *args, check=False, errors="surrogateescape")
         return text if code == 0 else ""
 
+    # Names are read NUL-separated and unquoted, as `changed_paths` reads them,
+    # so a name git quotes (non-ASCII, `"`, `\`) is the same string everywhere.
     add, remove = changed_paths(c.wt)
     base = out("merge-base", c.state["repo"]["base"], "HEAD").strip()
-    committed = out("diff", "--name-only", f"{base}..HEAD").splitlines() if base else []
+    committed = out("-c", "core.quotePath=false", "diff", "--name-only", "-z",
+                    "--no-renames", f"{base}..HEAD").split("\0") if base else []
     paths = sorted({p for p in add + remove + committed
                     if p and not p.startswith(".auto-dev/")})
     lines = 0
@@ -1619,7 +1749,7 @@ def build_diff(c):
         if len(cells) == 3 and not cells[2].startswith(".auto-dev/") and \
                 not lock_file(cells[2]):
             lines += sum(int(n) for n in cells[:2] if n.isdigit())
-    tracked = set(out("ls-files").splitlines())
+    tracked = set(out("ls-files", "-z").split("\0"))
     for p in add:
         if p not in tracked and not lock_file(p):
             try:
@@ -1627,7 +1757,7 @@ def build_diff(c):
                                                           errors="replace").splitlines())
             except OSError:
                 pass
-    return paths, lines
+    return paths, lines, added_words(c, base, [p for p in add if p not in tracked])
 
 
 # ---------------------------------------------------------------- the change loop
@@ -2455,7 +2585,7 @@ def ci_fold(c):
     ci = c.p6.get("ci") or {}
     if ci.get("sha") != sha or ci.get("status") == "pending":
         return ci_watch(c, "findings are open: CI settles on the pushed commit first, so "
-                        "one correction takes red CI too"), None
+                        "one correction takes red CI too", sha), None
     if ci.get("status") != "red":
         return None, None
     triage = c.last("triager", after=ci["seq"], mode="ci")
@@ -2777,7 +2907,8 @@ def ship_step(c, sha):
     if c.state["settings"].get("ci", "none") != "none" and \
             (p6.get("ci") or {}).get("seq", 0) < ready["seq"]:
         # Workflows that skip drafts run only now: watch CI once more.
-        return ci_watch(c, "the PR was marked ready: workflows that skip drafts run now")
+        return ci_watch(c, "the PR was marked ready: workflows that skip drafts run now",
+                        sha)
     ci = ci_step(c, sha)
     if ci is not None:
         return ci
@@ -2935,8 +3066,24 @@ def write_body(c, body, rule, refused=None):
                                  if refused else ""), rule, AFTER=[c.cmd("pr", "publish")])
 
 
-def ci_watch(c, rule):
-    return action(f"watch CI: run `{c.cmd('ci-watch')}` (it waits up to 9 minutes), "
+def ci_watch(c, rule, sha=None):
+    """Watch CI on `sha`, the pushed commit, named so that a tests commit made
+    on top of it (and not pushed) doesn't stand in for it. A watch run since
+    `sha` was committed (and since the last resume or retry) that reported on
+    another commit stops the run, rather than asking for a watch that would
+    never settle on `sha`."""
+    ci = c.p6.get("ci") or {}
+    other = ci.get("sha")
+    if sha and other and other != sha and \
+            ci.get("seq", 0) > max(c.p6.get("commit_seq", 0), c.resumed()):
+        return stop([(f"CI is to settle on the pushed commit {sha[:12]}, but `ci-watch` "
+                      f"reported on {other[:12]} instead, so CI never reported on "
+                      f"{sha[:12]}. Tell the user; `auto-dev continue` watches "
+                      f"{sha[:12]} again.")],
+                    "CI reported on another commit", retry={"lift": True},
+                    no_signoff="CI never reported on the commit that ships")
+    watch = c.cmd("ci-watch", "--sha", sha) if sha else c.cmd("ci-watch")
+    return action(f"watch CI: run `{watch}` (it waits up to 9 minutes), "
                   "then run AFTER whatever it exits: `next` asks for another watch "
                   "while CI is still pending", rule, AFTER=[c.cmd("next")])
 
@@ -2948,7 +3095,7 @@ def ci_step(c, sha):
     rewatch = c.resumed() > ci.get("seq", 0)
     if ci.get("sha") != sha or ci.get("status") == "pending" or (rewatch and \
             ci.get("status") != "green"):
-        return ci_watch(c, "CI has not settled on the pushed commit")
+        return ci_watch(c, "CI has not settled on the pushed commit", sha)
     if ci["status"] != "red":
         return None  # green, timeout or unavailable: the main gate says which
     triage = c.last("triager", after=ci["seq"], mode="ci")

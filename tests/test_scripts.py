@@ -826,6 +826,33 @@ class ValidateConfigTest(unittest.TestCase):
         r = self.validate(self.PROFILE)
         self.assertNotIn("no longer selects", r.stdout)
 
+    SENSITIVE = 'sensitive_paths: ["src/middleware.ts", "src/users/**"]\n'
+
+    def test_sensitive_paths_are_accepted_in_a_profile_and_an_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "web-app.yml"
+            path.write_text(self.PROFILE + self.SENSITIVE)
+            r = run("validate-config.py", "--profile", path)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn(f"VALID: {path} is a profile with gate, sensitive_paths, "
+                          "setup, stack.", r.stdout)
+        r = self.validate(self.SENSITIVE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("VALID", r.stdout)
+
+    def test_sensitive_paths_must_be_a_list_of_strings(self):
+        r = self.validate('sensitive_paths: "src/middleware.ts"\n')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("ERROR    sensitive_paths: expected a list, got a string", r.stderr)
+        r = self.validate("sensitive_paths: [3]\n")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("sensitive_paths[0]", r.stderr)
+
+    def test_a_misspelled_sensitive_paths_key_suggests_the_right_one(self):
+        r = self.validate('sensitive_path: ["src/middleware.ts"]\n')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("did you mean `sensitive_paths`", r.stderr)
+
 
 class ProfilePathTest(GitRepoCase):
     def setUp(self):

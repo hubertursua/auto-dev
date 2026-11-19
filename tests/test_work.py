@@ -300,6 +300,28 @@ class BriefTest(WorkCase):
         self.assertEqual(values["result_file"], str(out.resolve() / "lookup-1.json"))
         self.assertEqual(values["worktree"], str(self.repo))
 
+    def test_the_test_command_is_the_test_check_with_a_scoped_form(self):
+        state = self.state()
+        state["settings"]["gate"] = [
+            {"kind": "test", "command": "repo-check", "report": "CHECKS.md"},
+            {"kind": "test", "command": "unit-tests", "report": "TEST.md",
+             "files": "unit-tests <files>"}]
+        self.write_state(state)
+        r = self.cmd("brief", "coder", "--mode", "build")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "coder-1.md")
+        self.assertEqual(values["test_command"], "unit-tests")
+
+    def test_the_test_command_of_a_single_unscoped_test_check_is_its_command(self):
+        state = self.state()
+        state["settings"]["gate"] = [
+            {"kind": "test", "command": "npm test", "report": "TEST.md"}]
+        self.write_state(state)
+        r = self.cmd("brief", "coder", "--mode", "build")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        values = self.brief_values(self.dir / "briefs" / "coder-1.md")
+        self.assertEqual(values["test_command"], "npm test")
+
 
 class RecordTest(WorkCase):
     def test_the_planner_s_size_and_risk_are_recorded_and_checked_against_the_plan(self):

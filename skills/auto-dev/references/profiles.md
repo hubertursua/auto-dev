@@ -21,8 +21,12 @@ any clone or worktree of the same repo find it.
 `autodev.py next --repo` finds, researches and confirms the profile
 (`references/plan.md`, step 2): it runs `profile-path.py` and
 `validate-config.py` itself, asks a lookup whether a saved profile's gate tools
-are adopted, spawns the profiler when there is no usable profile, asks the user
-the profile question and writes the saved file on their `save` answer. `autodev.py
+are adopted and, when one is not, asks the user the gate-check question (keep the
+checks, leave them out of this run, or stop) before the run exists (when the
+repo's `.auto-dev.yml` sets `gate`, its gate replaces the saved one: no lookup,
+no question), spawns the profiler when there is no usable profile, asks the user the profile question and
+writes the saved file on their `save` answer. A saved profile is never edited to
+leave a check out: the run gets its own copy without it. `autodev.py
 init`, which it runs, then validates the profile, applies `.auto-dev.yml` over it,
 refuses a quality gate with no test command, and writes `.auto-dev/profile.md`.
 
@@ -66,6 +70,9 @@ test_notes: "…"
 symbol_lookup:
   definition: "<index-tool> definition <symbol>"
   references: "<index-tool> references <symbol>"
+# Optional: globs of files that hold sensitive code under paths that don't say so.
+# The risk re-check after the build treats a changed file matching one as sensitive.
+sensitive_paths: ["src/middleware.ts", "src/users/**"]
 # Optional: the CI provider Phase 6 watches (github-actions|circleci|gitlab|none).
 ci: github-actions
 ```
@@ -81,9 +88,12 @@ Fields:
   same check run on only some files, with `<files>` where the paths go (quoted,
   relative to the worktree). Workers run a check through `autodev.py run gate
   <n>` (the test check: `run test`), which runs `command` in the worktree, or
-  `files` with `--files <path> …`. The test check's `files` form must name every
-  test it runs and its result, since a base run and the verifier's acceptance
-  run read the names. Without a `files` form a check only runs whole: a
+  `files` with `--files <path> …`. When the gate has several test checks,
+  `run test`, the verifier's acceptance run and its mutation run use the first
+  one with a `files` form (else the first test check), so give that form to
+  the check that runs the test files. The test check's `files` form must name
+  every test it runs and its result, since a base run and the verifier's
+  acceptance run read the names. Without a `files` form a check only runs whole: a
   worker that wanted it scoped runs it whole and reads the lines about its
   files.
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
@@ -97,6 +107,20 @@ Fields:
   the tool is on PATH; otherwise, or when the profile has none, `profile.md`
   records `grep -n`. A code index answers with less noise than grep, which
   keeps the worker's answers short.
+- **`sensitive_paths`** (optional) — globs of files the repo declares
+  sensitive: sign-in, session, access-control, payment or secret-handling code
+  under a path whose words don't name the area (`src/middleware.ts`). Once the
+  build's quality gate is green, the risk re-check
+  (`references/build.md`) makes the run high-risk when a changed file matches
+  one. A glob is matched, case-sensitively, against the path from the repo
+  root: a pattern with no `/` matches a file name at any depth; a pattern with
+  a `/` anywhere (leading, inner or trailing) is anchored at the repo root, so
+  unlike gitignore `users/` matches only the root `users/` directory (write
+  `**/users/` for any depth); a trailing `/` means everything under it; `*` and
+  `?` never cross a `/`; a whole `**` segment spans any number of folders, none
+  included. There are no character classes, braces or `!` negation (a `[` is
+  literal). The profiler proposes them; a glob that matches no file yet is not
+  an error. A list in `.auto-dev.yml` replaces the profile's whole list.
 - **`ci`** (optional) — the CI provider. When absent, Phase 1 reads the repo's CI
   config to find it.
 
@@ -261,6 +285,7 @@ worktree_files: [".env"]      # gitignored files to seed the run's worktree with
 symbol_lookup:                # code-index commands instead of grep; <symbol> is the name
   definition: "<index-tool> definition <symbol>"
   references: "<index-tool> references <symbol>"
+sensitive_paths: ["src/middleware.ts"]  # files the risk re-check treats as sensitive; replaces the profile's list
 security_docs:                # the security directives every worker must obey, used
   - "SECURITY.md"             # instead of the repo defaults; [] turns them off, and
   - "docs/security/authz.md"  # a listed path that doesn't exist is dropped with a warning

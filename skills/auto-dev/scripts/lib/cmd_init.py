@@ -23,7 +23,8 @@ verbatim as its task (without it, the planner gets --ask, else --task).
 `--note` records a decision in the new run's WORK_LOG.md (repeatable), as
 `autodev.py note` would. `--profile-origin` names a JSON file saying where the
 profile came from, `{"kind": "saved", "path": <saved file>, "dropped":
-[{"n": <check number>, "command": <command>}]}`, `{"kind": "draft"}` or
+[{"n": <check number>, "command": <command>}], "kept": [same]}` (the checks
+the user left out or kept at the gate-check question), `{"kind": "draft"}` or
 `{"kind": "override"}`; it is kept as `.auto-dev/profile-origin.json`, so a
 failed setup is retried from the same profile (for kind `draft`, `--profile`
 is kept as `.auto-dev/profile.yml`, the file to fix).
@@ -390,6 +391,8 @@ def create_run(repo, worktree, branch, config, args, base, prefix, seed_from=Non
         "test_notes": config.get("test_notes", ""),
         "setup": config.get("setup", []),
         "gate": config.get("gate", []),
+        # Globs the risk re-check treats as sensitive (5.1); [] when none.
+        "sensitive_paths": list(config.get("sensitive_paths") or []),
     }
     task = {"text": args.task, "ticket": args.ticket or "none",
             "ticket_url": args.ticket_url or "", "ask": args.ask or args.task}
@@ -560,6 +563,11 @@ def symbol_lookup(config):
     return f"`{definition}` / `{lookup.get('references', '')}`"
 
 
+def sensitive_paths_text(settings):
+    globs = settings.get("sensitive_paths") or []
+    return ", ".join(f"`{g}`" for g in globs) or "none declared"
+
+
 def security_line(docs, missing_docs, config, args):
     if docs:
         text = ", ".join(docs)
@@ -593,6 +601,7 @@ def render_profile(state, config, args, seeded, missing, missing_docs=()):
         f"- **Mutation cap:** {mutation}",
         f"- **Worktree files seeded:** {seeded_text}",
         f"- **Symbol lookup:** {symbol_lookup(config)}",
+        f"- **Sensitive paths:** {sensitive_paths_text(s)}",
         f"- **`.auto-dev.yml`:** {override}",
         f"- **Post-plan gate:** {'on — gates.post_plan' if s['post_plan_gate'] else 'off'}",
         f"- **Open-the-PR gate:** {'on — gates.open_pr' if s.get('open_pr_gate') else 'off'}",

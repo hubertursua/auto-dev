@@ -25,9 +25,10 @@ prep
        evidence/tree-start.txt.
     4. The change set: untracked files are marked intent-to-add, and `git diff
        <cut>` is saved to evidence/changes.diff.
-    5. The acceptance run: the profile's test command, scoped to the files that
-       hold the checks when the test check has a `files` form (`autodev.py run
-       test`), saved to evidence/acceptance.txt; it gets what is left of 570
+    5. The acceptance run: the profile's test check (the first `kind: test`
+       check with a `files` form, else the first; `autodev.py run test`),
+       scoped to the files that hold the checks when it has a `files` form,
+       saved to evidence/acceptance.txt; it gets what is left of 570
        seconds after the wait in 1, at least 60, and is stopped past that.
     6. For each PLAN.md condition with acceptance checks, evidence/C<n>.txt:
        Expected, Command and Result lines and the lines of the run's output
@@ -36,8 +37,10 @@ prep
        The verifier adds a group for each run of its own after it.
     Prints one token, then `key: value` lines:
       PREPARED: <what ran> — then `tree:`, `integrity:`, `changes:`,
-                 `acceptance:`, `evidence:` and one `unnamed:` line per check
-                 MANIFEST.md lists that no line of the run's output names
+                 `acceptance:`, a `warning:` line when the run finished and no
+                 line of its output names any check MANIFEST.md lists,
+                 `evidence:` and one `unnamed:` line per check MANIFEST.md
+                 lists that no line of the run's output names
       MUTATION_LEFT_CHANGES: `mutate.py --restore` could not put a file back
                  — its output follows
       STILL_RUNNING: an earlier mutation run is still alive after --wait
@@ -274,6 +277,10 @@ def prep(args):
     named = {pair for who in owners.values() for pair in who}
     unnamed = [f"{cid}: {name}" for cid, ns in names.items() for name in ns
                if name and (name, cid) not in named]
+    listed = sum(1 for ns in names.values() for name in ns if name)
+    warning = (f"the acceptance run's output names none of the {listed} checks "
+               f"MANIFEST.md lists, so `{command}` may not run them: run them yourself"
+               if code is not None and listed and len(unnamed) == listed else None)
     how = ran(code, budget)
     emit(args.json, "PREPARED",
          f"audit exit {audit_code}, acceptance run {how}",
@@ -284,7 +291,7 @@ def prep(args):
                      + (f" in {seconds:g}s" if code is not None else "")
                      + ("" if scoped else " (the whole suite: the test check has no "
                                           "scoped form)")),
-         evidence=", ".join(written) or "none", unnamed=unnamed)
+         warning=warning, evidence=", ".join(written) or "none", unnamed=unnamed)
     return OK
 
 

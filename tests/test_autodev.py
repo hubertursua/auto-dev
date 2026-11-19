@@ -417,6 +417,33 @@ class InitTest(RunCase):
                          "--task", "x", "--profile", self.profile)
         self.assertEqual(r.returncode, 2)
 
+    def test_declared_sensitive_paths_reach_profile_md_and_the_settings(self):
+        self.profile.write_text(
+            PROFILE + 'sensitive_paths: ["src/middleware.ts", "src/users/**"]\n')
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Sensitive paths:** `src/middleware.ts`, `src/users/**`\n",
+                      (self.dir / "profile.md").read_text())
+        self.assertEqual(self.state()["settings"]["sensitive_paths"],
+                         ["src/middleware.ts", "src/users/**"])
+
+    def test_the_override_s_sensitive_paths_replace_the_profile_s(self):
+        self.profile.write_text(
+            PROFILE + 'sensitive_paths: ["src/middleware.ts", "src/users/**"]\n')
+        (self.repo / ".auto-dev.yml").write_text('sensitive_paths: ["api/guard.ts"]\n')
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Sensitive paths:** `api/guard.ts`\n",
+                      (self.dir / "profile.md").read_text())
+        self.assertEqual(self.state()["settings"]["sensitive_paths"], ["api/guard.ts"])
+
+    def test_a_profile_without_sensitive_paths_reads_none_declared(self):
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Sensitive paths:** none declared\n",
+                      (self.dir / "profile.md").read_text())
+        self.assertEqual(self.state()["settings"]["sensitive_paths"], [])
+
 
 class ResumeTest(RunCase):
     def resume(self, *extra):
@@ -1091,6 +1118,67 @@ class ShipTest(RunCase):
         self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}],
                     head="f" * 40)
         self.assertNotIn("GREEN", self.watch("--max-wait", "0").stdout)
+
+    def test_ci_watch_sha_watches_that_commit_not_head(self):
+        self.set_settings(ci="github-actions")
+        pushed = self.git("rev-parse", "HEAD").strip()
+        (self.worktree / "local.ts").write_text("export const local = 1;\n")
+        self.git("add", "local.ts")
+        self.git("commit", "-q", "-m", "test: a local commit on top")
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}],
+                    head=pushed)
+        r = self.watch("--max-wait", "0")  # the local HEAD: not the PR's head yet
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("PENDING", r.stdout)
+        r = self.watch("--max-wait", "0", "--sha", pushed[:12])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"GREEN: all checks passed on {pushed[:12]}", r.stdout)
+        ci = self.state()["phase6"]["ci"]
+        self.assertEqual((ci["sha"], ci["status"]), (pushed, "green"))
+
+    def test_ci_watch_sha_naming_no_commit_cannot_run(self):
+        self.set_settings(ci="github-actions")
+        head = self.git("rev-parse", "HEAD").strip()
+        state = self.state()
+        state["phase6"]["ci"] = {"sha": head, "status": "green", "failing": [], "seq": 1}
+        self.write_state(state)
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}])
+        for sha in ("0" * 40, "no-such-commit", "--all", "--since=yesterday"):
+            with self.subTest(sha=sha):
+                r = self.watch("--max-wait", "0", f"--sha={sha}")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("names no commit", r.stdout + r.stderr)
+                self.assertEqual(self.state()["phase6"]["ci"], state["phase6"]["ci"])
+        self.set_settings(ci="gitlab")
+        r = self.watch("--max-wait", "0", "--sha", "0" * 40)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.watch("--max-wait", "0", "--sha", head[:12])
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.state()["phase6"]["ci"]["sha"], head)
+
+    def test_ci_watch_sha_on_gitlab_records_that_commit_not_head(self):
+        self.set_settings(ci="gitlab")
+        pushed = self.git("rev-parse", "HEAD").strip()
+        (self.worktree / "local.ts").write_text("export const local = 1;\n")
+        self.git("add", "local.ts")
+        self.git("commit", "-q", "-m", "test: a local commit on top")
+        head = self.git("rev-parse", "HEAD").strip()
+        r = self.watch("--max-wait", "0", "--sha", pushed[:12])
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.state()["phase6"]["ci"]["sha"], pushed)
+        self.assertNotEqual(pushed, head)
+
+    def test_ci_watch_sha_on_another_pr_head_names_the_watched_commit(self):
+        self.set_settings(ci="github-actions")
+        watched = self.git("rev-parse", "HEAD").strip()
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}],
+                    head="f" * 40)
+        r = self.watch("--max-wait", "0", "--grace", "0", "--sha", watched[:12])
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        line = next(ln for ln in r.stdout.splitlines() if ln.startswith("UNAVAILABLE"))
+        self.assertIn(f"the PR's head is ffffffffffff, not the watched commit {watched[:12]}",
+                      line)
+        self.assertNotIn("local HEAD", line)
 
     def test_ci_timeout_holds(self):
         self.set_settings(ci="github-actions", ci_timeout=0)
@@ -2470,6 +2558,39 @@ class RunCommandTest(unittest.TestCase):
         r = self.run_("test")
         self.assertEqual(r.returncode, 2)
 
+    def test_test_runs_the_first_test_check_with_a_scoped_form(self):
+        py = shlex.quote(sys.executable)
+        echo = f"{py} -c 'import os, sys; print(os.getcwd()); print(sys.argv[1:])'"
+        gate = [{"kind": "lint", "command": f"{echo} lint", "report": "LINT.md"},
+                {"kind": "test", "command": f"{echo} repo", "report": "CHECKS.md"},
+                {"kind": "test", "command": f"{echo} all", "report": "TEST.md",
+                 "files": f"{echo} some <files> --verbose"}]
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": gate}}))
+        r = self.run_("test", "--files", "src/c.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PASSED"), r.stdout)
+        self.assertIn("['some', 'src/c.test.ts', '--verbose']", r.stdout)
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['all']", r.stdout)
+        self.assertNotIn("['repo']", r.stdout)
+
+    def test_without_a_scoped_test_check_test_runs_the_first(self):
+        py = shlex.quote(sys.executable)
+        echo = f"{py} -c 'import os, sys; print(os.getcwd()); print(sys.argv[1:])'"
+        gate = [{"kind": "test", "command": f"{echo} first", "report": "TEST.md"},
+                {"kind": "test", "command": f"{echo} second", "report": "CHECKS.md"}]
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": gate}}))
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['first']", r.stdout)
+        self.assertNotIn("['second']", r.stdout)
+        r = self.run_("test", "--files", "src/c.test.ts")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no scoped form", r.stderr)
+
 
 VERIFY_SPEC = """\
 # Spec
@@ -2596,6 +2717,8 @@ class VerifyPrepTest(unittest.TestCase):
         # Condition 2's check isn't in the check file: no line names it.
         self.assertIn('  unnamed: 2: flags an overdue todo', r.stdout)
         self.assertIn("C1.txt, C2.txt", r.stdout)
+        # One check is named, so prep doesn't warn that none is.
+        self.assertNotIn("warning:", r.stdout)
 
     def test_an_edited_check_is_audited_against_every_tests_commit(self):
         self.write("tests/due.test.ts", "test: an old test\ntest: keeps the date\n")
@@ -2658,6 +2781,7 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("acceptance run ran past 1s and was stopped", r.stdout)
         self.assertIn("Result: the run ran past 1s and was stopped;", self.evidence("C1.txt"))
+        self.assertNotIn("warning:", r.stdout)
 
     def test_without_a_scoped_form_the_whole_test_check_runs(self):
         state = json.loads((self.ad / "state.json").read_text())
@@ -2695,6 +2819,136 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("TREE_CHANGED: "), r.stdout)
         self.assertIn("  changed: src/todo.ts", r.stdout)
+
+    def test_prep_runs_the_test_check_with_a_scoped_form(self):
+        py = shlex.quote(sys.executable)
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"] = [
+            {"kind": "test", "command": f"{py} -c \"print('repo ok')\"",
+             "report": "CHECKS.md"},
+            {"kind": "test", "command": f"{py} runner.py tests", "report": "TEST.md",
+             "files": f"{py} runner.py <files>"}]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
+        acceptance = [x for x in r.stdout.splitlines() if x.startswith("  acceptance: ")]
+        self.assertEqual(len(acceptance), 1, r.stdout)
+        self.assertIn("runner.py tests/due.test.ts", acceptance[0])
+        self.assertNotIn("the whole suite", acceptance[0])
+        self.assertIn("ok  keeps the due date", self.evidence("acceptance.txt"))
+        command = [x for x in self.evidence("C1.txt").splitlines()
+                   if x.startswith("Command: ")]
+        self.assertEqual(len(command), 1, self.evidence("C1.txt"))
+        self.assertIn("runner.py tests/due.test.ts", command[0])
+        self.assertNotIn("  unnamed: 1:", r.stdout)
+
+    def test_prep_runs_the_first_test_check_whole_when_none_has_a_scoped_form(self):
+        py = shlex.quote(sys.executable)
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"] = [
+            {"kind": "test", "command": f"{py} runner.py tests", "report": "TEST.md"},
+            {"kind": "test", "command": f"{py} -c \"print('second')\"",
+             "report": "CHECKS.md"}]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        acceptance = [x for x in r.stdout.splitlines() if x.startswith("  acceptance: ")]
+        self.assertEqual(len(acceptance), 1, r.stdout)
+        self.assertIn("the whole suite", acceptance[0])
+        self.assertIn("runner.py tests", acceptance[0])
+        self.assertIn("ok  keeps the due date", self.evidence("acceptance.txt"))
+        self.assertNotIn("second", self.evidence("acceptance.txt"))
+
+    def test_prep_runs_the_first_of_two_scoped_test_checks(self):
+        py = shlex.quote(sys.executable)
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"] = [
+            {"kind": "test", "command": f"{py} runner.py tests", "report": "TEST.md",
+             "files": f"{py} runner.py <files>"},
+            {"kind": "test", "command": f"{py} -c \"print('second')\"",
+             "report": "CHECKS.md", "files": f"{py} -c \"print('second')\" <files>"}]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok  keeps the due date", self.evidence("acceptance.txt"))
+        self.assertNotIn("second", self.evidence("acceptance.txt"))
+
+    def test_prep_warns_when_the_output_names_no_check(self):
+        py = shlex.quote(sys.executable)
+        command = f"{py} -c \"print('repo ok')\""
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"] = [{"kind": "test", "command": command,
+                                      "report": "TEST.md"}]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
+        warnings = [x for x in r.stdout.splitlines() if x.startswith("  warning: ")]
+        self.assertEqual(len(warnings), 1, r.stdout)
+        self.assertIn("names none of the 2 checks MANIFEST.md lists", warnings[0])
+        self.assertIn(command, warnings[0])
+        self.assertIn("  unnamed: 1: keeps the due date", r.stdout.splitlines())
+        self.assertIn("  unnamed: 2: flags an overdue todo", r.stdout.splitlines())
+        r = self.verify("prep", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["result"], "PREPARED")
+        self.assertEqual(data["warning"], warnings[0][len("  warning: "):])
+
+    def test_prep_does_not_warn_when_the_output_names_a_check(self):
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("warning:", r.stdout)
+        unnamed = [x for x in r.stdout.splitlines() if x.startswith("  unnamed: ")]
+        self.assertEqual(unnamed, ["  unnamed: 2: flags an overdue todo"])
+
+    def test_prep_does_not_warn_when_the_manifest_lists_no_check(self):
+        py = shlex.quote(sys.executable)
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"] = [{"kind": "test",
+                                      "command": f"{py} -c \"print('repo ok')\"",
+                                      "report": "TEST.md"}]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        self.write(".auto-dev/acceptance/MANIFEST.md", VERIFY_MANIFEST.split("| 1 |")[0]
+                   + "\n## Not automatable\n| # | Condition | Why | Proxy |\n"
+                   "|---|---|---|---|\n| 1 | A todo can have a due date. | visual | none |\n")
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
+        self.assertNotIn("warning:", r.stdout)
+
+    def test_prep_does_not_warn_on_a_run_stopped_at_its_time_limit(self):
+        self.write("runner.py", "import time\ntime.sleep(30)\n")
+        r = self.verify("prep", "--budget", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ran past 1s and was stopped", r.stdout)
+        self.assertNotIn("warning:", r.stdout)
+
+    def test_prep_warns_when_a_failing_run_names_no_check(self):
+        py = shlex.quote(sys.executable)
+        command = f"{py} -c \"print('repo broke'); raise SystemExit(1)\""
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"] = [{"kind": "test", "command": command,
+                                      "report": "TEST.md"}]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
+        warnings = [x for x in r.stdout.splitlines() if x.startswith("  warning: ")]
+        self.assertEqual(len(warnings), 1, r.stdout)
+        self.assertIn("names none of the 2 checks MANIFEST.md lists", warnings[0])
+        acceptance = [x for x in r.stdout.splitlines() if x.startswith("  acceptance: ")]
+        self.assertEqual(len(acceptance), 1, r.stdout)
+        self.assertIn("exited 1", acceptance[0])
+
+    def test_prep_json_gives_a_null_warning_when_a_check_is_named(self):
+        r = self.verify("prep", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["result"], "PREPARED")
+        self.assertIn("warning", data)
+        self.assertIsNone(data["warning"])
 
 
 # The fake test command for MutationRunTest: fails when `limit < 5` is gone
@@ -3004,6 +3258,21 @@ class MutationRunTest(unittest.TestCase):
         self.assertTrue(r.stdout.startswith("NOT_RUN: "), r.stdout)
         (self.ad / "evidence" / "tree-start.txt").unlink()
         self.assertEqual(self.mutants_cmd("run").returncode, 2)
+
+    def test_the_mutation_run_uses_the_test_check_with_a_scoped_form(self):
+        py = shlex.quote(sys.executable)
+        self.write(".auto-dev/state.json", json.dumps({
+            "schema": 5, "worktree": str(self.wt), "repo": {"base": "main"},
+            "settings": {"mutation_max": 20, "gate": [
+                {"kind": "test", "command": f"{py} -c pass", "report": "CHECKS.md"},
+                {"kind": "test", "command": f"{py} check.py", "report": "TEST.md",
+                 "files": f"{py} check.py <files>"}]}}))
+        r = self.mutants_cmd("run", "--files", "check.py", "--new-set")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.evidence("mutation-cmd.txt").strip().endswith("check.py check.py"),
+                        self.evidence("mutation-cmd.txt"))
+        record = json.loads(self.evidence("mutation-record.json"))
+        self.assertEqual({m["id"]: m["status"] for m in record["results"]}["M1"], "killed")
 
 
 class CliTest(unittest.TestCase):
@@ -4139,8 +4408,25 @@ class SetupAnswerTest(RunCase):
             if self.profiles.exists() else []
         self.assertEqual(written, [])
 
+    def test_stop_with_no_setup_question_is_refused(self):
+        r = self.autodev("setup-answer", "stop", "--repo", self.repo,
+                         "--task", "Add due dates to todos")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        said = (r.stdout + r.stderr).lower()
+        self.assertIn("no setup question", said)
+        self.assertIn("gate-check question", said)
+
     def test_change_without_text_cannot_run(self):
         r = self.autodev("setup-answer", "change", "--repo", self.repo,
                          "--task", "Add due dates to todos")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("--text", r.stderr)
+
+    def test_keep_with_no_gate_check_question_is_refused(self):
+        r = self.autodev("setup-answer", "keep", "--repo", self.repo,
+                         "--task", "Add due dates to todos")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        written = [p for p in self.profiles.rglob("*") if p.is_file()] \
+            if self.profiles.exists() else []
+        self.assertEqual(written, [])

@@ -56,7 +56,7 @@ it (_Overriding a stop_, below).
 | # | Condition | Detected by |
 |---|---|---|
 | 1 | `gh` missing or signed out, `origin` not on GitHub, python3 < 3.9 or no PyYAML | `next` (setup) exit 4 |
-| 2 | invalid `.auto-dev.yml`, the profiler leaving no usable draft twice running (not ok, an invalid draft, or one of each), no test command in the quality gate (or none left once a lookup drops the checks the repo never adopted), the user's Stop at the profile question, a setup worker that never returned | `next` (setup) exit 4 |
+| 2 | invalid `.auto-dev.yml`, the profiler leaving no usable draft twice running (not ok, an invalid draft, or one of each), no test command in the quality gate, the user's Stop at the profile question or the gate-check question, a setup worker that never returned | `next` (setup) exit 4 |
 | 3 | a seeded file not gitignored, a setup command missing or failing (the run is kept: once the file the `REPORT` names is fixed, `auto-dev continue` runs setup again); in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `next` (setup) exit 4 |
 | 4 | the run was started on auto-dev 3.x or 4.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | the planner returns `OVERSIZED` |
@@ -77,6 +77,7 @@ it (_Overriding a stop_, below).
 | 20 | a later worker found a PLAN.md condition or criterion wrong or missing (the verifier, the reviewer, the review judge, a security reviewer, or the triager from a PR comment): the report names each item from `spec-problems/<worker>-<n>.md`. Workers never change the plan's conditions; the user decides, and a sign-off keeps it as written | `next`, on a result with `spec_problems` |
 | 21 | the acceptance tester ruled a check right as written (STANDS) that the verifier, a review finding or a PR comment called wrong: the report names both sides. A sign-off keeps the check as written | `next` |
 | 22 | a free step came round a second time: the acceptance checks still have gaps after the tester's one more go, a condition still reads two ways after the planner's decision, or the coder stopped a step again after the planner's decision in the same change | `next` |
+| 23 | a CI watch run since the pushed commit was made reported on another commit (`ci-watch` run without `--sha`, so it watched an unpushed tests commit on top), so CI never reported on the commit that ships. The report names both commits. Lifted by `auto-dev continue` or _I fixed it myself_: CI is watched on the pushed commit again. No sign-off | `next` |
 
 `next` counts each stop it reports by this number in `.auto-dev/metrics.json`
 (`none` for a stop the table doesn't number), once while it keeps reporting
@@ -100,10 +101,10 @@ They are different states.
 Every other stop (exit 4) leaves the phase open, and `next` decides again in
 the next session:
 
-- A stop on a **worker** (#6, #7), a refused `pr publish`, and a red CI run the
-  code can't fix (#15) are lifted when the user fixes the cause and says
-  `auto-dev continue`: the worker is spawned again, the PR published again, or
-  CI watched again. A session that ended at a checkpoint (`handoff
+- A stop on a **worker** (#6, #7), a refused `pr publish`, a red CI run the
+  code can't fix (#15) and a CI watch on another commit (#23) are lifted when
+  the user fixes the cause and says `auto-dev continue`: the worker is spawned
+  again, the PR published again, or CI watched again. A session that ended at a checkpoint (`handoff
   --checkpoint`) lifts nothing: it ended at a clean point, with no stop to
   lift, so a worker that failed once before it and once after still stops.
 - A stop on a **result** (a red quality gate #9, an impossible spec #8, a
@@ -124,7 +125,7 @@ correction its new result calls for is paid as usual.
 |---|---|---|
 | a typed instruction | `override fix --text "<the user's words>"` | the **fixer** is spawned with the words, its consent. It does what they say and nothing more: in the code, the tests, or the run's PLAN.md or acceptance checks when they name them. `FIXED`: the step that stopped runs again, and so does what depends on what changed (the quality gate on changed code; in Phase 6, a pass, the verifier and the review, on the changed files, the verifier's first pass when PLAN.md changed). `record` refuses a report that leaves out a path the fixer changed. A check the fixer edits in the worktree is committed as a new tests commit once its fix is recorded, and `check-tests.py` guards it from then on; for a change to MANIFEST.md's rows it runs `autodev.py amend-checks`, which works only while its fix is open. `record` refuses a dropped test still in its file, a condition left with no check and no Not automatable row, and `FIXED` with a status other than ok. A change to the run's settings in `state.json` (a gate check's command) counts as a changed path: kept with `FIXED`, put back otherwise. Auto mode can refuse an agent's own edit of those files as test removal. `NEEDS_CONSENT` (the fix needs more than the words allow) or `CANNOT_FIX`: whatever it changed is put back, and the question comes again, with its proposal or its reason |
 | Approve the fixer's proposal | `override approve` | the fixer runs again, told to do what it proposed |
-| I fixed it myself | `override retry` | the result that stopped is set aside and its step runs again; a worker that failed twice, a refused `pr publish` or red CI (#6, #7, #12, #15, #17) get what `auto-dev continue` gives them |
+| I fixed it myself | `override retry` | the result that stopped is set aside and its step runs again; a worker that failed twice, a refused `pr publish`, red CI or a CI watch on another commit (#6, #7, #12, #15, #17, #23) get what `auto-dev continue` gives them |
 | Sign off and go on | `override signoff --text "<why>"` | the result is accepted as if it had passed: a red gate as green (for the rest of the run, while only the checks signed off fail), a disputed check as standing and a wrong criterion as written (each later worker that judges it is told the user kept it, `checks_kept` or `spec_kept` in its brief), open findings as known (the ready-for-review gate names them), an `OVERSIZED` task as fitting. Named in `WORK_LOG.md`, the ready-for-review gate's summary and the PR body. Never offered on red CI, a confirmed security finding, a mutation that may have left changes, a stale report, impossible conditions or commits the pipeline didn't check |
 | Let's talk it through | `override talk` (records nothing) | talk it over with the user, sending a `lookup` for any fact about the code; then `next` asks again |
 | Leave it stopped | `override leave` | the stop is reported without the question for the rest of the session; `auto-dev continue` asks again |
@@ -176,6 +177,18 @@ only` · `Change something (tell me what)` · `Stop`. Each answer's `AFTER` line
 --repo` acts on it: save writes the saved profile, change has the profiler redo
 the draft and asks again, Stop ends setup with nothing created (the ticket details
 and the ask given on the first call are kept for the start-over command).
+
+The gate-check question (Phase 1, exit 5 from `next --repo`, asked when a saved
+profile's lookup finds a gate check's tool not adopted) has its own options:
+`Keep them` · `Leave them out of this run` · `Stop`. Each answer's `AFTER` line is
+`autodev.py setup-answer keep|drop|stop --repo <repo> --task "<task>"`; the next
+`next --repo` acts on it: keep creates the run with every saved check (a kept check
+that fails is first handed to the coder to make green, which may change the repo;
+if it is still red, the run stops at the quality gate, stop 9, where the user can
+sign it off), drop creates it without the flagged checks (the saved file is unchanged, so
+the next run asks again), Stop ends setup with nothing created. When leaving them
+out would leave no test check, only `Keep them` and `Stop` are offered, and a `drop`
+answer is refused.
 
 ## Freshness: when a report no longer matches the code
 

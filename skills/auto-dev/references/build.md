@@ -39,8 +39,9 @@ see in the Build stage, in order:
    runs the gate again), or signs the failing checks off, which counts them
    green for the rest of the run.
 3. Once the gate is green, `next` re-checks the risk tier from the diff (a
-   sensitive path or a large change makes the run high-risk; it never goes
-   down). Nothing is verified or reviewed here: the verifier and the review
+   path that names a sensitive area or matches the profile's `sensitive_paths`
+   globs, a sensitive word on a line the build adds, or a large change makes
+   the run high-risk; it never goes down). Nothing is verified or reviewed here: the verifier and the review
    run on the draft PR, in the Ship stage (`references/ship.md`).
 4. Once the gate is green, `next` says the run goes on to the Ship stage in
    this session: read `references/ship.md`, as its `ACTION` says, then run

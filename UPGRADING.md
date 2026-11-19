@@ -6,6 +6,31 @@ can resume on the new one. Newest first. The current version is in
 
 ## Upgrading from 5.0
 
+- **The test check is the one that runs the test files.** `autodev.py run
+  test`, `verify prep`'s acceptance run, `mutants run` and the briefs'
+  `{{test_command}}` used the gate's first `kind: test` check, so a profile
+  whose first test check had no scoped form (a repo-wide consistency check,
+  say) ran it for the acceptance checks, and its output named none of them.
+  They now use the first test check with a `files` form, else the first test
+  check. A saved profile whose first test check runs the unit tests unscoped,
+  with a later test check that has a `files` form, now runs that later check:
+  move the `files` form to the check that runs the test files, or reorder the
+  gate. `verify prep` also prints a `warning:` line when its run finished and
+  its output names none of the checks MANIFEST.md lists; the verifier then
+  runs them itself. A 5.0 run in flight resumes on it.
+- **The risk re-check reads declared globs and added lines.** A saved profile
+  or `.auto-dev.yml` can list `sensitive_paths`, globs of files that hold
+  sensitive code under paths that don't say so (`.auto-dev.yml`'s list
+  replaces the profile's); `validate-config.py` accepts the key, and a run
+  records it in `profile.md` (a `Sensitive paths` line) and `state.json`'s
+  `settings.sensitive_paths`. Once the quality gate is green, a changed file
+  matching one raises the tier, and so does a sensitive word on a line the
+  build adds (`it adds lines naming a sensitive area: …`). The profiler may
+  propose the globs when it researches a repo. It does not research a repo
+  that already has a saved profile, so there, add `sensitive_paths` to the
+  saved profile or to `.auto-dev.yml` yourself; the added-line scan applies at
+  once. A 5.0 run in flight resumes on it: a `state.json` without the key
+  reads as no globs, and a run past the re-check keeps its recorded result.
 - **Each run writes its metrics.** Whenever `next` completes or stops a run
   (exit 3 or 4), it writes `.auto-dev/metrics.json`: spawns per worker, the
   budget's rounds (spent, left, added), each stop counted once by its number in
@@ -41,8 +66,11 @@ can resume on the new one. Newest first. The current version is in
   `autodev.py next --repo <repo> --task "<task>"` (with the ticket flags on the
   first call), in the same ACTION/AFTER shape as the rest of the run: it runs
   `profile-path.py` and `validate-config.py` itself, prints the adopted-tool
-  lookup for a saved profile (a check whose tool the repo never adopted is
-  still left out of this run only, and named in the summary), or the profiler
+  lookup for a saved profile (when it finds a check's tool not adopted, the
+  new gate-check question asks you, before the run exists, to keep the check,
+  leave it out of this run, or stop; it is no longer left out without
+  asking; when the repo's `.auto-dev.yml` sets `gate`, its gate
+  replaces the saved one: no lookup, no question), or the profiler
   and then the profile question (exit 5), whose AFTER lines run the new
   `autodev.py setup-answer`; then it runs `init` and says to move into the
   worktree. The orchestrator no longer runs `profile-path.py`,
@@ -59,6 +87,20 @@ can resume on the new one. Newest first. The current version is in
   user fixed, runs it again. A 5.0 run in flight resumes on it; one held in
   Phase 1 after a failed setup is set up again by `next`, from the saved
   profile's `setup` (read again) with the run's own gate.
+- **CI settles under a tests commit.** With review findings open, `next` waited
+  for CI on the pushed commit, but `ci-watch` watched the local HEAD, so a
+  tests commit made on top of it (a fixer's or tester's change to the checks,
+  not pushed yet) had `next` ask for the same watch forever. `ci-watch` gains
+  `--sha <commit>` (the commit to watch; without it, the local HEAD as before;
+  one that names no commit exits 2), and every watch `next` asks for names the
+  pushed commit. A watch run since that commit was made that reported on
+  another commit now stops the run (stop #23, lifted by `auto-dev continue` or
+  a retry). A 5.0 run in flight that is looping resumes on it. If you ended
+  its last session, `resume` starts a new session, so the stop doesn't fire
+  and `next` asks for `ci-watch --sha <the pushed commit>`. If its last
+  session ended at a checkpoint, `auto-dev continue` stops once at #23; `auto-dev
+  continue` again, or _I fixed it myself_, lifts the stop and watches the
+  pushed commit.
 
 ## Upgrading from 4.27
 

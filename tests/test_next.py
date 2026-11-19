@@ -3013,6 +3013,157 @@ class LeanTest(NextCase):
         self.assertIn("QUESTION", out, shown)
         self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
 
+    GREEN_CHECKS = ({"name": "test", "state": "SUCCESS", "bucket": "pass",
+                     "link": "https://ci/1"},)
+    RED_CHECKS = ({"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"},)
+
+    def pushed_commit_under_a_tests_commit(self, checks):
+        """A draft PR whose pushed commit has `checks` on GitHub, a tests commit
+        made on top of it locally (not pushed), and a pass that leaves one
+        must-fix finding open. Returns (pushed commit, tests commit)."""
+        self.draft_pr(extra=self.ci_on(checks))
+        pushed = self.state()["phase6"]["verified_sha"]
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        head = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        self.assertNotEqual(head, pushed)
+        self.solo(finding=True)
+        return pushed, head
+
+    def assert_watches(self, out, sha):
+        """`out` asks for a CI watch that names `sha` with --sha, and no stop."""
+        shown = json.dumps(out, indent=2)
+        self.assertIn("ci-watch", out.get("ACTION", ""), shown)
+        self.assertRegex(out["ACTION"], rf"--sha[= ]'?{sha}\b", shown)
+        self.assertNotIn("REPORT", out, shown)
+
+    def watch_as_asked(self, out):
+        """Run the CI watch command `out` asks for, without waiting."""
+        found = re.search(r"`([^`]*ci-watch[^`]*)`", out["ACTION"])
+        self.assertIsNotNone(found, out["ACTION"])
+        return subprocess.run(found.group(1) + " --max-wait 0", shell=True,
+                              capture_output=True, text=True, env=self.env, cwd=self.tmp,
+                              check=False)
+
+    def test_a_tests_commit_on_the_pushed_commit_lets_ci_settle(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        out = self.next(0)
+        self.assert_watches(out, pushed)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("GREEN", r.stdout)
+        self.assertIn(pushed[:12], r.stdout)
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertNotIn("ci-watch", out["ACTION"])
+
+    def test_red_ci_on_the_pushed_commit_under_a_tests_commit_is_triaged(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.RED_CHECKS)
+        out = self.next(0)
+        self.assert_watches(out, pushed)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        self.assertEqual(self.mode(*jobs[0]), "ci")
+
+    def test_a_watch_on_another_commit_stops_and_a_resume_watches_again(self):
+        pushed, head = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertNotIn(r.returncode, (0, 2), r.stdout + r.stderr)  # it watched the local HEAD
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn(pushed[:12], report)
+        self.assertIn(head[:12], report)
+        self.assertIn("never", report)
+        self.resume()
+        self.assert_watches(self.next(0), pushed)
+
+    def test_a_ci_result_from_an_earlier_commit_asks_for_a_watch(self):
+        self.draft_pr(extra=self.ci_on(self.GREEN_CHECKS))
+        self.solo(finding=True)
+        state = self.state()
+        pushed = state["phase6"]["verified_sha"]
+        parent = self.sh("git", "rev-parse", f"{pushed}^", cwd=self.worktree).strip()
+        state["phase6"]["ci"] = {"sha": parent, "status": "green", "failing": [],
+                                 "seq": state["phase6"]["commit_seq"] - 1}
+        self.write_state(state)
+        self.assert_watches(self.next(0), pushed)
+
+    def stop_labels(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertIn("QUESTION", out, shown)
+        return [o["label"] for o in json.loads(out["QUESTION"])["questions"][0]["options"]]
+
+    def test_a_watch_on_another_commit_offers_a_retry_and_no_sign_off(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertNotIn(r.returncode, (0, 2), r.stdout + r.stderr)  # it watched the local HEAD
+        out = self.next(4)
+        labels = self.stop_labels(out)
+        self.assertIn("I fixed it myself", labels)
+        self.assertNotIn("Sign off and go on", labels)
+        self.assertIn("It can't be signed off: CI never reported on the commit that ships.",
+                      out["SUMMARY"], json.dumps(out, indent=2))
+        self.assertEqual(self.state()["stop"]["no_signoff"],
+                         "CI never reported on the commit that ships")
+        r = self.autodev("override", "retry", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_watches(self.next(0), pushed)
+
+    def test_a_final_ci_record_of_another_commit_stops_too(self):
+        pushed, head = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        for status in ("unavailable", "green"):
+            with self.subTest(status=status):
+                state = self.state()
+                self.assertGreater(state["events"], state["phase6"]["commit_seq"])
+                state["phase6"]["ci"] = {"sha": head, "status": status, "failing": [],
+                                         "seq": state["events"]}
+                self.write_state(state)
+                report = " ".join(self.next(4)["REPORT"])
+                self.assertIn(pushed[:12], report)
+                self.assertIn(head[:12], report)
+
+    def test_red_ci_watched_again_after_a_resume_names_the_pushed_commit(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.RED_CHECKS)
+        out = self.next(0)
+        self.assert_watches(out, pushed)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        (self.dir / "triage" / "ci-1.md").write_text("# Triage\nA flaky runner.\n")
+        self.answer(*jobs[0], "FLAKY", blockers="0", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
+        self.assertIn("classed it FLAKY", " ".join(self.next(4)["REPORT"]))
+        self.resume()
+        self.assert_watches(self.next(0), pushed)
+
+    def test_ci_on_the_draft_before_the_ready_gate_names_the_pushed_commit(self):
+        self.draft_pr(extra=self.ci_on(self.GREEN_CHECKS))
+        verified = self.state()["phase6"]["verified_sha"]
+        self.solo()
+        self.refresh_body()
+        out = self.next(0)
+        self.assert_watches(out, verified)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def test_the_watch_after_the_pr_is_marked_ready_names_the_pushed_commit(self):
+        self.draft_pr(extra=self.ci_on(self.GREEN_CHECKS))
+        verified = self.state()["phase6"]["verified_sha"]
+        self.solo()
+        self.refresh_body()
+        r = self.watch_as_asked(self.next(0))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.mark_ready()
+        state = self.state()  # CI settled before the PR was marked ready: the re-watch
+        self.assertEqual(state["phase6"]["ci"]["status"], "green")
+        self.assertLess(state["phase6"]["ci"]["seq"], state["marks"]["pr-ready"]["seq"])
+        self.assert_watches(self.next(0), verified)
+
 
 class PublishTest(NextCase):
     def test_a_refresh_brings_the_overrides_made_after_the_draft_opened(self):
@@ -4295,6 +4446,459 @@ class RiskRecheckTest(NextCase):
         self.next(0)
         self.assertEqual(self.state()["risk_recheck"]["seq"], seq)
 
+    def declare(self, *globs):
+        """The run's settings declare `globs` sensitive, as a profile would."""
+        state = self.state()
+        state["settings"]["sensitive_paths"] = list(globs)
+        self.write_state(state)
+
+    def test_a_file_under_a_declared_glob_raises_the_risk(self):
+        self.standard_session()
+        self.declare("src/middleware.ts", "src/users/**")
+        self.write("src/users/controller.ts")
+        state = self.verified()
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/controller.ts"])
+        self.assertIn("risk raised to high after the build: it touches "
+                      "src/users/controller.ts", [n["text"] for n in state["notes"]])
+
+    def test_a_file_beside_a_declared_directory_stays_standard(self):
+        self.standard_session()
+        self.declare("src/middleware.ts", "src/users/**")
+        self.write("src/users.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+    def test_a_bare_name_matches_at_any_depth_and_a_double_star_spans_folders(self):
+        self.standard_session()
+        self.declare("middleware.ts", "src/**/guard.ts", "/lib/app.ts")
+        for rel in ("api/v2/middleware.ts", "src/guard.ts", "src/a/b/guard.ts",
+                    "lib/app.ts"):
+            self.write(rel)
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches api/v2/middleware.ts, lib/app.ts, src/a/b/guard.ts, src/guard.ts"])
+
+    def test_a_star_stops_at_a_slash_and_a_slashed_glob_is_anchored(self):
+        self.standard_session()
+        self.declare("src/*.ts", "lib/app.ts")
+        self.write("src/users/controller.ts")
+        self.write("vendor/lib/app.ts")
+        state = self.verified()
+        # Neither built file matches. The run's two acceptance checks sit
+        # directly in src/, so `src/*.ts` names them and nothing else.
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches " + ", ".join(sorted(self.CHECKS))])
+
+    MIDDLEWARE = ("export function check(req) { return req.headers.authorization "
+                  "&& req.session; }\n")
+    WORDS_WHY = ("it adds lines naming a sensitive area: src/middleware.ts "
+                 "(authorization, session)")
+
+    def test_a_sensitive_word_on_an_added_line_raises_the_risk(self):
+        self.standard_session()
+        self.write("src/middleware.ts", self.MIDDLEWARE)
+        state = self.verified()
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def committed_middleware_with(self, key):
+        """The repo's git config sets `key`; the build commits src/middleware.ts,
+        so the words are found through the diff, not by reading a new file."""
+        self.standard_session()
+        self.sh("git", "config", key, "true", cwd=self.worktree)
+        self.write("src/middleware.ts", "export const x = 1;\n")
+        self.sh("git", "add", "src/middleware.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "middleware", cwd=self.worktree)
+        self.write("src/middleware.ts", self.MIDDLEWARE)
+        return self.verified()
+
+    def test_the_added_line_scan_ignores_a_mnemonic_diff_prefix(self):
+        state = self.committed_middleware_with("diff.mnemonicPrefix")
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_diff_noprefix(self):
+        state = self.committed_middleware_with("diff.noprefix")
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def test_a_run_without_the_sensitive_paths_setting_still_rechecks(self):
+        self.standard_session()
+        state = self.state()
+        state["settings"].pop("sensitive_paths", None)
+        self.write_state(state)
+        self.write("src/users/controller.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+
+class AddedLineWordsTest(NextCase):
+    """The base branch holds src/legacy.ts with `export const token = 1;`,
+    which the build rewrites: a word only on a removed line does not count."""
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def init(self, *extra, **kw):
+        seed = self.tmp / "seed"
+        (seed / "src").mkdir(exist_ok=True)
+        (seed / "src" / "legacy.ts").write_text("export const token = 1;\n")
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "legacy", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "pull", "-q", "--ff-only", "origin", "main", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+    def test_longer_words_and_words_on_removed_lines_do_not_count(self):
+        self.standard_session()
+        self.assertIn("token", self.sh("git", "show", "main:src/legacy.ts",
+                                       cwd=self.worktree))
+        self.write("src/legacy.ts", "export const one = 1;\n")
+        self.write("src/name.ts", "export const author = tokenizer();\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+
+class SensitiveScanTest(NextCase):
+    """More of the risk re-check's declared globs and added-line scan."""
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+    declare = RiskRecheckTest.declare
+
+    def commit(self, rel, text):
+        """The build commits `rel` holding `text` (a name with `\\` or `*` is literal)."""
+        self.write(rel, text)
+        self.sh("git", "--literal-pathspecs", "add", "--", rel, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "add", cwd=self.worktree)
+
+    def committed(self, rel, before, after):
+        """The build commits `rel` holding `before`, then changes it to `after`."""
+        self.commit(rel, before)
+        self.write(rel, after)
+
+    # A name that is not UTF-8 (`caf` and the byte 0xE9), as Python passes it to git.
+    NOT_UTF8 = "caf" + b"\xe9".decode("utf-8", "surrogateescape")
+
+    def commit_unwritten(self, rel, text):
+        """Commit `rel` holding `text` through the index alone, marked
+        skip-worktree: no file is written, so a name that is not UTF-8 commits
+        on any file system, and the working tree stays as it was."""
+        blob = self.tmp / "blob.txt"
+        blob.write_text(text)
+        sha = self.sh("git", "hash-object", "-w", str(blob), cwd=self.worktree).strip()
+        self.sh("git", "update-index", "--add", "--cacheinfo", f"100644,{sha},{rel}",
+                cwd=self.worktree)
+        self.sh("git", "update-index", "--skip-worktree", "--", rel, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "add", cwd=self.worktree)
+
+    def test_a_committed_name_that_is_not_utf8_is_named_printably(self):
+        self.standard_session()
+        self.commit_unwritten(f"src/auth/{self.NOT_UTF8}.ts", "export const x = 1;\n")
+        state = self.verified()  # `next` exits 0 past the re-check
+        why = "it touches src/auth/caf\\xe9.ts"
+        self.assertEqual(state["risk_recheck"]["why"], [why])
+        self.assertIn(why, (self.dir / "WORK_LOG.md").read_text(encoding="utf-8"))
+
+    def test_an_added_line_in_a_name_that_is_not_utf8_is_named_printably(self):
+        self.standard_session()
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.ts", "export const session = 1;\n")
+        state = self.verified()
+        why = "it adds lines naming a sensitive area: lib/caf\\xe9.ts (session)"
+        self.assertEqual(state["risk_recheck"]["why"], [why])
+        self.assertIn(why, (self.dir / "WORK_LOG.md").read_text(encoding="utf-8"))
+
+    def test_a_committed_name_that_is_not_utf8_outside_a_sensitive_area(self):
+        self.standard_session()
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.txt", "plain\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_base_branch_name_that_is_not_utf8_is_read(self):
+        # The base branch tracks the name: committed before the session, with
+        # main and origin/main moved to that commit, so it is in `ls-files`
+        # but not in the build's diff.
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.txt", "plain\n")
+        for ref in ("refs/heads/main", "refs/remotes/origin/main"):
+            self.sh("git", "update-ref", ref, "HEAD", cwd=self.worktree)
+        self.standard_session()
+        self.write("src/due.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_trailing_slash_a_question_mark_and_a_bracket(self):
+        self.standard_session()
+        self.declare("users/", "src/v?.ts", "src/[ab].ts")
+        for rel in ("users/a/b.ts", "api/users/x.ts", "src/v1.ts", "src/v10.ts",
+                    "src/a.ts", "src/[ab].ts"):
+            self.write(rel)
+        state = self.verified()
+        # `users/` is anchored at the root; `?` is one character; `[` is literal.
+        self.assertEqual(state["risk_recheck"]["why"],
+                         ["it touches src/[ab].ts, src/v1.ts, users/a/b.ts"])
+
+    def test_a_lock_file_s_words_do_not_count(self):
+        self.standard_session()
+        self.write("package-lock.json", '{"node_modules/@auth0/auth0-spa-js": {}}\n')
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_binary_file_s_words_do_not_count(self):
+        self.standard_session()
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "blob.bin").write_bytes(b"\0token session\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_file_named_by_both_signals_is_reported_once(self):
+        self.standard_session()
+        self.write("src/auth/login.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/login.ts"])
+
+    def test_an_added_line_that_starts_with_plus_signs_is_scanned(self):
+        self.standard_session()
+        self.committed("src/notes.txt", "notes\n", "notes\n++ session\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: src/notes.txt (session)"])
+
+    def test_a_tracked_name_with_a_space_is_named_as_built(self):
+        self.standard_session()
+        self.committed("src/my file.ts", "export const x = 1;\n",
+                       "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: src/my file.ts (session)"])
+
+    def test_a_tracked_name_git_quotes_is_named_as_built(self):
+        self.standard_session()
+        self.committed('src/say"hi".ts', "export const x = 1;\n",
+                       "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            'it adds lines naming a sensitive area: src/say"hi".ts (session)'])
+
+    def test_three_words_a_file_and_five_files_at_most(self):
+        self.standard_session()
+        for i in range(6):
+            self.write(f"src/f{i}.ts", "token(); logout(); session; login(auth);\n")
+        state = self.verified()
+        listed = ", ".join(f"src/f{i}.ts (auth, login, logout)" for i in range(5))
+        self.assertEqual(state["risk_recheck"]["why"], [
+            f"it adds lines naming a sensitive area: {listed} and 1 more"])
+
+    def test_a_committed_quoted_name_under_a_declared_glob_is_named_raw(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        self.commit("src/users/café.ts", "export const x = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/café.ts"])
+
+    # The next three commit with a clean working tree, so each name reaches the
+    # re-check only through the committed diff, never through `git status`.
+    def test_a_committed_name_with_a_quote_under_a_declared_glob_is_named_raw(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        self.commit('src/users/say"hi".ts', "export const x = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ['it touches src/users/say"hi".ts'])
+
+    def test_a_committed_name_with_a_backslash_is_reported_once(self):
+        self.standard_session()
+        self.commit("src/auth/back\\slash.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/back\\slash.ts"])
+
+    def test_committed_names_with_a_tab_and_a_control_byte_are_reported_once(self):
+        self.standard_session()
+        for rel in ("src/auth/ctl\x01.ts", "src/auth/a\tb.ts"):
+            self.commit(rel, "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches src/auth/a\tb.ts, src/auth/ctl\x01.ts"])
+
+    def test_a_committed_quoted_sensitive_path_is_reported_once(self):
+        self.standard_session()
+        self.commit("src/auth/café.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/café.ts"])
+
+    def test_a_committed_quoted_name_is_scanned_through_the_diff(self):
+        self.standard_session()
+        self.commit('src/say"hi".ts', "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            'it adds lines naming a sensitive area: src/say"hi".ts (session)'])
+
+    def test_names_with_a_backslash_a_tab_and_a_control_byte_are_named_as_built(self):
+        self.standard_session()
+        names = ("src/back\\slash.ts", "src/a\tb.ts", "src/ctl\x01.ts")
+        for rel in names:
+            self.committed(rel, "export const x = 1;\n", "export const session = 1;\n")
+        state = self.verified()
+        listed = ", ".join(f"{rel} (session)" for rel in sorted(names))
+        self.assertEqual(state["risk_recheck"]["why"], [
+            f"it adds lines naming a sensitive area: {listed}"])
+
+    def committed_middleware_under(self, *config, attributes=None):
+        """The repo's git config sets each (key, value) in `config`; the build
+        commits src/middleware.ts (and a .gitattributes holding `attributes`),
+        then adds the middleware's sensitive line to it."""
+        self.standard_session()
+        for key, value in config:
+            self.sh("git", "config", key, value, cwd=self.worktree)
+        if attributes:
+            self.commit(".gitattributes", attributes)
+        self.committed("src/middleware.ts", "export const x = 1;\n",
+                       RiskRecheckTest.MIDDLEWARE)
+        return self.verified()
+
+    def test_the_added_line_scan_ignores_a_forced_colour(self):
+        state = self.committed_middleware_under(("color.ui", "always"))
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_an_external_diff(self):
+        state = self.committed_middleware_under(("diff.external", "true"))
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_a_textconv_driver(self):
+        state = self.committed_middleware_under(("diff.strip.textconv", "true"),
+                                                attributes="*.ts diff=strip\n")
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+
+class BaseFilesCase(NextCase):
+    """The base branch holds BASE ((path, text) pairs) before the run starts."""
+    BASE = ()
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def seed(self, seed):
+        """Anything more to commit on the base branch, in the clone `seed`."""
+
+    def init(self, *extra, **kw):
+        seed = self.tmp / "seed"
+        for rel, text in self.BASE:
+            (seed / rel).parent.mkdir(parents=True, exist_ok=True)
+            (seed / rel).write_text(text)
+        self.seed(seed)
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "base", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "pull", "-q", "--ff-only", "origin", "main", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+
+class TrackedQuotedNameTest(BaseFilesCase):
+    """A tracked file whose name git quotes is scanned through its diff, as any
+    tracked file is: a word already on the base branch does not count."""
+    TWO_LINES = "const session = 1;\nconst a = 1;\n"
+    BASE = (("lib/café.ts", TWO_LINES), ('src/say"hi".ts', TWO_LINES),
+            ("package-lock.json", "{}\n"))
+
+    def test_a_non_ascii_name_changed_off_its_sensitive_line_stays_standard(self):
+        self.standard_session()
+        self.write("lib/café.ts", "const session = 1;\nconst a = 2;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_quoted_name_changed_off_its_sensitive_line_stays_standard(self):
+        self.standard_session()
+        self.write('src/say"hi".ts', "const session = 1;\nconst a = 2;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_word_added_to_a_non_ascii_name_comes_from_its_diff(self):
+        self.standard_session()
+        self.write("lib/café.ts", "const session = 1;\nconst a = 1;\nconst token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: lib/café.ts (token)"])
+
+    def test_a_tracked_lock_file_s_added_words_do_not_count(self):
+        self.standard_session()
+        self.write("package-lock.json", '{"node_modules/@auth0/auth0-spa-js": {}}\n')
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+
+class MovedFileTest(BaseFilesCase):
+    """A file the build moves has its lines counted as added, whatever the
+    repo's diff.renames says, as an untracked move's lines already are."""
+    BASE = (("src/store.ts", "const session = 1;\n"),)
+    MOVED_WHY = "it adds lines naming a sensitive area: src/data/store.ts (session)"
+
+    def moved_under(self, renames):
+        self.standard_session()
+        self.sh("git", "config", "diff.renames", renames, cwd=self.worktree)
+        (self.worktree / "src" / "data").mkdir()
+        self.sh("git", "mv", "src/store.ts", "src/data/store.ts", cwd=self.worktree)
+        return self.verified()
+
+    def test_a_moved_file_s_lines_count_with_renames_off(self):
+        state = self.moved_under("false")
+        self.assertEqual(state["risk_recheck"]["why"], [self.MOVED_WHY])
+
+    def test_a_moved_file_s_lines_count_with_renames_on(self):
+        state = self.moved_under("true")
+        self.assertEqual(state["risk_recheck"]["why"], [self.MOVED_WHY])
+
+
+class CommittedMoveTest(BaseFilesCase):
+    """A move the build commits names the file's old path, under git's default
+    diff.renames, with the working tree left as committed."""
+    BASE = (("src/auth/guard.ts", "export const x = 1;\n"),
+            ("src/users/a.ts", "export const x = 1;\n"))
+    declare = RiskRecheckTest.declare
+
+    def committed_move(self, old, new):
+        self.sh("git", "mv", old, new, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "move", cwd=self.worktree)
+        return self.verified()
+
+    def test_a_committed_move_out_of_a_sensitive_word_directory(self):
+        self.standard_session()
+        state = self.committed_move("src/auth/guard.ts", "src/guard.ts")
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/guard.ts"])
+
+    def test_a_committed_move_out_of_a_declared_glob(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        state = self.committed_move("src/users/a.ts", "src/a.ts")
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/a.ts"])
+
+
+class SubmoduleBumpTest(BaseFilesCase):
+    """The base branch holds a submodule at lib/; a bump shows as one changed
+    path, never as lines of the files inside it."""
+    FILE_PROTOCOL = ("-c", "protocol.file.allow=always")
+
+    def seed(self, seed):
+        sub = self.tmp / "sublib"
+        self.sh("git", "init", "-q", "-b", "main", str(sub))
+        (sub / "a.txt").write_text("plain\n")
+        self.sh("git", "add", "-A", cwd=sub)
+        self.sh("git", "commit", "-q", "-m", "sub", cwd=sub)
+        self.sh("git", *self.FILE_PROTOCOL, "submodule", "add", "-q", str(sub), "lib",
+                cwd=seed)
+
+    def test_a_bumped_submodule_s_inner_lines_are_not_scanned(self):
+        self.standard_session()
+        self.sh("git", "config", "diff.submodule", "diff", cwd=self.worktree)
+        self.sh("git", *self.FILE_PROTOCOL, "submodule", "update", "-q", "--init", "lib",
+                cwd=self.worktree)
+        inner = self.worktree / "lib"
+        (inner / "a.txt").write_text("plain\nconst session = 1;\n")
+        self.sh("git", "commit", "-q", "-am", "bump", cwd=inner)
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [], state["risk_recheck"])
+
 
 class RiskAtTheReadyGateTest(NextCase):
     ship_ready = ShipTest.ship_ready
@@ -4314,6 +4918,31 @@ class RiskAtTheReadyGateTest(NextCase):
         out = self.next(5)
         self.assertIn("ready gate", out["QUESTION"])
         self.assertIn("Risk: high after the build (it touches src/auth/token.ts)",
+                      out["SUMMARY"])
+
+
+class DeclaredPathAtTheReadyGateTest(NextCase):
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    reviewed_pr = ShipTest.reviewed_pr
+    refresh_body = ShipTest.refresh_body
+    published = ShipTest.published
+
+    def build_session(self):
+        state = self.state()
+        state["settings"]["sensitive_paths"] = ["src/middleware.ts", "src/users/**"]
+        self.write_state(state)
+        (self.worktree / "src" / "users").mkdir(parents=True, exist_ok=True)
+        (self.worktree / "src" / "users" / "controller.ts").write_text(
+            "export const x = 1;\n")
+        super().build_session()
+
+    def test_the_ready_gate_names_a_file_under_a_declared_glob(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertIn("Risk: high after the build (it touches src/users/controller.ts)",
                       out["SUMMARY"])
 
 
@@ -5337,6 +5966,12 @@ class SetupFlowTest(RunCase):
         return sorted(p.name for p in self.temp.rglob("*.md")
                       if re.match(r"(profiler|lookup)-\d+\.md$", p.name))
 
+    def leave_out(self, out):
+        """Answer `out`'s gate-check question with Leave them out; the next `next`."""
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        self.answered(out, "Leave them out of this run")
+        return self.setup_next()
+
     def failed_setup(self):
         """A saved profile whose setup is `false`: the run is made and stops."""
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
@@ -5387,13 +6022,15 @@ class SetupFlowTest(RunCase):
                 self.assertNotIn("dropped gate check", self.work_log())
 
     def test_a_check_the_repo_never_adopted_is_left_out_of_this_run(self):
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config or dependency\n")
+        out = self.leave_out(self.with_saved_profile(
+            "check 1: adopted — package.json:9\n"
+            "check 2: not adopted — no eslint config or dependency\n"))
         self.ready(out, self.tmp / "app-add-due-dates-to-todos")
         self.assertEqual(self.gate(), ["true"])
         self.assertEqual(self.profile_line(), f"saved profile {self.saved}, without npx eslint .")
-        self.assertIn(f"dropped gate check npx eslint .: the repo never adopted its tool "
-                      f"(saved profile {self.saved})", self.work_log())
+        self.assertIn(f"dropped gate check npx eslint .: the user left it out of this run; the "
+                      f"lookup found its tool not adopted (saved profile {self.saved})",
+                      self.work_log())
         self.assertTrue([ln for ln in out.get("SUMMARY", [])
                          if "npx eslint ." in ln and str(self.saved) in ln],
                         json.dumps(out, indent=2))
@@ -5769,9 +6406,9 @@ class SetupFlowTest(RunCase):
 
     def test_retry_keeps_the_checks_dropped_at_creation(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config\n",
-                                      text=self.saved.read_text())
+        out = self.leave_out(self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                                     "check 2: not adopted — no eslint config\n",
+                                                     text=self.saved.read_text()))
         self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
         self.save_profile()  # the user fixes the setup; the lint check is still listed
         self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
@@ -5954,26 +6591,65 @@ class SetupFlowTest(RunCase):
 
     # C3, C4: a saved profile that changes, goes, or loses its test check
 
-    def test_a_lookup_that_leaves_no_test_check_stops_naming_the_saved_file(self):
+    def test_a_gate_question_with_no_test_check_left_names_the_check_and_saved_file(self):
         out = self.with_saved_profile("check 1: not adopted — no jest dependency\n"
                                       "check 2: adopted — .eslintrc.json:1\n",
                                       text=self.JEST_PROFILE)
-        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
-        report = out.get("REPORT", [])
-        self.assertTrue([ln for ln in report if "npx jest" in ln and "not adopted" in ln], report)
-        self.assertTrue([ln for ln in report if str(self.saved) in ln], report)
-        self.assertFalse([ln for ln in report if "profile.yml" in ln], report)
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        summary = out.get("SUMMARY", [])
+        self.assertTrue([ln for ln in summary if "npx jest" in ln and "not adopted" in ln],
+                        summary)
+        self.assertTrue([ln for ln in summary if str(self.saved) in ln], summary)
+        self.assertFalse([ln for ln in summary if "profile.yml" in ln], summary)
         self.no_run_made()
 
     def test_a_changed_saved_profile_is_looked_up_again(self):
         self.with_saved_profile("check 1: not adopted — no jest dependency\n"
                                 "check 2: adopted — .eslintrc.json:1\n", text=self.JEST_PROFILE)
-        self.assertEqual(self.outs[-1].get("exit"), 4)
+        self.assertEqual(self.outs[-1].get("exit"), 5)
         self.save_profile()  # the user makes check 1 another test command
         values = self.lookup_answers(self.setup_next(expect=0), BOTH_ADOPTED)
         self.assertIn("`true`", values["question"])
         self.ready(self.setup_next())
         self.assertEqual(self.gate(), ["true", "npx eslint ."])
+
+    def test_each_setup_question_refuses_the_other_s_answers(self):
+        self.save_profile()
+        self.lookup_answers(self.setup_next(expect=0),
+                            "check 1: adopted — package.json:9\n"
+                            "check 2: not adopted — no eslint config\n")
+        self.setup_next(expect=5)
+        r = self.autodev("setup-answer", "run-only", "--repo", self.repo, "--task", self.TASK)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no profile question", (r.stdout + r.stderr).lower())
+        self.saved.unlink()
+        self.to_question(task="Add due dates researched")
+        r = self.autodev("setup-answer", "keep", "--repo", self.repo,
+                         "--task", "Add due dates researched")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no gate-check question", (r.stdout + r.stderr).lower())
+
+    def test_a_gate_question_answered_once_is_closed(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n")
+        self.answered(out, "Keep them")
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text())["kept"],
+                         [{"n": 2, "command": "npx eslint ."}])
+
+    def test_a_gate_answer_given_before_the_saved_file_changed_is_asked_again(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n")
+        self.answered(out, "Leave them out of this run")
+        self.save_profile(SAVED_PROFILE.replace("echo ready", "echo set up"))  # same gate
+        out = self.setup_next(expect=5)
+        self.assertNotIn("AGENT", out)  # the same gate: its lookup's answer still holds
+        self.assertEqual(self.options(out), ("Keep them", "Leave them out of this run", "Stop"))
+        self.no_run_made()
 
     def test_a_saved_profile_removed_after_its_lookup_is_researched(self):
         self.save_profile()
@@ -5985,9 +6661,9 @@ class SetupFlowTest(RunCase):
 
     def test_a_kept_run_s_failed_setup_names_the_dropped_check(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
-                                      "check 2: not adopted — no eslint config\n",
-                                      text=self.saved.read_text())
+        out = self.leave_out(self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                                     "check 2: not adopted — no eslint config\n",
+                                                     text=self.saved.read_text()))
         self.kept_failed_run(out)
         self.assertTrue([ln for ln in out["REPORT"] if "npx eslint ." in ln
                          and str(self.saved) in ln], self.report(out))
@@ -6120,9 +6796,9 @@ class SetupFlowTest(RunCase):
 
     def test_a_saved_profile_unreadable_at_retry_stops_with_the_validator_s_errors(self):
         self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
-        self.kept_failed_run(self.with_saved_profile(
+        self.kept_failed_run(self.leave_out(self.with_saved_profile(
             "check 1: adopted — package.json:9\ncheck 2: not adopted — no eslint config\n",
-            text=self.saved.read_text()))
+            text=self.saved.read_text())))
         self.saved.write_text("gate: [unclosed\n")
         self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
         out = self.next_dir(4)
@@ -6361,6 +7037,282 @@ class SetupFlowTest(RunCase):
                 self.assertNotIn("AGENT", out)
                 self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
 
+    # -------------------------------------------------------------- the gate-check question
+
+    ESLINT_NOT_ADOPTED = ("check 1: adopted — package.json:9\n"
+                          "check 2: not adopted — no eslint config\n")
+    JEST_NOT_ADOPTED = ("check 1: not adopted — no jest dependency\n"
+                        "check 2: adopted — .eslintrc.json:1\n")
+    GATE_QUESTION_OPTIONS = ("Keep them", "Leave them out of this run", "Stop")
+
+    def nothing_set_up_yet(self):
+        """No worktree, branch or run for the task exists."""
+        self.no_run_made()
+        self.assertEqual(len(self.sh("git", "worktree", "list", cwd=self.repo).splitlines()), 1)
+        self.assertEqual(self.sh("git", "branch", "--list", "*due-dates*", cwd=self.repo).strip(),
+                         "")
+
+    def at_the_gate_check_question(self, answer=None, text=SAVED_PROFILE):
+        """A saved profile whose lookup flags a check: the question it asks."""
+        out = self.with_saved_profile(answer or self.ESLINT_NOT_ADOPTED, text=text)
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        return out
+
+    def after_line(self, out, label):
+        return next((ln for ln in out.get("AFTER", []) if ln.startswith(f'"{label}" → ')), "")
+
+    def test_a_not_adopted_check_is_asked_about_before_the_run_exists(self):
+        out = self.at_the_gate_check_question()
+        shown = json.dumps(out, indent=2)
+        summary = self.summary(out)
+        for part in ("npx eslint .", "no eslint config", str(self.saved)):
+            self.assertIn(part, summary, shown)
+        self.assertEqual(self.options(out), self.GATE_QUESTION_OPTIONS)
+        self.assertEqual(len(out["AFTER"]), 3, shown)
+        for label, line in zip(self.GATE_QUESTION_OPTIONS, out["AFTER"]):
+            self.assertTrue(line.startswith(f'"{label}" → '), shown)
+        self.nothing_set_up_yet()
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_a_lookup_that_flags_nothing_usable_asks_nothing_and_keeps_every_check(self):
+        cases = [("every check adopted", "ok", "ANSWERED", BOTH_ADOPTED),
+                 ("contradicting lines", "ok", "ANSWERED",
+                  ("check 1: adopted — package.json:9\ncheck 2: adopted — package.json:12\n"
+                   "check 2: not adopted — no eslint config\n")),
+                 ("outside the gate", "ok", "ANSWERED", "check 7: not adopted — no such tool\n"),
+                 ("prose only", "ok", "ANSWERED", "Neither eslint nor the tests look adopted.\n"),
+                 ("failed", "failed", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("blocked", "blocked", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("out of scope", "ok", "OUT_OF_SCOPE",
+                  "check 2: not adopted — no eslint config\n")]
+        self.save_profile()
+        for i, (case, status, nxt, answer) in enumerate(cases, 1):
+            with self.subTest(case=case):
+                task = f"Add due dates lookup case {i}"
+                self.lookup_answers(self.setup_next(task=task, expect=0), answer,
+                                    status=status, nxt=nxt)
+                out = self.setup_next(task=task)
+                self.assertNotEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+                self.assertNotIn("QUESTION", out)
+                self.ready(out)
+                self.assertEqual(self.gate(), ["true", "npx eslint ."])
+                self.assertNotIn("dropped gate check", self.work_log())
+
+    def test_keep_runs_every_check_and_says_a_failing_one_stops_for_sign_off(self):
+        out = self.at_the_gate_check_question()
+        self.assertIn("setup-answer keep", self.after_line(out, "Keep them"))
+        self.answered(out, "Keep them")
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}")
+        kept = [ln for ln in out.get("SUMMARY", []) if "npx eslint ." in ln
+                and "quality gate" in ln.lower() and "sign" in ln.lower()]
+        self.assertTrue(kept, json.dumps(out, indent=2))
+        self.assertIn("kept gate check npx eslint .", self.work_log())
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_after_keep_a_further_next_points_to_the_run_without_asking(self):
+        self.answered(self.at_the_gate_check_question(), "Keep them")
+        self.ready(self.setup_next(), self.tmp / "app-add-due-dates-to-todos")
+        lookups = len([p for p in self.worker_briefs() if p.startswith("lookup-")])
+        out = self.setup_next()
+        self.assertNotIn("QUESTION", out)
+        self.assertNotIn("AGENT", out)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(len([p for p in self.worker_briefs() if p.startswith("lookup-")]),
+                         lookups)
+
+    def test_leave_out_creates_the_run_without_the_check_and_keeps_the_saved_file(self):
+        out = self.at_the_gate_check_question()
+        self.assertIn("setup-answer drop", self.after_line(out, "Leave them out of this run"))
+        self.answered(out, "Leave them out of this run")
+        out = self.setup_next()
+        shown = json.dumps(out, indent=2)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}, without npx eslint .")
+        notes = [ln.split("dropped gate check npx eslint .:", 1)[1]
+                 for ln in self.work_log().splitlines()
+                 if "dropped gate check npx eslint .:" in ln]
+        self.assertEqual(len(notes), 1, self.work_log())
+        self.assertIn("user", notes[0].lower(), self.work_log())
+        self.assertRegex(notes[0].lower(), r"\bleft\b.*\bout\b")
+        named = [ln for ln in out.get("SUMMARY", [])
+                 if "npx eslint ." in ln and str(self.saved) in ln]
+        self.assertTrue(named, shown)
+        summary = self.summary(out).lower()
+        self.assertRegex(summary, r"unchanged|not changed")
+        self.assertRegex(summary, r"\bask")
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_a_check_left_out_stays_out_when_a_failed_setup_is_retried(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        self.answered(self.at_the_gate_check_question(text=self.saved.read_text()),
+                      "Leave them out of this run")
+        self.kept_failed_run(self.setup_next())
+        self.save_profile()  # the user fixes the setup; the lint check is still listed
+        self.resume_to_the_planner()
+        self.assertEqual(self.gate(), ["true"])
+
+    def test_with_no_test_check_left_only_keep_and_stop_are_offered(self):
+        out = self.at_the_gate_check_question(self.JEST_NOT_ADOPTED, text=self.JEST_PROFILE)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.options(out), ("Keep them", "Stop"))
+        self.assertEqual(len(out["AFTER"]), 2, shown)
+        self.assertTrue([ln for ln in out.get("SUMMARY", [])
+                         if re.search(r"no `?test`? check", ln.lower())], shown)
+        self.nothing_set_up_yet()
+        self.answered(out, "Keep them")
+        self.ready(self.setup_next(), self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["npx jest", "npx eslint ."])
+
+    def test_leave_out_with_no_test_check_left_is_refused_and_asked_again(self):
+        out = self.at_the_gate_check_question(self.JEST_NOT_ADOPTED, text=self.JEST_PROFILE)
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertIn("test check", said.lower())
+        again = self.setup_next(expect=5)
+        self.assertEqual(self.options(again), self.options(out))
+        self.assertEqual(self.options(again), ("Keep them", "Stop"))
+        self.nothing_set_up_yet()
+
+    def test_stop_at_the_gate_check_question_creates_nothing(self):
+        self.answered(self.at_the_gate_check_question(), "Stop")
+        out = self.setup_next(expect=4)
+        report = self.report(out).lower()
+        self.assertRegex(report, r"gate[- ]check question")
+        self.assertIn("stop", report)
+        self.assertIn("nothing", report)
+        self.nothing_set_up_yet()
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+        self.brief(self.setup_next(expect=0), "lookup")  # a later call starts over
+
+    def test_a_gate_answer_after_the_saved_profile_changed_is_refused(self):
+        self.at_the_gate_check_question()
+        self.save_profile(PROFILER_DRAFT)  # the user removes check 2 themselves
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertRegex(said.lower(), r"no gate[- ]check question")
+        values = self.brief(self.setup_next(expect=0), "lookup")
+        self.assertIn("`true`", values["question"])
+        self.assertNotIn("npx eslint .", values["question"])
+        self.nothing_set_up_yet()
+
+    # -------------------------------------------------------------- review corrections
+
+    GATE_ONLY_OVERRIDE = 'gate:\n  - { kind: test, command: "true", report: "TEST.md" }\n'
+    THREE_CHECKS = (SAVED_PROFILE
+                    + '  - { kind: typecheck, command: "npx tsc", report: "TYPES.md" }\n')
+    TWO_NOT_ADOPTED = ("check 1: adopted — package.json:9\n"
+                       "check 2: not adopted — no eslint config\n"
+                       "check 3: not adopted — no typescript dependency\n")
+
+    def no_gate_answer_traces(self, out):
+        log = self.work_log()
+        self.assertNotIn("kept gate check", log)
+        self.assertNotIn("dropped gate check", log)
+        summary = self.summary(out)
+        self.assertNotIn("Kept at your answer", summary)
+        self.assertNotIn("Left out of this run", summary)
+
+    def test_a_gate_the_auto_dev_yml_sets_skips_the_saved_profile_s_lookup(self):
+        for override, saved in ((FULL_OVERRIDE, SAVED_PROFILE),
+                                (self.GATE_ONLY_OVERRIDE, self.JEST_PROFILE)):
+            with self.subTest(saved=saved):
+                self.commit_override(override)
+                self.save_profile(saved)
+                task = f"Add due dates override {len(self.outs)}"
+                out = self.setup_next(task=task, expect=0)
+                shown = json.dumps(out, indent=2)
+                self.assertNotIn("AGENT", out, shown)
+                self.assertNotIn("QUESTION", out, shown)
+                self.ready(out)
+                self.assertEqual(self.worker_briefs(), [])
+                self.assertEqual(self.gate(), ["true"])
+                self.no_gate_answer_traces(out)
+
+    def asks_after_the_lookup_despite(self, override):
+        """A committed `.auto-dev.yml` that leaves `gate` out: the saved profile
+        is still looked up, and the flagged check asked about."""
+        self.commit_override(override)
+        self.save_profile()
+        first = self.setup_next(expect=0)
+        self.lookup_answers(first, self.ESLINT_NOT_ADOPTED)
+        out = self.setup_next(expect=5)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.options(out), self.GATE_QUESTION_OPTIONS, shown)
+        self.assertIn("check 2: `npx eslint .`", self.summary(out), shown)
+        self.nothing_set_up_yet()
+
+    def test_an_auto_dev_yml_setting_only_setup_still_gets_the_lookup_and_question(self):
+        self.asks_after_the_lookup_despite('setup: ["true"]\n')
+
+    def test_an_auto_dev_yml_setting_neither_setup_nor_gate_still_gets_the_question(self):
+        self.asks_after_the_lookup_despite("branches:\n  base: main\n")
+
+    def test_the_keep_promise_says_the_coder_tries_to_make_a_failing_check_green_first(self):
+        promise = r"coder.*green.*still (red|fail).*quality gate stops.*sign"
+        out = self.at_the_gate_check_question()
+        keep = next(o["description"] for o in json.loads(out["QUESTION"])["questions"][0]
+                    ["options"] if o["label"] == "Keep them")
+        self.assertRegex(keep.lower(), promise)
+        self.assertRegex(self.summary(out).lower().replace("\n", " "), promise)
+        self.answered(out, "Keep them")
+        out = self.setup_next()
+        self.ready(out)
+        kept = [ln for ln in out.get("SUMMARY", []) if "npx eslint ." in ln]
+        self.assertEqual(len(kept), 1, json.dumps(out, indent=2))
+        self.assertRegex(kept[0].lower(), promise)
+
+    def test_one_answer_leaves_out_every_flagged_check(self):
+        out = self.at_the_gate_check_question(self.TWO_NOT_ADOPTED, text=self.THREE_CHECKS)
+        summary = self.summary(out)
+        for part in ("npx eslint .", "no eslint config", "npx tsc", "no typescript dependency"):
+            self.assertIn(part, summary)
+        self.answered(out, "Leave them out of this run")
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(),
+                         f"saved profile {self.saved}, without npx eslint ., npx tsc")
+        log = self.work_log()
+        for cmd in ("npx eslint .", "npx tsc"):
+            self.assertEqual(log.count(f"dropped gate check {cmd}:"), 1, log)
+        self.assertEqual(self.saved.read_text(), self.THREE_CHECKS)
+
+    def test_one_answer_keeps_every_flagged_check(self):
+        out = self.at_the_gate_check_question(self.TWO_NOT_ADOPTED, text=self.THREE_CHECKS)
+        self.answered(out, "Keep them")
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint .", "npx tsc"])
+        log = self.work_log()
+        for cmd in ("npx eslint .", "npx tsc"):
+            self.assertEqual(log.count(f"kept gate check {cmd}:"), 1, log)
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text())["kept"],
+                         [{"n": 2, "command": "npx eslint ."}, {"n": 3, "command": "npx tsc"}])
+
+    def test_leaving_out_a_flagged_test_and_lint_check_is_refused_naming_both(self):
+        self.at_the_gate_check_question("check 1: not adopted — no jest dependency\n"
+                                        "check 2: not adopted — no eslint config\n",
+                                        text=self.JEST_PROFILE)
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertIn("npx jest", said)
+        self.assertIn("npx eslint .", said)
+        self.nothing_set_up_yet()
+
+    def test_a_long_lookup_reason_is_cut_to_200_characters(self):
+        line = "check 2: not adopted — " + "no eslint config anywhere " * 12
+        out = self.at_the_gate_check_question("check 1: adopted — package.json:9\n" + line + "\n")
+        summary = self.summary(out)
+        self.assertIn(line.strip()[:200], summary)
+        self.assertNotIn(line.strip()[:201], summary)
 
 class MetricsTest(OverrideCase):
     """`next` writes .auto-dev/metrics.json, and a copy outside the worktree,
