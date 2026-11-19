@@ -63,6 +63,20 @@ can resume on the new one. Newest first. The current version is in
   user fixed, runs it again. A 5.0 run in flight resumes on it; one held in
   Phase 1 after a failed setup is set up again by `next`, from the saved
   profile's `setup` (read again) with the run's own gate.
+- **CI settles under a tests commit.** With review findings open, `next` waited
+  for CI on the pushed commit, but `ci-watch` watched the local HEAD, so a
+  tests commit made on top of it (a fixer's or tester's change to the checks,
+  not pushed yet) had `next` ask for the same watch forever. `ci-watch` gains
+  `--sha <commit>` (the commit to watch; without it, the local HEAD as before;
+  one that names no commit exits 2), and every watch `next` asks for names the
+  pushed commit. A watch run since that commit was made that reported on
+  another commit now stops the run (stop #23, lifted by `auto-dev continue` or
+  a retry). A 5.0 run in flight that is looping resumes on it. If you ended
+  its last session, `resume` starts a new session, so the stop doesn't fire
+  and `next` asks for `ci-watch --sha <the pushed commit>`. If its last
+  session ended at a checkpoint, `auto-dev continue` stops once at #23; `auto-dev
+  continue` again, or _I fixed it myself_, lifts the stop and watches the
+  pushed commit.
 
 ## Upgrading from 4.27
 

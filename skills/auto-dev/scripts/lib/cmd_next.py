@@ -2504,7 +2504,7 @@ def ci_fold(c):
     ci = c.p6.get("ci") or {}
     if ci.get("sha") != sha or ci.get("status") == "pending":
         return ci_watch(c, "findings are open: CI settles on the pushed commit first, so "
-                        "one correction takes red CI too"), None
+                        "one correction takes red CI too", sha), None
     if ci.get("status") != "red":
         return None, None
     triage = c.last("triager", after=ci["seq"], mode="ci")
@@ -2826,7 +2826,8 @@ def ship_step(c, sha):
     if c.state["settings"].get("ci", "none") != "none" and \
             (p6.get("ci") or {}).get("seq", 0) < ready["seq"]:
         # Workflows that skip drafts run only now: watch CI once more.
-        return ci_watch(c, "the PR was marked ready: workflows that skip drafts run now")
+        return ci_watch(c, "the PR was marked ready: workflows that skip drafts run now",
+                        sha)
     ci = ci_step(c, sha)
     if ci is not None:
         return ci
@@ -2984,8 +2985,24 @@ def write_body(c, body, rule, refused=None):
                                  if refused else ""), rule, AFTER=[c.cmd("pr", "publish")])
 
 
-def ci_watch(c, rule):
-    return action(f"watch CI: run `{c.cmd('ci-watch')}` (it waits up to 9 minutes), "
+def ci_watch(c, rule, sha=None):
+    """Watch CI on `sha`, the pushed commit, named so that a tests commit made
+    on top of it (and not pushed) doesn't stand in for it. A watch run since
+    `sha` was committed (and since the last resume or retry) that reported on
+    another commit stops the run, rather than asking for a watch that would
+    never settle on `sha`."""
+    ci = c.p6.get("ci") or {}
+    other = ci.get("sha")
+    if sha and other and other != sha and \
+            ci.get("seq", 0) > max(c.p6.get("commit_seq", 0), c.resumed()):
+        return stop([(f"CI is to settle on the pushed commit {sha[:12]}, but `ci-watch` "
+                      f"reported on {other[:12]} instead, so CI never reported on "
+                      f"{sha[:12]}. Tell the user; `auto-dev continue` watches "
+                      f"{sha[:12]} again.")],
+                    "CI reported on another commit", retry={"lift": True},
+                    no_signoff="CI never reported on the commit that ships")
+    watch = c.cmd("ci-watch", "--sha", sha) if sha else c.cmd("ci-watch")
+    return action(f"watch CI: run `{watch}` (it waits up to 9 minutes), "
                   "then run AFTER whatever it exits: `next` asks for another watch "
                   "while CI is still pending", rule, AFTER=[c.cmd("next")])
 
@@ -2997,7 +3014,7 @@ def ci_step(c, sha):
     rewatch = c.resumed() > ci.get("seq", 0)
     if ci.get("sha") != sha or ci.get("status") == "pending" or (rewatch and \
             ci.get("status") != "green"):
-        return ci_watch(c, "CI has not settled on the pushed commit")
+        return ci_watch(c, "CI has not settled on the pushed commit", sha)
     if ci["status"] != "red":
         return None  # green, timeout or unavailable: the main gate says which
     triage = c.last("triager", after=ci["seq"], mode="ci")
