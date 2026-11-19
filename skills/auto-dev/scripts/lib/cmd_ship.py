@@ -64,6 +64,8 @@ cleanup-worktree
     Removes the run's worktree from the main checkout with `git worktree
     remove` (never --force). Only after the final report: it deletes
     .auto-dev/. Refuses a worktree the user made (the run started in it).
+    A removal git refuses is recorded as the worktree kept (the cleanup gate's
+    `keep`), so the run is finished and `next` no longer gives this command.
     Exit: 0 removed; 1 git refused (files are listed; leave it), or the
     worktree is the user's own.
 
@@ -643,6 +645,35 @@ def path_shown(text, path, whole=False):
     return re.search(rf"(?<![\w.~/-]){re.escape(path)}{end}", text) is not None
 
 
+REFUSED_REMOVAL = "git refused the removal"
+
+
+def registered(main_checkout, wt):
+    """Whether `git worktree list` from the main checkout still names `wt`."""
+    code, out, _ = git(main_checkout, "worktree", "list", "--porcelain", check=False)
+    want = Path(wt).resolve()
+    return code == 0 and any(Path(line[len("worktree "):]).resolve() == want
+                             for line in out.splitlines() if line.startswith("worktree "))
+
+
+def left_in_place(main_checkout, wt):
+    """Whether a removal git refused left the worktree as it was: still
+    registered, with the run's state.json in it."""
+    return registered(main_checkout, wt) and (Path(wt) / ".auto-dev" / "state.json").is_file()
+
+
+def what_is_left(wt, shown=10):
+    """The top-level entries still at `wt`, or that nothing is."""
+    try:
+        names = sorted(p.name for p in Path(wt).iterdir())
+    except OSError:
+        return f"nothing at {wt}"
+    if not names:
+        return f"the empty folder {wt}"
+    more = f" and {len(names) - shown} more" if len(names) > shown else ""
+    return f"{', '.join(names[:shown])}{more} in {wt}"
+
+
 def cleanup_worktree(args):
     state = load(args)
     main_checkout, wt = state["repo"]["main_checkout"], state["worktree"]
@@ -650,7 +681,20 @@ def cleanup_worktree(args):
         raise Fail(f"{wt} is the user's own worktree (the run started in it); "
                    "auto-dev never removes it", FAILED, "REFUSED")
     code, out, err = git(main_checkout, "worktree", "remove", wt, check=False)
+    if code != 0 and not left_in_place(main_checkout, wt):
+        # git deleted part of the tree (ignored files don't stop it) and failed on
+        # the rest: saving state now would make .auto-dev/ again outside a worktree.
+        gone = "" if registered(main_checkout, wt) else " and unregistered it"
+        raise Fail(f"git removed part of {wt}{gone}, its run state with it; what is "
+                   f"left: {what_is_left(wt)}. Nothing was recorded: tell the user, who "
+                   f"removes what is left by hand:\n{(err or out).strip()}",
+                   FAILED, "REFUSED")
     if code != 0:
+        # The removal won't happen: the worktree is kept, so the run is finished
+        # (st.cleanup_pending) and `next` no longer gives this command.
+        state["gates"].append({"gate": "cleanup", "choice": "keep", "reason": REFUSED_REMOVAL,
+                               "at": st.now(), "seq": st.seq(state)})
+        st.save(args.dir, state)
         raise Fail(f"git refused to remove {wt}; leave it in place and report what is "
                    f"there:\n{(err or out).strip()}", FAILED, "REFUSED")
     emit(args.json, "REMOVED", wt)

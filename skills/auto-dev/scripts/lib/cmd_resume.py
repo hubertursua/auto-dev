@@ -20,7 +20,10 @@ prints one decision on the first line:
                      the task (NEAR-MISS), or no task was given and no run is open
     FINISHED <tree>  the run the task names already finished or was stopped (a
                      run stopped on a step the user can still override, an
-                     OVERSIZED task, is RESUMEd instead: `next` asks how to go on)
+                     OVERSIZED task, is RESUMEd instead: `next` asks how to go on;
+                     so is a finished run whose worktree the user chose to remove
+                     and is still there: `next` gives the `cleanup-worktree`
+                     command, as its `action:` line says)
     OLD-VERSION <tree>  the run was started on auto-dev 3.x or 4.x, which this
                      version does not resume: finish it on that version (3.9,
                      or 4.27), or remove its worktree and start again
@@ -135,6 +138,12 @@ def current_tree(repo):
 
 def describe(tree, state):
     opened = st.first_open_phase(state)
+    if opened is None and st.cleanup_pending(state):
+        return {"tree": tree, "run": st.run_state(state),
+                "stage": st.STAGE_NAMES["ship"], "runbook": "references/ship.md",
+                "task": state["task"].get("text", ""),
+                "action": ("the user chose to remove the worktree and it is still here: "
+                           "run `next`, which gives the `cleanup-worktree` command")}
     if opened is None:
         return {"tree": tree, "run": st.run_state(state)}
     number, status = opened
@@ -240,7 +249,7 @@ def start_session(tree, state):
     """A new session picks the run up in the first open phase's stage (the
     orchestrator reads its runbook), and a held gate is asked again (`next`
     re-fires it)."""
-    number, _ = st.first_open_phase(state)
+    number, _ = st.first_open_phase(state) or (6, None)  # finished: its cleanup is left
     state["stage"] = st.STAGES[number]
     for n, _ in st.PHASES:
         if st.phase(state, n)["status"] == "held":

@@ -80,7 +80,9 @@ it (_Overriding a stop_, below).
 
 `next` counts each stop it reports by this number in `.auto-dev/metrics.json`
 (`none` for a stop the table doesn't number), once while it keeps reporting
-the same stop; a hold is not a stop.
+the same stop: an answer to the stop other than talk or leave, a setup run
+again, or any other step makes the next stop count again. A hold is not a
+stop, and neither is a step `next` could not take.
 
 ## Hold and Stop
 

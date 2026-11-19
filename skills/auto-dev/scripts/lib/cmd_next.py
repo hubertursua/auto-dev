@@ -151,11 +151,19 @@ Metrics: whenever `next` (not --explain) exits 3 or 4 for a run, it writes
 .auto-dev/metrics.json from state.json: spawns per worker, rounds, stops by
 their number in references/tables.md (each counted once while `next` keeps
 reporting it), refused results, review findings kept and dropped, events and
-the build's diff size. It writes the same file to
+the build's diff size. `next --repo` writes it too when setup failed in the
+run it created (exit 4; that stop is not counted), and a step `next` could not
+take (exit 4) writes it from the run as saved. It writes the same file to
 <metrics-dir>/<repo folder>/<branch>.json, so it outlives the worktree;
 <metrics-dir> is $AUTO_DEV_METRICS_DIR, else $XDG_CONFIG_HOME/auto-dev/metrics,
 else ~/.config/auto-dev/metrics. A file it can't write is said on stderr and
-changes neither the output nor the exit code.
+changes neither the output nor the exit code, with one exception: when the copy
+was not written, the worktree question and its 'Remove it' ACTION say so and
+name .auto-dev/metrics.json, so the user can save it before the worktree is
+removed, or keep it (the ACTION names `gate cleanup keep`). Until
+`cleanup-worktree` has removed it, a later `next` gives that ACTION again, and
+`resume` picks the run up (RESUME) for it; a removal git refuses records the
+worktree as kept, which finishes the run.
 
 A brief issued but not yet recorded is waited for while it was sent out in
 this session, after the latest retry at a stop and less than 3 hours ago
@@ -237,6 +245,12 @@ HUMAN_SCOPE = "ONLY the conditions whose checks the PR comments in the report qu
 # The stop's number and whether it counts (metrics.json): main() reads it,
 # show() drops it.
 TALLY = "TALLY"
+# The ACTION to print instead when the metrics copy could not be written
+# (main_step's "Remove it"): main() swaps it in, show() drops it.
+UNSAVED = "UNSAVED"
+# The artifact dir of the run `next --repo` created and whose setup failed:
+# main() writes its metrics, show() drops it.
+RUN_DIR = "RUN_DIR"
 FILL = ("replace each '<...>' placeholder, inside its single quotes, with text that "
         "holds no single quote (rephrase, or use the typographic apostrophe U+2019)")
 
@@ -738,7 +752,12 @@ def undo_fix(c, brief, n):
 
 def main(args):
     if args.repo:
-        return show(setup_before_run(args), args)
+        result = setup_before_run(args)
+        made = result.pop(RUN_DIR, None)
+        if made is not None and not args.explain and result["code"] == NEXT_STOP:
+            for error in metrics.write(made):  # the run as init left it: no stop counted
+                print(error, file=sys.stderr)
+        return show(result, args)
     for flag in ("task", "ask", "ticket", "ticket_url", "ticket_text_file", "jira"):
         if getattr(args, flag):
             raise Fail(f"--{flag.replace('_', '-')} needs --repo (it sets a run up)",
@@ -781,16 +800,24 @@ def main(args):
         if changed:
             c.quiet = True  # saved, but not an event of its own (as state["stop"])
     c.save()
+    unsaved = result.pop(UNSAVED, None)
     if not c.readonly and result["code"] in (NEXT_COMPLETE, NEXT_STOP):
-        write_metrics(c)
+        copied = not any(e.startswith(metrics.COPY_NOT_WRITTEN) for e in write_metrics(c))
+    else:  # nothing written (--explain): whether it could be, decides the same
+        copied = not unsaved or metrics.copy_error(c.state) is None
+    if unsaved and not copied:
+        result["ACTION"] = unsaved
     return show(result, args)
 
 
 def write_metrics(c):
     """metrics.json and its copy (lib/metrics.py); a file it can't write is
-    said on stderr and changes neither the output nor the exit code."""
-    for error in metrics.write(c.dir):
+    said on stderr and changes neither the output nor the exit code (but for
+    UNSAVED, in main()). The lines it printed."""
+    errors = metrics.write(c.dir)
+    for error in errors:
         print(error, file=sys.stderr)
+    return errors
 
 
 def setup_before_run(args):
@@ -810,6 +837,8 @@ def setup_before_run(args):
 def show(result, args):
     code = result.pop("code")
     result.pop(TALLY, None)
+    result.pop(UNSAVED, None)
+    result.pop(RUN_DIR, None)
     if not args.explain:
         result.pop("RULE", None)
     elif result.get("ACTION"):
@@ -893,6 +922,8 @@ def decide_step(c):
         return fix
     run_state = st.run_state(c.state)
     if run_state == "finished":
+        if st.cleanup_pending(c.state):  # "Remove it", and the worktree is still here
+            return remove_worktree(c)
         return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
                 "RULE": "every phase is done"}
     if run_state in ("stopped", "held"):
@@ -3083,9 +3114,15 @@ def main_step(c, sha):
                 "RULE": "the run used the user's own worktree, which stays"}
     gate = c.gate("cleanup")
     if gate is None:
-        return ask(c, "the worktree", [(f"The run is finished. Remove the worktree {c.wt}? "
-                                       "That deletes .auto-dev/ too; its metrics.json "
-                                       f"stays at {metrics.saved_path(c.state)}.")],
+        saved, inside = metrics.saved_path(c.state), c.ad / metrics.FILE
+        if metrics.copy_error(c.state) is None:
+            told = f"That deletes .auto-dev/ too; its metrics.json stays at {saved}."
+        else:
+            told = ("That deletes .auto-dev/ too, and the run's metrics with it: the "
+                    f"metrics copy could not be written to {saved}, so {inside}, written "
+                    "when you answer, is their only copy; save it first if you want them.")
+        return ask(c, "the worktree", [f"The run is finished. Remove the worktree {c.wt}? "
+                                       + told],
                    [cmd_review.question("Cleanup", f"Remove the worktree {c.wt}?",
                                         ["Remove it", "Keep it"])],
                    [("Remove it", c.cmd("gate", "cleanup", "proceed")),
@@ -3093,13 +3130,36 @@ def main_step(c, sha):
                    "the final report is written")
     c.finish(6, f"merged PR #{p6.get('pr')}")
     if gate["choice"] == "proceed":
-        return {"code": NEXT_COMPLETE, "RULE": "the user chose to remove the worktree",
-                "ACTION": (f"run `{c.cmd('cleanup-worktree')}` from "
-                           f"{q(c.state['repo']['main_checkout'])}; then the run is "
-                           "complete (its state goes with the worktree; its metrics stay "
-                           f"at {metrics.saved_path(c.state)})")}
+        return remove_worktree(c)
     return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
-            "RULE": "the user kept the worktree"}
+            "RULE": "the worktree stays: " + (gate.get("reason") or "the user kept it")}
+
+
+def remove_worktree(c):
+    """The user answered the worktree question "Remove it": the
+    `cleanup-worktree` command (UNSAVED, the ACTION main() prints instead when
+    the metrics copy could not be written, which also names `gate cleanup keep`
+    for a user who keeps the worktree after all). Given again by every `next`
+    until the worktree is gone or recorded as kept, as `cleanup-worktree` does
+    when git refuses (st.cleanup_pending, which counts only a removal a
+    `next` gave: state["cleanup_given"], never saved under --explain)."""
+    if not c.readonly and not c.state.get("cleanup_given"):
+        c.state["cleanup_given"] = True
+        c.dirty = True
+    saved, inside = metrics.saved_path(c.state), c.ad / metrics.FILE
+    cleanup, home = c.cmd("cleanup-worktree"), q(c.state["repo"]["main_checkout"])
+    keep = c.cmd("gate", "cleanup", "keep")
+    return {"code": NEXT_COMPLETE, "RULE": "the user chose to remove the worktree",
+            "ACTION": (f"run `{cleanup}` from {home}; then the run is complete (its "
+                       "state goes with the worktree; its metrics stay at "
+                       f"{saved})"),
+            UNSAVED: (f"the metrics copy could not be written to {saved}: tell the "
+                      f"user that {inside} is the run's only metrics file and goes "
+                      f"with the worktree, and run `{cleanup}` from {home} only once "
+                      "they have saved it or said to go on; then the run is complete "
+                      "(its state and metrics go with the worktree). If they decide to "
+                      f"keep the worktree instead, run `{keep}`: then the run is complete "
+                      "and the worktree stays")}
 
 
 def outside_push(c, sha, stale):

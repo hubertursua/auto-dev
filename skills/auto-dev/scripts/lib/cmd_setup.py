@@ -47,7 +47,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import cmd_init, cmd_resume, cmd_work
+from . import cmd_init, cmd_resume, cmd_work, metrics
 from . import state as st
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git, run
@@ -334,9 +334,10 @@ def find_run(repo, task, ticket):
     """(worktree, state) of this task's open run, or None: one whose task text
     is `task`, else one whose restated ask is (the user's own words find a run
     started from a ticket key), and whose ticket is `ticket` when one is
-    given."""
+    given. A run past its end (its worktree removal still to run) is not open:
+    a new request for its task sets a fresh run up."""
     runs = [(tree, state) for kind, tree, _, state in cmd_resume.candidates(repo)
-            if kind == "run" and st.resumable(state)
+            if kind == "run" and st.resumable(state) and not past_its_end(state)
             and not (ticket and state["task"].get("ticket") != ticket)]
     # A run whose task text is `task` comes first, whatever the worktree order.
     for key in ("text", "ask"):
@@ -344,6 +345,14 @@ def find_run(repo, task, ticket):
             if str(state["task"].get(key) or "").strip() == task:
                 return tree, state
     return None
+
+
+def past_its_end(state):
+    """The run finished, or the user answered its last question (whether to
+    remove the worktree) and the `next` that finishes it has not run yet: all
+    that is left is the worktree's removal, never new work."""
+    return st.run_state(state) == "finished" or any(
+        g.get("gate") == "cleanup" for g in state.get("gates") or [])
 
 
 def read_origin(artifact_dir):
@@ -776,7 +785,8 @@ class Setup:
                            f"({profile.get('no_save') or 'no save path'}): use it for this "
                            "run only, or commit it as the repo's .auto-dev.yml.")
         summary.append("Paths for the permissions guidance: profiles folder "
-                       f"{profile.get('profiles_dir') or 'none'}; skill folder {SKILL_DIR}; "
+                       f"{profile.get('profiles_dir') or 'none'}; metrics folder "
+                       f"{metrics.metrics_dir()}; skill folder {SKILL_DIR}; "
                        f"the run's worktree goes in {Path(self.repo).parent}")
         keys = [k for k in ANSWERS if k != "save" or profile.get("save_path")]
         commands = {k: command("setup-answer", k, "--repo", self.repo, "--task", self.task)
@@ -842,7 +852,7 @@ class Setup:
                 f"saved profile {saved}, without {', '.join(commands)}"], notes
 
     def create(self, profile):
-        from .cmd_next import stop
+        from .cmd_next import RUN_DIR, stop
         prefix = self.branches().get("prefix") or "feat"
         info = self.info
         ticket_text = read_text(self.folder / TICKET_FILE) if info.get("ticket_text") else ""
@@ -877,10 +887,12 @@ class Setup:
         tree, state = found
         ad = Path(tree) / ".auto-dev"
         source = cmd_init.setup_source(ad, state)
-        return stop([f"Setup failed: {message}", *origin_summary(ad, state),
-                     (f"The run is kept in {tree}. Fix the setup in {source}, then say "
-                      "`auto-dev continue`: `next` runs setup again from that file.")],
-                    "Phase 1's setup failed")
+        failed = stop([f"Setup failed: {message}", *origin_summary(ad, state),
+                       (f"The run is kept in {tree}. Fix the setup in {source}, then say "
+                        "`auto-dev continue`: `next` runs setup again from that file.")],
+                      "Phase 1's setup failed")
+        failed[RUN_DIR] = ad  # the run exists: next writes its metrics.json
+        return failed
 
     def reopen(self, profile):
         """After init stopped before the run existed: what the user can do.

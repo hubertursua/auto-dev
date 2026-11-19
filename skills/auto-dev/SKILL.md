@@ -92,7 +92,7 @@ repo. Below, `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 | Prints | Do |
 |---|---|
 | `FRESH` | a new run: follow `references/plan.md` from step 1 |
-| `RESUME <tree>` | read the runbook its `runbook:` line names (`references/plan.md`, `build.md` or `ship.md`), `cd <tree>`, then go to **The loop**. An `action:` line (setup is not done) needs nothing more: the first `next` finishes setup, or runs it again |
+| `RESUME <tree>` | read the runbook its `runbook:` line names (`references/plan.md`, `build.md` or `ship.md`), `cd <tree>`, then go to **The loop**. An `action:` line (setup is not done, or the worktree the user chose to remove is still there) needs nothing more: the first `next` finishes setup, runs it again, or gives the `cleanup-worktree` command |
 | `ASK` | show the user the `candidates` lines and ask which run is theirs, or whether to start fresh. Then run `resume` again with `--task` set to the chosen run's task, or follow `plan.md` for a fresh one |
 | `FINISHED <tree>` | tell the user that run already finished or was stopped; ask whether to start a fresh one |
 | `OLD-VERSION <tree>` | tell the user: "This run was started on an older auto-dev (its `action` line names the version, 3.x or 4.x, and the release to finish it on). Finish it there, or remove its worktree (`git worktree remove <tree>`) and start again." Then stop |

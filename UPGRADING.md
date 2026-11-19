@@ -14,7 +14,17 @@ can resume on the new one. Newest first. The current version is in
   `~/.config/auto-dev/metrics/<repo>/<branch>.json` (or
   `$AUTO_DEV_METRICS_DIR`, or `$XDG_CONFIG_HOME/auto-dev/metrics`), so it
   outlives the worktree; the worktree question names it. A file it can't
-  write is said on stderr and changes nothing else. A 5.0 run in flight
+  write is said on stderr and changes nothing else, with one exception: when
+  the copy can't be written, the worktree question and its "Remove it" ACTION
+  say so and name `.auto-dev/metrics.json`, so the user can save it before the
+  worktree is removed (or keep it: the ACTION names `gate cleanup keep`).
+  Until `cleanup-worktree` runs, a later `next` gives that ACTION again and
+  `resume` picks the run up for it; a removal git refuses records the worktree
+  as kept, so the run is finished (one where git removed part of the worktree
+  before it failed records nothing, and names what is left). A 5.0 run that
+  finished with its worktree still there (git refused 5.0's
+  `cleanup-worktree`) stays finished: only a removal this version's `next`
+  gave is picked up again. A 5.0 run in flight
   resumes on it; its metrics count only the stops and refused results after
   the upgrade, and a diff checked before it has no file or line count.
 - **A worker still out is waited for, not spawned again.** `next` used to

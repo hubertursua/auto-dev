@@ -18,6 +18,7 @@ only: no task text, path or code.
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
 from . import artifacts as art
@@ -27,6 +28,8 @@ from . import state as st
 FILE = "metrics.json"
 FORMAT = 1
 UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+# How write() begins the line for a copy it could not write.
+COPY_NOT_WRITTEN = "metrics copy not written"
 
 
 def metrics_dir():
@@ -167,8 +170,23 @@ def write(artifact_dir):
         copy.parent.mkdir(parents=True, exist_ok=True)
         st._atomic_write(copy, text)
     except OSError as exc:
-        errors.append(f"metrics copy not written to {copy}: {exc}")
+        errors.append(f"{COPY_NOT_WRITTEN} to {copy}: {exc}")
     return errors
+
+
+def copy_error(state):
+    """Whether the copy can be written now, tried the way write() writes it,
+    for a text no write comes before (the worktree question): the folder made,
+    then a temporary file created in it and removed. None when both worked,
+    else the error's text. Leaves no file behind and raises nothing."""
+    folder = saved_path(state).parent
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=folder):
+            pass
+    except OSError as exc:
+        return str(exc)
+    return None
 
 
 def note_stop(state, tally_, rule, phase):
