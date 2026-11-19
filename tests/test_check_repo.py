@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -447,6 +448,76 @@ class CheckRepoTest(unittest.TestCase):
             tool.check_panel_lenses(Path(tmp), slots=("R1",))  # no code-reviewer.md
         self.assertEqual(len(tool.errors), 1, tool.errors)
         self.assertIn("agents/code-reviewer.md", tool.errors[0])
+
+    def folded_review_mode(self):
+        return " ".join(self.code_reviewer_mode("review").split()).lower()
+
+    def test_the_lens_sentence_points_each_reviewer_at_its_own_slot_s_line(self):
+        review = self.folded_review_mode()
+        self.assertIn("yours is the line for {{reviewer}}:", review)
+        # A fixed slot there would tell every panelist that one slot's lens.
+        self.assertNotRegex(review, r"yours is the line for r\d")
+
+    def test_the_review_mode_says_to_go_deepest_on_the_lens_and_name_it(self):
+        self.assertIn("go deepest on your lens in step 2, and name it on your report's "
+                      "`lens:` line", self.folded_review_mode())
+
+    def test_step_2_tries_to_break_the_change_through_the_lens_first(self):
+        steps = self.code_reviewer_mode("review").split("### Steps", 1)
+        self.assertEqual(len(steps), 2, "the review mode has no `### Steps`")
+        step2 = re.search(r"^2\. .*?(?=^\d+\. |^#|\Z)", steps[1], re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(step2, "the review mode's steps have no step 2")
+        self.assertIn("try to break the change through your lens first (your lens, above)",
+                      " ".join(step2.group(0).split()).lower())
+
+    def test_r2_s_lens_line_defines_overfitting(self):
+        review = self.code_reviewer_mode("review")
+        r2 = re.search(r"^[ \t]*- \*\*R2 — .*?(?=^[ \t]*- |\n\s*\n|\Z)", review,
+                       re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(r2, "the review mode has no lens line for R2")
+        r2_text = " ".join(r2.group(0).split()).lower()
+        for what in ("overfitting: code that passes its tests without doing what",
+                     "branches on a test's own inputs", "hardcodes an expected value",
+                     "matches a check's wording"):
+            self.assertIn(what, r2_text)
+
+    def slots_check_on_a_copy(self, edit):
+        """check-repo.py's run on a repo copy whose panel SLOTS in
+        scripts/lib/cmd_next.py `edit` (text -> text) rewrites, after the copy
+        passes as it is. agents/code-reviewer.md stays as it is."""
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = self.copy_of_the_repo(tmp)
+            tool = copy / "tools" / "check-repo.py"
+            module = copy / "skills" / "auto-dev" / "scripts" / "lib" / "cmd_next.py"
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+
+            def run():
+                return subprocess.run([sys.executable, str(tool)], capture_output=True,
+                                      text=True, check=False, env=env)
+
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stdout)  # the copy passes as it is
+            text = module.read_text(encoding="utf-8")
+            edited = edit(text)
+            self.assertNotEqual(edited, text, "the edit changed nothing")
+            module.write_text(edited, encoding="utf-8")
+            return run()
+
+    SLOTS_LINE = 'SLOTS = ("R1", "R2", "R3")\n'
+
+    def test_a_slot_added_to_the_panel_with_no_lens_fails_naming_it(self):
+        result = self.slots_check_on_a_copy(lambda text: text.replace(
+            self.SLOTS_LINE, 'SLOTS = ("R1", "R2", "R3", "R4")\n', 1))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue([ln for ln in self.fail_lines(result)
+                         if "agents/code-reviewer.md" in ln and "R4" in ln], result.stdout)
+
+    def test_a_slot_dropped_from_the_panel_with_a_lens_fails_naming_it(self):
+        result = self.slots_check_on_a_copy(lambda text: text.replace(
+            self.SLOTS_LINE, 'SLOTS = ("R1", "R2")\n', 1))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue([ln for ln in self.fail_lines(result)
+                         if "R3" in ln and "not a panel slot" in ln], result.stdout)
 
 
 if __name__ == "__main__":
