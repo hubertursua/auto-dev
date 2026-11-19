@@ -4531,6 +4531,7 @@ class OutsidePushTest(NextCase):
     def test_a_pushed_mark_for_a_head_the_run_did_not_make_does_not_loop(self):
         verified = self.reviewed_with_ci()
         merged = self.base_merged_and_pushed()
+        self.seen = []  # only what `next` says after the outside push counts
         r = self.autodev("mark", "pushed", "--value", merged, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.asks_for_the_re_check(self.next(0))
