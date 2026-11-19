@@ -46,9 +46,12 @@ can resume on the new one. Newest first. The current version is in
   one that names no commit exits 2), and every watch `next` asks for names the
   pushed commit. A watch run since that commit was made that reported on
   another commit now stops the run (stop #23, lifted by `auto-dev continue` or
-  a retry). A 5.0 run in flight that is looping resumes on it: `resume` starts
-  a new session, so the stop doesn't fire and `next` asks for `ci-watch --sha
-  <the pushed commit>`.
+  a retry). A 5.0 run in flight that is looping resumes on it. If you ended
+  its last session, `resume` starts a new session, so the stop doesn't fire
+  and `next` asks for `ci-watch --sha <the pushed commit>`. If its last
+  session ended at a checkpoint, `auto-dev continue` stops once at #23; `auto-dev
+  continue` again, or _I fixed it myself_, lifts the stop and watches the
+  pushed commit.
 
 ## Upgrading from 4.27
 

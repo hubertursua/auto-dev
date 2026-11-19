@@ -1114,7 +1114,7 @@ class ShipTest(RunCase):
         state["phase6"]["ci"] = {"sha": head, "status": "green", "failing": [], "seq": 1}
         self.write_state(state)
         self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}])
-        for sha in ("0" * 40, "no-such-commit", "--all"):
+        for sha in ("0" * 40, "no-such-commit", "--all", "--since=yesterday"):
             with self.subTest(sha=sha):
                 r = self.watch("--max-wait", "0", f"--sha={sha}")
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
@@ -1126,6 +1126,30 @@ class ShipTest(RunCase):
         r = self.watch("--max-wait", "0", "--sha", head[:12])
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
         self.assertEqual(self.state()["phase6"]["ci"]["sha"], head)
+
+    def test_ci_watch_sha_on_gitlab_records_that_commit_not_head(self):
+        self.set_settings(ci="gitlab")
+        pushed = self.git("rev-parse", "HEAD").strip()
+        (self.worktree / "local.ts").write_text("export const local = 1;\n")
+        self.git("add", "local.ts")
+        self.git("commit", "-q", "-m", "test: a local commit on top")
+        head = self.git("rev-parse", "HEAD").strip()
+        r = self.watch("--max-wait", "0", "--sha", pushed[:12])
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.state()["phase6"]["ci"]["sha"], pushed)
+        self.assertNotEqual(pushed, head)
+
+    def test_ci_watch_sha_on_another_pr_head_names_the_watched_commit(self):
+        self.set_settings(ci="github-actions")
+        watched = self.git("rev-parse", "HEAD").strip()
+        self.checks([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}],
+                    head="f" * 40)
+        r = self.watch("--max-wait", "0", "--grace", "0", "--sha", watched[:12])
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        line = next(ln for ln in r.stdout.splitlines() if ln.startswith("UNAVAILABLE"))
+        self.assertIn(f"the PR's head is ffffffffffff, not the watched commit {watched[:12]}",
+                      line)
+        self.assertNotIn("local HEAD", line)
 
     def test_ci_timeout_holds(self):
         self.set_settings(ci="github-actions", ci_timeout=0)

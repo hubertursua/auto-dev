@@ -448,7 +448,8 @@ def poll_checks(cwd, pr, sha, deadline, ready=None):
                    CANNOT_RUN, "ERROR") from None
     if head != sha:
         return "elsewhere", [], (f"the PR's head is {head[:12] or 'unknown'}, not the "
-                                 f"local HEAD {sha[:12]} (not pushed yet?)")
+                                 f"watched commit {sha[:12]} (not pushed yet, or another "
+                                 "commit pushed since?)")
     code, out, err = gh_poll(cwd, deadline, "pr", "checks", str(pr), "--json",
                              "name,state,bucket,link,startedAt")
     if code == 124:
