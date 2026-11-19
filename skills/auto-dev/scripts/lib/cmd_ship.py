@@ -70,8 +70,14 @@ cleanup-worktree
     .auto-dev/. Refuses a worktree the user made (the run started in it).
     A removal git refuses is recorded as the worktree kept (the cleanup gate's
     `keep`), so the run is finished and `next` no longer gives this command.
-    Exit: 0 removed; 1 git refused (files are listed; leave it), or the
-    worktree is the user's own.
+    When git removed part of the worktree before it failed (it unregisters
+    the tree all the same), the REFUSED says so and names what is left, which
+    the user removes by hand. If the run's state.json is still there, it is
+    recorded as kept in the same way and the REFUSED says .auto-dev/ is still
+    there; if the state went with the tree, nothing is recorded.
+    Exit: 0 removed; 1 git refused (files are listed; leave it), git removed
+    part of the worktree (what is left is listed; the user removes it by
+    hand), or the worktree is the user's own.
 
 All of them exit 2 when they could not run (no state, git or gh missing, an
 unexpected error) — never a pass.
@@ -664,6 +670,7 @@ def path_shown(text, path, whole=False):
 
 
 REFUSED_REMOVAL = "git refused the removal"
+PARTIAL_REMOVAL = "git removed part of the worktree"
 
 
 def registered(main_checkout, wt):
@@ -692,6 +699,24 @@ def what_is_left(wt, shown=10):
     return f"{', '.join(names[:shown])}{more} in {wt}"
 
 
+def record_kept(artifact_dir, state, reason):
+    """Record the cleanup gate `keep`: the run is finished (st.cleanup_pending),
+    so `next` no longer gives `cleanup-worktree`. Where git left a .auto-dev/
+    that takes no new file (it stopped there, at a read-only folder), state.json
+    is rewritten in place instead. The error when neither write worked, else None."""
+    state["gates"].append({"gate": "cleanup", "choice": "keep", "reason": reason,
+                           "at": st.now(), "seq": st.seq(state)})
+    try:
+        st.save(artifact_dir, state)
+    except OSError:
+        try:
+            st.path_of(artifact_dir).write_text(
+                json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError as exc:
+            return exc
+    return None
+
+
 def cleanup_worktree(args):
     state = load(args)
     main_checkout, wt = state["repo"]["main_checkout"], state["worktree"]
@@ -700,13 +725,25 @@ def cleanup_worktree(args):
                    "auto-dev never removes it", FAILED, "REFUSED")
     code, out, err = git(main_checkout, "worktree", "remove", wt, check=False)
     if code != 0 and not left_in_place(main_checkout, wt):
-        # git deleted part of the tree (ignored files don't stop it) and failed on
-        # the rest: saving state now would make .auto-dev/ again outside a worktree.
+        # git deleted part of the tree (ignored files don't stop it), stopped at
+        # the first entry it could not delete and unregistered the tree.
         gone = "" if registered(main_checkout, wt) else " and unregistered it"
-        raise Fail(f"git removed part of {wt}{gone}, its run state with it; what is "
-                   f"left: {what_is_left(wt)}. Nothing was recorded: tell the user, who "
-                   f"removes what is left by hand:\n{(err or out).strip()}",
-                   FAILED, "REFUSED")
+        detail, left = (err or out).strip(), what_is_left(wt)
+        if not st.path_of(args.dir).is_file():
+            # Saving state now would make .auto-dev/ again outside a worktree.
+            raise Fail(f"git removed part of {wt}{gone}, its run state with it; what "
+                       f"is left: {left}. Nothing was recorded: tell the user, who "
+                       f"removes what is left by hand:\n{detail}", FAILED, "REFUSED")
+        # git stopped before it deleted state.json: record the worktree kept
+        # there, or every later `next` gives this command again.
+        failed = record_kept(args.dir, state, PARTIAL_REMOVAL)
+        recorded = (f"but could not be updated ({failed}), so `next` gives this "
+                    "command again" if failed else "and now records the worktree as "
+                    "kept, so the run is finished")
+        raise Fail(f"git removed part of {wt}{gone}; the run's state "
+                   f"({Path(args.dir).name}/) is still there {recorded}; what is "
+                   f"left: {left}. Tell the user, who removes what is left by hand:"
+                   f"\n{detail}", FAILED, "REFUSED")
     if code != 0:
         # The removal won't happen: the worktree is kept, so the run is finished
         # (st.cleanup_pending) and `next` no longer gives this command.

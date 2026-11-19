@@ -221,9 +221,11 @@ names. Until `cleanup-worktree` has run, `next` gives the same ACTION again (and
 answered can finish it. If git refuses (exit 1), `cleanup-worktree` records the
 worktree as kept, so the run is finished and `next` gives no ACTION for it
 again: leave the tree and tell the user which files are in it. When git
-removed part of the worktree before it failed (its `REFUSED` says so and names
-what is left), nothing is recorded, since the run's state went with it: tell
-the user what is left, which they remove by hand.
+removed part of the worktree before it failed, its `REFUSED` says so and names
+what is left: tell the user, who removes it by hand. If the run's state is
+still there, the `REFUSED` says so and the worktree is recorded as kept, so
+`next` gives no ACTION for it again; if the state went with the tree, nothing
+is recorded.
 A run that started in a worktree the user made never asks: that worktree stays.
 
 ## Stops in the Ship stage

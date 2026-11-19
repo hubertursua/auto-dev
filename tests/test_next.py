@@ -8259,13 +8259,9 @@ class MetricsCleanupTest(OverrideCase):
         self.next_3()
         self.assertTrue(self.state()["cleanup_given"])
 
-    def test_a_removal_git_left_half_done_records_nothing(self):
-        self.to_the_worktree_question()
-        with open(self.repo / ".git" / "info" / "exclude", "a") as exclude:
-            exclude.write("build/\n")
-        folder = self.worktree / "build" / "ro"
-        folder.mkdir(parents=True)
-        (folder / "out.bin").write_text("built\n")
+    def read_only(self, folder):
+        """Make `folder` read-only for this test, or skip it where the user
+        can write to a read-only folder anyway (root)."""
         folder.chmod(0o555)
         self.addCleanup(lambda: folder.exists() and folder.chmod(0o755))
         try:
@@ -8275,15 +8271,76 @@ class MetricsCleanupTest(OverrideCase):
             pass
         else:
             self.skipTest("this user can write to a read-only folder (root)")
+
+    def ignore(self, pattern):
+        with open(self.repo / ".git" / "info" / "exclude", "a") as exclude:
+            exclude.write(pattern + "\n")
+
+    def half_removed(self, lock=None):
+        """Answer "Remove it" and run `cleanup-worktree` (with the folder `lock`
+        made read-only first), which git stops partway: exit 1, REFUSED, saying
+        so. Its output."""
         self.removed()
         self.next_3()
+        if lock:
+            self.read_only(lock)
         r = self.autodev("cleanup-worktree", "--dir", self.dir, cwd=self.repo)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("REFUSED", r.stdout + r.stderr)
-        self.assertIn("git removed part of", r.stdout + r.stderr)
-        self.assertIn("build", r.stdout + r.stderr)  # what is left
-        self.assertFalse((self.dir / "state.json").exists())
-        self.assertFalse((self.dir / "WORK_LOG.md").exists())
+        shown = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, shown)
+        self.assertIn("REFUSED", shown)
+        self.assertIn("git removed part of", shown)
+        self.assertIn("unregistered it", shown)
+        return shown
+
+    def test_a_removal_git_left_half_done_names_what_is_left(self):
+        # git stops at the first entry it can't delete, in the order the
+        # filesystem lists them: .auto-dev/ may go before build/ or stay.
+        self.to_the_worktree_question()
+        self.ignore("build/")
+        folder = self.worktree / "build" / "ro"
+        folder.mkdir(parents=True)
+        (folder / "out.bin").write_text("built\n")
+        self.read_only(folder)
+        shown = self.half_removed()
+        self.assertIn("build", shown)  # what is left
+        if (self.dir / "state.json").exists():
+            self.assertIn("(.auto-dev/) is still there", shown)
+            self.assertNotIn("its run state with it", shown)
+            self.assertEqual(self.state()["gates"][-1]["choice"], "keep")
+        else:
+            self.assertIn("its run state with it", shown)
+            self.assertIn("Nothing was recorded", shown)
+            self.assertFalse(self.dir.exists() and any(self.dir.iterdir()))
+
+    def test_a_half_done_removal_that_left_the_state_ends_the_run(self):
+        # .auto-dev/ takes no deletion, so state.json stays whatever the order.
+        self.to_the_worktree_question()
+        self.ignore("build/")
+        folder = self.worktree / "build" / "ro"
+        folder.mkdir(parents=True)
+        (folder / "out.bin").write_text("built\n")
+        self.read_only(folder)
+        shown = self.half_removed(lock=self.dir)
+        self.assertNotIn("its run state with it", shown)
+        self.assertIn("(.auto-dev/) is still there", shown)
+        self.assertIn(".auto-dev", shown.split("what is left:")[1])
+        self.assertTrue((self.dir / "state.json").is_file())
+        gate = self.state()["gates"][-1]
+        self.assertEqual((gate["gate"], gate["choice"]), ("cleanup", "keep"))
+        action, _ = self.next_3()
+        self.assertEqual(action, self.DONE)
+        self.assertNotIn("cleanup-worktree", action)
+
+    def test_a_half_done_removal_lists_ten_entries_and_how_many_more(self):
+        # In a read-only worktree folder git deletes no top-level entry.
+        self.to_the_worktree_question()
+        self.ignore("extra-*")
+        for i in range(12):
+            (self.worktree / f"extra-{i:02}").write_text("left\n")
+        entries = len(list(self.worktree.iterdir()))
+        self.assertGreater(entries, 10)
+        shown = self.half_removed(lock=self.worktree)
+        self.assertIn(f" and {entries - 10} more in {self.worktree}", shown)
 
     def test_resume_of_a_pending_cleanup_reads_the_ship_runbook(self):
         self.to_the_worktree_question()

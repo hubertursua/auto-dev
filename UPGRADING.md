@@ -46,7 +46,8 @@ can resume on the new one. Newest first. The current version is in
   Until `cleanup-worktree` runs, a later `next` gives that ACTION again and
   `resume` picks the run up for it; a removal git refuses records the worktree
   as kept, so the run is finished (one where git removed part of the worktree
-  before it failed records nothing, and names what is left). A 5.0 run that
+  before it failed names what is left, and records the worktree as kept only
+  when the run's state is still there). A 5.0 run that
   finished with its worktree still there (git refused 5.0's
   `cleanup-worktree`) stays finished: only a removal this version's `next`
   gave is picked up again. A 5.0 run in flight
