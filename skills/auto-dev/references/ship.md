@@ -211,9 +211,22 @@ wasn't. A run that stopped early uses the same shape and says where it stopped.
 
 The last question (exit 5) is whether to remove the worktree. On `Remove it`,
 `next` exits 3 with a `cleanup-worktree` command: run it from the main checkout.
+The run's `metrics.json` survives it: `next` writes a copy outside the worktree,
+at the path the question names. When that copy could not be written, the
+question and the ACTION say so and name `.auto-dev/metrics.json` instead: the
+user saves it, or says to go on, before `cleanup-worktree` runs; if they decide
+to keep the worktree instead, run the `gate cleanup keep` command that ACTION
+names. Until `cleanup-worktree` has run, `next` gives the same ACTION again (and
+`resume` picks the run up for it), so a session that ended before the user
+answered can finish it. If git refuses (exit 1), `cleanup-worktree` records the
+worktree as kept, so the run is finished and `next` gives no ACTION for it
+again: leave the tree and tell the user which files are in it. When git
+removed part of the worktree before it failed, its `REFUSED` says so and names
+what is left: tell the user, who removes it by hand. If the run's state is
+still there, the `REFUSED` says so and the worktree is recorded as kept, so
+`next` gives no ACTION for it again; if the state went with the tree, nothing
+is recorded.
 A run that started in a worktree the user made never asks: that worktree stays.
-If git refuses (exit 1), leave the tree and tell the user which files are in
-it.
 
 ## Stops in the Ship stage
 

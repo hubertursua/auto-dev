@@ -984,6 +984,28 @@ class RecordTest(WorkCase):
             r = self.cmd("record", "lookup", str(n))
             self.assertEqual(r.returncode, 0, (answer, r.stdout))
 
+    def test_a_refused_return_recorded_twice_by_hand_counts_once_in_metrics(self):
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.tmp / "metrics")
+        n = self.job("planner", "write")
+        self.returned("planner", n, next="FITS", reading="none", entry_points_changed="no")
+        for _ in range(2):
+            r = self.cmd("record", "planner", str(n))
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("MALFORMED", r.stdout)
+        # Send the retry out until `next` stops the run: a stop writes metrics.json.
+        codes = []
+        for _ in range(6):
+            r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+            codes.append(r.returncode)
+            if r.returncode != 0:
+                break
+        self.assertEqual(codes[-1], 4, f"{codes}\n{r.stdout}{r.stderr}")
+        path = self.dir / "metrics.json"
+        self.assertTrue(path.is_file(), f"no {path} after the stop")
+        metrics = json.loads(path.read_text())
+        self.assertEqual(metrics["refused"]["total"], 1)
+        self.assertEqual(metrics["refused"]["by_worker"], {"planner": 1})
+
 
 class TreeGuardTest(WorkCase):
     """A worker that never changes the repo (the planner, the plan critic, the

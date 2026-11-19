@@ -157,19 +157,20 @@ script's writes outside the working directory. A run also runs the helper
 scripts and the profile's commands through Bash, in a worktree outside the
 working directory, and each new command or path can prompt. Show the user the
 guidance below at the profile question, and again when saving the profile
-failed. Fill in the real `<profiles-dir>`, `<skill-dir>` and commands (the
-profile question's `SUMMARY` names the paths). **Never edit the user's
+failed. Fill in the real `<profiles-dir>`, `<metrics-dir>`, `<skill-dir>` and
+commands (the profile question's `SUMMARY` names the paths). **Never edit the user's
 settings files yourself**: the user decides what to allow.
 
 Guidance to show (adapt the paths):
 
-> **Let auto-dev save this repo's profile.** `autodev.py` writes it. If you use
-> the Bash sandbox, add
+> **Let auto-dev save this repo's profile and each run's metrics.** `autodev.py`
+> writes both. If you use the Bash sandbox, add
 > `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }` to
 > `~/.claude/settings.json` (your user settings, which apply in every repo), so
-> the script can write there. If the profiles directory is not under
-> `~/.config/auto-dev` (you set `AUTO_DEV_PROFILES_DIR` or `XDG_CONFIG_HOME`),
-> use that path instead.
+> the script can write there: the profile, and the copy of each run's
+> `metrics.json` that outlives its worktree. If you moved either folder (you set
+> `AUTO_DEV_PROFILES_DIR`, `AUTO_DEV_METRICS_DIR` or `XDG_CONFIG_HOME`), allow
+> each moved folder instead: `<profiles-dir>` and `<metrics-dir>`.
 >
 > **Let the run's scripts and files go without asking.** Add these to the same
 > `~/.claude/settings.json`. Replace `<home>` with the absolute home folder (a

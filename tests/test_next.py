@@ -426,6 +426,20 @@ class NextCase(RunCase):
         self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
         return out
 
+    def assert_counted(self, number, rule, phase, times=1):
+        """metrics.json counts the stop `next` printed last: the last entry of
+        stops.list is it, and `times` stops carry its number (`none` for one
+        references/tables.md doesn't number)."""
+        path = self.dir / "metrics.json"
+        self.assertTrue(path.is_file(), f"no {path}")
+        stops = json.loads(path.read_text())["stops"]
+        self.assertTrue(stops["list"], stops)
+        self.assertEqual(stops["list"][-1], {"number": number, "rule": rule, "phase": phase},
+                         stops)
+        self.assertEqual(stops["by_number"].get("none" if number is None else str(number)),
+                         times, stops)
+        return stops
+
     def sent_out_ago(self, worker, n, **ago):
         """Make `worker` #`n`'s brief look as if it was last sent out `ago` back."""
         when = (datetime.now(timezone.utc) - timedelta(**ago)).replace(microsecond=0)
@@ -507,6 +521,20 @@ class PlanTest(NextCase):
         # The reasons themselves, so the orchestrator never reads PLAN.md.
         self.assertIn("- Split: ship shared lists first, then invites", out["REPORT"])
         self.assertIn("- Subsystems: lists (~6 files), invites (~8 files)", out["REPORT"])
+        self.assert_counted(5, "the planner found the task too big for one PR (OVERSIZED)", 2)
+
+    def test_a_stopped_oversized_run_with_its_plan_set_aside_is_still_stop_5(self):
+        (self.dir / "PLAN.md").write_text(OVERSIZED_PLAN)
+        self.expect("planner", "OVERSIZED", **PLANNED)
+        self.next(4)
+        state = self.state()
+        for entry in state["log"]:
+            if entry["worker"] == "planner":
+                entry["aside"] = True
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("too big for one PR", " ".join(out["REPORT"]))
+        self.assert_counted(5, "the run is stopped", 2, times=2)
 
     def test_oversized_with_no_size_check_section_points_at_the_plan_not_a_reply(self):
         (self.dir / "PLAN.md").write_text(OVERSIZED_PLAN)
@@ -791,6 +819,8 @@ class PlanTest(NextCase):
         out = self.next(4)  # free, but once: no planner/tester loop
         self.assertIn("still finds condition(s) 2 reading two ways",
                       " ".join(out["REPORT"]))
+        self.assert_counted(22, "a condition still reads two ways after the planner's "
+                            "decision", 3)
 
     def test_an_ambiguous_condition_read_the_tester_s_way_goes_on(self):
         self.planned()
@@ -812,6 +842,7 @@ class PlanTest(NextCase):
         self.answer(*jobs[0], "WRITTEN", checks="1", ambiguous="none")  # gaps still
         out = self.next(4)
         self.assertIn("gaps after the tester's second try", " ".join(out["REPORT"]))
+        self.assert_counted(22, "check-manifest found gaps twice", 3)
 
     def test_post_plan_revise_goes_to_the_planner_then_asks_again(self):
         self.planned(gate=False)
@@ -831,6 +862,7 @@ class PlanTest(NextCase):
         self.next(0, reissue=True)
         out = self.next(4, reissue=True)
         self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
+        self.assert_counted(7, "a worker failed to return three times", 2)
 
     def test_a_long_session_checkpoints_and_resumes_where_it_stopped(self):
         state = self.state()
@@ -1014,6 +1046,7 @@ class PlanTest(NextCase):
         _, jobs = self.expect("planner")
         self.answer(*jobs[0], "", status="blocked")
         self.assertIn("did not return ok twice running", " ".join(self.next(4)["REPORT"]))
+        self.assert_counted(6, "a worker returned status blocked", 2)
 
     def test_resume_after_a_worker_never_returned_spawns_it_again(self):
         self.expect("planner")
@@ -1236,6 +1269,7 @@ class BuildTest(NextCase):
         self.answer(*jobs[0], "BLOCKED", blocked="1", test_changes="none")
         out = self.next(4)  # once is free; again in the same change, the user decides
         self.assertIn("stopped a step again", " ".join(out["REPORT"]))
+        self.assert_counted(22, "the coder returned BLOCKED again", 4)
 
     def test_phase_5_runs_the_quality_gate_itself_on_the_committed_checks(self):
         self.plan_session()
@@ -1289,6 +1323,7 @@ class BuildTest(NextCase):
             self.assertIn("quality-gate", self.next(0)["ACTION"])
         out = self.next(4)
         self.assertIn("no run was recorded", " ".join(out["REPORT"]))
+        self.assert_counted(9, "the quality gate never finished", 5)
         r = self.autodev("override", "retry", "--text", "run it in the background",
                          "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1891,6 +1926,9 @@ class ShipTest(NextCase):
         self.after(out, "Keep it")
         out = self.next(3)
         self.assertEqual(self.state()["phases"]["6"]["status"], "done")
+        # exit 3 writes the run's metrics, as it finished
+        metrics = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(metrics["run"]["state"], "finished")
         log = [json.loads(ln)["args"] for ln in
                (self.tmp / "gh.log").read_text().splitlines()]
         self.assertEqual(sum(1 for a in log if a[:2] == ["pr", "create"]), 1)
@@ -2299,6 +2337,7 @@ class ShipTest(NextCase):
         self.write_state(state)
         self.assertIn("The commit step failed (not-verified)",
                       " ".join(self.next(4)["REPORT"]))
+        self.assert_counted(14, "the commit failed", 6)
 
     def test_gh_failing_at_publish_is_not_a_refusal(self):
         _sha, _url, _out, body = self.to_body(first=[
@@ -2319,6 +2358,8 @@ class ShipTest(NextCase):
         left = self.state()["budget"]["remaining"]  # human-1 is spent
         out = self.next(4)  # the tester and the comment disagree: the user decides
         self.assertIn("a PR comment judges them wrong", " ".join(out["REPORT"]))
+        self.assert_counted(21, "the acceptance tester and the worker that questioned a "
+                            "check disagree", 6)
         self.sign_off(out)
         # Nothing changed: no second round, no pass; the main gate asks.
         self.assertIn("main gate", self.next(5)["QUESTION"])
@@ -2397,6 +2438,7 @@ class ShipTest(NextCase):
         self.assertIn("PROBLEMS", r.stdout)
         out = self.next(4)  # never exit 1, never the same publish again
         self.assertIn(".auto-dev/", " ".join(out["REPORT"]))
+        self.assert_counted(None, "pr publish was refused", 6)  # one stop, shown twice
         self.assertIn("auto-dev continue", " ".join(out["REPORT"]))
         self.resume()  # the user fixed it: a resume lifts the stop
         self.assertIn(str(body), self.next(0)["ACTION"])
@@ -2416,6 +2458,7 @@ class ShipTest(NextCase):
         out = self.next(4)
         self.assertIn("gh pr view 12 --json state", " ".join(out["REPORT"]))
         self.assertEqual(self.next(4)["exit"], 4)
+        self.assert_counted(None, "a merge whose outcome is unknown", 6)  # once
 
     def test_a_triage_answer_is_kept_and_listed_as_a_follow_up(self):
         self.reviewed_pr()
@@ -2750,6 +2793,7 @@ class LeanTest(NextCase):
         self.answer(*jobs[0], None, status="failed")
         out = self.next(4)
         self.assertIn("did not return ok twice running", " ".join(out["REPORT"]))
+        self.assert_counted(13, "the pass's verifier returned status failed twice", 6)
 
     def spec_problem(self, worker, n, text="- condition 1: the ticket asks for the latest "
                                            "due date first\n"):
@@ -2772,6 +2816,7 @@ class LeanTest(NextCase):
         self.assertIn("found PLAN.md wrong in review pass 1", report)
         self.assertIn("condition 1: the ticket asks for the latest due date first", report)
         self.assertEqual(self.state()["stop"]["kind"], "spec-problem")
+        self.assert_counted(20, "a worker found a criterion wrong", 6)
         self.assertEqual(self.state()["budget"]["remaining"], left)  # no round, no coder
         self.sign_off(out, "the spec is right")
         out, jobs = self.expect("coder")  # the verifier's correction goes ahead
@@ -4059,6 +4104,7 @@ class CiTest(NextCase):
         self.assertIn("INFRA", report)
         self.assertIn("triage/ci-1.md", report)
         self.assertIn("The run stops here", report)
+        self.assert_counted(15, "the triager returned INFRA", 6)
 
     def test_a_secret_ci_failure_stops_and_continue_watches_again(self):
         self.github_ci()
@@ -4071,6 +4117,7 @@ class CiTest(NextCase):
         report = " ".join(self.next(4)["REPORT"])
         self.assertIn("Once the secret is fixed and CI re-run", report)
         self.assertNotIn("do not re-run", report)
+        self.assert_counted(15, "the triager returned SECRET", 6)
         self.resume()
         self.assertIn("ci-watch", self.next(0)["ACTION"])
 
@@ -4142,6 +4189,7 @@ class HumanAndMainGateTest(NextCase):
         self.assertNotIn("Sign off", out.get("QUESTION", ""))
         self.assertNotIn("merge-pr", json.dumps(out))
         self.assertIn(f"merge --ff-only origin/{branch}", report)
+        self.assert_counted(16, "the PR head moved", 6)
         return old, url, branch
 
     def recheck(self, old, branch, edit=None):
@@ -4301,6 +4349,7 @@ class ReVoteTest(NextCase):
         self.assertEqual([self.sets(*j)["reviewer"] for j in jobs], ["R3"])
         out = self.next(4)
         self.assertIn("R3 (failed twice)", " ".join(out["REPORT"]))
+        self.assert_counted(None, "a re-voter gave no usable vote twice", 6)
 
 
 class RiskRecheckTest(NextCase):
@@ -5469,6 +5518,7 @@ class OverrideTest(OverrideCase):
         out = self.next(4)
         self.assertNotIn("Sign off and go on", self.labels(out))
         self.assertIn("planted change", " ".join(out["SUMMARY"]))
+        self.assert_counted(10, "the verifier returned MUTATION_LEFT_CHANGES", 6)
         r = self.autodev("override", "signoff", "--text", "fine", "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("can't be signed off", r.stdout + r.stderr)
@@ -5596,6 +5646,7 @@ class OverrideShipTest(OverrideCase):
 
     def test_retry_reopens_a_correction_that_changed_nothing_at_no_round(self):
         out = self.unchanged_correction()
+        self.assert_counted(None, "a correction changed nothing", 6)
         left = self.state()["budget"]["remaining"]
         r = self.answer_stop(out, "I fixed it myself", "clarified the finding")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -5747,6 +5798,7 @@ class SetupFlowTest(RunCase):
     TASK = "Add due dates to todos"
     OPTIONS = ("Looks right — save it for this repo", "Looks right — use it for this run only",
                "Change something (tell me what)", "Stop")
+    assert_counted = NextCase.assert_counted
 
     def setUp(self):
         super().setUp()
@@ -6770,6 +6822,47 @@ class SetupFlowTest(RunCase):
         self.assertIn("exited 1", report)
         self.assertIn("false", report)
         self.assertEqual(self.state()["phases"]["1"]["status"], "held")
+        self.assert_counted(3, "Phase 1's setup failed", 1)
+
+    def test_a_setup_that_fails_again_after_its_hold_counts_again(self):
+        self.failed_setup()
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.next_dir(4)  # setup ran again inside the run and failed: #3
+        self.assert_counted(3, "Phase 1's setup failed", 1)
+        out = self.next_dir(4)  # the run is held: not a stop of its own
+        self.assertIn("Phase 1's setup failed", self.report(out))
+        self.assert_counted(3, "Phase 1's setup failed", 1)
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.next_dir(4)  # a new setup attempt failed: a new stop
+        self.assert_counted(3, "Phase 1's setup failed", 1, times=2)
+
+    def test_a_setup_that_fails_in_the_run_it_made_writes_its_metrics(self):
+        self.failed_setup()  # `next --repo` made the run, and its setup failed
+        data = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(data["stops"]["total"], 0)  # a setup stop is not counted
+        self.assertEqual(data["run"], {"state": "held", "phase": 1, "size": None,
+                                       "high_risk": None})
+        copies = sorted((self.tmp / "metrics").rglob("*.json"))
+        self.assertEqual(len(copies), 1, copies)
+        self.assertEqual(copies[0].read_text(), (self.dir / "metrics.json").read_text())
+
+    def test_a_setup_stop_before_the_run_exists_writes_no_metrics(self):
+        self.script_gh([{"args": ["auth", "status"], "stderr": "not logged in", "exit": 1}])
+        self.setup_next(expect=4)
+        self.no_run_made()
+        self.assertFalse((self.tmp / "metrics").exists())
+
+    def test_the_profile_question_names_the_metrics_folder(self):
+        self.assertIn(f"metrics folder {self.tmp / 'metrics'};",
+                      self.summary(self.to_question()))
+
+    def test_the_profile_question_names_the_metrics_folder_under_xdg_config_home(self):
+        del self.env["AUTO_DEV_METRICS_DIR"]
+        self.env["XDG_CONFIG_HOME"] = str(self.tmp / "config")
+        summary = self.summary(self.to_question())
+        self.assertIn(f"metrics folder {self.tmp / 'config' / 'auto-dev' / 'metrics'};",
+                      summary)
+        self.assertIn(f"profiles folder {self.profiles};", summary)
 
     def test_init_continue_that_cannot_run_is_an_error(self):
         self.profiler_returns(self.setup_next(expect=0), draft=PROFILER_DRAFT.replace(
@@ -7220,3 +7313,1061 @@ class SetupFlowTest(RunCase):
         summary = self.summary(out)
         self.assertIn(line.strip()[:200], summary)
         self.assertNotIn(line.strip()[:201], summary)
+
+class MetricsTest(OverrideCase):
+    """`next` writes .auto-dev/metrics.json, and a copy outside the worktree,
+    whenever it completes a run's step (exit 3) or stops it (exit 4)."""
+
+    ship_ready = ShipTest.ship_ready
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    open_pr = ShipTest.open_pr
+    merge_ready = ShipTest.merge_ready
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def setUp(self):
+        super().setUp()
+        self.metrics_dir = self.tmp / "metrics"
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)
+
+    def metrics(self):
+        path = self.dir / "metrics.json"
+        self.assertTrue(path.is_file(), f"no {path}")
+        return json.loads(path.read_text())
+
+    def stopped_at_the_post_plan_gate(self):
+        """The user answers Stop at the post-plan gate; `next` reports it."""
+        out = self.next(5)
+        self.assertIn("post-plan gate", out["QUESTION"])
+        self.after(out, "Stop")
+        return self.next(4)
+
+    def test_a_stop_writes_metrics_json_with_the_run_and_its_events(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertEqual(data["metrics"], 1)
+        self.assertEqual(data["run"]["state"], "open")
+        self.assertEqual(data["run"]["phase"], 2)
+        self.assertEqual(data["events"], self.state()["events"])
+
+    def test_explain_and_a_plain_action_write_no_metrics(self):
+        out = self.next(0)  # the first step only spawns the planner
+        self.assertEqual(self.spawned(out), [("planner", 1)])
+        self.assertFalse((self.dir / "metrics.json").exists())
+        for _ in range(2):
+            self.next_reissue(0)
+        self.next_reissue(4)
+        self.assertTrue((self.dir / "metrics.json").is_file())
+        (self.dir / "metrics.json").unlink()
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertFalse((self.dir / "metrics.json").exists())
+
+    def test_spawns_count_each_time_a_brief_was_sent_out(self):
+        self.stopped_after_three_spawns()
+        self.assertEqual(self.metrics()["spawns"], {"total": 3, "by_worker": {"planner": 3}})
+
+    def test_a_refused_planner_and_its_retry_each_count_as_a_spawn_and_one_refusal(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        _, jobs = self.expect("planner")
+        self.assertEqual(jobs, [("planner", 1)])
+        self.answer("planner", 1, "FITS", reading="none", entry_points_changed="no")
+        out = self.next(0, refused_ok=True)  # no `risk`: refused, and briefed again
+        self.assertEqual(self.spawned(out), [("planner", 2)], json.dumps(out, indent=2))
+        self.answer("planner", 2, "FITS", **PLANNED)
+        self.critic()
+        self.stopped_at_the_post_plan_gate()
+        data = self.metrics()
+        self.assertEqual(data["spawns"]["by_worker"]["planner"], 2)
+        self.assertEqual(data["refused"], {"total": 1, "by_worker": {"planner": 1},
+                                           "by_token": {"MALFORMED": 1}})
+
+    def test_rounds_count_what_was_spent_left_and_added(self):
+        state = self.state()
+        state["budget"].update(total=1, remaining=0, spends=[
+            {"id": "fix-0", "what": "an earlier correction", "at": state["created"],
+             "seq": 1}])
+        self.write_state(state)
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic("REVISE", blockers=1)
+        self.next(4)  # no round left for the plan's revision
+        out = self.next(4)  # the same stop, reported again
+        self.raise_from_report(out, 2)
+        self.expect("planner", "REVISED", **PLANNED)
+        self.critic("APPROVE", mode="recheck")
+        self.stopped_at_the_post_plan_gate()
+        data = self.metrics()
+        self.assertEqual(data["rounds"], {
+            "total": 3, "spent": 2, "remaining": 1, "raised": 2,
+            "spends": [{"id": "fix-0", "what": "an earlier correction"},
+                       {"id": "plan-critic-1", "what": "plan revision"}]})
+        self.assertEqual(data["stops"]["by_number"], {"11": 1, "19": 1})
+
+    def test_a_run_that_spent_nothing_still_has_every_rounds_key(self):
+        self.stopped_after_three_spawns()
+        rounds = self.metrics()["rounds"]
+        self.assertEqual((rounds["spent"], rounds["spends"], rounds["raised"]), (0, [], 0))
+        self.assertEqual(rounds["remaining"], rounds["total"])
+
+    def test_a_stop_reported_twice_counts_once_by_its_number(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic()
+        first = self.stopped_at_the_post_plan_gate()
+        second = self.next(4)
+        for shown in (first, second):  # the same stop both times
+            self.assertIn("stopped at the post-plan gate", " ".join(shown["REPORT"]))
+        data = self.metrics()
+        self.assertEqual(data["stops"]["total"], 1)
+        self.assertEqual(data["stops"]["by_number"], {"19": 1})
+        self.assertEqual(len(data["stops"]["list"]), 1)
+        self.assertEqual(data["stops"]["list"][0]["number"], 19)
+        self.assertEqual(data["stops"]["list"][0]["rule"], "the run is stopped")
+        self.assertEqual(data["run"]["state"], "stopped")
+
+    def test_a_red_gate_stop_after_the_user_s_fix_counts_again(self):
+        out, _ = self.red_gate()
+        self.next(4)  # the same stop, reported again
+        r = self.answer_stop(out, "I fixed it myself", "I fixed the lint config")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.quality_gate(red=True)
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.quality_gate(red=True)
+        out = self.next(4)
+        self.assertIn("still red after the coder's correction", " ".join(out["REPORT"]))
+        self.assertEqual(self.metrics()["stops"]["by_number"], {"9": 2})
+
+    def test_a_run_held_at_a_gate_has_no_stop(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.after(out, "Hold (keep it a draft)")
+        out = self.next(4)
+        self.assertIn("held", " ".join(out["REPORT"]))
+        self.assertEqual(self.metrics()["stops"]["total"], 0)
+
+    def review_files(self):
+        """The fixture's review files, with condition-shaped rows."""
+        code = """\
+# Code review — feat/due-dates
+
+**Overall confidence: High** — reviewers finished: 3/3; coverage: full; must-fix decided 2–1: none
+Latest pass: 2 — scope: the correction
+Tree: {tree}
+Must-fix: 1 open · 1 fixed   ·   Advisory: 1   ·   Noise: 2   ·   Dropped (pre-existing): 1
+
+## Must-fix
+| ID | Finding | Location | Category | Votes | Confidence | Status |
+|----|---------|----------|----------|-------|------------|--------|
+| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | 3/3 | High | open |
+| C2 | blank title saved | `src/save.ts:18` | tests | 2/3 (re-vote) | Medium | fixed (pass 2) |
+
+## Pending re-vote
+| ID | Finding | Location | Category | Raised by | Re-voters | Votes |
+|----|---------|----------|----------|-----------|-----------|-------|
+
+## Advisory
+| ID | Finding | Location | Category | Votes | Confidence | Why advisory |
+|----|---------|----------|----------|-------|------------|--------------|
+| C3 | the sort could be cached | `src/sort.ts:9` | performance | 2/3 | Low | no user impact |
+
+## Noise
+| ID | Finding | Raised by | Why dismissed |
+|----|---------|-----------|---------------|
+| C4 | a due date in the past | R1 | allowed by the spec |
+| C5 | a long title | R2 | the field has a limit |
+
+## Security leads
+none
+
+## Passes
+| Pass | Scope | Reviewers finished | Must-fix found | Re-votes |
+|------|-------|--------------------|----------------|----------|
+| 1 | whole change | 3/3 | 2 | 1 |
+| 2 | the correction | 3/3 | 0 | 0 |
+""".format(tree="0" * 40)
+        security = """\
+# Security review — feat/due-dates
+
+**Overall confidence: High** — finished: yes; coverage: full; High/Medium verified: 2/2
+Run 1 — reviewer: security-reviewer — scope: the whole change since `abc`
+Tree: {tree}
+Must-fix: 1 open · 0 fixed   ·   For the user (pre-existing): 1   ·   Advisory: 0
+
+## Findings
+| ID | Finding | Location | Origin | Confidence | Verified | Verdict | Status |
+|----|---------|----------|--------|------------|----------|---------|--------|
+| S1 | anyone sets a due date | `src/due.ts:9` | introduced | High | confirmed | must-fix | open |
+| S2 | token not rotated | `src/auth.ts:88` | pre-existing | Medium | confirmed | for the user | — |
+| S3 | a date in a log | `src/log.ts:3` | introduced | Medium | refuted | advisory | — |
+
+## Coverage
+Every changed file.
+""".format(tree="0" * 40)
+        (self.dir / "CODE_REVIEW.md").write_text(code)
+        (self.dir / "SECURITY_REVIEW.md").write_text(security)
+
+    def test_review_findings_are_counted_kept_and_dropped(self):
+        self.stopped_after_three_spawns()
+        self.review_files()
+        state = self.state()
+        state["phase6"]["passes"] = [{"n": 1, "scope": "first"},
+                                     {"n": 2, "scope": "correction"}]
+        self.write_state(state)
+        self.next_reissue(4)  # the same stop, reported again: metrics written again
+        data = self.metrics()
+        self.assertEqual(data["code_review"], {
+            "passes": 2, "must_fix": 2, "advisory": 1, "pending": 0, "noise": 2,
+            "pre_existing": 1, "kept": 3, "dropped": 3})
+        self.assertEqual(data["security_review"],
+                         {"findings": 3, "refuted": 1, "kept": 2, "dropped": 1})
+
+    def test_a_run_with_no_review_has_null_review_blocks(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertIn("code_review", data)
+        self.assertIn("security_review", data)
+        self.assertIsNone(data["code_review"])
+        self.assertIsNone(data["security_review"])
+
+    def test_the_diff_size_comes_from_the_risk_re_check(self):
+        self.standard_session()
+        for i in range(30):
+            self.write(f"src/part{i}.ts")
+        state = self.verified()
+        lines = int(re.search(r"(\d+) lines", state["risk_recheck"]["why"][0]).group(1))
+        state["settings"]["open_pr_gate"] = True
+        self.write_state(state)
+        self.lint()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.after(out, "Hold (don't push yet)")
+        self.next(4)
+        self.assertEqual(self.metrics()["diff"], {"files": 32, "lines": lines, "high": True})
+
+    def test_a_run_stopped_in_the_plan_stage_has_no_diff(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertIn("diff", data)
+        self.assertIsNone(data["diff"])
+
+    def test_removing_the_worktree_keeps_the_run_s_metrics(self):
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        saved = self.metrics_dir / "app" / "feat-due-dates.json"
+        out = self.next(5)
+        self.assertIn("Remove the worktree", json.dumps(out))
+        self.assertIn(str(saved), json.dumps(out))
+        self.after(out, "Remove it")
+        out = self.next(3)
+        last = (self.dir / "metrics.json").read_text()
+        r = self.autodev("cleanup-worktree", "--dir", self.dir, cwd=self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.worktree.exists())
+        self.assertTrue(saved.is_file(), f"no {saved}")
+        self.assertEqual(saved.read_text(), last)
+        self.assertEqual(json.loads(saved.read_text())["run"]["state"], "finished")
+
+    def test_a_metrics_copy_that_cannot_be_written_changes_no_output(self):
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        self.expect("planner")
+        for _ in range(2):
+            self.next_reissue(0)
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        report = json.loads(r.stdout)["REPORT"]
+        self.assertIn("spawned 3 times", " ".join(report))
+        self.assertIn("metrics copy not written", r.stderr)
+        self.assertTrue((self.dir / "metrics.json").is_file())
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)
+        self.assertEqual(self.next(4)["REPORT"], report)  # the stop as it reads when written
+
+    def test_a_copy_that_cannot_be_written_is_told_before_the_worktree_goes(self):
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        inside = str(self.dir / "metrics.json")
+        out = self.next(5)
+        question = json.dumps(out)
+        self.assertIn("Remove the worktree", question)
+        self.assertIn("the metrics copy could not be written", question)
+        self.assertIn(inside, question)
+        self.assertNotIn("stays at", question)
+        self.after(out, "Remove it")
+        out = self.next(3)
+        self.assertIn("the metrics copy could not be written", out["ACTION"])
+        self.assertIn(inside, out["ACTION"])
+        self.assertIn("cleanup-worktree", out["ACTION"])
+        self.assertNotIn("metrics stay at", out["ACTION"])
+        self.assertTrue((self.dir / "metrics.json").is_file())
+
+    def test_the_copy_s_file_name_replaces_unsafe_branch_characters(self):
+        state = self.state()
+        state["branch"] = "feat/a b+c_d.e"
+        self.write_state(state)
+        self.stopped_after_three_spawns()
+        saved = self.metrics_dir / "app" / "feat-a-b-c_d.e.json"
+        self.assertTrue(saved.is_file(), sorted(str(p) for p in self.metrics_dir.rglob("*"))
+                        if self.metrics_dir.exists() else "no metrics folder")
+        self.assertEqual(saved.read_text(), (self.dir / "metrics.json").read_text())
+
+    def test_explain_at_remove_it_tells_whether_the_copy_can_be_written(self):
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        out = self.next(5)
+        self.assertIn("stays at", json.dumps(out))
+        # Checking the copy can be written leaves nothing beside it.
+        self.assertEqual([p.name for p in (self.metrics_dir / "app").iterdir()
+                          if p.name != "feat-due-dates.json"], [])
+        self.after(out, "Remove it")
+        explain = ["next", "--explain", "--dir", self.dir, "--json"]
+        r = self.autodev(*explain)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        action = json.loads(r.stdout)["ACTION"]
+        self.assertIn("metrics stay at", action)
+        self.assertNotIn("could not be written", action)
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        r = self.autodev(*explain)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        action = json.loads(r.stdout)["ACTION"]
+        self.assertIn("--explain", action)
+        self.assertIn("the metrics copy could not be written", action)
+        self.assertIn(str(self.dir / "metrics.json"), action)
+        self.assertNotIn("UNSAVED", r.stdout)
+        self.assertEqual(r.stderr, "")  # --explain writes nothing, so reports no write
+
+
+class MetricsFileTest(OverrideCase):
+    """What metrics.json holds beyond the acceptance checks, through `next` and
+    tests/lib_cli.py's `metrics` (what `next` writes at exits 3 and 4)."""
+
+    def metrics(self):
+        r = self.lib("metrics", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual(out["message"], str(self.dir / "metrics.json"))
+        return json.loads((self.dir / "metrics.json").read_text()), out["copied"]
+
+    def test_a_metrics_json_that_cannot_be_written_changes_no_output(self):
+        (self.dir / "metrics.json").mkdir()
+        self.expect("planner")
+        for _ in range(2):
+            self.next_reissue(0)
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("spawned 3 times", " ".join(json.loads(r.stdout)["REPORT"]))
+        self.assertIn("metrics.json not written", r.stderr)
+        self.assertNotIn("TALLY", r.stdout)
+        saved = self.tmp / "metrics" / "app" / "feat-due-dates.json"
+        self.assertTrue(saved.is_file())  # the copy is written all the same
+
+    def test_the_text_output_of_a_stop_has_no_tally(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("next", "--reissue", "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("REPORT:", r.stdout)
+        self.assertNotIn("TALLY", r.stdout)
+        self.assertNotIn("number", r.stdout)
+
+    def test_the_copy_folder_falls_back_to_the_xdg_config_folder(self):
+        del self.env["AUTO_DEV_METRICS_DIR"]
+        self.env["XDG_CONFIG_HOME"] = str(self.tmp / "config")
+        _, copied = self.metrics()
+        self.assertEqual(copied, str(self.tmp / "config" / "auto-dev" / "metrics" / "app"
+                                     / "feat-due-dates.json"))
+        self.assertTrue(Path(copied).is_file())
+
+    def test_the_copy_folder_falls_back_to_the_home_config_folder(self):
+        del self.env["AUTO_DEV_METRICS_DIR"]
+        self.env.pop("XDG_CONFIG_HOME", None)
+        self.env["HOME"] = str(self.tmp / "home")
+        _, copied = self.metrics()
+        self.assertEqual(copied, str(self.tmp / "home" / ".config" / "auto-dev" / "metrics"
+                                     / "app" / "feat-due-dates.json"))
+
+    def test_a_branch_of_dots_stays_inside_the_metrics_folder(self):
+        state = self.state()
+        state["branch"] = "../.."
+        self.write_state(state)
+        _, copied = self.metrics()
+        self.assertEqual(Path(copied).parent, self.tmp / "metrics" / "app")
+        self.assertEqual(Path(copied).name, "-...json")
+
+    def test_a_review_file_that_cannot_be_read_gives_a_null_block(self):
+        (self.dir / "CODE_REVIEW.md").write_bytes(b"\xff\xfe not text")
+        (self.dir / "SECURITY_REVIEW.md").write_text("# Security review\n\nno table\n")
+        data, _ = self.metrics()
+        self.assertIsNone(data["code_review"])
+        self.assertIsNone(data["security_review"])
+
+    def test_a_re_check_from_before_the_upgrade_has_no_counts(self):
+        state = self.state()
+        state["risk_recheck"] = {"seq": 3, "high": False, "why": []}
+        self.write_state(state)
+        data, _ = self.metrics()
+        self.assertEqual(data["diff"], {"files": None, "lines": None, "high": False})
+
+    def test_the_numbered_stops_and_the_ones_the_table_does_not_number(self):
+        state = self.state()
+        state["stops"] = [
+            {"number": 9, "rule": "the quality gate is red after its correction",
+             "phase": 5, "at": state["created"], "seq": 4},
+            {"number": None, "rule": "commit-tests refused", "phase": 4,
+             "at": state["created"], "seq": 5}]
+        self.write_state(state)
+        data, _ = self.metrics()
+        self.assertEqual(data["stops"]["by_number"], {"9": 1, "none": 1})
+        self.assertEqual(data["stops"]["list"][1],
+                         {"number": None, "rule": "commit-tests refused", "phase": 4})
+
+    def test_a_stop_after_a_fixer_ran_counts_again(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        self.report(n, proposal="Also relax the lint rule.")
+        self.answer("fixer", n, "NEEDS_CONSENT", fix_report="x", changed="0")
+        out = self.next(4)  # the stop asked again, after the fixer ran
+        self.assertIn("still red", " ".join(out["REPORT"]))
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["by_number"], {"9": 2})
+
+    def test_pending_re_votes_are_counted_apart_from_kept_and_dropped(self):
+        MetricsTest.review_files(self)
+        path = self.dir / "CODE_REVIEW.md"
+        text = path.read_text().replace(
+            "| ID | Finding | Location | Category | Raised by | Re-voters | Votes |\n"
+            "|----|---------|----------|----------|-----------|-----------|-------|\n",
+            "| ID | Finding | Location | Category | Raised by | Re-voters | Votes |\n"
+            "|----|---------|----------|----------|-----------|-----------|-------|\n"
+            "| C6 | a lone finding | `src/a.ts:1` | correctness | R1 | R2, R3 | 1/3 |\n"
+            "| C7 | another lone one | `src/b.ts:2` | tests | R2 | R1, R3 | 1/3 |\n")
+        self.assertIn("| C7 |", text)
+        path.write_text(text)
+        data, _ = self.metrics()
+        self.assertEqual(data["code_review"], {
+            "passes": 0, "must_fix": 2, "advisory": 1, "pending": 2, "noise": 2,
+            "pre_existing": 1, "kept": 3, "dropped": 3})
+
+    def test_a_stop_reported_again_at_once_after_a_retry_counts_twice(self):
+        out = self.refused_commit()
+        r = self.autodev("override", "retry", "--text", "the checks are fine",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)  # the same step refused again, nothing between
+        self.assertIn("could not be committed", " ".join(out["REPORT"]))
+        self.assert_counted(None, "commit-tests refused", 3, times=2)
+
+    def test_a_stop_reported_again_after_talk_counts_once(self):
+        out = self.refused_commit()
+        r = self.answer_stop(out, "Let's talk it through")
+        self.assertIn("TALK", r.stdout)
+        self.next(4)
+        self.assert_counted(None, "commit-tests refused", 3)
+
+    def test_a_stop_reported_again_after_leave_counts_once(self):
+        out = self.refused_commit()
+        r = self.answer_stop(out, "Leave it stopped")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        self.assertIn("leave the run stopped", " ".join(out["REPORT"]))
+        self.assert_counted(None, "commit-tests refused", 3)
+
+    def test_a_stop_reported_again_in_a_new_session_counts_once(self):
+        self.refused_commit()
+        self.resume()
+        out = self.next(4)
+        self.assertIn("could not be committed", " ".join(out["REPORT"]))
+        self.assert_counted(None, "commit-tests refused", 3)
+
+    def refused_commit(self):
+        """The tester's checks are already in HEAD (committed by hand): their
+        commit is refused, and `next` stops."""
+        self.planned()
+        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
+        self.sh("git", "add", *self.CHECKS, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "the checks, by hand", cwd=self.worktree)
+        out = self.next(4)
+        self.assertIn("could not be committed", " ".join(out["REPORT"]))
+        self.assert_counted(None, "commit-tests refused", 3)
+        return out
+
+    def test_a_question_as_the_first_other_exit_writes_no_metrics(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic()
+        out = self.next(5)
+        self.assertIn("post-plan gate", out["QUESTION"])
+        self.assertFalse((self.dir / "metrics.json").exists())
+        self.assertFalse((self.tmp / "metrics").exists())
+
+    def test_a_checkpoint_writes_no_metrics(self):
+        _, jobs = self.expect("planner")
+        self.answer(*jobs[0], "", status="failed")
+        state = self.state()
+        state["settings"]["checkpoint_events"] = state["events"]
+        self.write_state(state)
+        out = self.next(6)
+        self.assertIn("--checkpoint", out["AFTER"][0])
+        self.assertFalse((self.dir / "metrics.json").exists())
+        self.assertFalse((self.tmp / "metrics").exists())
+
+    def test_a_step_next_could_not_take_writes_metrics_and_counts_no_stop(self):
+        self.expect("planner")
+        state = self.state()
+        state["refused"] = {"planner-1": []}  # refused, with no issues to retry with
+        self.write_state(state)
+        r = self.autodev("next", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("could not take its step", " ".join(json.loads(r.stdout)["REPORT"]))
+        data = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(data["stops"], {"total": 0, "by_number": {}, "list": []})
+        self.assertEqual(data["spawns"]["by_worker"], {"planner": 1})
+        saved = self.tmp / "metrics" / "app" / "feat-due-dates.json"
+        self.assertEqual(saved.read_text(), (self.dir / "metrics.json").read_text())
+
+
+class MetricsStopsTest(OverrideCase):
+    """Each stop `next` reaches is counted in metrics.json by its number in
+    references/tables.md, its rule and its phase."""
+
+    ship_ready = ShipTest.ship_ready
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    open_pr = ShipTest.open_pr
+    merge_ready = ShipTest.merge_ready
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def test_a_spec_the_planner_finds_impossible_is_stop_8(self):
+        self.plan_session()
+        self.resume()
+        _, jobs = self.expect("coder")
+        (self.dir / "blocked" / "coder-1.md").write_text("- step 1: the store has no date type\n")
+        self.answer(*jobs[0], "BLOCKED", blocked="1", test_changes="none")
+        self.expect("planner", "SPEC_IMPOSSIBLE", **PLANNED)
+        out = self.next(4)
+        self.assertIn("impossible to meet", " ".join(out["REPORT"]))
+        self.assert_counted(8, "the planner returned SPEC_IMPOSSIBLE", 4)
+
+    def test_a_gate_whose_checks_fail_is_a_stop_the_table_does_not_number(self):
+        self.open_pr()
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none")
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        fields = ("url,isDraft,reviewDecision,reviews,comments,mergeable,mergeStateStatus,"
+                  "headRefOid,state")
+        self.script_gh([{"args": ["pr", "view", "12", "--json", fields],
+                         "stdout": json.dumps({"isDraft": True, "state": "OPEN"})}] + gh)
+        out = self.next(4)
+        self.assertIn("still a draft", " ".join(out["REPORT"]))
+        self.assert_counted(None, "a main gate precondition failed", 6)
+
+    def test_a_panel_with_no_usable_report_is_stop_13(self):
+        self.draft_pr()
+        _out, jobs = self.reviewers()
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        for w, n in [*jobs, self.security_job]:
+            r = self.autodev("record", w, n, "--dir", self.dir)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for w, n in jobs:  # the reports lost after they were recorded
+            slot = self.sets(w, n)["reviewer"]
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text("cut short\n")
+        out = self.next(4)
+        self.assertIn("No code reviewer wrote a usable report", " ".join(out["REPORT"]))
+        self.assert_counted(13, "the panel produced nothing", 6)
+
+    def test_a_result_stale_again_after_its_re_check_is_stop_12(self):
+        self.ship_ready()
+        self.lint()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        state = self.state()
+        # The outside change was re-checked (its correction closed), and the
+        # commit then found results stale again.
+        state["phase6"]["corrections"].append({
+            "entry": "outside", "file": None, "checks": None, "seq": state["events"] + 1,
+            "after_commit": False, "rule": "the code changed outside the pipeline",
+            "budget": None, "spend_id": None, "closed": True})
+        state["phase6"]["commit_attempt"] = {"result": "stale", "seq": state["events"] + 2}
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("stale again right after its own re-run", " ".join(out["REPORT"]))
+        self.assert_counted(12, "stale twice running", 6)
+
+    def test_an_empty_change_is_stop_14(self):
+        self.ship_ready()
+        (self.worktree / "due.ts").unlink()
+        self.lint()
+        out = self.next(4)
+        self.assertIn("There is nothing to commit", " ".join(out["REPORT"]))
+        self.assert_counted(14, "an empty change", 6)
+
+    def test_a_ci_correction_that_changed_nothing_is_a_stop_the_table_does_not_number(self):
+        state = self.state()
+        state["settings"]["ci"] = "github"
+        self.write_state(state)
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        (self.dir / "triage" / "ci-1.md").write_text("# Required changes\n1. x\n")
+        self.answer(*jobs[0], "CODE", blockers="0", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")  # it changes nothing
+        out = self.next(4)
+        self.assertIn("the correction changed nothing", " ".join(out["REPORT"]))
+        self.assert_counted(None, "a CI correction changed nothing", 6)
+
+    def test_a_merge_github_refused_is_stop_18(self):
+        sha = self.merge_ready(first=[{"args": ["pr", "merge"], "stderr": "not mergeable",
+                                       "exit": 1}])
+        self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        out = self.next(4)
+        self.assertIn("GitHub did not merge the PR", " ".join(out["REPORT"]))
+        self.assert_counted(18, "merge-pr did not merge", 6)
+
+    def test_red_ci_at_the_main_gate_is_stop_17(self):
+        self.merge_ready()
+        state = self.state()
+        state["phase6"]["ci"] = {"status": "red", "failing": ["test — https://ci/1"],
+                                 "sha": state["phase6"]["verified_sha"],
+                                 "seq": state["events"]}
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("CI is red on the PR", " ".join(out["REPORT"]))
+        self.assert_counted(17, "red CI at the main gate", 6)
+
+    def test_the_diff_s_lines_are_its_line_count_not_its_file_count(self):
+        self.standard_session()
+        self.write("src/due.ts", "export const a = 1;\nexport const b = 2;\n"
+                                 "export const c = 3;\nexport const d = 4;\n")
+        self.verified()
+        r = self.lib("metrics", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(data["diff"], {"files": 3, "lines": 6, "high": False})
+
+
+class MetricsCleanupTest(OverrideCase):
+    """The worktree question and its "Remove it": where the metrics stay, and
+    the `cleanup-worktree` command until the worktree is gone."""
+
+    ship_ready = ShipTest.ship_ready
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    open_pr = ShipTest.open_pr
+    merge_ready = ShipTest.merge_ready
+
+    def setUp(self):
+        super().setUp()
+        self.metrics_dir = self.tmp / "metrics"
+        self.saved = self.metrics_dir / "app" / "feat-due-dates.json"
+        self.inside = self.dir / "metrics.json"
+
+    def to_the_worktree_question(self):
+        """The PR merged, CI on main marked and the final report written: the
+        next `next` asks whether to remove the worktree."""
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+
+    def removed(self):
+        """Answer the worktree question "Remove it"; the question."""
+        out = self.next(5)
+        self.assertIn("Remove the worktree", json.dumps(out))
+        self.after(out, "Remove it")
+        return out
+
+    def next_3(self):
+        """`next`, exit 3: (its ACTION, its stderr)."""
+        r = self.autodev("next", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        return json.loads(r.stdout)["ACTION"], r.stderr
+
+    def assert_saved_action(self, action):
+        self.assertIn("cleanup-worktree", action)
+        self.assertIn("metrics stay at", action)
+        self.assertIn(str(self.saved), action)
+        self.assertNotIn("could not be written", action)
+
+    def assert_unsaved_action(self, action):
+        self.assertIn("the metrics copy could not be written", action)
+        self.assertIn(str(self.inside), action)
+        self.assertIn("cleanup-worktree", action)
+        self.assertNotIn("metrics stay at", action)
+
+    def test_remove_it_names_the_copy_and_says_so_again_until_the_worktree_goes(self):
+        self.to_the_worktree_question()
+        self.removed()
+        action, stderr = self.next_3()
+        self.assert_saved_action(action)
+        self.assertEqual(stderr, "")
+        self.assertTrue(self.saved.is_file())
+        again, _ = self.next_3()  # the session ended before cleanup-worktree ran
+        self.assertEqual(again, action)
+
+    def test_a_copy_that_could_not_be_written_is_told_again_by_a_later_next(self):
+        self.to_the_worktree_question()
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        self.removed()
+        action, _ = self.next_3()
+        self.assert_unsaved_action(action)
+        again, stderr = self.next_3()
+        self.assert_unsaved_action(again)
+        self.assertIn("metrics copy not written", stderr)
+
+    def test_a_copy_path_that_fails_only_when_written_is_told_at_remove_it(self):
+        self.to_the_worktree_question()
+        self.saved.mkdir(parents=True)  # the folder takes files; the copy's path doesn't
+        out = self.removed()
+        self.assertIn("stays at", json.dumps(out))
+        action, stderr = self.next_3()
+        self.assert_unsaved_action(action)
+        self.assertIn("metrics copy not written", stderr)
+
+    def test_a_metrics_json_that_could_not_be_written_leaves_remove_it_as_it_is(self):
+        self.to_the_worktree_question()
+        if self.inside.exists():
+            self.inside.unlink()
+        self.inside.mkdir()
+        self.removed()
+        action, stderr = self.next_3()
+        self.assert_saved_action(action)
+        self.assertIn("metrics.json not written", stderr)
+        self.assertTrue(self.saved.is_file())
+
+    def test_a_copy_folder_that_takes_no_file_is_told_at_the_question(self):
+        self.to_the_worktree_question()
+        folder = self.saved.parent
+        folder.mkdir(parents=True, exist_ok=True)
+        folder.chmod(0o555)
+        self.addCleanup(folder.chmod, 0o755)
+        try:
+            with tempfile.NamedTemporaryFile(dir=folder):
+                pass
+        except OSError:
+            pass
+        else:
+            self.skipTest("this user can write to a read-only folder (root)")
+        out = self.next(5)
+        question = json.dumps(out)
+        self.assertIn("the metrics copy could not be written", question)
+        self.assertIn(str(self.inside), question)
+        self.assertNotIn("stays at", question)
+        self.after(out, "Remove it")
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        action = json.loads(r.stdout)["ACTION"]
+        self.assertIn("the metrics copy could not be written", action)
+        self.assertIn(str(self.inside), action)
+
+    def test_keep_it_leaves_nothing_more_to_do(self):
+        self.to_the_worktree_question()
+        out = self.next(5)
+        self.after(out, "Keep it")
+        for _ in range(2):
+            action, _ = self.next_3()
+            self.assertEqual(action, "the run is complete; nothing more to do")
+
+    def test_resume_picks_up_a_run_whose_worktree_is_still_to_remove(self):
+        self.to_the_worktree_question()
+        self.removed()
+        action, _ = self.next_3()
+        r = self.autodev("resume", "--repo", self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("RESUME"), r.stdout)
+        self.assertIn("cleanup-worktree", r.stdout)
+        again, _ = self.next_3()
+        self.assertEqual(again, action)
+
+    def test_resume_finds_a_kept_worktree_s_run_finished(self):
+        self.to_the_worktree_question()
+        self.after(self.next(5), "Keep it")
+        self.next_3()
+        r = self.autodev("resume", "--repo", self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("RESUME", r.stdout)
+
+    # The run's task, as init set it (RunCase.init).
+    TASK = "Add due dates to todos"
+    DONE = "the run is complete; nothing more to do"
+
+    def resume(self, *extra):
+        """`resume --repo <main>` (with `extra`): its stdout."""
+        r = self.autodev("resume", "--repo", self.repo, *extra)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def other_run(self):
+        """A second open run of another task, beside this one: its worktree."""
+        r = self.autodev("init", "--repo", self.repo, "--slug", "overdue",
+                         "--task", "Show overdue todos", "--profile", self.profile,
+                         "--max-wait", "30")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return self.tmp / "app-overdue"
+
+    def assert_finished(self):
+        """A bare `resume` finds the run finished: from the main checkout it
+        leaves the run alone (no open run), and from its worktree it prints
+        FINISHED."""
+        out = self.resume()
+        self.assertTrue(out.startswith("ASK"), out)
+        self.assertIn("no open run", out)
+        r = self.autodev("resume", "--repo", self.worktree)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], f"FINISHED: {self.worktree}", r.stdout)
+
+    def refused_cleanup(self):
+        """Answer "Remove it" with an untracked file in the worktree: git
+        refuses `cleanup-worktree` (exit 1)."""
+        self.to_the_worktree_question()
+        self.removed()
+        (self.worktree / "stray-notes.txt").write_text("the user's notes\n")
+        self.next_3()
+        r = self.autodev("cleanup-worktree", "--dir", self.dir, cwd=self.repo)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_resume_task_picks_up_a_run_whose_worktree_is_still_to_remove(self):
+        self.to_the_worktree_question()
+        self.removed()
+        self.next_3()
+        out = self.resume("--task", self.TASK)
+        self.assertTrue(out.startswith("RESUME"), out)
+        action = next((ln for ln in out.splitlines() if ln.strip().startswith("action:")),
+                      "")
+        self.assertIn("cleanup-worktree", action, out)
+
+    def test_a_bare_resume_asks_which_run_beside_a_pending_cleanup(self):
+        self.to_the_worktree_question()
+        self.removed()
+        self.next_3()
+        other = self.other_run()
+        out = self.resume()
+        self.assertTrue(out.startswith("ASK"), out)
+        self.assertIn(str(self.worktree), out)
+        self.assertIn(str(other), out)
+
+    def test_next_repo_sets_a_new_run_up_while_the_old_cleanup_is_pending(self):
+        self.to_the_worktree_question()
+        self.removed()
+        self.next_3()  # the session ends before cleanup-worktree runs
+        self.assert_a_new_run_is_set_up()
+
+    def test_next_repo_sets_a_new_run_up_right_after_remove_it(self):
+        self.to_the_worktree_question()
+        self.removed()  # the session ends before the `next` that finishes the run
+        self.assert_a_new_run_is_set_up()
+
+    def assert_a_new_run_is_set_up(self):
+        """`next --repo --task <the run's task>` starts setting a new run up,
+        and leaves this run's worktree and state as they were."""
+        before = (self.dir / "state.json").read_text()
+        temp = self.tmp / "tmpdir"
+        temp.mkdir()
+        self.env.update(TMPDIR=str(temp), AUTO_DEV_PROFILES_DIR=str(self.tmp / "profiles"))
+        r = self.autodev("next", "--repo", self.repo, "--task", self.TASK, "--max-wait",
+                         "5", "--json")
+        shown = r.stdout + r.stderr
+        self.assertNotIn("move into the run's worktree", shown)
+        self.assertNotIn(str(self.worktree) + " ", shown)
+        out = json.loads(r.stdout)
+        self.assertEqual(out.get("exit"), r.returncode, shown)
+        self.assertIn(out.get("exit"), (0, 5), shown)  # setup's first step for a new run
+        self.assertTrue(self.worktree.is_dir())
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+
+    def test_a_cleanup_git_refuses_ends_the_run(self):
+        self.refused_cleanup()
+        action, _ = self.next_3()
+        self.assertEqual(action, self.DONE)
+        self.assertEqual(self.state()["gates"][-1]["choice"], "keep")
+        self.assert_finished()
+        self.assertTrue(self.resume("--task", self.TASK).startswith("FINISHED"))
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_a_cleanup_git_refuses_leaves_another_open_run_to_resume(self):
+        self.refused_cleanup()
+        other = self.other_run()
+        out = self.resume()
+        self.assertEqual(out.splitlines()[0], f"RESUME: {other}", out)
+
+    def test_a_run_5_0_left_with_its_worktree_stays_finished(self):
+        # On 5.0, "Remove it" recorded `gate cleanup proceed`, git refused the
+        # removal and nothing more was saved: no `keep` gate, no cleanup_given.
+        self.refused_cleanup()
+        state = self.state()
+        self.assertEqual(state["gates"][-1]["choice"], "keep")
+        state["gates"].pop()
+        self.assertEqual(state["gates"][-1]["choice"], "proceed")
+        self.assertTrue(state.pop("cleanup_given"))
+        self.write_state(state)
+        self.assert_finished()
+        self.assertTrue(self.resume("--task", self.TASK).startswith("FINISHED"))
+        action, _ = self.next_3()
+        self.assertEqual(action, self.DONE)
+        other = self.other_run()
+        out = self.resume()
+        self.assertEqual(out.splitlines()[0], f"RESUME: {other}", out)
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_explain_gives_the_removal_without_saving_that_it_was_given(self):
+        self.to_the_worktree_question()
+        self.removed()
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("cleanup-worktree", json.loads(r.stdout)["ACTION"])
+        self.assertNotIn("cleanup_given", self.state())
+        self.next_3()
+        self.assertTrue(self.state()["cleanup_given"])
+
+    def read_only(self, folder):
+        """Make `folder` read-only for this test, or skip it where the user
+        can write to a read-only folder anyway (root)."""
+        folder.chmod(0o555)
+        self.addCleanup(lambda: folder.exists() and folder.chmod(0o755))
+        try:
+            with tempfile.NamedTemporaryFile(dir=folder):
+                pass
+        except OSError:
+            pass
+        else:
+            self.skipTest("this user can write to a read-only folder (root)")
+
+    def ignore(self, pattern):
+        with open(self.repo / ".git" / "info" / "exclude", "a") as exclude:
+            exclude.write(pattern + "\n")
+
+    def half_removed(self, lock=None):
+        """Answer "Remove it" and run `cleanup-worktree` (with the folder `lock`
+        made read-only first), which git stops partway: exit 1, REFUSED, saying
+        so. Its output."""
+        self.removed()
+        self.next_3()
+        if lock:
+            self.read_only(lock)
+        r = self.autodev("cleanup-worktree", "--dir", self.dir, cwd=self.repo)
+        shown = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, shown)
+        self.assertIn("REFUSED", shown)
+        self.assertIn("git removed part of", shown)
+        self.assertIn("unregistered it", shown)
+        return shown
+
+    def test_a_removal_git_left_half_done_names_what_is_left(self):
+        # git stops at the first entry it can't delete, in the order the
+        # filesystem lists them: .auto-dev/ may go before build/ or stay.
+        self.to_the_worktree_question()
+        self.ignore("build/")
+        folder = self.worktree / "build" / "ro"
+        folder.mkdir(parents=True)
+        (folder / "out.bin").write_text("built\n")
+        self.read_only(folder)
+        shown = self.half_removed()
+        self.assertIn("build", shown)  # what is left
+        if (self.dir / "state.json").exists():
+            self.assertIn("(.auto-dev/) is still there", shown)
+            self.assertNotIn("its run state with it", shown)
+            self.assertEqual(self.state()["gates"][-1]["choice"], "keep")
+        else:
+            self.assertIn("its run state with it", shown)
+            self.assertIn("Nothing was recorded", shown)
+            self.assertFalse(self.dir.exists() and any(self.dir.iterdir()))
+
+    def test_a_half_done_removal_that_left_the_state_ends_the_run(self):
+        # .auto-dev/ takes no deletion, so state.json stays whatever the order.
+        self.to_the_worktree_question()
+        self.ignore("build/")
+        folder = self.worktree / "build" / "ro"
+        folder.mkdir(parents=True)
+        (folder / "out.bin").write_text("built\n")
+        self.read_only(folder)
+        shown = self.half_removed(lock=self.dir)
+        self.assertNotIn("its run state with it", shown)
+        self.assertIn("(.auto-dev/) is still there", shown)
+        self.assertIn(".auto-dev", shown.split("what is left:")[1])
+        self.assertTrue((self.dir / "state.json").is_file())
+        gate = self.state()["gates"][-1]
+        self.assertEqual((gate["gate"], gate["choice"]), ("cleanup", "keep"))
+        action, _ = self.next_3()
+        self.assertEqual(action, self.DONE)
+        self.assertNotIn("cleanup-worktree", action)
+
+    def test_a_half_done_removal_lists_ten_entries_and_how_many_more(self):
+        # In a read-only worktree folder git deletes no top-level entry.
+        self.to_the_worktree_question()
+        self.ignore("extra-*")
+        for i in range(12):
+            (self.worktree / f"extra-{i:02}").write_text("left\n")
+        entries = len(list(self.worktree.iterdir()))
+        self.assertGreater(entries, 10)
+        shown = self.half_removed(lock=self.worktree)
+        self.assertIn(f" and {entries - 10} more in {self.worktree}", shown)
+
+    def test_resume_of_a_pending_cleanup_reads_the_ship_runbook(self):
+        self.to_the_worktree_question()
+        self.removed()
+        self.next_3()
+        out = self.resume()
+        self.assertTrue(out.startswith("RESUME"), out)
+        lines = [ln.strip() for ln in out.splitlines()]
+        self.assertIn("runbook: references/ship.md", lines, out)
+        self.assertIn("stage: Ship", lines, out)
+        self.assertEqual(self.state()["stage"], "ship")
+
+    def test_keeping_the_worktree_after_an_unsaved_copy_ends_the_run(self):
+        self.to_the_worktree_question()
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        self.removed()
+        action, _ = self.next_3()
+        self.assert_unsaved_action(action)
+        keep = re.search(r"`([^`]*gate cleanup keep[^`]*)`", action)
+        self.assertIsNotNone(keep, action)
+        r = subprocess.run(keep.group(1), shell=True, capture_output=True, text=True,
+                           env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)  # the copy writes now
+        again, _ = self.next_3()
+        self.assertEqual(again, self.DONE)
+        self.assertTrue(self.worktree.is_dir())
+        self.assert_finished()

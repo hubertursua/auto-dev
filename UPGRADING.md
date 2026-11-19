@@ -31,6 +31,28 @@ can resume on the new one. Newest first. The current version is in
   saved profile or to `.auto-dev.yml` yourself; the added-line scan applies at
   once. A 5.0 run in flight resumes on it: a `state.json` without the key
   reads as no globs, and a run past the re-check keeps its recorded result.
+- **Each run writes its metrics.** Whenever `next` completes or stops a run
+  (exit 3 or 4), it writes `.auto-dev/metrics.json`: spawns per worker, the
+  budget's rounds (spent, left, added), each stop counted once by its number in
+  `references/tables.md`, refused results, review findings kept and dropped,
+  events and the build's diff size. It writes the same file to
+  `~/.config/auto-dev/metrics/<repo>/<branch>.json` (or
+  `$AUTO_DEV_METRICS_DIR`, or `$XDG_CONFIG_HOME/auto-dev/metrics`), so it
+  outlives the worktree; the worktree question names it. A file it can't
+  write is said on stderr and changes nothing else, with one exception: when
+  the copy can't be written, the worktree question and its "Remove it" ACTION
+  say so and name `.auto-dev/metrics.json`, so the user can save it before the
+  worktree is removed (or keep it: the ACTION names `gate cleanup keep`).
+  Until `cleanup-worktree` runs, a later `next` gives that ACTION again and
+  `resume` picks the run up for it; a removal git refuses records the worktree
+  as kept, so the run is finished (one where git removed part of the worktree
+  before it failed names what is left, and records the worktree as kept only
+  when the run's state is still there). A 5.0 run that
+  finished with its worktree still there (git refused 5.0's
+  `cleanup-worktree`) stays finished: only a removal this version's `next`
+  gave is picked up again. A 5.0 run in flight
+  resumes on it; its metrics count only the stops and refused results after
+  the upgrade, and a diff checked before it has no file or line count.
 - **A worker still out is waited for, not spawned again.** `next` used to
   send a brief with no result file out again on every call, so a `next` run
   before a background worker returned started a second one in the same

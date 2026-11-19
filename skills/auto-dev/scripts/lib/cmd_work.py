@@ -95,8 +95,10 @@ record <worker> <n>
     printed). Either way the issues are saved in state.json for job
     <worker>-<n>: run `autodev.py next`, which re-spawns it with a brief whose
     `previous_issues` carries them (as `brief <worker> --retry <n>` writes). A
-    later RECORDED for <worker>-<n> clears them. Recording a job again keeps
-    its place in the log. Don't guess.
+    later RECORDED for <worker>-<n> clears them. Each refused job is counted
+    once for metrics.json (by worker and token), even when it is recorded again
+    or its retry is accepted. Recording a job again keeps its place in the
+    log. Don't guess.
 
 check-artifact <file>
     Checks one artifact against its template before a worker returns it:
@@ -1359,6 +1361,9 @@ def record_job(state, worker, n):
             raise Refused("MISMATCH", "the return and the artifacts disagree", issues)
     except Refused as exc:
         token, message, issues = exc.args
+        if job(worker, n) not in state.get("refused", {}):  # not the same return again
+            state.setdefault("refusals", []).append(
+                {"worker": worker, "n": n, "token": token, "seq": st.seq(state)})
         state.setdefault("refused", {})[job(worker, n)] = issues
         st.add_note(state, f"{worker} #{n} refused ({token})")
         return token, message, issues, data

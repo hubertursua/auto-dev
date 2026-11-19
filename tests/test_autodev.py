@@ -58,7 +58,9 @@ class RunCase(unittest.TestCase):
         self.env = {**BASE_ENV,
                     "PATH": f"{FAKE_GH}{os.pathsep}{os.environ.get('PATH', '')}",
                     "FAKE_GH_RESPONSES": str(self.tmp / "gh.json"),
-                    "FAKE_GH_LOG": str(self.tmp / "gh.log")}
+                    "FAKE_GH_LOG": str(self.tmp / "gh.log"),
+                    # `next` copies metrics.json here, never to the user's home.
+                    "AUTO_DEV_METRICS_DIR": str(self.tmp / "metrics")}
         self.script_gh(GH_OK)
         origin = self.tmp / "origin.git"
         self.sh("git", "init", "-q", "--bare", "-b", "main", str(origin))

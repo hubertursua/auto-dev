@@ -7,10 +7,12 @@ PATH (a stub git, the fake gh) applies.
 Usage:
     lib_cli.py pr-body [--check FILE] --dir <artifact-dir> [--json]
     lib_cli.py gate-summary <post-plan|pr|ready|main> --dir <artifact-dir> [--json]
+    lib_cli.py metrics --dir <artifact-dir> [--json]
 
 Prints and exits as autodev.py would: `WRITTEN`, `CLEAN` or `PROBLEMS` (exit
 1) for pr-body; the summary and the question for gate-summary, exit 1 when a
-precondition fails; exit 2 when it could not run.
+precondition fails; `WRITTEN <metrics.json>` and `COPIED <its copy>` for
+metrics (what `next` writes at exits 3 and 4); exit 2 when it could not run.
 """
 
 import argparse
@@ -22,7 +24,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "auto-dev" / "scri
 sys.path.insert(0, str(SCRIPTS))
 
 from lib import artifacts as art  # noqa: E402
-from lib import cmd_review, cmd_ship  # noqa: E402
+from lib import cmd_review, cmd_ship, metrics  # noqa: E402
 from lib import state as st  # noqa: E402
 from lib.output import CANNOT_RUN, FAILED, Fail, emit, report_failure  # noqa: E402
 
@@ -75,6 +77,15 @@ def gate_summary(args):
     return 0
 
 
+def write_metrics(args):
+    errors = metrics.write(args.dir)
+    if errors:
+        raise Fail("; ".join(errors), CANNOT_RUN, "ERROR")
+    emit(args.json, "WRITTEN", str(Path(args.dir) / metrics.FILE),
+         copied=str(metrics.saved_path(st.load(args.dir))))
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -83,12 +94,14 @@ def main():
     gate = sub.add_parser("gate-summary")
     gate.add_argument("gate", choices=sorted(cmd_review.GATE_OPTIONS))
     gate.add_argument("--pr")
-    for p in (body, gate):
+    metrics_ = sub.add_parser("metrics")
+    for p in (body, gate, metrics_):
         p.add_argument("--dir", required=True)
         p.add_argument("--json", action="store_true")
     args = parser.parse_args()
     try:
-        return {"pr-body": pr_body, "gate-summary": gate_summary}[args.command](args)
+        return {"pr-body": pr_body, "gate-summary": gate_summary,
+                "metrics": write_metrics}[args.command](args)
     except Fail as exc:
         return report_failure(exc, args.json)
     except st.StateError as exc:

@@ -79,6 +79,12 @@ it (_Overriding a stop_, below).
 | 22 | a free step came round a second time: the acceptance checks still have gaps after the tester's one more go, a condition still reads two ways after the planner's decision, or the coder stopped a step again after the planner's decision in the same change | `next` |
 | 23 | a CI watch run since the pushed commit was made reported on another commit (`ci-watch` run without `--sha`, so it watched an unpushed tests commit on top), so CI never reported on the commit that ships. The report names both commits. Lifted by `auto-dev continue` or _I fixed it myself_: CI is watched on the pushed commit again. No sign-off | `next` |
 
+`next` counts each stop it reports by this number in `.auto-dev/metrics.json`
+(`none` for a stop the table doesn't number), once while it keeps reporting
+the same stop: an answer to the stop other than talk or leave, a setup run
+again, or any other step makes the next stop count again. A hold is not a
+stop, and neither is a step `next` could not take.
+
 ## Hold and Stop
 
 They are different states.
