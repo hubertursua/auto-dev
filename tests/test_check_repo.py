@@ -288,6 +288,20 @@ class CheckRepoTest(unittest.TestCase):
         for what in ("caller", "signature", "return value", "output line", "exit code",
                      "file format", "config key"):
             self.assertIn(what, r3_text)
+        # Each reviewer, briefed with its own slot, is pointed at that slot's line:
+        # the sentence leading into the lens list names its slot, and nothing outside
+        # the lens lines names another slot as its own.
+        lens_line = re.compile(r"^[ \t]*- \*\*R\d+ — .*?(?=^[ \t]*- |\n\s*\n|\Z)",
+                               re.MULTILINE | re.DOTALL)
+        for slot in ("R1", "R2", "R3"):
+            told = review.replace("{{reviewer}}", slot)
+            first = lens_line.search(told)
+            lead_in = told[:first.start()].rstrip().rsplit("\n\n", 1)[-1]
+            self.assertEqual(set(re.findall(r"\bR\d+\b", lead_in)), {slot},
+                             f"reviewer {slot} is not pointed at its own lens: {lead_in!r}")
+            elsewhere = set(re.findall(r"\bR\d+\b", lens_line.sub("", told)))
+            self.assertEqual(elsewhere, {slot},
+                             f"reviewer {slot}'s instructions name another slot: {elsewhere}")
 
     def test_the_review_report_header_states_the_lens_used(self):
         template = (ROOT_DIR / "skills" / "auto-dev" / "templates" / "R.md").read_text(
