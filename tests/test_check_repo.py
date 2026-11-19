@@ -395,6 +395,45 @@ class CheckRepoTest(unittest.TestCase):
                      "callers and compatibility"):
             self.assertTrue(lens in text, f"the code review panel item does not name {lens!r}")
 
+    def test_the_panel_has_one_lens_per_reviewer(self):
+        tool = load_tool()
+        text = (ROOT_DIR / "agents" / "code-reviewer.md").read_text(encoding="utf-8")
+        self.assertEqual(tool.panel_lenses(text),
+                         [("R1", "correctness and edge cases"),
+                          ("R2", "tests and overfitting"),
+                          ("R3", "callers and compatibility")])
+        self.assertEqual(tuple(tool.load_panel_slots()), ("R1", "R2", "R3"))
+        tool.check_panel_lenses()
+        self.assertEqual(tool.errors, [])
+
+    def check_lenses(self, lines, slots=("R1", "R2", "R3")):
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "## Mode: review\n\n### Your lens\n\n" + "".join(
+                f"- **{slot} — {lens}.** Look there first.\n" for slot, lens in lines)
+            (Path(tmp) / "code-reviewer.md").write_text(text, encoding="utf-8")
+            tool.check_panel_lenses(Path(tmp), slots=slots)
+        return tool.errors
+
+    def test_a_slot_without_its_own_lens_fails_the_check(self):
+        three = [("R1", "correctness"), ("R2", "tests"), ("R3", "callers")]
+        self.assertEqual(self.check_lenses(three), [])
+        for lines, named in ((three[:2], ("R3",)),
+                             (three + [("R2", "speed")], ("R2",)),
+                             (three + [("R4", "style")], ("R4",)),
+                             ([three[0], ("R2", " Correctness "), three[2]],
+                              ("correctness", "R1", "R2"))):
+            errors = self.check_lenses(lines)
+            self.assertEqual(len(errors), 1, (lines, errors))
+            self.assertTrue(errors[0].startswith("agents/code-reviewer.md:"), errors)
+            for word in named:
+                self.assertIn(word, errors[0])
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            tool.check_panel_lenses(Path(tmp), slots=("R1",))  # no code-reviewer.md
+        self.assertEqual(len(tool.errors), 1, tool.errors)
+        self.assertIn("agents/code-reviewer.md", tool.errors[0])
+
 
 if __name__ == "__main__":
     unittest.main()

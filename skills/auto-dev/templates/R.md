@@ -2,6 +2,7 @@
 # Code review R<k> — pass <n>
 
 Scope: <the scope as briefed>
+Lens: <your lens, word for word from your instructions' line for your slot>
 /code-review <effort>: <ran | failed: <reason>>   ·   Coverage: <full | partial: <files not covered, and why>>
 
 ## Findings
