@@ -50,10 +50,10 @@ it and see it FAIL, then make it pass. Follow existing codebase conventions and
 abstractions closely. Run the relevant tests as you go and get them green with
 one of these lines, copied as written with your test files or test IDs filled in:
 {{test_runs}}
-Each runs the profile's test check scoped, in the worktree, and saves its
-output; `--tests` runs only the named tests, and `run` says which form ran on
-its `scope:` line. The quality gate runs the test check whole
-({{test_command}}), so never run it whole to test a step.
+Each runs the profile's test check in the worktree, scoped when the check
+has a scoped form, and saves its output; `--tests` runs only the named tests,
+and `run` says which form ran on its `scope:` line. The quality gate runs the
+test check whole ({{test_command}}).
 Never type the test command yourself: a permission check refuses `cd
 <worktree> && …` and every rewritten form. When `run` exits 2 because the
 check has no scoped form, run the whole suite. Scope hints: {{test_notes}}. Do NOT

@@ -128,15 +128,15 @@ For every PLAN.md condition, Security/Compliance criteria included:
    this untouched tree) or `pass-to-pass` (behavior the change must preserve —
    must PASS on it).
 3. Run your checks with one of these lines, copied as written with your test
-   files or test IDs filled in:
+   files or test IDs filled in where the line takes them:
    {{test_runs}}
-   Each runs the profile's test check scoped to those files or tests, in the
-   worktree, saves the output under {{artifact_dir}}/tmp/run/ and prints the
-   command as run, its `scope:` and the output's tail. Never type a profile
-   command yourself: a permission check refuses `cd <worktree> && …` and
-   every rewritten form.
-   When `run` exits 2 because the check has no scoped form, run it whole
-   (`run test` with no `--files`) and keep the lines that name your checks.
+   Each runs the profile's test check in the worktree, scoped when the check
+   has a scoped form, saves the output under {{artifact_dir}}/tmp/run/ and
+   prints the command as run, its `scope:` and the output's tail. Never type
+   a profile command yourself: a permission check refuses `cd <worktree> && …`
+   and every rewritten form.
+   When the check has no scoped form, the one line above runs it whole: keep
+   the lines of its output that name your checks.
    A fail-to-pass check must fail FOR THE RIGHT REASON: an assertion,
    or the entry point being absent or returning the wrong result (a compile error
    that names the missing entry point counts). This is what "the right reason"

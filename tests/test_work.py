@@ -401,6 +401,52 @@ class BriefTest(WorkCase):
         self.assertIn("one test ID", value)
         self.assertIn("deletes one", value)
 
+    def test_an_unscopable_test_check_gives_the_line_that_runs_it_whole(self):
+        self.set_gate({"kind": "test", "command": "true", "report": "TEST.md"})
+        whole = (f"python3 {shlex.quote(str(SCRIPTS / 'autodev.py'))} run test "
+                 f"--dir {shlex.quote(str(self.dir))}")
+        never = re.compile(r"never run (it|`run test`)[^.]*(whole|neither flag)", re.I)
+        # Each line runs the check scoped only when it has a scoped form.
+        always_scoped = re.compile(r"scoped\s+to\s+those\s+files\s+or\s+tests", re.I)
+        qualified = re.compile(r"scoped\s+when\s+(the\s+check|it)\s+has\s+a\s+scoped\s+form",
+                               re.I)
+        for worker, args in (("coder", ("--mode", "build")),
+                             ("fixer", ("--set", "instruction=fix the gate",
+                                        "--set", "stopped=the quality gate failed")),
+                             ("acceptance-tester", ("--mode", "write",
+                                                    "--set", "scope=ALL CONDITIONS"))):
+            r = self.cmd("brief", worker, *args)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            brief = self.dir / "briefs" / f"{worker}-1.md"
+            value = self.runs_value(brief)
+            self.assertIn(f"`{whole}`", value, worker)
+            self.assertNotIn("--files", value, worker)
+            self.assertNotIn("--tests", value, worker)
+            agent = (SCRIPTS.parents[2] / "agents" / f"{worker}.md").read_text()
+            for text in (brief.read_text(), agent):
+                self.assertIsNone(never.search(text), worker)
+                self.assertIsNone(always_scoped.search(text), worker)
+            self.assertIsNotNone(qualified.search(agent), worker)
+        done = subprocess.run(whole, shell=True, cwd=self.tmp, env=self.env,
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 0, (whole, done.stdout, done.stderr))
+        self.assertIn("  scope: whole — the check has no scoped form",
+                      done.stdout.splitlines())
+        # A check that can be scoped still keeps the whole run for the gate.
+        self.set_gate({"kind": "test", "command": "true", "report": "TEST.md",
+                       "files": "true <files>"})
+        self.assertIn("A whole run of the test check is for the quality gate only",
+                      self.coder_runs(2))
+
+    def test_a_tests_only_check_gives_only_the_tests_line(self):
+        self.set_gate({"kind": "test", "command": "true", "report": "TEST.md",
+                       "tests": "true <tests>"})
+        value = self.coder_runs()
+        self.assertIn(f" run test --dir {shlex.quote(str(self.dir))} --tests <test id> …",
+                      value)
+        self.assertNotIn("--files", value)
+        self.assertNotIn("no test-ID form", value)
+
 
 class RecordTest(WorkCase):
     def test_the_planner_s_size_and_risk_are_recorded_and_checked_against_the_plan(self):

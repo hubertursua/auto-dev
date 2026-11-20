@@ -28,16 +28,21 @@ worktree, so a default would find no run, or an old one.
     Runs the check's scoped form instead: its `files` command, with `<files>`
     replaced by the paths given, quoted, relative to the worktree (a relative
     path is taken from the worktree root). Each must exist inside the
-    worktree. A check with no `files` form can't be scoped: exit 2.
+    worktree. A check with no `files` form can't be scoped: exit 2, and so
+    is a `files` form that holds `<tests>` or `<test>`.
 --tests <id> ...
     Runs the check's test-ID form instead: its `tests` command, with `<tests>`
     replaced by the IDs given, each quoted as one argument, or `<test>`
     replaced by the one ID given (a form with `<test>` takes exactly one: a
     second is exit 2, never a fallback). An ID is the runner's own syntax and
     is passed as given; one that is empty, starts with `-` or holds a control
-    character is exit 2. When the check has no `tests` form, the `files` form
-    runs on the --files paths given with it, else the whole check runs. Paths
-    given with --files are always checked, whichever form runs.
+    character (or, on Windows, ends in a backslash) is exit 2, and so is a form whose
+    placeholder is quoted, since `run` quotes each ID itself, or that holds
+    `<files>`, which it would leave for the shell to read. A repeated
+    --tests adds its IDs to the ones before. When the check has no `tests`
+    form, the `files` form runs on the --files paths given with it, else the
+    whole check runs. Paths given with --files are always checked, whichever
+    form runs.
 
 Each run prints its scope on the line after the token:
 `  scope: tests|files|whole`, with ` — <why>` when --tests fell back or the
@@ -70,8 +75,9 @@ Exit codes:
     1  FAILED: the command exited non-zero
     2  could not run (no state, no such check, no `files` form, a path outside
        the worktree or missing, a test ID that is empty, starts with `-` or
-       holds a control character, more than one ID for a `<test>` form,
-       --out outside the artifact dir) — `ERROR: …`
+       holds a control character, more than one ID for a `<test>` form, a
+       quoted `<tests>` or `<test>`, a form holding the other form's
+       placeholder, --out outside the artifact dir) — `ERROR: …`
     3  TIMED_OUT: the command and everything it started were stopped
 """
 
@@ -108,7 +114,8 @@ def add_arguments(parser):
                         help="gate: the check's number or its report name")
     parser.add_argument("--files", nargs="+", default=None,
                         help="run the check's scoped form on these paths")
-    parser.add_argument("--tests", nargs="+", default=None,
+    # extend: a repeated --tests adds its IDs, so none is dropped unseen
+    parser.add_argument("--tests", nargs="+", action="extend", default=None,
                         help="run the check's test-ID form on these test IDs")
     parser.add_argument("--dir", required=True, help="the run's .auto-dev/")
     parser.add_argument("--out", help="the file to save the output to (under --dir's "
@@ -215,12 +222,25 @@ def command_for(n, check, worktree, files):
         raise Fail(f"gate check {n} (`{check.get('command', '')}`) has no scoped form: "
                    f"the profile gives it no `files` command with {PLACEHOLDER}, so "
                    f"it can only run whole (drop --files)", CANNOT_RUN, "ERROR")
+    unfilled(n, form, "files", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER))
     return form.replace(PLACEHOLDER, quote(relative_paths(worktree, files)))
+
+
+def unfilled(n, form, key, placeholders):
+    """Refuse a form that holds a placeholder it doesn't fill: left in the
+    command, the shell would read `<files> <path>` as two redirects."""
+    for p in placeholders:
+        if p in form:
+            raise Fail(f"gate check {n}'s `{key}` form (`{form}`) holds {p}, which only "
+                       f"the other form fills: `run` would leave it in the command, "
+                       f"where the shell reads it as a redirect. Remove {p} from the "
+                       f"`{key}` form in the profile", CANNOT_RUN, "ERROR")
 
 
 def test_ids(ids):
     """The IDs, unchanged, once each is checked to be data the runner can only
-    read as a test ID: not empty, not an option, no control character."""
+    read as a test ID: not empty, not an option, no control character, and on
+    Windows no trailing backslash."""
     for test in ids:
         if not test:
             why = "it is empty"
@@ -228,10 +248,50 @@ def test_ids(ids):
             why = "it starts with `-`, so the runner would read it as an option"
         elif any(c < " " or c == "\x7f" for c in test):
             why = "it holds a control character, such as a newline"
+        elif os.name == "nt" and test.endswith("\\"):
+            # The C runtime reads `\"` as a literal quote, so the closing quote
+            # `quote` adds would be lost and the next ID's words would shift.
+            why = "on Windows a trailing backslash would escape the quote around it"
         else:
             continue
         raise Fail(f"{test!r} is not a test ID: {why}", CANNOT_RUN, "ERROR")
     return ids
+
+
+def quoted_placeholder(form, placeholders=(TESTS_PLACEHOLDER, TEST_PLACEHOLDER)):
+    """The first of `placeholders` that `form` holds inside a quoted span or
+    with a quote, backtick or backslash right beside it, else None. `run`
+    quotes each value itself, so a placeholder the form quotes again hands the
+    runner those quotes too, or lets the shell expand what the value holds."""
+    marks = ("'", '"', "`", "\\")
+    quoted = [False] * len(form)
+    inside, i = None, 0
+    while i < len(form):
+        c = form[i]
+        if inside:
+            quoted[i] = True
+            if c == "\\" and inside != "'":
+                quoted[i + 1:i + 2] = [True] * len(form[i + 1:i + 2])
+                i += 2
+                continue
+            if c == inside:
+                inside = None
+        elif c == "\\":
+            quoted[i:i + 2] = [True] * len(form[i:i + 2])
+            i += 2
+            continue
+        elif c in marks:
+            quoted[i], inside = True, c
+        i += 1
+    for p in placeholders:
+        at = form.find(p)
+        while at != -1:
+            end = at + len(p)
+            if (quoted[at] or (at and form[at - 1] in marks)
+                    or (end < len(form) and form[end] in marks)):
+                return p
+            at = form.find(p, end)
+    return None
 
 
 def has_form(check, key):
@@ -254,6 +314,13 @@ def resolve(n, check, worktree, files, tests):
     if files:
         relative_paths(worktree, files)  # a given path is checked whatever runs
     form = str(check.get("tests") or "")
+    unfilled(n, form, "tests", (PLACEHOLDER,))
+    bad = quoted_placeholder(form)
+    if bad:
+        raise Fail(f"gate check {n}'s test-ID form (`{form}`) has {bad} inside quotes "
+                   f"or next to a quote or backslash: `run` quotes each test ID itself, "
+                   f"so write {bad} unquoted, as a word of its own, in the profile",
+                   CANNOT_RUN, "ERROR")
     if TESTS_PLACEHOLDER in form:
         return form.replace(TESTS_PLACEHOLDER, quote(tests)), "tests", ""
     if TEST_PLACEHOLDER in form:
@@ -270,12 +337,16 @@ def resolve(n, check, worktree, files, tests):
     return command_for(n, check, worktree, None), "whole", why
 
 
+def run_line(ad, invocation="run test"):
+    """The `run` command with the script and artifact dir filled in."""
+    return f"python3 {shlex.quote(str(SCRIPT))} {invocation} --dir {shlex.quote(str(ad))}"
+
+
 def scoped_runs(ad, check, invocation="run test", forms=("files", "tests")):
     """[(run line, note)] for each of `forms` the check has: the `run` command
     that runs it, with the script and artifact dir filled in and only the test
     file or ID left, and a note ('' when none)."""
-    head = (f"python3 {shlex.quote(str(SCRIPT))} {invocation} "
-            f"--dir {shlex.quote(str(ad))}")
+    head = run_line(ad, invocation)
     runs = []
     if "files" in forms and has_form(check, "files"):
         runs.append((f"{head} --files <test file> …", ""))

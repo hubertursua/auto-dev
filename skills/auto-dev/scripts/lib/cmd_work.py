@@ -415,10 +415,13 @@ def auto_values(worker, n, state, ad, mode):
 
 def test_runs(check, ad):
     """The test_runs slot: the run's scoped test commands, filled in and ready to
-    copy, and that a whole run of the test check is for the quality gate only."""
+    copy, and that a whole run of the test check is for the quality gate only;
+    for a check with no scoped form, the one line that runs it whole."""
     runs = cmd_run.scoped_runs(ad, check)
     if not runs:
-        return "the test check has no scoped form: `run test` runs it whole"
+        return (f"- `{cmd_run.run_line(ad)}`\n"
+                "The test check has no scoped form, so it only runs whole: this line "
+                "is the way to run its tests.")
     lines = [f"- `{line}`" + (f" ({note})" if note else "") for line, note in runs]
     if not cmd_run.has_form(check, "tests"):
         lines.append("- no test-ID form: scope by file")

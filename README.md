@@ -548,12 +548,13 @@ permission check refuses. A check can also give a scoped form (`files`, with
 `<files>` where the paths go), so a worker can run it on only the files it
 changed or wrote, and a test-ID form (`tests`, with `<tests>` for a list of
 test IDs or `<test>` for one, plus a `tests_example`), so it can run only the
-tests it names with `--tests`; the profiler looks for both. `--tests` falls
-back to the file-scoped form, then to the whole check, and `run` prints which
-it used. The quality gate runs every check whole through `run gate <n>`; a
-`run test` that runs the test check whole when it could have been scoped
-prints a warning with the ready-to-copy scoped lines, which the coder's,
-fixer's and acceptance tester's briefs also carry.
+tests it names with `--tests`; the profiler looks for both. With no test-ID
+form, `--tests` falls back to the file-scoped form on the `--files` given with
+it, else to the whole check, and `run` prints which it used. The quality gate
+runs every check whole through `run gate <n>`; a `run test` that runs the test
+check whole when it could have been scoped prints a warning with the
+ready-to-copy scoped lines, which the coder's, fixer's and acceptance tester's
+briefs also carry.
 
 ### Where saved profiles live
 

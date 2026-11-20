@@ -108,11 +108,18 @@ Fields:
   one argument, for a runner that takes IDs such as `file:line` or a dotted
   test path) or `<test>` where exactly one goes (for a runner whose only
   selector is a single-value filter flag, such as a name or pattern), never
-  both. `tests_example` is one ID in the runner's syntax, shown to workers
+  both. Write the placeholder unquoted, as a word of its own (`--grep=<test>`
+  is fine, `"<test>"` is not): `run` quotes each ID itself, so quotes around
+  it would reach the runner, and both `validate-config.py` and `run` refuse a
+  quoted one. Each form takes only its own placeholder: the `tests` form no
+  `<files>`, the `files` form no `<tests>` or `<test>`, since `run` would leave
+  the other one in the command for the shell to read as redirects; both
+  `validate-config.py` and `run` refuse it. `tests_example` is one ID in the runner's syntax, shown to workers
   beside the form; it needs `tests`. Put `tests` on the same check as the
   `files` form `run test` uses. `run gate <n> --tests <id> …` and `run test
   --tests <id> …` run the test-ID form; an ID that is empty, starts with `-`
-  or holds a control character is refused, and a `<test>` form given a
+  or holds a control character (or, on Windows, ends in a backslash) is
+  refused, a repeated `--tests` adds its IDs, and a `<test>` form given a
   second ID is refused rather than run on one. When the check has no `tests`
   form, `--tests` falls back to the `files` form on the `--files` paths given
   with it, else to the whole check. Every run prints a `scope:` line

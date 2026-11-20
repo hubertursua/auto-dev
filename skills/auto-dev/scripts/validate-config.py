@@ -36,6 +36,9 @@ import difflib
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.cmd_run import quoted_placeholder  # the rule `run` applies too
+
 # The schema doc, located from this script so the path is right from any cwd.
 SCHEMA = Path(__file__).resolve().parent.parent / "references" / "profiles.md"
 
@@ -173,12 +176,29 @@ def check_gate(gate, profile=False):
                 errors.append(f"{where}.files: the command must contain "
                               f"{FILES_PLACEHOLDER}, which is replaced by the paths "
                               f"it runs on")
+            elif (key == "files" and isinstance(val, str)
+                  and any(p in val for p in TESTS_PLACEHOLDERS)):
+                errors.append(f"{where}.files: the command may not contain "
+                              f"{' or '.join(TESTS_PLACEHOLDERS)}: only the `tests` "
+                              f"form fills them, and one left in is read by the "
+                              f"shell as a redirect")
+            elif key == "tests" and isinstance(val, str) and FILES_PLACEHOLDER in val:
+                errors.append(f"{where}.tests: the command may not contain "
+                              f"{FILES_PLACEHOLDER}: only the `files` form fills it, "
+                              f"and one left in is read by the shell as a redirect")
             elif (key == "tests" and isinstance(val, str)
                   and sum(p in val for p in TESTS_PLACEHOLDERS) != 1):
                 errors.append(f"{where}.tests: the command must contain "
                               f"{TESTS_PLACEHOLDERS[0]} (replaced by a list of test "
                               f"IDs) or {TESTS_PLACEHOLDERS[1]} (replaced by exactly "
                               f"one), not both")
+            elif (key == "tests" and isinstance(val, str)
+                  and quoted_placeholder(val, TESTS_PLACEHOLDERS)):
+                errors.append(f"{where}.tests: write "
+                              f"{quoted_placeholder(val, TESTS_PLACEHOLDERS)} unquoted, "
+                              f"as a word of its own (`--grep=<test>` is fine): "
+                              f"`autodev.py run` quotes each test ID itself, so quotes "
+                              f"around it would reach the runner")
             elif key == "tests_example" and isinstance(val, str) and "tests" not in check:
                 errors.append(f"{where}.tests_example: an example test ID needs a "
                               f"`tests` form on the same check")

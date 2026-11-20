@@ -88,8 +88,12 @@ Find, from the repo itself:
    runner can select less than one file (a test name, a `file:line`, a
    dotted test path). Use `<tests>` where the runner takes a list of IDs, and
    `<test>` where its only selector takes one value (a name or pattern
-   filter flag; example in TypeScript: `npx jest -t <test>`). A runner that
-   can only run whole files gets neither key.
+   filter flag; example in TypeScript: `npx jest -t <test>`). Write the
+   placeholder unquoted, as a word of its own (`--grep=<test>` is fine):
+   `run` quotes each ID itself, and refuses a form that quotes it again.
+   Give each form only its own placeholder: no `<files>` in `tests`, no
+   `<tests>` or `<test>` in `files`. A
+   runner that can only run whole files gets neither key.
 4. Test scope: databases or services the suite needs, how to start them, the
    monorepo or workspace layout, slow tiers. This goes in test_notes.
 5. Gitignored files the suite needs that a fresh worktree won't have (`.env`,

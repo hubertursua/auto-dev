@@ -480,6 +480,12 @@ class InitTest(RunCase):
         self.assertIn("| `run-tests <files>` | `run-tests -t <test> --verbose` "
                       "(e.g. `deletes one`) |", profile)
 
+    def test_profile_md_shows_a_test_id_form_without_an_example_bare(self):
+        profile = self.init_with_test_check('files: "run-tests <files>", tests: '
+                                            '"run-tests <tests>"')
+        self.assertIn("| `run-tests <files>` | `run-tests <tests>` |\n", profile)
+        self.assertNotIn("(e.g.", profile)
+
 
 class ResumeTest(RunCase):
     def resume(self, *extra):
@@ -2988,6 +2994,148 @@ class RunCommandTest(unittest.TestCase):
         r = self.run_("test", "--files", "src/c.test.ts")
         self.assertEqual(r.stdout.splitlines()[1], "  scope: files")
         self.assertNotIn("warning:", r.stdout)
+
+    def test_tests_and_files_on_a_check_with_no_scoped_form_runs_it_whole(self):
+        self.set_test_check()
+        r = self.run_("test", "--tests", "deletes one", "--files", "src/c.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.output_of(r).read_text().splitlines()[1:], ["['all']"])
+        self.assertIn("  scope: whole — the check has no scoped form", r.stdout.splitlines())
+
+    def test_a_scoped_run_on_a_check_with_both_forms_prints_no_warning(self):
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose")
+        for args, scope in ((("--tests", "x"), "tests"),
+                            (("--files", "src/c.test.ts"), "files")):
+            r = self.run_("test", *args)
+            self.assertEqual(r.returncode, 0, (args, r.stdout, r.stderr))
+            self.assertIn(f"  scope: {scope}", r.stdout.splitlines(), args)
+            self.assertNotIn("warning:", r.stdout, args)
+            r = self.run_("test", *args, "--json")
+            self.assertEqual(r.returncode, 0, (args, r.stdout, r.stderr))
+            data = json.loads(r.stdout)
+            self.assertEqual((data["scope"], data["warning"]), (scope, None), args)
+
+    def test_tests_that_fell_back_to_whole_warns_with_the_files_line_only(self):
+        # setUp's test check has a files form and no test-ID form.
+        r = self.run_("test", "--tests", "x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        warned = [i for i, x in enumerate(lines) if x.startswith("  warning:")]
+        self.assertEqual(len(warned), 1, r.stdout)
+        after = "\n".join(lines[warned[0] + 1:])
+        self.assertIn(f"python3 {shlex.quote(str(AUTODEV.resolve()))} run test --dir "
+                      f"{shlex.quote(str(self.ad))} --files <test file> …", after)
+        self.assertNotIn("--tests", r.stdout)
+
+    def test_a_quoted_placeholder_in_the_test_id_form_is_refused_and_nothing_runs(self):
+        for form in ('<runner> pick -t "<test>"', "<runner> pick -t '<test>'",
+                     '<runner> pick "<tests>" --verbose',
+                     # Inside a span, with nothing right beside it.
+                     "<runner> pick '^<test>$'", '<runner> pick "^<test>$"'):
+            self.set_test_check(tests=form)
+            for test in ("a b", "x$(touch PWNED)"):
+                r = self.run_("test", "--tests", test)
+                self.assertEqual(r.returncode, 2, (form, test, r.stdout, r.stderr))
+                self.assertIn("ERROR:", r.stdout + r.stderr, (form, test))
+                self.assertIn("unquoted", r.stdout + r.stderr, (form, test))
+                self.assertEqual(self.run_outputs(), [], (form, test))
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+        # Beside an option's `=` it is still a word of its own, and runs.
+        self.set_test_check(tests="<runner> pick --grep=<test>")
+        r = self.run_("test", "--tests", "a b")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', '--grep=a b']", r.stdout)
+        # A quoted span closed before the placeholder leaves it unquoted.
+        self.set_test_check(tests="sh -c 'cd .' && <runner> pick <tests>")
+        r = self.run_("test", "--tests", "x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', 'x']", r.stdout)
+        # A backslash inside '…' is literal, so that span closes too.
+        self.set_test_check(tests="echo 'a\\' && <runner> pick <tests>")
+        r = self.run_("test", "--tests", "x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', 'x']", r.stdout)
+        # Every occurrence is checked, not only the first.
+        self.set_test_check(tests='<runner> pick <tests> && echo "<tests>"')
+        ran = self.run_outputs()
+        r = self.run_("test", "--tests", "x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR:", r.stdout + r.stderr)
+        self.assertEqual(self.run_outputs(), ran)
+
+    def test_a_placeholder_the_form_does_not_fill_is_refused_and_nothing_runs(self):
+        # Left in, `<files> <path>` would be read by the shell as two redirects.
+        (self.wt / "files").write_text("")
+        outside = self.tmp / "outside.txt"
+        outside.write_text("keep\n")
+        for form in ("echo PAYLOAD <files> <tests>", "echo PAYLOAD <files> <test>"):
+            self.set_test_check(tests=form)
+            r = self.run_("test", "--tests", str(outside))
+            self.assertEqual(r.returncode, 2, (form, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, form)
+            self.assertIn("<files>", r.stdout + r.stderr, form)
+            self.assertEqual(outside.read_text(), "keep\n", form)
+            self.assertEqual(self.run_outputs(), [], form)
+        (self.wt / "tests").write_text("")
+        (self.wt / "test").write_text("")
+        for form in ("<runner> some <files> <tests>", "<runner> some <files> <test>"):
+            self.set_test_check(files=form)
+            for args in (("--files", "src/c.test.ts"),
+                         ("--files", "src/c.test.ts", "--tests", "x")):
+                r = self.run_("test", *args)
+                self.assertEqual(r.returncode, 2, (form, args, r.stdout, r.stderr))
+                self.assertIn("ERROR:", r.stdout + r.stderr, (form, args))
+                self.assertEqual(self.run_outputs(), [], (form, args))
+
+    def test_a_test_id_with_any_control_character_is_refused(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        for test in ("a\rb", "a\tb", "a\x7fb"):
+            r = self.run_("test", "--tests", test)
+            self.assertEqual(r.returncode, 2, (test, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, test)
+            self.assertIn(repr(test), r.stdout + r.stderr, test)
+            self.assertEqual(self.run_outputs(), [], test)
+
+    def test_a_repeated_tests_flag_keeps_every_id(self):
+        self.set_test_check(tests="<runner> pick -t <test> --verbose")
+        r = self.run_("test", "--tests", "a", "--tests", "b")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("one test ID", r.stdout + r.stderr)
+        self.assertEqual(self.run_outputs(), [])
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        r = self.run_("test", "--tests", "a", "--tests", "b")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', 'a', 'b', '--verbose']", r.stdout)
+
+    def run_as_windows(self, *args):
+        """`run test` with cmd_run seeing os.name as "nt" (the rest of Python
+        unchanged, so paths still work)."""
+        code = ("import os, runpy, sys, types\n"
+                f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+                "from lib import cmd_run\n"
+                "cmd_run.os = types.SimpleNamespace(**{**vars(os), 'name': 'nt'})\n"
+                f"sys.argv = [{str(AUTODEV)!r}, 'run', 'test', *{list(args)!r}, "
+                f"'--dir', {str(self.ad)!r}]\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, cwd=self.cwd, check=False)
+
+    def test_on_windows_a_test_id_ending_in_a_backslash_is_refused(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        for ids in (["x\\"], ["x\\", "y -z c\\", "d"]):
+            r = self.run_as_windows("--tests", *ids)
+            self.assertEqual(r.returncode, 2, (ids, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, ids)
+            self.assertIn("backslash", r.stdout + r.stderr, ids)
+            self.assertEqual(self.run_outputs(), [], ids)
+        # A backslash inside an ID is fine there, and so is a trailing one elsewhere.
+        r = self.run_as_windows("--tests", "a\\b", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('pick "a\\b" --verbose', r.stdout)
+        if os.name != "nt":
+            r = self.run_("test", "--tests", "x\\", "--show")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
 VERIFY_SPEC = """\

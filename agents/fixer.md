@@ -78,10 +78,9 @@ The user's instruction:
      written with your test files or test IDs filled in (hints:
      {{test_notes}}):
      {{test_runs}}
-     They run the profile's test check scoped; the quality gate runs it whole
-     ({{test_command}}), so never run it whole to test a change. Run the
-     quality gate's commands on what you changed when the stop was about
-     them:
+     They run the profile's test check, scoped when it has a scoped form;
+     the quality gate runs it whole ({{test_command}}). Run the quality
+     gate's commands on what you changed when the stop was about them:
      {{gate_commands}}
      Never type the test command yourself.
    - **PLAN.md** (`{{artifact_dir}}/PLAN.md`), when the instruction says to
