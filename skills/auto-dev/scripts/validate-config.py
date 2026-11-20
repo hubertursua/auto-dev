@@ -36,6 +36,9 @@ import difflib
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.cmd_run import quoted_placeholder  # the rule `run` applies too
+
 # The schema doc, located from this script so the path is right from any cwd.
 SCHEMA = Path(__file__).resolve().parent.parent / "references" / "profiles.md"
 
@@ -48,8 +51,11 @@ GATE_KINDS = {"compile", "format", "lint", "typecheck", "test", "build"}
 JIRA_STATES = {"in_progress", "in_review", "done"}
 # Every key a gate check may carry; anything else is flagged as unknown.
 # `files` is optional: the check scoped to some files, with FILES_PLACEHOLDER
-# where `autodev.py run --files` puts them.
-GATE_FIELDS = {"kind", "command", "report", "files"}
+# where `autodev.py run --files` puts them. `tests` is optional too: the check
+# scoped to some tests, with exactly one of TESTS_PLACEHOLDERS where `autodev.py
+# run --tests` puts a list of test IDs (`<tests>`) or one (`<test>`);
+# `tests_example` is one test ID in the runner's syntax, and needs `tests`.
+GATE_FIELDS = {"kind", "command", "report", "files", "tests", "tests_example"}
 # The subset of GATE_FIELDS each check must set. Kept separate so a new
 # optional field can join GATE_FIELDS without becoming required.
 GATE_REQUIRED = ("kind", "command", "report")
@@ -100,6 +106,7 @@ MUTATION_MAX = 50
 SYMBOL_LOOKUP = {"definition": str, "references": str}
 SYMBOL_PLACEHOLDER = "<symbol>"
 FILES_PLACEHOLDER = "<files>"
+TESTS_PLACEHOLDERS = ("<tests>", "<test>")
 
 errors: list[str] = []
 warnings: list[str] = []
@@ -169,6 +176,38 @@ def check_gate(gate, profile=False):
                 errors.append(f"{where}.files: the command must contain "
                               f"{FILES_PLACEHOLDER}, which is replaced by the paths "
                               f"it runs on")
+            elif (key == "files" and isinstance(val, str)
+                  and any(p in val for p in TESTS_PLACEHOLDERS)):
+                errors.append(f"{where}.files: the command may not contain "
+                              f"{' or '.join(TESTS_PLACEHOLDERS)}: only the `tests` "
+                              f"form fills them, and one left in is read by the "
+                              f"shell as a redirect")
+            elif (key == "files" and isinstance(val, str)
+                  and quoted_placeholder(val, (FILES_PLACEHOLDER,))):
+                errors.append(f"{where}.files: write {FILES_PLACEHOLDER} unquoted, as a "
+                              f"word of its own: `autodev.py run` quotes each path "
+                              f"itself, so quotes around it would reach the runner, or "
+                              f"let the shell expand a file named `$(…)`")
+            elif key == "tests" and isinstance(val, str) and FILES_PLACEHOLDER in val:
+                errors.append(f"{where}.tests: the command may not contain "
+                              f"{FILES_PLACEHOLDER}: only the `files` form fills it, "
+                              f"and one left in is read by the shell as a redirect")
+            elif (key == "tests" and isinstance(val, str)
+                  and sum(p in val for p in TESTS_PLACEHOLDERS) != 1):
+                errors.append(f"{where}.tests: the command must contain "
+                              f"{TESTS_PLACEHOLDERS[0]} (replaced by a list of test "
+                              f"IDs) or {TESTS_PLACEHOLDERS[1]} (replaced by exactly "
+                              f"one), not both")
+            elif (key == "tests" and isinstance(val, str)
+                  and quoted_placeholder(val, TESTS_PLACEHOLDERS)):
+                errors.append(f"{where}.tests: write "
+                              f"{quoted_placeholder(val, TESTS_PLACEHOLDERS)} unquoted, "
+                              f"as a word of its own (`--grep=<test>` is fine): "
+                              f"`autodev.py run` quotes each test ID itself, so quotes "
+                              f"around it would reach the runner")
+            elif key == "tests_example" and isinstance(val, str) and "tests" not in check:
+                errors.append(f"{where}.tests_example: an example test ID needs a "
+                              f"`tests` form on the same check")
         kind = check.get("kind")
         if isinstance(kind, str):
             kinds.add(kind)

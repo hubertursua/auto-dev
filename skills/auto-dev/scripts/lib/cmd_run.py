@@ -3,11 +3,11 @@ run's worktree, and save its output.
 
 Usage:
     autodev.py run gate <n | REPORT> --dir <artifact-dir> [--files <path> ...]
-                        [--out <file>] [--timeout <seconds>] [--tail <lines>]
-                        [--show] [--json]
+                        [--tests <id> ...] [--out <file>] [--timeout <seconds>]
+                        [--tail <lines>] [--show] [--json]
     autodev.py run test --dir <artifact-dir> [--files <path> ...]
-                        [--out <file>] [--timeout <seconds>] [--tail <lines>]
-                        [--show] [--json]
+                        [--tests <id> ...] [--out <file>] [--timeout <seconds>]
+                        [--tail <lines>] [--show] [--json]
 
 A worker's shell doesn't start in the worktree, and a permission check refuses
 `cd <worktree> && <command>` and rewritten forms of it. This runs the command
@@ -28,7 +28,32 @@ worktree, so a default would find no run, or an old one.
     Runs the check's scoped form instead: its `files` command, with `<files>`
     replaced by the paths given, quoted, relative to the worktree (a relative
     path is taken from the worktree root). Each must exist inside the
-    worktree. A check with no `files` form can't be scoped: exit 2.
+    worktree. A check with no `files` form can't be scoped: exit 2, and so
+    is a `files` form that holds `<tests>` or `<test>`, or whose `<files>` is
+    quoted, since `run` quotes each path itself.
+--tests <id> ...
+    Runs the check's test-ID form instead: its `tests` command, with `<tests>`
+    replaced by the IDs given, each quoted as one argument, or `<test>`
+    replaced by the one ID given (a form with `<test>` takes exactly one: a
+    second is exit 2, never a fallback). An ID is the runner's own syntax and
+    is passed as given; one that is empty, starts with `-` or holds a control
+    character is exit 2, and so is a form whose placeholder is quoted, since
+    `run` quotes each ID itself, or that holds `<files>`, which it would leave
+    for the shell to read. On Windows an ID that ends in a backslash or holds
+    `"`, `%` or `!` (cmd.exe's delayed expansion) is exit 2 too, checked again
+    with fullwidth lookalikes mapped to ASCII (NFKC), and so is a --files
+    path with `"`, `%` or `!`. A repeated --tests adds its IDs to the ones
+    before. When the check has no `tests` form, the `files` form runs on the
+    --files paths given with it, else the whole check runs. Paths given with
+    --files are always checked, whichever form runs.
+
+Each run prints its scope on the line after the token:
+`  scope: tests|files|whole`, with ` — <why>` when --tests fell back or the
+check has no scoped form. When `run test` (or a `run gate` given --files or
+--tests) ran the check whole and it has a scoped form that wasn't used, a
+`  warning:` follows: a whole run is for the quality gate only, then the
+filled-in scoped `run` lines to use instead and the profile's example test
+ID. The quality gate's own `run gate <n>`, with neither flag, never warns.
 
 --show prints `COMMAND: <the command>` and runs nothing (exit 0), so a caller
 that passes the command on uses the one `run` would run.
@@ -44,13 +69,21 @@ time taken, and the output's last --tail lines (default 40):
     PASSED: `<command>` exited 0 in <s>s
     FAILED: `<command>` exited <code> in <s>s
     TIMED_OUT: `<command>` ran past <s>s and was stopped
-With --json, `command`, `exit_code`, `seconds`, `output`, `lines` and `tail`.
+With --json, `command`, `exit_code`, `seconds`, `output`, `lines`, `tail`,
+`scope` (`tests`, `files` or `whole`) and `warning` (the whole warning text,
+its lines joined by newlines, or null).
 
 Exit codes:
     0  PASSED, or --show printed the command
     1  FAILED: the command exited non-zero
     2  could not run (no state, no such check, no `files` form, a path outside
-       the worktree or missing, --out outside the artifact dir) — `ERROR: …`
+       the worktree or missing, a test ID that is empty, starts with `-` or
+       holds a control character, on Windows also a test ID that ends in a
+       backslash or a test ID or path that holds `"`, `%` or `!`, each checked
+       again with fullwidth lookalikes mapped to ASCII, more than one ID
+       for a `<test>` form, a quoted `<files>`, `<tests>` or `<test>`, a form
+       holding the other form's placeholder, --out outside the artifact dir)
+       — `ERROR: …`
     3  TIMED_OUT: the command and everything it started were stopped
 """
 
@@ -61,6 +94,7 @@ import signal
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 from . import state as st
@@ -68,6 +102,9 @@ from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
 TIMED_OUT = 3
 PLACEHOLDER = "<files>"
+TESTS_PLACEHOLDER = "<tests>"  # a list of test IDs
+TEST_PLACEHOLDER = "<test>"  # exactly one test ID
+SCRIPT = Path(__file__).resolve().parents[1] / "autodev.py"
 TAIL = 40
 # Where --out may write, under the artifact dir: never state.json, PLAN.md or
 # MANIFEST.md.
@@ -84,6 +121,9 @@ def add_arguments(parser):
                         help="gate: the check's number or its report name")
     parser.add_argument("--files", nargs="+", default=None,
                         help="run the check's scoped form on these paths")
+    # extend: a repeated --tests adds its IDs, so none is dropped unseen
+    parser.add_argument("--tests", nargs="+", action="extend", default=None,
+                        help="run the check's test-ID form on these test IDs")
     parser.add_argument("--dir", required=True, help="the run's .auto-dev/")
     parser.add_argument("--out", help="the file to save the output to (under --dir's "
                                       "evidence/, acceptance/base-run/ or tmp/)")
@@ -168,12 +208,30 @@ def relative_paths(worktree, files):
     return out
 
 
+def windows_forms(text):
+    """The text, and its NFKC form when that differs: a Windows program that
+    reads its command line through the ANSI API gets the fullwidth forms
+    (U+FF0D, U+FF02, U+FF3C, U+FF05, U+FF01) best-fit mapped to `-` `"` `\\`
+    `%` `!`."""
+    folded = unicodedata.normalize("NFKC", text)
+    return (text,) if folded == text else (text, folded)
+
+
 def quote(paths):
     if os.name == "nt":  # cmd.exe: double quotes, and no name it would expand
-        bad = [p for p in paths if '"' in p or "%" in p]
-        if bad:
-            raise Fail(f"{bad[0]}: a name with `\"` or `%` can't be passed safely on "
-                       "Windows", CANNOT_RUN, "ERROR")
+        for p in paths:
+            for form in windows_forms(p):
+                if '"' in form or "%" in form:
+                    why = "`\"` would end the quotes around it, and `%` expand a variable"
+                elif "!" in form:
+                    why = ("cmd.exe's delayed expansion would replace `!…!` with a "
+                           "variable's value, inside the quotes too")
+                else:
+                    continue
+                lookalike = " (as a fullwidth lookalike)" if form != p else ""
+                raise Fail(f"{p}: a name or test ID with `\"`, `%` or `!`{lookalike} "
+                           f"can't be passed safely on Windows: {why}", CANNOT_RUN,
+                           "ERROR")
         return " ".join(f'"{p}"' for p in paths)
     return " ".join(shlex.quote(p) for p in paths)
 
@@ -189,7 +247,179 @@ def command_for(n, check, worktree, files):
         raise Fail(f"gate check {n} (`{check.get('command', '')}`) has no scoped form: "
                    f"the profile gives it no `files` command with {PLACEHOLDER}, so "
                    f"it can only run whole (drop --files)", CANNOT_RUN, "ERROR")
+    unfilled(n, form, "files", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER))
+    refuse_quoted(n, form, "files", (PLACEHOLDER,), "path")
     return form.replace(PLACEHOLDER, quote(relative_paths(worktree, files)))
+
+
+def refuse_quoted(n, form, key, placeholders, what):
+    """Refuse a form that quotes its placeholder: `run` quotes each value
+    itself, so the form's own quotes would reach the runner, or let the shell
+    expand what the value holds (a file named `$(…)`)."""
+    bad = quoted_placeholder(form, placeholders)
+    if bad:
+        raise Fail(f"gate check {n}'s `{key}` form (`{form}`) has {bad} inside quotes "
+                   f"or next to a quote or backslash: `run` quotes each {what} itself, "
+                   f"so write {bad} unquoted, as a word of its own, in the profile",
+                   CANNOT_RUN, "ERROR")
+
+
+def unfilled(n, form, key, placeholders):
+    """Refuse a form that holds a placeholder it doesn't fill: left in the
+    command, the shell would read `<files> <path>` as two redirects."""
+    for p in placeholders:
+        if p in form:
+            raise Fail(f"gate check {n}'s `{key}` form (`{form}`) holds {p}, which only "
+                       f"the other form fills: `run` would leave it in the command, "
+                       f"where the shell reads it as a redirect. Remove {p} from the "
+                       f"`{key}` form in the profile", CANNOT_RUN, "ERROR")
+
+
+def test_ids(ids):
+    """The IDs, unchanged, once each is checked to be data the runner can only
+    read as a test ID: not empty, not an option, no control character, and on
+    Windows no trailing backslash, for the ID as given or (on Windows) its
+    fullwidth lookalikes mapped to ASCII. `quote` refuses the rest."""
+    for test in ids:
+        why = not_a_test_id(test)
+        folded = windows_forms(test)[-1] if os.name == "nt" else test
+        if not why and folded != test and not_a_test_id(folded):
+            why = (f"{not_a_test_id(folded)}, once Windows maps its fullwidth "
+                   f"lookalikes to ASCII ({folded!r})")
+        if why:
+            raise Fail(f"{test!r} is not a test ID: {why}", CANNOT_RUN, "ERROR")
+    return ids
+
+
+def not_a_test_id(test):
+    """Why `test` can't be passed as a test ID, or ''."""
+    if not test:
+        return "it is empty"
+    if test.startswith("-"):
+        return "it starts with `-`, so the runner would read it as an option"
+    if any(c < " " or c == "\x7f" for c in test):
+        return "it holds a control character, such as a newline"
+    if os.name == "nt" and test.endswith("\\"):
+        # The C runtime reads `\"` as a literal quote, so the closing quote
+        # `quote` adds would be lost and the next ID's words would shift.
+        return "on Windows a trailing backslash would escape the quote around it"
+    return ""
+
+
+def quoted_placeholder(form, placeholders=(TESTS_PLACEHOLDER, TEST_PLACEHOLDER)):
+    """The first of `placeholders` that `form` holds inside a quoted span, with
+    a quote, backtick or backslash right beside it, or with a `$` right before
+    it, else None. `run` quotes each value itself, so a placeholder the form
+    quotes again hands the runner those quotes too, or lets the shell expand
+    what the value holds; a `$` would turn `run`'s own quotes into bash's
+    `$'…'`, where a backslash escapes the closing quote."""
+    marks = ("'", '"', "`", "\\")
+    quoted = [False] * len(form)
+    inside, i = None, 0
+    while i < len(form):
+        c = form[i]
+        if inside:
+            quoted[i] = True
+            if c == "\\" and inside != "'":
+                quoted[i + 1:i + 2] = [True] * len(form[i + 1:i + 2])
+                i += 2
+                continue
+            if c == inside:
+                inside = None
+        elif c == "\\":
+            quoted[i:i + 2] = [True] * len(form[i:i + 2])
+            i += 2
+            continue
+        elif c in marks:
+            quoted[i], inside = True, c
+        i += 1
+    for p in placeholders:
+        at = form.find(p)
+        while at != -1:
+            end = at + len(p)
+            if (quoted[at] or (at and form[at - 1] in marks + ("$",))
+                    or (end < len(form) and form[end] in marks)):
+                return p
+            at = form.find(p, end)
+    return None
+
+
+def has_form(check, key):
+    form = str(check.get(key) or "")
+    if key == "files":
+        return PLACEHOLDER in form
+    return TESTS_PLACEHOLDER in form or TEST_PLACEHOLDER in form
+
+
+def resolve(n, check, worktree, files, tests):
+    """(command, scope, why): the command --files and --tests choose, `tests`,
+    `files` or `whole`, and why it fell back ('' when it didn't)."""
+    if tests is None:
+        command = command_for(n, check, worktree, files)
+        if files:
+            return command, "files", ""
+        bare = not (has_form(check, "files") or has_form(check, "tests"))
+        return command, "whole", "the check has no scoped form" if bare else ""
+    test_ids(tests)
+    if files:
+        relative_paths(worktree, files)  # a given path is checked whatever runs
+    form = str(check.get("tests") or "")
+    unfilled(n, form, "tests", (PLACEHOLDER,))
+    refuse_quoted(n, form, "tests", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER), "test ID")
+    if TESTS_PLACEHOLDER in form:
+        return form.replace(TESTS_PLACEHOLDER, quote(tests)), "tests", ""
+    if TEST_PLACEHOLDER in form:
+        if len(tests) > 1:
+            raise Fail(f"gate check {n}'s test-ID form (`{form}`) takes one test ID "
+                       f"({TEST_PLACEHOLDER}), and {len(tests)} were given: run it once "
+                       "per ID, or give one pattern the runner matches", CANNOT_RUN,
+                       "ERROR")
+        return form.replace(TEST_PLACEHOLDER, quote(tests)), "tests", ""
+    if files and has_form(check, "files"):
+        return command_for(n, check, worktree, files), "files", "the check has no tests form"
+    why = ("the check has no tests form and no --files was given"
+           if has_form(check, "files") else "the check has no scoped form")
+    return command_for(n, check, worktree, None), "whole", why
+
+
+def run_line(ad, invocation="run test"):
+    """The `run` command with the script and artifact dir filled in."""
+    return f"python3 {shlex.quote(str(SCRIPT))} {invocation} --dir {shlex.quote(str(ad))}"
+
+
+def scoped_runs(ad, check, invocation="run test", forms=("files", "tests")):
+    """[(run line, note)] for each of `forms` the check has: the `run` command
+    that runs it, with the script and artifact dir filled in and only the test
+    file or ID left, and a note ('' when none)."""
+    head = run_line(ad, invocation)
+    runs = []
+    if "files" in forms and has_form(check, "files"):
+        runs.append((f"{head} --files <test file> …", ""))
+    if "tests" in forms and has_form(check, "tests"):
+        one = TESTS_PLACEHOLDER not in str(check.get("tests"))
+        notes = ["one test ID per run"] if one else []
+        if check.get("tests_example"):
+            notes.append(f"a test ID looks like `{check['tests_example']}`")
+        runs.append((f"{head} --tests <test id>{'' if one else ' …'}", "; ".join(notes)))
+    return runs
+
+
+def warning_text(ad, n, check, what, files, tests, scope):
+    """The warning for a whole run a worker made where a scoped form would do,
+    as one string (lines joined by newlines), or None."""
+    if scope != "whole" or (what != "test" and not files and not tests):
+        return None
+    unused = [f for f in ("files", "tests")
+              if has_form(check, f) and not (files if f == "files" else tests)]
+    runs = scoped_runs(ad, check, "run test" if what == "test" else f"run gate {n}",
+                       unused)
+    if not runs:
+        return None
+    ran = "the whole test check" if what == "test" else f"check {n} whole"
+    head = (f"this ran {ran}; a whole run is for the quality gate only. "
+            "Run only the tests you need with:")
+    return "\n".join([head] + [f"{line}  ({note})" if note else line
+                               for line, note in runs])
 
 
 def output_file(ad, out, label):
@@ -282,7 +512,7 @@ def main(args):
         raise Fail("--tail must be 0 or more and --timeout more than 0", CANNOT_RUN,
                    "ERROR")
     n, check = pick(state["settings"].get("gate", []), args.what, args.check)
-    command = command_for(n, check, worktree, args.files)
+    command, scope, why = resolve(n, check, worktree, args.files, args.tests)
     if args.show:
         emit(args.json, "COMMAND", command)
         return OK
@@ -296,14 +526,23 @@ def main(args):
     else:
         token, result = ("PASSED", OK) if code == 0 else ("FAILED", FAILED)
         message = f"`{command}` exited {code} in {seconds:g}s"
+    warning = warning_text(Path(os.path.abspath(ad)), n, check, args.what, args.files,
+                           args.tests, scope)
     if args.json:
         print(json.dumps({"result": token, "message": message, "command": command,
                           "exit_code": code, "seconds": seconds, "output": str(path),
-                          "lines": len(lines), "tail": tail}, indent=2, sort_keys=True))
+                          "lines": len(lines), "tail": tail, "scope": scope,
+                          "warning": warning}, indent=2, sort_keys=True))
         return result
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")  # output that isn't UTF-8 never crashes
     print(f"{token}: {message}")
+    print(f"  scope: {scope}" + (f" — {why}" if why else ""))
+    if warning:
+        first, *more = warning.split("\n")
+        print(f"  warning: {first}")
+        for line in more:
+            print(f"    {line}")
     print(f"  output: {path} ({len(lines)} lines)")
     if tail:
         shown = "all" if len(tail) == len(lines) else f"the last {len(tail)}"

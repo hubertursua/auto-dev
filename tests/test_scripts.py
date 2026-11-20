@@ -853,6 +853,156 @@ class ValidateConfigTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("did you mean `sensitive_paths`", r.stderr)
 
+    def profile_with_test_ids(self, tests=None, example=None):
+        """A saved profile whose test check carries the given test-ID form and example."""
+        extra = "".join(f', {key}: "{value}"' for key, value in
+                        (("tests", tests), ("tests_example", example)) if value is not None)
+        return ('stack: typescript\nsetup: ["npm ci"]\ngate:\n'
+                '  - { kind: test, command: "npm test", report: "TEST.md", '
+                f'files: "npx vitest run --reporter=verbose <files>"{extra} }}\n')
+
+    def test_a_profile_may_give_a_test_id_form_with_a_list_or_one_id_and_an_example(self):
+        r = self.validate_profile(self.profile_with_test_ids(
+            "npx vitest run --reporter=verbose <tests>", "src/todos/delete.test.ts:14"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("VALID:", r.stdout)
+        r = self.validate_profile(self.profile_with_test_ids("npx jest -t <test>"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("VALID:", r.stdout)
+
+    def test_an_override_may_give_a_test_id_form_and_an_example(self):
+        r = self.validate('gate:\n  - { kind: test, command: "npm test", report: "TEST.md",'
+                          ' tests: "npx vitest run <tests>", tests_example: "src/a.test.ts:3" }\n')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("VALID:", r.stdout)
+
+    def test_a_test_id_form_needs_exactly_one_placeholder_and_an_example_needs_the_form(self):
+        r = self.validate_profile(self.profile_with_test_ids("npx vitest run"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        line = next((x for x in r.stderr.splitlines() if "gate[0].tests" in x), "")
+        self.assertTrue(line.startswith("ERROR"), r.stderr)
+        self.assertIn("<tests>", line)
+        r = self.validate_profile(self.profile_with_test_ids("npx jest <tests> -t <test>"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("gate[0].tests", r.stderr)
+        r = self.validate_profile(self.profile_with_test_ids(example="src/todos/delete.test.ts:14"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        line = next((x for x in r.stderr.splitlines() if "gate[0].tests_example" in x), "")
+        self.assertTrue(line.startswith("ERROR"), r.stderr)
+
+    def test_a_test_id_form_must_leave_its_placeholder_unquoted(self):
+        # `run` quotes each ID itself: quotes in the form would reach the runner.
+        for form in ('npx jest -t \\"<test>\\"', "npx jest -t '<test>'",
+                     'npx vitest run \\"<tests>\\"', "npx jest -t=\\\\<test>"):
+            r = self.validate_profile(self.profile_with_test_ids(form))
+            self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+            line = next((x for x in r.stderr.splitlines() if "gate[0].tests" in x), "")
+            self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+            self.assertIn("unquoted", line, form)
+        for form in ("npx playwright test --grep=<test>",
+                     "sh -c 'cd web' && npx vitest run <tests>"):
+            r = self.validate_profile(self.profile_with_test_ids(form))
+            self.assertEqual(r.returncode, 0, (form, r.stdout, r.stderr))
+            self.assertIn("VALID:", r.stdout)
+        # Each form as written in the profile's double-quoted YAML string; the
+        # comment shows the command it holds. All but the backtick one have no
+        # mark right before the placeholder, so the span scan or the mark after
+        # it refuses them.
+        for form in ("npx jest -t '^<test>$'",          # npx jest -t '^<test>$'
+                     'npx jest -t \\"^<test>$\\"',      # npx jest -t "^<test>$"
+                     "`echo x <tests>`",                # `echo x <tests>`
+                     "npx jest -t `<test>`",            # npx jest -t `<test>`
+                     "npx vitest run <tests>'x'",       # npx vitest run <tests>'x'
+                     "npx jest -t <test>\\\\ --verbose"):  # npx jest -t <test>\ --verbose
+            r = self.validate_profile(self.profile_with_test_ids(form))
+            self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+            line = next((x for x in r.stderr.splitlines() if "gate[0].tests" in x), "")
+            self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+            self.assertIn("unquoted", line, form)
+        # An escaped quote inside an earlier span, or outside quotes, closes nothing.
+        for form in ('npx vitest run -t \\"a\\\\\\"b\\" <tests>',  # -t "a\"b" <tests>
+                     "npx vitest run it\\\\'s <tests>",         # it\'s <tests>
+                     # A backslash inside '…' is literal, so the span closes.
+                     "cd 'web\\\\' && npx jest -t <test>"):     # cd 'web\' && npx jest -t <test>
+            r = self.validate_profile(self.profile_with_test_ids(form))
+            self.assertEqual(r.returncode, 0, (form, r.stdout, r.stderr))
+            self.assertIn("VALID:", r.stdout)
+        # Every occurrence is checked, and a closed span or an escaped backslash
+        # right before the placeholder is still a mark beside it.
+        for form in ('npx jest <tests> && echo \\"<tests>\\"',  # npx jest <tests> && echo "<tests>"
+                     'runner -t \\"x\\"<test>',                 # runner -t "x"<test>
+                     "runner -t 'x'<test>",                     # runner -t 'x'<test>
+                     "runner \\\\\\\\<test>"):                  # runner \\<test>
+            r = self.validate_profile(self.profile_with_test_ids(form))
+            self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+            line = next((x for x in r.stderr.splitlines() if "gate[0].tests" in x), "")
+            self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+            self.assertIn("unquoted", line, form)
+
+    def test_a_form_may_not_hold_the_other_forms_placeholder(self):
+        # `run` fills only its own placeholder; the shell would read one left in
+        # as redirects (`<files> <path>`).
+        for form in ("npx jest <files> <tests>", "npx jest <files> -t <test>"):
+            r = self.validate_profile(self.profile_with_test_ids(form))
+            self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+            line = next((x for x in r.stderr.splitlines() if "gate[0].tests" in x), "")
+            self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+            self.assertIn("<files>", line, form)
+            r = self.validate('gate:\n  - { kind: test, command: "npm test", report: '
+                              f'"TEST.md", tests: "{form}" }}\n')
+            self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+            self.assertIn("gate[0].tests", r.stderr, form)
+        for form in ("npx jest <files> <tests>", "npx jest <files> -t <test>"):
+            r = self.validate('gate:\n  - { kind: test, command: "npm test", report: '
+                              f'"TEST.md", files: "{form}" }}\n')
+            self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+            line = next((x for x in r.stderr.splitlines() if "gate[0].files" in x), "")
+            self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+            self.assertIn("<test", line, form)
+
+    def test_a_files_form_must_leave_its_placeholder_unquoted(self):
+        # `run` quotes each path itself: inside the form's own quotes the shell
+        # would expand a file named `$(…)`. Each form as written in the YAML
+        # string; the comment shows the command it holds.
+        def profile(form):
+            return ('stack: typescript\nsetup: ["npm ci"]\ngate:\n'
+                    '  - { kind: test, command: "npm test", report: "TEST.md", '
+                    f'files: "{form}" }}\n')
+        for form in ('npx jest \\"<files>\\"',        # npx jest "<files>"
+                     "npx jest '<files>'",            # npx jest '<files>'
+                     'npx eslint \\"./<files>\\"',    # npx eslint "./<files>"
+                     "npx jest `<files>`"):           # npx jest `<files>`
+            for r in (self.validate_profile(profile(form)),
+                      self.validate('gate:\n  - { kind: test, command: "npm test", '
+                                    f'report: "TEST.md", files: "{form}" }}\n')):
+                self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+                line = next((x for x in r.stderr.splitlines() if "gate[0].files" in x), "")
+                self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+                self.assertIn("unquoted", line, form)
+        # The schema's own forms, and a loop that takes the paths as words.
+        for form in ("npx eslint <files>", "npx prettier --check <files>",
+                     "npx vitest run --reporter=verbose <files>",
+                     'npx tsc -p \\"web\\" <files>',  # npx tsc -p "web" <files>
+                     # npx vitest run $(for f in <files>; do basename "$f"; done)
+                     'npx vitest run $(for f in <files>; do basename \\"$f\\"; done)'):
+            r = self.validate_profile(profile(form))
+            self.assertEqual(r.returncode, 0, (form, r.stdout, r.stderr))
+            self.assertIn("VALID:", r.stdout)
+
+    def test_a_dollar_sign_right_before_a_placeholder_is_refused(self):
+        # `$'…'` is bash's ANSI-C quoting, where `\'` doesn't close the
+        # string: `npx jest $<files>` would let a path ending in a backslash
+        # carry the next one out of its quotes.
+        for key, form in (("files", "npx jest $<files>"), ("tests", "npx jest $<tests>"),
+                          ("tests", "npx jest -t $<test>")):
+            r = self.validate_profile(
+                'stack: typescript\nsetup: ["npm ci"]\ngate:\n'
+                '  - { kind: test, command: "npm test", report: "TEST.md", '
+                f'{key}: "{form}" }}\n')
+            self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+            line = next((x for x in r.stderr.splitlines() if f"gate[0].{key}" in x), "")
+            self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+
 
 class ProfilePathTest(GitRepoCase):
     def setUp(self):

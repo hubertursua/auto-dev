@@ -29,7 +29,7 @@ SLOT_RE = re.compile(r"\{\{([a-z_]+)\}\}")
 MODE_RE = re.compile(r"^## Mode: ([a-z-]+)\s*$", re.MULTILINE)
 
 AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "ticket",
-        "binding_rules", "test_command", "test_notes", "mutation_cap", "probes",
+        "binding_rules", "test_command", "test_runs", "test_notes", "mutation_cap", "probes",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
         "symbol_lookup", "pass", "tree", "cut", "run", "pr", "triage_file", "checks_file",
         "answer_file", "blocked_file", "deviations_file", "spec_problem_file",

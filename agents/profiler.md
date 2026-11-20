@@ -72,15 +72,30 @@ Find, from the repo itself:
    `kind: test` check; if you find no way to run the tests, say so under
    QUESTIONS rather than invent one.
 3. Each check's scoped form, in `files`: the same check run on only some
-   files, with `<files>` where the paths go (the workers run it on the files
-   they changed or wrote, through `autodev.py run`). For
+   files, with `<files>` where the paths go, unquoted, as a word of its own
+   (the workers run it on the files they changed or wrote, through
+   `autodev.py run`, which quotes each path itself and refuses a quoted
+   `<files>`). For
    the test check, the form must also name every test it runs and its result
    (the runner's verbose reporter, if its default only counts passing tests).
    When the gate has several test checks, give the `files` form to the one
    that runs the test files: `run test`, the acceptance run and the mutation
    run use the first test check that has one.
    Take it from how the repo or its runner's docs run one file; omit `files`
-   for a check that can't be scoped (a whole-program type check, say).
+   for a check that can't be scoped (a whole-program type check, say). When
+   the runner takes the paths directly, write the form with no `$(…)`, loop
+   or shell variable, so a worker reading profile.md sees a plain command.
+   On that same test check, record its test-ID form in `tests` and one
+   example ID, in the runner's own syntax, in `tests_example`, whenever the
+   runner can select less than one file (a test name, a `file:line`, a
+   dotted test path). Use `<tests>` where the runner takes a list of IDs, and
+   `<test>` where its only selector takes one value (a name or pattern
+   filter flag; example in TypeScript: `npx jest -t <test>`). Write the
+   placeholder unquoted, as a word of its own (`--grep=<test>` is fine):
+   `run` quotes each ID itself, and refuses a form that quotes it again.
+   Give each form only its own placeholder: no `<files>` in `tests`, no
+   `<tests>` or `<test>` in `files`. A
+   runner that can only run whole files gets neither key.
 4. Test scope: databases or services the suite needs, how to start them, the
    monorepo or workspace layout, slow tiers. This goes in test_notes.
 5. Gitignored files the suite needs that a fresh worktree won't have (`.env`,
@@ -116,7 +131,7 @@ PROFILE
 stack: <short name>
 setup: [<install commands, in order>]
 gate:
-  - { kind: <compile|format|lint|typecheck|test|build>, command: "<command>", report: "<KIND>.md", files: "<command with <files>>" }   # files: omit if it can't be scoped
+  - { kind: <compile|format|lint|typecheck|test|build>, command: "<command>", report: "<KIND>.md", files: "<command with <files>>", tests: "<command with <tests> or <test>>", tests_example: "<one test ID>" }   # files, tests, tests_example: omit what the runner can't scope
 test_notes: "<scope hints>"          # omit if none
 worktree_files: [<paths>]            # omit if none
 symbol_lookup:                       # omit if none
@@ -138,13 +153,14 @@ stack: typescript
 setup: ["npm ci"]
 gate:
   - { kind: typecheck, command: "npx tsc --noEmit", report: "TYPECHECK.md" }
-  - { kind: test, command: "npm test", report: "TEST.md", files: "npx vitest run --reporter=verbose <files>" }
+  - { kind: test, command: "npm test", report: "TEST.md", files: "npx vitest run --reporter=verbose <files>", tests: "npx vitest run --reporter=verbose <tests>", tests_example: "src/todos/delete.test.ts:14" }
 ci: github-actions
 EVIDENCE
 - npm ci: package-lock.json; .github/workflows/ci.yml:18
 - npx tsc --noEmit: .github/workflows/ci.yml:21
 - npm test: package.json:9 ("test": "vitest run"); .github/workflows/ci.yml:24
 - vitest run --reporter=verbose <files>: vitest is the runner (package.json:9); it takes file paths
+- vitest run --reporter=verbose <tests>, src/todos/delete.test.ts:14: vitest's CLI docs; it takes `file:line` filters
 NOT ADOPTED — eslint: no config file or dependency
 NOT INSTALLED — none
 QUESTIONS — CI also runs `npm run e2e` against a deployed preview; left out of the gate.

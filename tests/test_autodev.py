@@ -444,6 +444,48 @@ class InitTest(RunCase):
                       (self.dir / "profile.md").read_text())
         self.assertEqual(self.state()["settings"]["sensitive_paths"], [])
 
+    def init_with_test_check(self, forms):
+        """Create the run from a profile whose only check is the test check with `forms`."""
+        self.profile.write_text(PROFILE.replace('report: "TEST.md" }',
+                                                f'report: "TEST.md", {forms} }}'))
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return (self.dir / "profile.md").read_text()
+
+    def test_profile_md_shows_the_test_id_form_and_sends_the_gate_through_run_gate(self):
+        profile = self.init_with_test_check('files: "run-tests <files>", tests: '
+                                            '"run-tests <tests>", tests_example: '
+                                            '"todos.ShipTest"')
+        self.assertIn("| 1 | test | `true` | `TEST.md` | `run-tests <files>` | "
+                      "`run-tests <tests>` (e.g. `todos.ShipTest`) |", profile)
+        how_to = profile.split("## Quality gate", 1)[1].split("\n| # |", 1)[0]
+        self.assertIn("run gate <n>", how_to)
+        self.assertIn("run test", how_to)
+        self.assertIn("--files <path> …", how_to)
+        self.assertIn("--tests <id> …", how_to)
+        self.assertNotIn("(the test check: `run test --dir <artifact dir>`)", profile)
+        check = self.state()["settings"]["gate"][0]
+        self.assertEqual(check.get("tests"), "run-tests <tests>")
+        self.assertEqual(check.get("tests_example"), "todos.ShipTest")
+
+    def test_profile_md_shows_none_for_a_check_with_no_test_id_form(self):
+        profile = self.init_with_test_check('files: "run-tests <files>"')
+        self.assertIn("| 1 | test | `true` | `TEST.md` | `run-tests <files>` | none |",
+                      profile)
+
+    def test_profile_md_shows_a_one_id_test_form_with_its_example(self):
+        profile = self.init_with_test_check('files: "run-tests <files>", tests: '
+                                            '"run-tests -t <test> --verbose", '
+                                            'tests_example: "deletes one"')
+        self.assertIn("| `run-tests <files>` | `run-tests -t <test> --verbose` "
+                      "(e.g. `deletes one`) |", profile)
+
+    def test_profile_md_shows_a_test_id_form_without_an_example_bare(self):
+        profile = self.init_with_test_check('files: "run-tests <files>", tests: '
+                                            '"run-tests <tests>"')
+        self.assertIn("| `run-tests <files>` | `run-tests <tests>` |\n", profile)
+        self.assertNotIn("(e.g.", profile)
+
 
 class ResumeTest(RunCase):
     def resume(self, *extra):
@@ -2714,6 +2756,464 @@ class RunCommandTest(unittest.TestCase):
         r = self.run_("test", "--files", "src/c.test.ts")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("no scoped form", r.stderr)
+
+    def set_test_check(self, **forms):
+        """Make check 3 the test check with only these forms (`files`, `tests`,
+        `tests_example`); `<runner>` stands for a command that prints its argv."""
+        py = shlex.quote(sys.executable)
+        echo = f"{py} -c 'import os, sys; print(os.getcwd()); print(sys.argv[1:])'"
+        self.gate[2] = {"kind": "test", "command": f"{echo} all", "report": "TEST.md",
+                        **{k: v.replace("<runner>", echo) for k, v in forms.items()}}
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+
+    def run_outputs(self):
+        """The output files `run` has saved so far."""
+        folder = self.ad / "tmp" / "run"
+        return sorted(folder.iterdir()) if folder.exists() else []
+
+    def copied_line(self, text, ending):
+        """The command in `text` that ends with `ending`, from its `python3`."""
+        line = next((x for x in text.splitlines() if ending in x and "python3 " in x), "")
+        self.assertTrue(line, text)
+        return line[line.index("python3 "):line.index(ending) + len(ending)]
+
+    def test_tests_gives_each_test_id_to_the_test_id_form_as_one_argument(self):
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose")
+        r = self.run_("test", "--tests", "todos deletes one", "src/a.test.ts:14")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PASSED: "), r.stdout)
+        self.assertIn("['pick', 'todos deletes one', 'src/a.test.ts:14', '--verbose']",
+                      r.stdout)
+        self.assertIn("  scope: tests", r.stdout.splitlines())
+        r = self.run_("test", "--tests", "todos deletes one", "src/a.test.ts:14", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout).get("scope"), "tests")
+
+    def test_run_gate_with_tests_uses_that_checks_test_id_form(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        r = self.run_("gate", "3", "--tests", "todos deletes one", "src/a.test.ts:14")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', 'todos deletes one', 'src/a.test.ts:14', '--verbose']",
+                      r.stdout)
+        self.assertIn("  scope: tests", r.stdout.splitlines())
+
+    def test_an_empty_dash_led_or_multi_line_test_id_is_refused_and_nothing_runs(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        for args, named in ((("--tests", ""), ""), (("--tests=-x",), "-x"),
+                            (("--tests", "a\ntouch PWNED"), "touch PWNED")):
+            r = self.run_("test", *args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertNotIn("unrecognized arguments", r.stdout + r.stderr, args)
+            self.assertIn(named, r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), [], args)
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+
+    def test_tests_with_no_test_id_form_falls_back_to_files_then_to_the_whole_check(self):
+        # setUp's test check has a files form and no test-ID form.
+        r = self.run_("test", "--tests", "deletes one", "--files", "src/c.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['some', 'src/c.test.ts', '--verbose']", r.stdout)
+        self.assertIn("  scope: files — the check has no tests form", r.stdout.splitlines())
+        r = self.run_("test", "--tests", "deletes one")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("    ['all']", r.stdout.splitlines())
+        self.assertIn("  scope: whole — the check has no tests form and no --files was given",
+                      r.stdout.splitlines())
+
+    def test_files_alone_still_runs_the_scoped_form_or_is_refused_without_one(self):
+        r = self.run_("test", "--files", "src/c.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['some', 'src/c.test.ts', '--verbose']", r.stdout)
+        r = self.run_("gate", "2", "--files", "src/c.test.ts")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no scoped form", r.stderr)
+
+    def test_a_missing_path_is_refused_even_when_the_test_id_form_would_run(self):
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose")
+        r = self.run_("test", "--tests", "x", "--files", "src/nope.ts")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("does not exist", r.stderr)
+        self.assertEqual(self.run_outputs(), [])
+
+    def test_a_whole_run_test_warns_and_gives_ready_to_copy_scoped_lines(self):
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose",
+                            tests_example="src/todos/delete.test.ts:14")
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("    ['all']", r.stdout.splitlines())
+        lines = r.stdout.splitlines()
+        warned = [i for i, x in enumerate(lines) if x.startswith("  warning:")]
+        self.assertEqual(len(warned), 1, r.stdout)
+        self.assertIn("quality gate", lines[warned[0]])
+        ad = shlex.quote(str(self.ad))
+        after = "\n".join(lines[warned[0] + 1:])
+        self.assertIn(f"run test --dir {ad} --files <test file> …", after)
+        self.assertIn(f"run test --dir {ad} --tests <test id> …", after)
+        self.assertIn("src/todos/delete.test.ts:14", after)
+        # Each line runs as written, from any folder, once its file or ID is filled in.
+        for ending, given, argv in (("--files <test file> …", "src/c.test.ts",
+                                     "['some', 'src/c.test.ts', '--verbose']"),
+                                    ("--tests <test id> …", "x", "['pick', 'x', '--verbose']")):
+            line = self.copied_line(after, ending).replace(ending.split(" ", 1)[1], given)
+            done = subprocess.run(line, shell=True, cwd=self.cwd, capture_output=True,
+                                  text=True, check=False)
+            self.assertEqual(done.returncode, 0, (line, done.stdout, done.stderr))
+            self.assertIn(argv, done.stdout)
+        r = self.run_("test", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        warning = json.loads(r.stdout).get("warning") or ""
+        self.assertIn("quality gate", warning)
+        self.assertIn(f"run test --dir {ad} --files <test file> …", warning)
+        self.assertIn(f"run test --dir {ad} --tests <test id> …", warning)
+        self.assertIn("src/todos/delete.test.ts:14", warning)
+        # One part per line: the sentence first, then the --files line and the
+        # --tests line on lines of their own; the example ID is never on the
+        # sentence's line or the --files line.
+        parts = warning.split("\n")
+        self.assertIn("quality gate", parts[0], warning)
+        self.assertNotIn(" --files ", parts[0], warning)
+        self.assertNotIn(" --tests ", parts[0], warning)
+        on = {name: [i for i, x in enumerate(parts) if text in x]
+              for name, text in (("files", f"run test --dir {ad} --files <test file> …"),
+                                 ("tests", f"run test --dir {ad} --tests <test id> …"),
+                                 ("example", "src/todos/delete.test.ts:14"))}
+        self.assertEqual(len(on["files"]), 1, warning)
+        self.assertEqual(len(on["tests"]), 1, warning)
+        self.assertNotEqual(on["files"], on["tests"], warning)
+        self.assertNotIn(" --tests ", parts[on["files"][0]], warning)
+        self.assertNotIn(" --files ", parts[on["tests"][0]], warning)
+        self.assertTrue(on["example"], warning)
+        self.assertNotIn(0, on["example"], warning)
+        self.assertNotIn(on["files"][0], on["example"], warning)
+
+    def test_the_gates_own_run_and_an_unscopable_test_check_print_no_warning(self):
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose",
+                            tests_example="src/todos/delete.test.ts:14")
+        r = self.run_("gate", "3")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("warning:", r.stdout)
+        r = self.run_("gate", "3", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertIn("warning", data)
+        self.assertIsNone(data["warning"])
+        self.set_test_check()
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("warning:", r.stdout)
+        self.assertIn("  scope: whole — the check has no scoped form", r.stdout.splitlines())
+
+    def test_a_one_id_test_form_runs_one_id_and_is_shown_taking_one(self):
+        self.set_test_check(tests="<runner> pick -t <test> --verbose",
+                            tests_example="deletes one")
+        r = self.run_("test", "--tests", "todos deletes one")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', '-t', 'todos deletes one', '--verbose']", r.stdout)
+        self.assertIn("  scope: tests", r.stdout.splitlines())
+        r = self.run_("test")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(any(x.startswith("  warning:") for x in r.stdout.splitlines()),
+                        r.stdout)
+        self.assertIn(f"run test --dir {shlex.quote(str(self.ad))} --tests <test id>",
+                      r.stdout)
+        self.assertNotIn("--tests <test id> …", r.stdout)
+
+    def test_a_one_id_test_form_refuses_a_second_id_without_falling_back(self):
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick -t <test> --verbose")
+        for args in (("--tests", "a", "b"), ("--tests", "a", "b", "--files", "src/c.test.ts")):
+            r = self.run_("test", *args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertIn("one test ID", r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), [], args)
+
+    def test_a_test_id_is_only_ever_data_for_the_runner(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        odd = "src/$(touch PWNED);x.ts:1"
+        r = self.run_("test", "--tests", odd)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"['pick', '{odd}', '--verbose']", r.stdout)
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+        ran = self.run_outputs()
+        for args in (("--tests=-rf",), ("--tests", "a\ntouch PWNED")):
+            r = self.run_("test", *args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertNotIn("unrecognized arguments", r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), ran, args)
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+
+    def test_tests_never_chooses_the_command_and_a_refused_call_runs_nothing(self):
+        self.set_test_check()
+        r = self.run_("test", "--tests", "rm -rf .")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("    ['all']", r.stdout.splitlines())
+        self.assertNotIn("rm -rf", r.stdout)
+        self.assertTrue(any(x.startswith("  scope: whole") for x in r.stdout.splitlines()),
+                        r.stdout)
+        self.assertTrue((self.wt / "src" / "c.test.ts").exists())
+        self.set_test_check(tests="<runner> pick -t <test> --verbose")
+        ran = self.run_outputs()
+        r = self.run_("test", "--tests", "a", "b")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("unrecognized arguments", r.stdout + r.stderr)
+        self.assertEqual(self.run_outputs(), ran)
+
+    def test_a_run_gate_tests_that_fell_back_to_whole_warns_with_run_gate_lines(self):
+        # setUp's test check (3) has a files form and no test-ID form.
+        r = self.run_("gate", "3", "--tests", "deletes one")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("    ['all']", r.stdout.splitlines())
+        self.assertTrue(any(x.startswith("  warning:") for x in r.stdout.splitlines()),
+                        r.stdout)
+        ad = shlex.quote(str(self.ad))
+        self.assertIn(f"run gate 3 --dir {ad} --files <test file> …", r.stdout)
+        self.assertNotIn("--tests <test id>", r.stdout)
+        self.assertNotIn("run test --dir", r.stdout)
+
+    def test_show_prints_the_test_id_command_and_runs_nothing(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        r = self.run_("test", "--tests", "a b", "c", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(), "COMMAND: " + self.gate[2]["tests"].replace(
+            "<tests>", "'a b' c"))
+        self.assertFalse((self.ad / "tmp").exists())
+
+    def test_a_scoped_run_prints_its_scope_and_no_warning(self):
+        r = self.run_("test", "--files", "src/c.test.ts", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual((data["scope"], data["warning"]), ("files", None))
+        r = self.run_("test", "--files", "src/c.test.ts")
+        self.assertEqual(r.stdout.splitlines()[1], "  scope: files")
+        self.assertNotIn("warning:", r.stdout)
+
+    def test_tests_and_files_on_a_check_with_no_scoped_form_runs_it_whole(self):
+        self.set_test_check()
+        r = self.run_("test", "--tests", "deletes one", "--files", "src/c.test.ts")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.output_of(r).read_text().splitlines()[1:], ["['all']"])
+        self.assertIn("  scope: whole — the check has no scoped form", r.stdout.splitlines())
+
+    def test_a_scoped_run_on_a_check_with_both_forms_prints_no_warning(self):
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose")
+        for args, scope in ((("--tests", "x"), "tests"),
+                            (("--files", "src/c.test.ts"), "files")):
+            r = self.run_("test", *args)
+            self.assertEqual(r.returncode, 0, (args, r.stdout, r.stderr))
+            self.assertIn(f"  scope: {scope}", r.stdout.splitlines(), args)
+            self.assertNotIn("warning:", r.stdout, args)
+            r = self.run_("test", *args, "--json")
+            self.assertEqual(r.returncode, 0, (args, r.stdout, r.stderr))
+            data = json.loads(r.stdout)
+            self.assertEqual((data["scope"], data["warning"]), (scope, None), args)
+
+    def test_tests_that_fell_back_to_whole_warns_with_the_files_line_only(self):
+        # setUp's test check has a files form and no test-ID form.
+        r = self.run_("test", "--tests", "x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        warned = [i for i, x in enumerate(lines) if x.startswith("  warning:")]
+        self.assertEqual(len(warned), 1, r.stdout)
+        after = "\n".join(lines[warned[0] + 1:])
+        self.assertIn(f"python3 {shlex.quote(str(AUTODEV.resolve()))} run test --dir "
+                      f"{shlex.quote(str(self.ad))} --files <test file> …", after)
+        self.assertNotIn("--tests", r.stdout)
+
+    def test_a_quoted_placeholder_in_the_test_id_form_is_refused_and_nothing_runs(self):
+        for form in ('<runner> pick -t "<test>"', "<runner> pick -t '<test>'",
+                     '<runner> pick "<tests>" --verbose',
+                     # Inside a span, with nothing right beside it.
+                     "<runner> pick '^<test>$'", '<runner> pick "^<test>$"'):
+            self.set_test_check(tests=form)
+            for test in ("a b", "x$(touch PWNED)"):
+                r = self.run_("test", "--tests", test)
+                self.assertEqual(r.returncode, 2, (form, test, r.stdout, r.stderr))
+                self.assertIn("ERROR:", r.stdout + r.stderr, (form, test))
+                self.assertIn("unquoted", r.stdout + r.stderr, (form, test))
+                self.assertEqual(self.run_outputs(), [], (form, test))
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+        # Beside an option's `=` it is still a word of its own, and runs.
+        self.set_test_check(tests="<runner> pick --grep=<test>")
+        r = self.run_("test", "--tests", "a b")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', '--grep=a b']", r.stdout)
+        # A quoted span closed before the placeholder leaves it unquoted.
+        self.set_test_check(tests="sh -c 'cd .' && <runner> pick <tests>")
+        r = self.run_("test", "--tests", "x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', 'x']", r.stdout)
+        # A backslash inside '…' is literal, so that span closes too.
+        self.set_test_check(tests="echo 'a\\' && <runner> pick <tests>")
+        r = self.run_("test", "--tests", "x")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', 'x']", r.stdout)
+        # Every occurrence is checked, not only the first.
+        self.set_test_check(tests='<runner> pick <tests> && echo "<tests>"')
+        ran = self.run_outputs()
+        r = self.run_("test", "--tests", "x")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR:", r.stdout + r.stderr)
+        self.assertEqual(self.run_outputs(), ran)
+
+    def test_a_placeholder_the_form_does_not_fill_is_refused_and_nothing_runs(self):
+        # Left in, `<files> <path>` would be read by the shell as two redirects.
+        (self.wt / "files").write_text("")
+        outside = self.tmp / "outside.txt"
+        outside.write_text("keep\n")
+        for form in ("echo PAYLOAD <files> <tests>", "echo PAYLOAD <files> <test>"):
+            self.set_test_check(tests=form)
+            r = self.run_("test", "--tests", str(outside))
+            self.assertEqual(r.returncode, 2, (form, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, form)
+            self.assertIn("<files>", r.stdout + r.stderr, form)
+            self.assertEqual(outside.read_text(), "keep\n", form)
+            self.assertEqual(self.run_outputs(), [], form)
+        (self.wt / "tests").write_text("")
+        (self.wt / "test").write_text("")
+        for form in ("<runner> some <files> <tests>", "<runner> some <files> <test>"):
+            self.set_test_check(files=form)
+            for args in (("--files", "src/c.test.ts"),
+                         ("--files", "src/c.test.ts", "--tests", "x")):
+                r = self.run_("test", *args)
+                self.assertEqual(r.returncode, 2, (form, args, r.stdout, r.stderr))
+                self.assertIn("ERROR:", r.stdout + r.stderr, (form, args))
+                self.assertEqual(self.run_outputs(), [], (form, args))
+
+    def test_a_test_id_with_any_control_character_is_refused(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        for test in ("a\rb", "a\tb", "a\x7fb"):
+            r = self.run_("test", "--tests", test)
+            self.assertEqual(r.returncode, 2, (test, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, test)
+            self.assertIn(repr(test), r.stdout + r.stderr, test)
+            self.assertEqual(self.run_outputs(), [], test)
+
+    def test_a_repeated_tests_flag_keeps_every_id(self):
+        self.set_test_check(tests="<runner> pick -t <test> --verbose")
+        r = self.run_("test", "--tests", "a", "--tests", "b")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("one test ID", r.stdout + r.stderr)
+        self.assertEqual(self.run_outputs(), [])
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        r = self.run_("test", "--tests", "a", "--tests", "b")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', 'a', 'b', '--verbose']", r.stdout)
+
+    def run_as_windows(self, *args):
+        """`run test` with cmd_run seeing os.name as "nt" (the rest of Python
+        unchanged, so paths still work)."""
+        code = ("import os, runpy, sys, types\n"
+                f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+                "from lib import cmd_run\n"
+                "cmd_run.os = types.SimpleNamespace(**{**vars(os), 'name': 'nt'})\n"
+                f"sys.argv = [{str(AUTODEV)!r}, 'run', 'test', *{list(args)!r}, "
+                f"'--dir', {str(self.ad)!r}]\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, cwd=self.cwd, check=False)
+
+    def test_on_windows_a_test_id_ending_in_a_backslash_is_refused(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        for ids in (["x\\"], ["x\\", "y -z c\\", "d"]):
+            r = self.run_as_windows("--tests", *ids)
+            self.assertEqual(r.returncode, 2, (ids, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, ids)
+            self.assertIn("backslash", r.stdout + r.stderr, ids)
+            self.assertEqual(self.run_outputs(), [], ids)
+        # A backslash inside an ID is fine there, and so is a trailing one elsewhere.
+        r = self.run_as_windows("--tests", "a\\b", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('pick "a\\b" --verbose', r.stdout)
+        if os.name != "nt":
+            r = self.run_("test", "--tests", "x\\", "--show")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_refused_test_id_after_a_good_one_refuses_the_whole_call(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        for args, named in ((("--tests", "a", "--tests=-x"), "-x"),
+                            (("--tests", "a", "--tests="), "''"),
+                            (("--tests", "a", "b\nc"), repr("b\nc"))):
+            r = self.run_("test", *args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertNotIn("unrecognized arguments", r.stdout + r.stderr, args)
+            self.assertIn(named, r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), [], args)
+        r = self.run_as_windows("--tests", "a", "b\\")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR:", r.stdout + r.stderr)
+        self.assertIn("backslash", r.stdout + r.stderr)
+        self.assertEqual(self.run_outputs(), [])
+
+    def test_on_windows_an_exclamation_mark_in_a_test_id_or_path_is_refused(self):
+        # cmd.exe's delayed expansion reads `!VAR!` and `!VAR:old=new!` inside
+        # double quotes too, so an ID could become `-rf`, end in `\` or carry a
+        # secret's value.
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose")
+        (self.wt / "src" / "!PATH!.test.ts").write_text("z\n")
+        for args in (("--tests", "!OS:Windows_NT=-rf!"), ("--tests", "!OS:Windows_NT=a\\!"),
+                     ("--tests", "!PATH!"), ("--tests", "a", "!PATH!"),
+                     ("--files", "src/!PATH!.test.ts")):
+            r = self.run_as_windows(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertIn("delayed expansion", r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), [], args)
+        if os.name != "nt":  # elsewhere `!` is plain data
+            r = self.run_("test", "--tests", "!PATH!", "--show")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_on_windows_a_fullwidth_lookalike_in_a_test_id_or_path_is_refused(self):
+        # A runner reading its command line through the ANSI API gets `－` `＂`
+        # `＼` best-fit mapped to `-` `"` `\`.
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose")
+        (self.wt / "src" / "x＂y.test.ts").write_text("z\n")
+        for args in (("--tests", "－－config=evil.js"),
+                     ("--tests", "a＂ -x ＂b"), ("--tests", "a＼"),
+                     ("--tests", "！PATH！"), ("--tests", "a％PATH％"),
+                     ("--tests", "a", "－x"), ("--files", "src/x＂y.test.ts")):
+            r = self.run_as_windows(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), [], args)
+        # Other non-ASCII text is fine there.
+        r = self.run_as_windows("--tests", "café über", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('pick "café über" --verbose', r.stdout)
+
+    @unittest.skipIf(os.name == "nt", "a POSIX shell's quoting")
+    def test_a_quoted_placeholder_in_the_files_form_is_refused_and_nothing_runs(self):
+        # `run` quotes each path itself: inside the form's own double quotes a
+        # file named `$(…)` would run.
+        name = "src/x$(touch PWNED).test.ts"
+        (self.wt / name).write_text("z\n")
+        for form in ('<runner> some "<files>" --verbose', "<runner> some '<files>'",
+                     '<runner> some "./<files>"'):
+            self.set_test_check(files=form)
+            for args in (("--files", name), ("--tests", "x", "--files", name)):
+                r = self.run_("test", *args)
+                self.assertEqual(r.returncode, 2, (form, args, r.stdout, r.stderr))
+                self.assertIn("ERROR:", r.stdout + r.stderr, (form, args))
+                self.assertIn("unquoted", r.stdout + r.stderr, (form, args))
+                self.assertEqual(self.run_outputs(), [], (form, args))
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+        # Unquoted, the same file is one argument, and nothing it names runs.
+        self.set_test_check(files="<runner> some <files> --verbose")
+        r = self.run_("test", "--files", name)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"['some', '{name}', '--verbose']", r.stdout)
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
 
 
 VERIFY_SPEC = """\
