@@ -24,7 +24,12 @@ of the same heading:
    box someone ticked under "Checks for a person" stays ticked.
  - Output too long for the description goes to one PR comment, edited in place
    on every refresh (never a second one), and is marked superseded once the
-   description fits again.
+   description fits again. When the sections written since take the finished
+   description over 60,000 characters, it cuts the quoted output blocks first,
+   the longest first: each run to its last 10 lines, then, if that is not
+   enough, whole blocks; their full output goes to that comment, which stays
+   within the same limit. Only text written by hand left over the limit is
+   refused.
  - Everything it posts ends with the line `<!-- auto-dev -->`, so the triager
    knows the pipeline wrote it.
  - Then it reads the PR back and checks it names the verified commit.
@@ -43,7 +48,8 @@ of the same heading:
 
 Exit codes:
     0  published; the PR number and URL are printed (and how the findings
-       were posted, when inline comments are on)
+       were posted, when inline comments are on, and an `output_cut` line
+       when output was cut to fit)
     1  refused: a WRITE line is left; pr-write.md lost its mark line, or a
        heading in it is not one it was written with, or leaves a section
        unwritten; the lint failed; or GitHub did not take it
@@ -51,6 +57,7 @@ Exit codes:
        out or offline, or the PR could not be read back)
 """
 
+import hashlib
 import json
 import os
 import re
@@ -65,6 +72,7 @@ from .cmd_ship import (  # shared with the ship steps
     ARTIFACTS,
     ATTRIBUTION,
     BODY_LIMIT,
+    QUOTED_RE,
     SECRET_RE,
     gh_cannot_run,
 )
@@ -144,17 +152,41 @@ class Body:
             label, lines = self.blocks[part]
             if tail:
                 lines = [(intro, output[-tail:]) for intro, output in lines]
-            details = ["  <details><summary>Command and output</summary>", ""]
-            for intro, output in lines:
-                details += [f"  {intro}", "  ```", *[f"  {ln}" for ln in output], "  ```"]
-            details.append("  </details>")
+            block = details(lines)
             if moved:
-                comment += [f"**{label}**", *[d[2:] for d in details], ""]
-                out.append("  (output in the comment \"Command output for commit "
-                           "<short>\")")
+                comment += [f"**{label}**", *[d[2:] for d in block], ""]
+                out.append(MOVED_LINE.format(short="<short>"))
             else:
-                out += details
+                out += block
         return "\n".join(out) + "\n", "\n".join(comment)
+
+
+# One output block as the description shows it, inside a list item (so each
+# line is indented two spaces); the comment shows the same lines unindented.
+DETAILS_OPEN = "  <details><summary>Command and output</summary>"
+DETAILS_CLOSE = "  </details>"
+FENCE = "  ```"
+# Where a block's output went: the whole block moved to the output comment...
+MOVED_LINE = '  (output in the comment "' + COMMENT_HEAD + ' {short}")'
+# ...or, inside the block, each run cut to its last lines.
+TRIMMED_NOTE = ('(last {tail} lines of each run shown; the full output is in the comment "'
+                + COMMENT_HEAD + ' {short}")')
+TRIMMED_RE = re.compile(r"^  \(last \d+ lines of each run shown; ")
+# In the comment, a block whose full output would take it over the limit.
+COMMENT_CUT = "(earlier lines left out: a comment's length is limited)"
+COMMENT_DROPPED = "(its output was left out: a comment's length is limited)"
+
+
+def details(runs, note=None):
+    """The lines of one output block: runs is [(intro line, [output lines])];
+    `note` goes after the last run."""
+    out = [DETAILS_OPEN, ""]
+    for intro, output in runs:
+        out += [f"  {intro}", FENCE, *[f"  {ln}" for ln in output], FENCE]
+    if note:
+        out.append(f"  {note}")
+    out.append(DETAILS_CLOSE)
+    return out
 
 
 def generate(state, ad, sha, reviewed=True, ready=True):
@@ -498,6 +530,154 @@ def fit(body, sha):
             return text, comment
     raise Fail(f"the description is over {BODY_LIMIT} characters even with every output "
                "block moved to a comment: report it at the gate", FAILED, "TOO-LONG")
+
+
+# ------------------------------------------------- cutting the finished description
+
+def cut_output(text, sha, digests):
+    """The finished description cut to fit BODY_LIMIT, as far as its output allows:
+    (text, moved, digests, (trimmed, moved whole)).
+
+    generate() fits the description it writes, but the sections written since
+    (and a live description merged in) can take it over. Only the output blocks
+    generate() quoted (a region whose digest is in `digests`) are cut: first the
+    longest, each run to its last TAIL lines with a note saying where the rest
+    is, until it fits; then, if every block is cut and it is still over, the
+    longest are replaced whole by the line saying they are in the output
+    comment. `moved` is [(label, the block's full runs)] in the order cut, for
+    the comment. `digests` gains each rewritten region's digest, so the lint
+    still skips what it quotes. A text still over the limit comes back as far as
+    it was cut: the lint refuses it."""
+    trusted, moved, trimmed, whole = set(digests), [], 0, 0
+    short = sha[:12]
+    note = TRIMMED_NOTE.format(tail=TAIL, short=short)
+    while len(text) > BODY_LIMIT:
+        found = []
+        for block in output_blocks(text, trusted):
+            if block["trimmed"]:
+                continue
+            lines = details([(i, o[-TAIL:]) for i, o in block["runs"]], note)
+            if len("\n".join(lines)) < block["end"] - block["start"]:
+                found.append((block, lines))
+        if not found:
+            break
+        block, lines = max(found, key=lambda f: f[0]["end"] - f[0]["start"])
+        text = splice_block(text, block, lines, trusted)
+        moved.append((block["label"], block["runs"]))
+        trimmed += 1
+    pointer = MOVED_LINE.format(short=short)
+    while len(text) > BODY_LIMIT:
+        found = [b for b in output_blocks(text, trusted) if b["end"] - b["start"] > len(pointer)]
+        if not found:
+            break
+        block = max(found, key=lambda b: b["end"] - b["start"])
+        text = splice_block(text, block, [pointer], trusted)
+        if not block["trimmed"]:  # a cut one's full output is in `moved` already
+            moved.append((block["label"], block["runs"]))
+        whole += 1
+    return text, moved, trusted, (trimmed, whole)
+
+
+def digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def output_blocks(text, trusted):
+    """Each output block in a quoted region whose digest is in `trusted`, in
+    order: {region: (start, end), start, end (the block's lines), label, runs,
+    trimmed}. The label is the line the region opens on, without its list
+    marker and box."""
+    blocks = []
+    for match in QUOTED_RE.finditer(text):
+        region = match.group(0)
+        if digest(region) not in trusted:
+            continue
+        label = text[text.rfind("\n", 0, match.start()) + 1:match.start()].strip()
+        label = re.sub(r"^- (?:\[[ xX]\] )?", "", label).strip() or "Command output"
+        offset, start, fenced, inner = match.start(), None, False, []
+        for line in region.split("\n"):
+            if start is None:
+                if line == DETAILS_OPEN:
+                    start, fenced, inner = offset, False, []
+            elif line == DETAILS_CLOSE and not fenced:
+                parsed = parse_details(inner)
+                if parsed:
+                    blocks.append({"region": (match.start(), match.end()), "start": start,
+                                   "end": offset + len(line), "label": label,
+                                   "runs": parsed[0], "trimmed": parsed[1]})
+                start = None
+            else:
+                fenced ^= line == FENCE
+                inner.append(line)
+            offset += len(line) + 1
+    return blocks
+
+
+def parse_details(lines):
+    """([(intro, output lines)], trimmed) from the lines between a block's
+    DETAILS_OPEN and DETAILS_CLOSE, or None when details() did not write them."""
+    runs, intro, output, trimmed = [], None, None, False
+    for line in lines:
+        if output is not None:
+            if line == FENCE:
+                runs.append((intro or "", output))
+                intro, output = None, None
+            else:
+                output.append(line[2:] if line.startswith("  ") else line)
+        elif line == FENCE:
+            output = []
+        elif not line.strip():
+            continue
+        elif TRIMMED_RE.match(line):
+            trimmed = True
+        elif intro is None:
+            intro = line[2:] if line.startswith("  ") else line.strip()
+        else:
+            return None
+    if output is not None or intro is not None or not runs:
+        return None
+    return runs, trimmed
+
+
+def splice_block(text, block, lines, trusted):
+    """`text` with `block`'s lines replaced by `lines`; the rewritten region's
+    digest goes into `trusted`."""
+    start, end = block["region"]
+    region = text[start:block["start"]] + "\n".join(lines) + text[block["end"]:end]
+    trusted.add(digest(region))
+    return text[:start] + region + text[end:]
+
+
+def comment_text(ad, sha, moved):
+    """The output comment with the full output of each `moved` block after what
+    generate() moved there (pr-output-comment.md), or None with nothing moved.
+    It stays within BODY_LIMIT: a block whose full output would take it over
+    goes in with each run's last TAIL lines and a line saying so, or, when even
+    that does not fit, as its label and a line saying its output was left out."""
+    if not moved:
+        return None
+    path = Path(ad) / "pr-output-comment.md"
+    if path.exists():
+        kept = path.read_text(encoding="utf-8").rstrip().split("\n")
+        while kept and kept[-1].strip() in ("", MARKER):
+            kept.pop()
+        text = "\n".join(kept) + "\n\n"
+    else:
+        text = f"{COMMENT_HEAD} {sha[:12]}\n\n"
+    end = f"{MARKER}\n"
+
+    def entry(label, lines):
+        return "\n".join([label, *lines]) + "\n\n"
+
+    for label, runs in moved:
+        cut = [(i, o[-TAIL:]) for i, o in runs]
+        for option in (entry(label, [d[2:] for d in details(runs)]),
+                       entry(label, [d[2:] for d in details(cut, COMMENT_CUT)]),
+                       entry(label, [COMMENT_DROPPED])):
+            if len(text) + len(option) + len(end) <= BODY_LIMIT:
+                text += option
+                break
+    return text + end
 
 
 def clean(text, worktree):
@@ -983,6 +1163,10 @@ def publish_body(args, state):
         raise Fail(f"{where} still holds a `<!-- WRITE: ... -->` line: replace each one "
                    "(the Summary, the Assumptions, a section or checklist the repo's PR "
                    "template adds) first", FAILED, "UNWRITTEN")
+    # The sections written since generate() fit it can take it over the limit:
+    # cut the output it quotes, and trust the regions the cut rewrote.
+    text, moved, digests, (trimmed, whole) = cut_output(text, sha, p6.get("quoted", []))
+    p6["quoted"] = sorted(digests)
     # Once the PR has a description, its checklist is the live one: edits stand.
     problems = lint_body(text, state, checklist=not live.strip())
     if problems:
@@ -1009,7 +1193,7 @@ def publish_body(args, state):
     if code != 0 or not pr:
         gh_cannot_run(code, err + out, "gh pr create/edit")  # gh broken: not a refusal
         raise Fail(f"GitHub did not take the PR: {(err or out).strip()}", FAILED, "REFUSED")
-    comment_id = output_comment(wt, ad, pr, p6.get("output_comment"), sha)
+    comment_id = output_comment(wt, ad, pr, p6.get("output_comment"), sha, moved)
     code, out, err = gh(wt, "pr", "view", str(pr), "--json", "number,url,body")
     try:
         live = json.loads(out) if code == 0 else None
@@ -1027,6 +1211,11 @@ def publish_body(args, state):
     p6["body"]["published_seq"] = st.seq(state)
     p6.pop("publish_attempt", None)
     st.add_note(state, f"PR #{pr} description published for {sha}")
+    cut = ""
+    if moved:
+        cut = (f"{trimmed} output block(s) cut to their last {TAIL} lines, {whole} moved "
+               "whole; the full output is in the comment")
+        st.add_note(state, f"PR #{pr} description over {BODY_LIMIT} characters: {cut}")
     inline = ""
     if state["settings"].get("inline_comments") and not p6.get("inline") and \
             p6["body"].get("ready"):  # once the ready-for-review gate is answered
@@ -1035,7 +1224,7 @@ def publish_body(args, state):
         st.add_note(state, f"review findings on PR #{pr}: {inline}")
     st.save(args.dir, state)
     emit(args.json, "PUBLISHED", f"PR #{pr}", url=live.get("url", ""), commit=sha,
-         inline_comments=inline)
+         inline_comments=inline, output_cut=cut)
     return 0
 
 
@@ -1242,15 +1431,20 @@ def keep_ticks(body, ticked):
     return head + sep + rest
 
 
-def output_comment(wt, ad, pr, comment_id, sha):
+def output_comment(wt, ad, pr, comment_id, sha, moved=()):
+    """Post or edit the PR's one output comment: what generate() moved there
+    and the output `moved` (cut_output's) cut from the description; marked
+    superseded once there is none. Returns its id."""
     path = ad / "pr-output-comment.md"
-    if not path.exists() and not comment_id:
-        return None
-    if not path.exists():
-        body = (f"{COMMENT_HEAD} {sha[:12]}: superseded, the PR description holds "
-                f"this commit's output.\n\n{MARKER}\n")
-    else:
-        body = path.read_text(encoding="utf-8")
+    body = comment_text(ad, sha, moved)
+    if body is None:
+        if not path.exists() and not comment_id:
+            return None
+        if not path.exists():
+            body = (f"{COMMENT_HEAD} {sha[:12]}: superseded, the PR description holds "
+                    f"this commit's output.\n\n{MARKER}\n")
+        else:
+            body = path.read_text(encoding="utf-8")
     if not comment_id:
         comment_id = find_comment(wt, pr)
     with tempfile.NamedTemporaryFile("w", suffix=".md", dir=str(ad), delete=False,

@@ -602,7 +602,9 @@ def note_merge(args, state, result):
 def lint_body(text, state, checklist=True):
     """The problems in a PR description, which `pr publish` refuses: a strict
     section or the attribution line missing, `Checked at commit <sha>` not
-    naming the verified commit, over 60,000 characters, or holding a
+    naming the verified commit, over 60,000 characters (`pr publish` cuts the
+    quoted command output first, so only text written by hand is left to
+    shorten), or holding a
     `.auto-dev/` path, one of the run's own condition, finding or mutant IDs,
     "held-out" / "fail-to-pass" / "pass-to-pass", an evidence tier used as one,
     an absolute worktree or home path, or something that looks like a secret.
@@ -614,8 +616,10 @@ def lint_body(text, state, checklist=True):
     GitHub."""
     problems = []
     if len(text) > BODY_LIMIT:
-        problems.append(f"{len(text)} characters, over {BODY_LIMIT}: cut output blocks "
-                        "to their last 10 lines, then move them to one comment")
+        problems.append(f"{len(text)} characters, over {BODY_LIMIT} even with the quoted "
+                        "command output cut or moved to the output comment: shorten the "
+                        "sections written by hand (the Summary, the Assumptions, a "
+                        "template section; or text edited on GitHub)")
     for heading in STRICT_HEADINGS:
         if not re.search(rf"^{re.escape(heading)}\s*$", text, re.MULTILINE):
             problems.append(f"missing the strict heading `{heading}`")

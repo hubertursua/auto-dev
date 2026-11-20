@@ -2715,6 +2715,26 @@ class ShipTest(NextCase):
         self.assert_nothing_published(calls)
         self.assertEqual(self.called(calls, "pr", "comment"), [])
 
+    def test_a_publish_that_cuts_output_says_so_and_leaves_the_files_as_generated(self):
+        self.long_output_body()
+        generated = (self.dir / "pr-body.md").read_text()
+        self.written_to(60293)
+        r, _ = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("output_cut: 1 output block(s) cut to their last 10 lines, 0 moved "
+                      "whole", r.stdout)
+        self.assertEqual((self.dir / "pr-body.md").read_text(), generated)
+        self.assertFalse((self.dir / "pr-output-comment.md").exists())
+        self.assertTrue(any("cut to their last 10 lines" in n["text"]
+                            for n in self.state()["notes"]))
+
+    def test_a_publish_that_fits_prints_no_cut(self):
+        self.long_output_body()
+        self.written_to(self.LIMIT)
+        r, _ = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("output_cut", r.stdout)
+
 
 # A standard-risk plan: no Security/Compliance criteria, so no S1 check.
 STANDARD_PLAN = (PLAN.replace("Risk: high — only the owner may set a due date",
@@ -3677,6 +3697,50 @@ class PublishTest(NextCase):
                  if re.search(r"earlier lines.*left out", ln, re.IGNORECASE)]
         self.assertEqual(len(notes), 1, comment[:3000])
         self.assertIn("limit", notes[0])
+
+    def test_cut_regions_stay_exempt_and_each_block_is_moved_once(self):
+        from lib.cmd_ship import unquoted
+        wide = " the step ran and passed;" * 10
+        short = [f"short {i:04d} ok" for i in range(1, 31)]
+        long = [f"long {i:04d} ok:{wide}" for i in range(1, 1201)]
+        body = self.quoting([("check two", short), ("check one", long)])
+        _, (cut, moved, digests, counts) = self.cut(body, 61000 - len(body.render(10)[0]))
+        self.assertEqual(counts, (2, 1))
+        self.assertEqual([label for label, _ in moved], ["`check one`: passed",
+                                                         "`check two`: passed"])
+        self.assertEqual(moved[0][1], [("Output:", long)])  # the full output, not the cut
+        prose = unquoted(cut, digests)
+        self.assertNotIn("short 0030 ok", prose)
+        self.assertNotIn("output in the comment", prose)
+        self.assertIn("Due dates sort the list", prose)
+
+    def test_a_description_that_fits_is_not_cut(self):
+        long = [f"long {i:04d} ok" for i in range(1, 1201)]
+        body = self.quoting([("check one", long)])
+        text, (cut, moved, _, counts) = self.cut(body, 100)
+        self.assertEqual((cut, moved, counts), (text, [], (0, 0)))
+
+    def test_an_edited_region_is_not_cut(self):
+        long = [f"long {i:04d} ok" for i in range(1, 1201)]
+        body = self.quoting([("check one", long)])
+        text = body.render()[0].replace("long 0001 ok", "long 0001 edited") + \
+            ShipTest.padding(60000)
+        cut, moved, _, _ = self.cmd_pr().cut_output(text, "a" * 40, [])
+        self.assertEqual((cut, moved), (text, []))
+
+    def test_the_comment_adds_the_cut_output_after_what_generate_moved(self):
+        cmd_pr = self.cmd_pr()
+        ad = self.comment_dir()
+        (ad / "pr-output-comment.md").write_text(
+            "Command output for commit aaaaaaaaaaaa\n\n**check zero**\nearlier\n\n"
+            + cmd_pr.MARKER + "\n")
+        comment = cmd_pr.comment_text(ad, "a" * 40, [("`check one`: passed",
+                                                      [("Output:", ["one", "two"])])])
+        self.assertTrue(comment.startswith("Command output for commit aaaaaaaaaaaa\n"))
+        self.assertLess(comment.index("earlier"), comment.index("`check one`: passed"))
+        self.assertEqual(comment.count(cmd_pr.MARKER), 1)
+        self.assertTrue(comment.endswith("</details>\n\n" + cmd_pr.MARKER + "\n"))
+        self.assertIsNone(cmd_pr.comment_text(ad, "a" * 40, []))
 
 
 class TemplateTest(unittest.TestCase):
