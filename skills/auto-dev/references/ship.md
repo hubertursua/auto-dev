@@ -1,8 +1,9 @@
 # Ship stage (Phase 6)
 
 `autodev.py next` drives the Ship stage too, but here it hands you a few steps to do with
-your own tools: writing a commit subject and two PR paragraphs, pushing,
-moving Jira, watching CI after the merge, and the final report. Each is below.
+your own tools: writing a commit subject and the PR body's sections, pushing,
+moving Jira, watching CI after the merge, the final report and the worktree
+question, plus the few in section 2. Each is below.
 `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 ## 1. Enter the worktree
@@ -13,89 +14,24 @@ Ship stage, `cd <worktree>` (the tree `resume` printed) and read
 
 ## 2. Run the loop
 
-Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
-see in the Ship stage, in order:
+Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. `next` names
+each worker to spawn, each command to run and each gate to ask. The steps that
+are yours, besides steps 3–9 below:
 
-1. Commit, push, the PR body and `pr publish`: steps 3–5 below. The build,
-   its quality gate green, opens as a **draft PR before any review**, so CI starts on it while
-   the reviews run; its description says it is not verified or reviewed yet. With
-   `gates.open_pr: true` in `.auto-dev.yml`, the open-the-PR gate asks first
-   (exit 5): `Open PR`, `Hold (don't push yet)` or `Stop`.
-2. The first review pass, on the draft's commit: the
-   `verifier` (it runs the acceptance checks against the plan's conditions and
-   audits the test changes; `check-tests.py` refuses any change to a line a
-   tests commit added) and the review. On a standard-risk run the review is one
-   `reviewer`, for code and security both; it judges its own findings and
-   builds `CODE_REVIEW.md` with `review-build --solo`. On a high-risk run it is
-   three `code-reviewer`s and a security reviewer, spawned once the verifier
-   returns (its mutants are planted in the worktree while it runs), then the
-   `review-judge`
-   (twice in one message when the security review found something to verify),
-   maybe re-votes; the verifier also runs mutation and a probe of its own per
-   condition. Both the verifier and the review look for code that passes a
-   test without doing what the condition asks.
-   What the pass leaves open (the verifier's items, must-fix findings, a
-   confirmed security finding) runs **one correction, one round**. First,
-   with CI configured, `next` has CI settle on the pushed commit (`ci-watch
-   --sha <the pushed commit>`, named even when an unpushed tests commit sits on
-   top of it): red CI the `triager` puts on the code joins the same correction.
-   A watch that reported on another commit since that commit was made (one run
-   without `--sha`) stops the run (#23) rather than waiting forever. The
-   correction is the `coder` (a finding that an acceptance check is wrong goes
-   to the `acceptance-tester` in repair mode first, on the same round; it
-   repairs the check, or answers `STANDS`, which stops the run and asks the
-   user, #21), then the quality gate you run (`autodev.py quality-gate`, as in
-   the Build stage), then a new pass on the uncommitted correction (the
-   verifier re-checks; the review skips its nested skills), before it is
-   committed on top, pushed and published again (steps 3–5).
-   A criterion the verifier, the reviewer, the judge or a security reviewer
-   finds wrong or missing in PLAN.md (`spec-problems/<worker>-<n>.md`) stops
-   the run once the pass has settled, before any correction (#20): no worker
-   changes the spec. The user says how to change it (the fixer edits PLAN.md,
-   and the checks when they say so; then the verifier's first pass runs
-   again), retries, or signs off, which keeps PLAN.md as written; later
-   workers are told what the user kept (`spec_kept`, `checks_kept`).
-   With no round left before the ready-for-review gate, what is open goes to
-   that gate instead of a correction. Once the pass settles, `next` asks you to
-   run `pr publish` again: the description gets the results.
-3. `ci-watch` on the draft. Whatever it exits, run its `AFTER` line (`next`):
-   `next` asks for `ci-watch` again only while CI is `PENDING`. A draft with no
-   check after the grace period (some workflows skip drafts) is `UNAVAILABLE`:
-   the run goes on, and CI is watched again once the PR is marked ready; CI
-   that never ran is shown as not monitored, never as green. A PR that
-   conflicts with its base gets no `pull_request` checks at all, so a watch
-   that finds none there prints `CONFLICT` at once (exit 4): tell the user the
-   PR conflicts with its base and that they bring the base in themselves
-   (fetch it and merge it in the worktree, resolve, push); you never merge or
-   edit the code, you only run `next`. The run goes on, and the gates show CI
-   as not run because of the conflict. Before it watches CI, asks
-   for a push or asks a gate, `next` fetches the PR branch: a head pushed from
-   the worktree that the run didn't make (a base merged in by hand, say) is
-   re-checked as in #16 below, with no stop, and CI is then watched on it (a
-   base merged in, or the branch rebased onto it, while a correction runs is
-   reviewed with the correction, in the pass before its commit); a head the
-   worktree doesn't have stops the run (#16). A red check sends the
-   `triager`. A code failure runs a correction, a pass and a new
-   commit (when findings are open too, it joined their correction in step 2). Any other class (`INFRA`, `FLAKY`, `UNKNOWN`, `SECRET`) is not the
-   code's to fix: `next` stops and reports it (exit 4). Once the cause is
-   fixed and CI re-run, _I fixed it myself_ (or `auto-dev continue`) watches
-   it again.
-4. The ready-for-review gate (exit 5): `Mark ready for review`, `Hold (keep it
-   a draft)` or `Stop`. With pre-existing security findings it asks one more
-   question per finding (_What each gate option does_ in
-   `references/tables.md`): run the `mark triage-<ID>` line for each answer.
-   Then `gh pr ready`, as printed.
-5. Jira In Review, CI watched once more (workflows that skip drafts run now,
-   so green from the draft's checks doesn't count), the `triager` on human
-   PR comments, the main gate, `merge-pr`. A human blocker goes to the coder;
-   a comment saying an acceptance check is wrong goes to the acceptance tester's
-   repair mode (the triager writes it to `triage/human-<n>-checks.md`), and a
-   `STANDS` stops the run as above. When both come back, the tester goes
-   first, on one round. A comment that says the plan's conditions are wrong is a
-   claim: the triager lists it, in its own words and naming the comment's id,
-   in `spec-problems/triager-<n>.md`, and the run stops for the user before
-   any correction (#20). CI mode never reports one.
-6. CI on the base branch, Jira Done, the final report, the worktree question.
+- **The quality gate**, when a correction runs: `autodev.py quality-gate`, as
+  printed, with the Bash tool's timeout at 600000 ms. Whatever it exits, run
+  its `AFTER` line.
+- **`ci-watch`.** Whatever it exits, run its `AFTER` line (`next`). Never
+  report CI as green when it never ran. On `CONFLICT` (exit 4: the PR conflicts
+  with its base, so no check runs), tell the user the PR conflicts with its
+  base and that they bring the base in themselves, with the commands its line
+  names (fetch the base, merge it in the worktree, resolve, push). You never
+  merge or edit the code: you only run `next`, which re-checks a head pushed
+  from the worktree that the run didn't make.
+- **The ready-for-review gate (exit 5).** With pre-existing security findings
+  it asks one more question per finding (_What each gate option does_ in
+  `references/tables.md`): run the `mark triage-<ID>` line for each answer.
+  Then `gh pr ready`, as printed.
 
 ## 3. Commit
 
@@ -247,6 +183,10 @@ Every stop is exit 4 with its reason in `REPORT`
 (`SKILL.md`, _A stop_). The ones that need care:
 
 - **CI red at the main gate (#17):** never merge over it; name each red check.
+- **CI red for a reason the code can't fix (#15: `INFRA`, `FLAKY`, `UNKNOWN`,
+  `SECRET`):** tell the user the class and the check. Once the cause is fixed
+  and CI re-run, _I fixed it myself_ (or `auto-dev continue`) watches it
+  again.
 - **The mutation step may have left a change in the source (#10, high risk
   only):** tell the user not to build on the tree until they've checked the
   paths named.

@@ -6001,6 +6001,24 @@ class ReviewEffortTest(NextCase):
         self.assertEqual(self.next(0, reissue=True)["EFFORT"],  # the plan, not the default
                          ["xhigh"] * 3)
 
+    def test_a_failed_reviewer_is_re_spawned_under_its_own_reviewer_slot(self):
+        self.to_panel()
+        _, jobs = self.reviewers()
+        self.assertEqual(sorted(self.sets(w, n)["reviewer"] for w, n in jobs),
+                         ["R1", "R2", "R3"])
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            if slot == "R2":
+                self.answer(w, n, "", status="failed")
+                continue
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        _, again = self.expect("code-reviewer")
+        self.assertEqual(len(again), 1, again)
+        self.assertEqual(self.sets(*again[0])["reviewer"], "R2")
+        brief = (self.dir / "briefs" / f"{again[0][0]}-{again[0][1]}.md").read_text()
+        self.assertIn("reviewer: R2", brief.splitlines())
+
 
 class QuoteTest(RunCase):
     def test_printed_commands_survive_a_path_with_spaces(self):

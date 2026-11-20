@@ -348,7 +348,9 @@ mutants are planted in the worktree, and the review follows on the same tree.
   writes `SECURITY_REVIEW.md` itself (`agents/reviewer.md`).
 - **High risk: the panel and the security review.**
   1. **Code review panel.** Three reviewers run `/code-review` on the changed
-     files independently. `next` merges their reports into one list, and a
+     files independently, each through its own lens: correctness and edge
+     cases, tests and overfitting, callers and compatibility
+     (`agents/code-reviewer.md`). `next` merges their reports into one list, and a
      judge decides which findings are one, checks each one's trigger path in
      the code and writes the fix for each must-fix finding, in a short
      `JUDGMENT.md`. `autodev.py review-build` then applies the rubric's vote

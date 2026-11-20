@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -264,6 +265,259 @@ class CheckRepoTest(unittest.TestCase):
         self.assertTrue(any("templates/NOPE.md" in e for e in errors), errors)
         errors = self.check_agents_dir({"planner.md": planner})
         self.assertFalse(any(e.startswith("agents/planner.md") for e in errors), errors)
+
+    LENS_HEAD = re.compile(r"^[ \t]*- \*\*(R\d+) — (.+?)\.?\*\*", re.MULTILINE)
+
+    def code_reviewer_mode(self, mode, root=ROOT_DIR):
+        """The `## Mode: <mode>` section of agents/code-reviewer.md, as written."""
+        text = (root / "agents" / "code-reviewer.md").read_text(encoding="utf-8")
+        found = re.search(rf"^## Mode: {mode}\b.*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(found, f"agents/code-reviewer.md has no `## Mode: {mode}`")
+        return found.group(0)
+
+    def test_each_panel_reviewer_slot_is_told_a_lens_of_its_own(self):
+        review = self.code_reviewer_mode("review")
+        heads = self.LENS_HEAD.findall(review)
+        self.assertEqual(len(heads), 3, heads)
+        self.assertEqual({slot: lens.strip().lower() for slot, lens in heads},
+                         {"R1": "correctness and edge cases",
+                          "R2": "tests and overfitting",
+                          "R3": "callers and compatibility"})
+        r3 = re.search(r"^[ \t]*- \*\*R3 — .*?(?=^[ \t]*- |\n\s*\n|\Z)", review,
+                       re.MULTILINE | re.DOTALL)
+        r3_text = " ".join(r3.group(0).split()).lower()
+        for what in ("caller", "signature", "return value", "output line", "exit code",
+                     "file format", "config key"):
+            self.assertIn(what, r3_text)
+        # Each reviewer, briefed with its own slot, is pointed at that slot's line:
+        # the sentence leading into the lens list names its slot, and nothing outside
+        # the lens lines names another slot as its own.
+        lens_line = re.compile(r"^[ \t]*- \*\*R\d+ — .*?(?=^[ \t]*- |\n\s*\n|\Z)",
+                               re.MULTILINE | re.DOTALL)
+        for slot in ("R1", "R2", "R3"):
+            told = review.replace("{{reviewer}}", slot)
+            first = lens_line.search(told)
+            lead_in = told[:first.start()].rstrip().rsplit("\n\n", 1)[-1]
+            self.assertEqual(set(re.findall(r"\bR\d+\b", lead_in)), {slot},
+                             f"reviewer {slot} is not pointed at its own lens: {lead_in!r}")
+            elsewhere = set(re.findall(r"\bR\d+\b", lens_line.sub("", told)))
+            self.assertEqual(elsewhere, {slot},
+                             f"reviewer {slot}'s instructions name another slot: {elsewhere}")
+
+    def test_the_review_report_header_states_the_lens_used(self):
+        template = (ROOT_DIR / "skills" / "auto-dev" / "templates" / "R.md").read_text(
+            encoding="utf-8")
+        report = template.split("\n", 1)[1]  # below the template's comment line
+        header = report.split("\n## ", 1)[0]
+        self.assertRegex(header, r"(?m)^Lens: \S")
+
+    def test_a_reviewer_s_lens_orders_its_effort_and_is_not_a_filter(self):
+        review = " ".join(self.code_reviewer_mode("review").split()).lower()
+        self.assertTrue("is not a filter" in review,
+                        "the review mode does not say the lens is not a filter")
+
+    def test_a_re_vote_judges_a_finding_from_the_code_whichever_lens_raised_it(self):
+        re_vote = " ".join(self.code_reviewer_mode("re-vote").split()).lower()
+        self.assertTrue("your review lens does not apply to a re-vote" in re_vote,
+                        "the re-vote mode does not say the review lens does not apply")
+
+    def test_every_panel_reviewer_still_runs_code_review_in_scopes_first_and_outside(self):
+        review = " ".join(self.code_reviewer_mode("review").split())
+        self.assertRegex(review, r"`first` or `outside`, run the /code-review skill")
+
+    def lens_check_on_a_copy(self, edit):
+        """check-repo.py's run on a repo copy whose agents/code-reviewer.md
+        `edit` (text -> text) rewrites, after the copy passes as it is."""
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = self.copy_of_the_repo(tmp)
+            tool = copy / "tools" / "check-repo.py"
+            agent = copy / "agents" / "code-reviewer.md"
+
+            def run():
+                return subprocess.run([sys.executable, str(tool)], capture_output=True,
+                                      text=True, check=False)
+
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stdout)  # the copy passes as it is
+            text = agent.read_text(encoding="utf-8")
+            edited = edit(text)
+            self.assertNotEqual(edited, text, "the edit changed nothing")
+            agent.write_text(edited, encoding="utf-8")
+            return run()
+
+    def lens_head_line(self, text, slot):
+        found = re.search(rf"^[ \t]*- \*\*{slot} — .*$", text, re.MULTILINE)
+        self.assertIsNotNone(found, f"agents/code-reviewer.md has no lens line for {slot}")
+        return found
+
+    def fail_lines(self, result):
+        return [ln for ln in result.stdout.splitlines() if ln.startswith("FAIL")]
+
+    def test_a_panel_slot_with_its_lens_deleted_fails_the_repo_check_naming_it(self):
+        def drop_r3(text):
+            line = self.lens_head_line(text, "R3")
+            return text[:line.start()] + text[line.end() + 1:]
+
+        result = self.lens_check_on_a_copy(drop_r3)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue([ln for ln in self.fail_lines(result)
+                         if "agents/code-reviewer.md" in ln and "R3" in ln], result.stdout)
+
+    def test_two_slots_sharing_a_lens_in_another_case_fail_naming_the_lens(self):
+        def r2_as_r1(text):
+            line = self.lens_head_line(text, "R2")
+            head = re.match(r"([ \t]*- \*\*R2 — ).+?\.?\*\*", line.group(0))
+            self.assertIsNotNone(head, line.group(0))
+            renamed = (head.group(1) + "Correctness and Edge Cases.**"
+                       + line.group(0)[head.end():])
+            return text[:line.start()] + renamed + text[line.end():]
+
+        result = self.lens_check_on_a_copy(r2_as_r1)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue([ln for ln in self.fail_lines(result)
+                         if "correctness and edge cases" in ln.lower()], result.stdout)
+
+    def test_a_lens_for_a_slot_the_panel_lacks_fails_naming_the_slot(self):
+        def add_r4(text):
+            line = self.lens_head_line(text, "R3")
+            extra = "\n- **R4 — style and naming.** Read every new name for its meaning."
+            return text[:line.end()] + extra + text[line.end():]
+
+        result = self.lens_check_on_a_copy(add_r4)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue([ln for ln in self.fail_lines(result) if "R4" in ln], result.stdout)
+
+    def test_a_panel_slot_given_two_lenses_fails_naming_the_slot(self):
+        def second_r2(text):
+            line = self.lens_head_line(text, "R2")
+            extra = "\n- **R2 — performance and load.** Time every changed loop."
+            return text[:line.end()] + extra + text[line.end():]
+
+        result = self.lens_check_on_a_copy(second_r2)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue([ln for ln in self.fail_lines(result) if "R2" in ln], result.stdout)
+
+    def test_the_readme_s_code_review_panel_item_names_each_lens(self):
+        readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+        section = re.search(r"^## Review on the draft PR\n.*?(?=^## |\Z)", readme,
+                            re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(section, "README.md has no *Review on the draft PR* section")
+        item = re.search(r"\*\*Code review panel\.\*\*.*?(?=\*\*Security review\.\*\*|\Z)",
+                         section.group(0), re.DOTALL)
+        self.assertIsNotNone(item, "the section has no code review panel item")
+        text = " ".join(item.group(0).split()).lower()
+        for lens in ("correctness and edge cases", "tests and overfitting",
+                     "callers and compatibility"):
+            self.assertTrue(lens in text, f"the code review panel item does not name {lens!r}")
+
+    def test_the_panel_has_one_lens_per_reviewer(self):
+        tool = load_tool()
+        text = (ROOT_DIR / "agents" / "code-reviewer.md").read_text(encoding="utf-8")
+        self.assertEqual(tool.panel_lenses(text),
+                         [("R1", "correctness and edge cases"),
+                          ("R2", "tests and overfitting"),
+                          ("R3", "callers and compatibility")])
+        self.assertEqual(tuple(tool.load_panel_slots()), ("R1", "R2", "R3"))
+        tool.check_panel_lenses()
+        self.assertEqual(tool.errors, [])
+
+    def check_lenses(self, lines, slots=("R1", "R2", "R3")):
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "## Mode: review\n\n### Your lens\n\n" + "".join(
+                f"- **{slot} — {lens}.** Look there first.\n" for slot, lens in lines)
+            (Path(tmp) / "code-reviewer.md").write_text(text, encoding="utf-8")
+            tool.check_panel_lenses(Path(tmp), slots=slots)
+        return tool.errors
+
+    def test_a_slot_without_its_own_lens_fails_the_check(self):
+        three = [("R1", "correctness"), ("R2", "tests"), ("R3", "callers")]
+        self.assertEqual(self.check_lenses(three), [])
+        for lines, named in ((three[:2], ("R3",)),
+                             (three + [("R2", "speed")], ("R2",)),
+                             (three + [("R4", "style")], ("R4",)),
+                             ([three[0], ("R2", " Correctness "), three[2]],
+                              ("correctness", "R1", "R2"))):
+            errors = self.check_lenses(lines)
+            self.assertEqual(len(errors), 1, (lines, errors))
+            self.assertTrue(errors[0].startswith("agents/code-reviewer.md:"), errors)
+            for word in named:
+                self.assertIn(word, errors[0])
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            tool.check_panel_lenses(Path(tmp), slots=("R1",))  # no code-reviewer.md
+        self.assertEqual(len(tool.errors), 1, tool.errors)
+        self.assertIn("agents/code-reviewer.md", tool.errors[0])
+
+    def folded_review_mode(self):
+        return " ".join(self.code_reviewer_mode("review").split()).lower()
+
+    def test_the_lens_sentence_points_each_reviewer_at_its_own_slot_s_line(self):
+        review = self.folded_review_mode()
+        self.assertIn("yours is the line for {{reviewer}}:", review)
+        # A fixed slot there would tell every panelist that one slot's lens.
+        self.assertNotRegex(review, r"yours is the line for r\d")
+
+    def test_the_review_mode_says_to_go_deepest_on_the_lens_and_name_it(self):
+        self.assertIn("go deepest on your lens in step 2, and name it on your report's "
+                      "`lens:` line", self.folded_review_mode())
+
+    def test_step_2_tries_to_break_the_change_through_the_lens_first(self):
+        steps = self.code_reviewer_mode("review").split("### Steps", 1)
+        self.assertEqual(len(steps), 2, "the review mode has no `### Steps`")
+        step2 = re.search(r"^2\. .*?(?=^\d+\. |^#|\Z)", steps[1], re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(step2, "the review mode's steps have no step 2")
+        self.assertIn("try to break the change through your lens first (your lens, above)",
+                      " ".join(step2.group(0).split()).lower())
+
+    def test_r2_s_lens_line_defines_overfitting(self):
+        review = self.code_reviewer_mode("review")
+        r2 = re.search(r"^[ \t]*- \*\*R2 — .*?(?=^[ \t]*- |\n\s*\n|\Z)", review,
+                       re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(r2, "the review mode has no lens line for R2")
+        r2_text = " ".join(r2.group(0).split()).lower()
+        for what in ("overfitting: code that passes its tests without doing what",
+                     "branches on a test's own inputs", "hardcodes an expected value",
+                     "matches a check's wording"):
+            self.assertIn(what, r2_text)
+
+    def slots_check_on_a_copy(self, edit):
+        """check-repo.py's run on a repo copy whose panel SLOTS in
+        scripts/lib/cmd_next.py `edit` (text -> text) rewrites, after the copy
+        passes as it is. agents/code-reviewer.md stays as it is."""
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = self.copy_of_the_repo(tmp)
+            tool = copy / "tools" / "check-repo.py"
+            module = copy / "skills" / "auto-dev" / "scripts" / "lib" / "cmd_next.py"
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+
+            def run():
+                return subprocess.run([sys.executable, str(tool)], capture_output=True,
+                                      text=True, check=False, env=env)
+
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stdout)  # the copy passes as it is
+            text = module.read_text(encoding="utf-8")
+            edited = edit(text)
+            self.assertNotEqual(edited, text, "the edit changed nothing")
+            module.write_text(edited, encoding="utf-8")
+            return run()
+
+    SLOTS_LINE = 'SLOTS = ("R1", "R2", "R3")\n'
+
+    def test_a_slot_added_to_the_panel_with_no_lens_fails_naming_it(self):
+        result = self.slots_check_on_a_copy(lambda text: text.replace(
+            self.SLOTS_LINE, 'SLOTS = ("R1", "R2", "R3", "R4")\n', 1))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue([ln for ln in self.fail_lines(result)
+                         if "agents/code-reviewer.md" in ln and "R4" in ln], result.stdout)
+
+    def test_a_slot_dropped_from_the_panel_with_a_lens_fails_naming_it(self):
+        result = self.slots_check_on_a_copy(lambda text: text.replace(
+            self.SLOTS_LINE, 'SLOTS = ("R1", "R2")\n', 1))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertTrue([ln for ln in self.fail_lines(result)
+                         if "R3" in ln and "not a panel slot" in ln], result.stdout)
 
 
 if __name__ == "__main__":
