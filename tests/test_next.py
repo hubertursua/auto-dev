@@ -5199,6 +5199,119 @@ class MovedHeadTest(NextCase):
         self.assertIn("sort.ts", p["files"])
         self.assertFalse([o for o in self.seen if "push -u origin HEAD" in o.get("ACTION", "")])
 
+    def rewritten_during_the_correction(self, rewrite):
+        """CI on GitHub, green on the draft; pass 1 leaves C1 open and the
+        coder corrects sort.ts. While it runs, `rewrite()` rewrites the branch
+        in the worktree (returning the new HEAD) and nothing is pushed; the
+        pass since the pushed commit is clean and `commit` commits the
+        correction on top. Returns (the pushed commit, the new HEAD)."""
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        rewritten = rewrite()
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", verified, rewritten],
+                           cwd=self.worktree, env=self.env, check=False)
+        self.assertNotEqual(r.returncode, 0)  # the pushed commit was rewritten
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.committed_on_top_of(rewritten)
+        branch = self.state()["branch"]
+        self.assertEqual(self.sh("git", "rev-parse", f"origin/{branch}",
+                                 cwd=self.worktree).strip(), verified)  # nothing pushed
+        return verified, self.head()
+
+    def asks_the_user_to_force_push(self, verified, head):
+        """`next` stops on the rewritten branch, calls no one else's push and
+        asks for no merge; once the user force-pushes it, the push step comes
+        with no stop."""
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertNotIn("someone pushed", report)
+        self.assertNotRegex(report, r"git -C \S+ merge")
+        self.assertNotIn("sort.ts", report)  # the run's own files are no one else's
+        self.assertIn("rewritten", report)
+        self.assertIn(verified[:12], report)
+        wt = re.escape(str(self.worktree))
+        self.assertRegex(report, rf"git -C '?{wt}'? push --force-with-lease origin HEAD")
+        self.assert_counted(16, "the worktree's branch was rewritten", 6)
+        self.sh("git", "push", "-q", "--force-with-lease", "origin", "HEAD",
+                cwd=self.worktree)
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.assertTrue(self.asked_push_of(out, head), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_a_rebase_not_pushed_during_a_correction_asks_the_user_to_force_push(self):
+        def rebase():
+            self.land_base()
+            self.sh("git", "add", "-A", cwd=self.worktree)
+            self.sh("git", "stash", "push", "-q", "--include-untracked", cwd=self.worktree)
+            self.sh("git", "rebase", "-q", "origin/main", cwd=self.worktree)
+            self.sh("git", "stash", "pop", "-q", cwd=self.worktree)
+            return self.head()
+        self.asks_the_user_to_force_push(*self.rewritten_during_the_correction(rebase))
+
+    def test_an_amend_not_pushed_during_a_correction_asks_the_user_to_force_push(self):
+        def amend():
+            self.sh("git", "commit", "-q", "--amend", "-m", "feat: due dates, reworded",
+                    cwd=self.worktree)
+            return self.head()
+        self.asks_the_user_to_force_push(*self.rewritten_during_the_correction(amend))
+
+    def test_an_outside_head_marked_pushed_but_never_verified_still_stops_as_a_push(self):
+        # `mark pushed` names a head someone else pushed, which the run never
+        # verified and the worktree doesn't hold: that is no rewrite of the
+        # run's own commit, so no force-push is asked for.
+        self.reviewed_with_ci()
+        self.push_outside("export const one = 1; // reworded\n")
+        outside = self.sh("git", "rev-parse", "HEAD", cwd=self.tmp / "other").strip()
+        r = self.autodev("mark", "pushed", "--value", outside, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("someone pushed", report)
+        self.assertNotIn("force", report)
+        self.assert_counted(16, "the PR head moved", 6)
+
+    def test_a_non_utf8_uncommitted_path_is_shown_escaped_in_the_report(self):
+        # As correction_left_uncommitted, with a path whose name isn't UTF-8
+        # in the correction too; macOS can't write such a name, so it is
+        # planted in the index alone while the coder works.
+        self.github_ci()
+        self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=b"x\n",
+                              cwd=self.worktree, env=self.env, capture_output=True,
+                              check=True).stdout.decode().strip()
+        subprocess.run([b"git", b"update-index", b"--add", b"--cacheinfo",
+                        b"100644," + blob.encode() + b",caf\xe9.ts"],
+                       cwd=self.worktree, env=self.env, capture_output=True, check=True)
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        self.push_outside("export const one = 1; // reworded\n")
+        # Without --json, the REPORT goes to a strict UTF-8 stdout.
+        r = subprocess.run([sys.executable, str(AUTODEV), "next", "--dir", str(self.dir)],
+                           capture_output=True, cwd=self.tmp, check=False,
+                           env={**self.env, "PYTHONIOENCODING": "utf-8:strict"})
+        stdout = r.stdout.decode("utf-8")
+        self.assertEqual(r.returncode, 4, stdout + r.stderr.decode("utf-8", "replace"))
+        self.assertIn("someone pushed", stdout)
+        self.assertIn("correction is uncommitted (caf\\xe9.ts, sort.ts)", stdout)
+
     def test_a_diverged_push_over_an_uncommitted_correction_is_stashed_merged_and_pushed(
             self):
         # The run's own tests commit on the verified commit, not pushed, the

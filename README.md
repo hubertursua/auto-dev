@@ -454,7 +454,10 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   the PR branch, the run stops before it watches CI, pushes or asks a gate, and
   tells you how to bring those commits in to be checked; a commit you pushed
   from the run's worktree (a base merged in by hand, say) is checked again with
-  no stop. auto-dev has no staging step; the PR targets the base branch.
+  no stop. If you rebase or amend the branch in the worktree and don't push it,
+  the run stops before its push and asks you to force-push it yourself: auto-dev
+  never force-pushes. auto-dev has no staging step; the PR targets the base
+  branch.
 - **Jira** only moves the ticket (In Progress → In Review → Done), and is
   skipped without a ticket. The ticket's text is stored at setup and given to
   the planner and the plan critic, which have no Jira access

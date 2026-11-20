@@ -3358,8 +3358,12 @@ def moved_head(c, sha):
     first recorded push and when origin has no such branch (a tracking ref left
     from an earlier branch of that name is no PR's head), when the branch is at
     `sha` or at the commit under re-check, behind `sha` (the run's own commit
-    not pushed yet), or past it by the run's own tests commits alone."""
-    if not sha or not (c.mark("pushed") or {}).get("value"):
+    not pushed yet), or past it by the run's own tests commits alone. A branch
+    still at the commit the run verified and recorded as pushed, which `sha`
+    doesn't descend from, is no outside push either: the worktree's branch was
+    rewritten (see rewritten_push)."""
+    pushed = (c.mark("pushed") or {}).get("value")
+    if not sha or not pushed:
         return None
     branch = c.state["branch"]
     if not c.readonly or c.probing:
@@ -3383,6 +3387,8 @@ def moved_head(c, sha):
     revs = out.split() if code == 0 else []
     if revs and set(revs) <= set(cmd_work.tests_shas(c.state)):
         return None
+    if remote == pushed and pushed in (c.p6.get("verified_shas") or []):
+        return rewritten_push(c, sha, remote)
     # From the merge base: when the run's own unpushed commit and the outside
     # commits diverged, only what the outside commits changed.
     _, out, _ = git(c.wt, "diff", "--name-only", f"{sha}...{remote}", check=False)
@@ -3390,6 +3396,25 @@ def moved_head(c, sha):
     detail = (f"the PR's branch is at {remote[:12]}, past the checked commit {sha[:12]}; "
               "files changed on it: " + (", ".join(files) or "none"))
     return outside_push(c, sha, detail)
+
+
+def rewritten_push(c, sha, remote):
+    """The PR's branch is still at `remote`, the commit the run pushed, but
+    `sha` doesn't descend from it: the user rebased or amended the branch in
+    the worktree and didn't push it. No one else pushed, so stop 16's merge
+    would bring the old commits back over the rewrite; the push needs a force,
+    which the run never uses, so the user pushes it."""
+    wt = q(c.wt)
+    return stop([(f"The PR's branch is still at {remote[:12]}, the commit the run "
+                  "pushed, but the branch in the worktree was rewritten since (rebased "
+                  f"or amended there), so its head {sha[:12]} doesn't build on that "
+                  "commit and a plain push would be refused. No one else pushed to the "
+                  "PR. The run never force-pushes. Tell the user: to ship the rewritten "
+                  f"branch, they push it themselves with `git -C {wt} push "
+                  "--force-with-lease origin HEAD` and say `auto-dev continue`; the run "
+                  "then goes on from the push.")],
+                "the worktree's branch was rewritten", retry={},
+                no_signoff="the run never force-pushes", number=16)
 
 
 def outside_push(c, sha, stale):
@@ -3432,7 +3457,7 @@ def outside_push(c, sha, stale):
         # git refuses a merge that would overwrite the uncommitted correction.
         # Staged first, a file the correction added comes back from the stash
         # as a merge, not as an untracked file the pop refuses to restore.
-        paths = sorted(add + remove)
+        paths = sorted(printable(p) for p in add + remove)
         named = ", ".join(paths[:5]) + (f" and {len(paths) - 5} more"
                                         if len(paths) > 5 else "")
         how = (f"the run's correction is uncommitted ({named}), so to ship those "

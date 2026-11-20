@@ -324,6 +324,11 @@ def verify_commit(args, state, sha, paths):
         return EXIT_NOT_VERIFIED
     phase6.pop("unverified_commit", None)
     phase6["verified_sha"] = sha
+    # Every commit the run verified: `next` tells the run's own pushed commit,
+    # rewritten in the worktree since, from a head someone else pushed.
+    verified = phase6.setdefault("verified_shas", [])
+    if sha not in verified:
+        verified.append(sha)
     phase6["commit_seq"] = st.seq(state)
     st.add_note(state, f"verified commit {sha}")
     st.save(args.dir, state)

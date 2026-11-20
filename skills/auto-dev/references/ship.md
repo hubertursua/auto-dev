@@ -47,7 +47,9 @@ result, whatever the exit code).
 
 `git -C <worktree> push -u origin HEAD`, exactly as printed. Never `--force`.
 If the push is rejected, tell the user what git printed and stop; don't run the
-`AFTER` line.
+`AFTER` line. When the user rebased or amended the branch in the worktree, so
+it no longer builds on the commit the run pushed, `next` stops (#16) instead of
+printing the push: only the user force-pushes.
 
 ## 5. The PR body
 
@@ -209,6 +211,12 @@ Every stop is exit 4 with its reason in `REPORT`
   pass on what they changed), `commit` verifies the new head, or commits the
   re-check's edits on top, and the run goes on from there: the push, CI on
   the new head and the gate it was at. A head pushed from the worktree itself
-  needs no stop: `next` re-checks it the same way.
+  needs no stop: `next` re-checks it the same way. When no one pushed but the
+  user rebased or amended the branch in the worktree without pushing it, the
+  PR branch is still at the commit the run pushed and a plain push would be
+  refused: the `REPORT` says so and asks the user to push the rewritten branch
+  themselves with the `git push --force-with-lease` command it names and say
+  `auto-dev continue`. Never force-push it yourself, and never merge the old
+  commits back in.
 - **GitHub refused or queued the merge (#18):** say what blocks it; Jira stays
   where it is.
