@@ -5241,7 +5241,9 @@ class MovedHeadTest(NextCase):
         self.assertIn("rewritten", report)
         self.assertIn(verified[:12], report)
         wt = re.escape(str(self.worktree))
-        self.assertRegex(report, rf"git -C '?{wt}'? push --force-with-lease origin HEAD")
+        branch = re.escape(self.state()["branch"])
+        self.assertRegex(report, rf"git -C '?{wt}'? push '?--force-with-lease={branch}:"
+                                 rf"{verified}'? origin HEAD")
         self.assert_counted(16, "the worktree's branch was rewritten", 6)
         self.sh("git", "push", "-q", "--force-with-lease", "origin", "HEAD",
                 cwd=self.worktree)

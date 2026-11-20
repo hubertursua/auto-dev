@@ -3405,14 +3405,19 @@ def rewritten_push(c, sha, remote):
     would bring the old commits back over the rewrite; the push needs a force,
     which the run never uses, so the user pushes it."""
     wt = q(c.wt)
+    branch = c.state["branch"]
+    # The lease names the commit the run pushed, so a push someone makes after
+    # the last fetch makes the force-push fail instead of being overwritten.
+    lease = q(f"--force-with-lease={branch}:{remote}")
     return stop([(f"The PR's branch is still at {remote[:12]}, the commit the run "
-                  "pushed, but the branch in the worktree was rewritten since (rebased "
-                  f"or amended there), so its head {sha[:12]} doesn't build on that "
-                  "commit and a plain push would be refused. No one else pushed to the "
-                  "PR. The run never force-pushes. Tell the user: to ship the rewritten "
-                  f"branch, they push it themselves with `git -C {wt} push "
-                  "--force-with-lease origin HEAD` and say `auto-dev continue`; the run "
-                  "then goes on from the push.")],
+                  "pushed, but the branch in the worktree was rewritten since (rebased, "
+                  f"amended or reset there), so its head {sha[:12]} doesn't build on "
+                  "that commit and a plain push would be refused. As of the last fetch, "
+                  "no one else pushed to the PR. The run never force-pushes. Tell the "
+                  "user: to ship the rewritten branch, they push it themselves with "
+                  f"`git -C {wt} push {lease} origin HEAD` (it fails if anyone pushed "
+                  "since) and say `auto-dev continue`; the run then goes on from the "
+                  "push.")],
                 "the worktree's branch was rewritten", retry={},
                 no_signoff="the run never force-pushes", number=16)
 
