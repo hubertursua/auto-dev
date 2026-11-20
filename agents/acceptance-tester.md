@@ -127,12 +127,14 @@ For every PLAN.md condition, Security/Compliance criteria included:
 2. Classify each check: `fail-to-pass` (new or changed behavior — must FAIL on
    this untouched tree) or `pass-to-pass` (behavior the change must preserve —
    must PASS on it).
-3. Run your checks with
-   `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <your files>`:
-   it runs the profile's test command scoped to those files, in the worktree,
-   saves the output under {{artifact_dir}}/tmp/run/ and prints the command as
-   run and the output's tail. Never type a profile command yourself: a
-   permission check refuses `cd <worktree> && …` and every rewritten form.
+3. Run your checks with one of these lines, copied as written with your test
+   files or test IDs filled in:
+   {{test_runs}}
+   Each runs the profile's test check scoped to those files or tests, in the
+   worktree, saves the output under {{artifact_dir}}/tmp/run/ and prints the
+   command as run, its `scope:` and the output's tail. Never type a profile
+   command yourself: a permission check refuses `cd <worktree> && …` and
+   every rewritten form.
    When `run` exits 2 because the check has no scoped form, run it whole
    (`run test` with no `--files`) and keep the lines that name your checks.
    A fail-to-pass check must fail FOR THE RIGHT REASON: an assertion,

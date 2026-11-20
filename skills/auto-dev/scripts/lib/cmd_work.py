@@ -396,6 +396,7 @@ def auto_values(worker, n, state, ad, mode):
                          "0 (off: a standard-risk run)"),
         "probes": "on" if state.get("high_risk") else "off (a standard-risk run)",
         "gate_commands": gate or "none",
+        "test_runs": test_runs(found[1], ad) if found else "none",
         "result_file": str(ad / "returns" / f"{worker}-{n}.json"),
         "pr": str(phase6.get("pr") or "none"),
         "pass": str(phase6.get("review_pass") or 1),
@@ -410,6 +411,21 @@ def auto_values(worker, n, state, ad, mode):
         "fix_report": str(ad / overrides.FIX_DIR / f"fixer-{n}.md"),
     }
     return values
+
+
+def test_runs(check, ad):
+    """The test_runs slot: the run's scoped test commands, filled in and ready to
+    copy, and that a whole run of the test check is for the quality gate only."""
+    runs = cmd_run.scoped_runs(ad, check)
+    if not runs:
+        return "the test check has no scoped form: `run test` runs it whole"
+    lines = [f"- `{line}`" + (f" ({note})" if note else "") for line, note in runs]
+    if not cmd_run.has_form(check, "tests"):
+        lines.append("- no test-ID form: scope by file")
+    lines.append("A whole run of the test check is for the quality gate only (its `run:` "
+                 "line under the gate commands); never run `run test` with neither flag "
+                 "to test your change.")
+    return "\n".join(lines)
 
 
 def job(worker, n):

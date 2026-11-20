@@ -622,16 +622,27 @@ def setup_and_gate_lines(settings):
     lines = [SETUP_HEADING]
     lines += [f"{i}. `{cmd}`" for i, cmd in enumerate(settings["setup"], 1)] or ["none"]
     lines += ["", "## Quality gate — run in order, verbatim (the Definition of Done)",
-              ("Run check <n> with `autodev.py run gate <n> --dir <artifact dir>` (the "
-               "test check: `run test --dir <artifact dir>`); add `--files <path> …` to "
-               "run its scoped form."), "",
-              "| # | kind | command | report | scoped form |",
-              "|---|------|---------|--------|-------------|"]
+              ("The quality gate runs every check, the test check included, with "
+               "`autodev.py run gate <n> --dir <artifact dir>`. To run only some tests, "
+               "use `autodev.py run test --dir <artifact dir>` with `--files <path> …` "
+               "(its scoped form) or `--tests <id> …` (its test-ID form; one ID when the "
+               "form holds `<test>`); a whole test run is for the quality gate only."), "",
+              "| # | kind | command | report | scoped form | test-ID form |",
+              "|---|------|---------|--------|-------------|--------------|"]
     lines += [f"| {i} | {c.get('kind', '')} | `{c.get('command', '')}` | "
               f"`{c.get('report', '')}` | "
-              + (f"`{c['files']}` |" if c.get("files") else "none |")
+              + (f"`{c['files']}` | " if c.get("files") else "none | ")
+              + test_id_cell(c)
               for i, c in enumerate(settings["gate"], 1)]
     return lines
+
+
+def test_id_cell(check):
+    """A check's test-ID form and its example, as profile.md's table shows them."""
+    if not check.get("tests"):
+        return "none |"
+    example = check.get("tests_example")
+    return f"`{check['tests']}`" + (f" (e.g. `{example}`)" if example else "") + " |"
 
 
 def refresh_setup(artifact_dir, state, profile_path):

@@ -51,7 +51,9 @@ setup:
 # Each check maps to a lint/<report>.md artifact.
 # kind is advisory (compile|format|lint|typecheck|test|build); `command` is
 # what actually runs; `report` is the .auto-dev/lint/ filename; optional
-# `files` is the check scoped to some files, with <files> where they go.
+# `files` is the check scoped to some files, with <files> where they go;
+# optional `tests` is the check scoped to some tests, with <tests> (a list of
+# test IDs) or <test> (one), and `tests_example` is one ID in the runner's syntax.
 gate:
   - { kind: typecheck, command: "npx tsc --noEmit",       report: "TYPECHECK.md" }
   - { kind: lint,      command: "npx eslint .",           report: "LINT.md",
@@ -59,7 +61,9 @@ gate:
   - { kind: format,    command: "npx prettier --check .", report: "FORMAT.md",
       files: "npx prettier --check <files>" }
   - { kind: test,      command: "npm test",               report: "TEST.md",
-      files: "npx vitest run --reporter=verbose <files>" }
+      files: "npx vitest run --reporter=verbose <files>",
+      tests: "npx vitest run --reporter=verbose <tests>",
+      tests_example: "src/todos/delete.test.ts:14" }
 # Optional: gitignored files copied from the main checkout into the run's worktree
 # before `setup` runs — env/config a suite needs but git does not track.
 worktree_files: [".env", ".env.test"]
@@ -87,8 +91,10 @@ Fields:
   only "green" when every `command` exits clean. A check may add `files`: the
   same check run on only some files, with `<files>` where the paths go (quoted,
   relative to the worktree). Workers run a check through `autodev.py run gate
-  <n>` (the test check: `run test`), which runs `command` in the worktree, or
-  `files` with `--files <path> …`. When the gate has several test checks,
+  <n>`, which runs `command` in the worktree, or `files` with `--files <path>
+  …`; the quality gate runs every check, the test check included, this way.
+  `run test` runs the test check scoped, with `--files` or `--tests` (below);
+  run with neither it runs whole and warns. When the gate has several test checks,
   `run test`, the verifier's acceptance run and its mutation run use the first
   one with a `files` form (else the first test check), so give that form to
   the check that runs the test files. The test check's `files` form must name
@@ -96,6 +102,24 @@ Fields:
   acceptance run read the names. Without a `files` form a check only runs whole: a
   worker that wanted it scoped runs it whole and reads the lines about its
   files.
+
+  A check may also add `tests`, its test-ID form: the same check run on only
+  some tests, with `<tests>` where a list of test IDs goes (each quoted as
+  one argument, for a runner that takes IDs such as `file:line` or a dotted
+  test path) or `<test>` where exactly one goes (for a runner whose only
+  selector is a single-value filter flag, such as a name or pattern), never
+  both. `tests_example` is one ID in the runner's syntax, shown to workers
+  beside the form; it needs `tests`. Put `tests` on the same check as the
+  `files` form `run test` uses. `run gate <n> --tests <id> …` and `run test
+  --tests <id> …` run the test-ID form; an ID that is empty, starts with `-`
+  or holds a control character is refused, and a `<test>` form given a
+  second ID is refused rather than run on one. When the check has no `tests`
+  form, `--tests` falls back to the `files` form on the `--files` paths given
+  with it, else to the whole check. Every run prints a `scope:` line
+  (`tests`, `files` or `whole`, and why it fell back). A `run test` that ran
+  the check whole when it has a scoped form prints a `warning:` with the
+  filled-in scoped `run` lines and the example ID; the quality gate's own
+  `run gate <n>` never warns. Workers' briefs carry the same scoped lines.
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
   before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.

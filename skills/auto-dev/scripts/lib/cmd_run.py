@@ -3,11 +3,11 @@ run's worktree, and save its output.
 
 Usage:
     autodev.py run gate <n | REPORT> --dir <artifact-dir> [--files <path> ...]
-                        [--out <file>] [--timeout <seconds>] [--tail <lines>]
-                        [--show] [--json]
+                        [--tests <id> ...] [--out <file>] [--timeout <seconds>]
+                        [--tail <lines>] [--show] [--json]
     autodev.py run test --dir <artifact-dir> [--files <path> ...]
-                        [--out <file>] [--timeout <seconds>] [--tail <lines>]
-                        [--show] [--json]
+                        [--tests <id> ...] [--out <file>] [--timeout <seconds>]
+                        [--tail <lines>] [--show] [--json]
 
 A worker's shell doesn't start in the worktree, and a permission check refuses
 `cd <worktree> && <command>` and rewritten forms of it. This runs the command
@@ -29,6 +29,23 @@ worktree, so a default would find no run, or an old one.
     replaced by the paths given, quoted, relative to the worktree (a relative
     path is taken from the worktree root). Each must exist inside the
     worktree. A check with no `files` form can't be scoped: exit 2.
+--tests <id> ...
+    Runs the check's test-ID form instead: its `tests` command, with `<tests>`
+    replaced by the IDs given, each quoted as one argument, or `<test>`
+    replaced by the one ID given (a form with `<test>` takes exactly one: a
+    second is exit 2, never a fallback). An ID is the runner's own syntax and
+    is passed as given; one that is empty, starts with `-` or holds a control
+    character is exit 2. When the check has no `tests` form, the `files` form
+    runs on the --files paths given with it, else the whole check runs. Paths
+    given with --files are always checked, whichever form runs.
+
+Each run prints its scope on the line after the token:
+`  scope: tests|files|whole`, with ` — <why>` when --tests fell back or the
+check has no scoped form. When `run test` (or a `run gate` given --files or
+--tests) ran the check whole and it has a scoped form that wasn't used, a
+`  warning:` follows: a whole run is for the quality gate only, then the
+filled-in scoped `run` lines to use instead and the profile's example test
+ID. The quality gate's own `run gate <n>`, with neither flag, never warns.
 
 --show prints `COMMAND: <the command>` and runs nothing (exit 0), so a caller
 that passes the command on uses the one `run` would run.
@@ -44,13 +61,17 @@ time taken, and the output's last --tail lines (default 40):
     PASSED: `<command>` exited 0 in <s>s
     FAILED: `<command>` exited <code> in <s>s
     TIMED_OUT: `<command>` ran past <s>s and was stopped
-With --json, `command`, `exit_code`, `seconds`, `output`, `lines` and `tail`.
+With --json, `command`, `exit_code`, `seconds`, `output`, `lines`, `tail`,
+`scope` (`tests`, `files` or `whole`) and `warning` (the whole warning text,
+its lines joined by newlines, or null).
 
 Exit codes:
     0  PASSED, or --show printed the command
     1  FAILED: the command exited non-zero
     2  could not run (no state, no such check, no `files` form, a path outside
-       the worktree or missing, --out outside the artifact dir) — `ERROR: …`
+       the worktree or missing, a test ID that is empty, starts with `-` or
+       holds a control character, more than one ID for a `<test>` form,
+       --out outside the artifact dir) — `ERROR: …`
     3  TIMED_OUT: the command and everything it started were stopped
 """
 
@@ -68,6 +89,9 @@ from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
 TIMED_OUT = 3
 PLACEHOLDER = "<files>"
+TESTS_PLACEHOLDER = "<tests>"  # a list of test IDs
+TEST_PLACEHOLDER = "<test>"  # exactly one test ID
+SCRIPT = Path(__file__).resolve().parents[1] / "autodev.py"
 TAIL = 40
 # Where --out may write, under the artifact dir: never state.json, PLAN.md or
 # MANIFEST.md.
@@ -84,6 +108,8 @@ def add_arguments(parser):
                         help="gate: the check's number or its report name")
     parser.add_argument("--files", nargs="+", default=None,
                         help="run the check's scoped form on these paths")
+    parser.add_argument("--tests", nargs="+", default=None,
+                        help="run the check's test-ID form on these test IDs")
     parser.add_argument("--dir", required=True, help="the run's .auto-dev/")
     parser.add_argument("--out", help="the file to save the output to (under --dir's "
                                       "evidence/, acceptance/base-run/ or tmp/)")
@@ -192,6 +218,94 @@ def command_for(n, check, worktree, files):
     return form.replace(PLACEHOLDER, quote(relative_paths(worktree, files)))
 
 
+def test_ids(ids):
+    """The IDs, unchanged, once each is checked to be data the runner can only
+    read as a test ID: not empty, not an option, no control character."""
+    for test in ids:
+        if not test:
+            why = "it is empty"
+        elif test.startswith("-"):
+            why = "it starts with `-`, so the runner would read it as an option"
+        elif any(c < " " or c == "\x7f" for c in test):
+            why = "it holds a control character, such as a newline"
+        else:
+            continue
+        raise Fail(f"{test!r} is not a test ID: {why}", CANNOT_RUN, "ERROR")
+    return ids
+
+
+def has_form(check, key):
+    form = str(check.get(key) or "")
+    if key == "files":
+        return PLACEHOLDER in form
+    return TESTS_PLACEHOLDER in form or TEST_PLACEHOLDER in form
+
+
+def resolve(n, check, worktree, files, tests):
+    """(command, scope, why): the command --files and --tests choose, `tests`,
+    `files` or `whole`, and why it fell back ('' when it didn't)."""
+    if tests is None:
+        command = command_for(n, check, worktree, files)
+        if files:
+            return command, "files", ""
+        bare = not (has_form(check, "files") or has_form(check, "tests"))
+        return command, "whole", "the check has no scoped form" if bare else ""
+    test_ids(tests)
+    if files:
+        relative_paths(worktree, files)  # a given path is checked whatever runs
+    form = str(check.get("tests") or "")
+    if TESTS_PLACEHOLDER in form:
+        return form.replace(TESTS_PLACEHOLDER, quote(tests)), "tests", ""
+    if TEST_PLACEHOLDER in form:
+        if len(tests) > 1:
+            raise Fail(f"gate check {n}'s test-ID form (`{form}`) takes one test ID "
+                       f"({TEST_PLACEHOLDER}), and {len(tests)} were given: run it once "
+                       "per ID, or give one pattern the runner matches", CANNOT_RUN,
+                       "ERROR")
+        return form.replace(TEST_PLACEHOLDER, quote(tests)), "tests", ""
+    if files and has_form(check, "files"):
+        return command_for(n, check, worktree, files), "files", "the check has no tests form"
+    why = ("the check has no tests form and no --files was given"
+           if has_form(check, "files") else "the check has no scoped form")
+    return command_for(n, check, worktree, None), "whole", why
+
+
+def scoped_runs(ad, check, invocation="run test", forms=("files", "tests")):
+    """[(run line, note)] for each of `forms` the check has: the `run` command
+    that runs it, with the script and artifact dir filled in and only the test
+    file or ID left, and a note ('' when none)."""
+    head = (f"python3 {shlex.quote(str(SCRIPT))} {invocation} "
+            f"--dir {shlex.quote(str(ad))}")
+    runs = []
+    if "files" in forms and has_form(check, "files"):
+        runs.append((f"{head} --files <test file> …", ""))
+    if "tests" in forms and has_form(check, "tests"):
+        one = TESTS_PLACEHOLDER not in str(check.get("tests"))
+        notes = ["one test ID per run"] if one else []
+        if check.get("tests_example"):
+            notes.append(f"a test ID looks like `{check['tests_example']}`")
+        runs.append((f"{head} --tests <test id>{'' if one else ' …'}", "; ".join(notes)))
+    return runs
+
+
+def warning_text(ad, n, check, what, files, tests, scope):
+    """The warning for a whole run a worker made where a scoped form would do,
+    as one string (lines joined by newlines), or None."""
+    if scope != "whole" or (what != "test" and not files and not tests):
+        return None
+    unused = [f for f in ("files", "tests")
+              if has_form(check, f) and not (files if f == "files" else tests)]
+    runs = scoped_runs(ad, check, "run test" if what == "test" else f"run gate {n}",
+                       unused)
+    if not runs:
+        return None
+    ran = "the whole test check" if what == "test" else f"check {n} whole"
+    head = (f"this ran {ran}; a whole run is for the quality gate only. "
+            "Run only the tests you need with:")
+    return "\n".join([head] + [f"{line}  ({note})" if note else line
+                               for line, note in runs])
+
+
 def output_file(ad, out, label):
     """The file to save to: --out (under one of OUT_DIRS), else the next free
     tmp/run/<label>-<k>.txt."""
@@ -282,7 +396,7 @@ def main(args):
         raise Fail("--tail must be 0 or more and --timeout more than 0", CANNOT_RUN,
                    "ERROR")
     n, check = pick(state["settings"].get("gate", []), args.what, args.check)
-    command = command_for(n, check, worktree, args.files)
+    command, scope, why = resolve(n, check, worktree, args.files, args.tests)
     if args.show:
         emit(args.json, "COMMAND", command)
         return OK
@@ -296,14 +410,23 @@ def main(args):
     else:
         token, result = ("PASSED", OK) if code == 0 else ("FAILED", FAILED)
         message = f"`{command}` exited {code} in {seconds:g}s"
+    warning = warning_text(Path(os.path.abspath(ad)), n, check, args.what, args.files,
+                           args.tests, scope)
     if args.json:
         print(json.dumps({"result": token, "message": message, "command": command,
                           "exit_code": code, "seconds": seconds, "output": str(path),
-                          "lines": len(lines), "tail": tail}, indent=2, sort_keys=True))
+                          "lines": len(lines), "tail": tail, "scope": scope,
+                          "warning": warning}, indent=2, sort_keys=True))
         return result
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")  # output that isn't UTF-8 never crashes
     print(f"{token}: {message}")
+    print(f"  scope: {scope}" + (f" — {why}" if why else ""))
+    if warning:
+        first, *more = warning.split("\n")
+        print(f"  warning: {first}")
+        for line in more:
+            print(f"    {line}")
     print(f"  output: {path} ({len(lines)} lines)")
     if tail:
         shown = "all" if len(tail) == len(lines) else f"the last {len(tail)}"

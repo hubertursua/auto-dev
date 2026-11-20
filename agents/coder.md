@@ -48,10 +48,12 @@ synthetic/test data only.
 Work test-first: for each step, add or extend the test the plan calls for, run
 it and see it FAIL, then make it pass. Follow existing codebase conventions and
 abstractions closely. Run the relevant tests as you go and get them green with
-`python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <test file> …`,
-which runs the profile's test command ({{test_command}}) scoped to those files,
-in the worktree, and saves its output (without `--files`, the same test check,
-whole).
+one of these lines, copied as written with your test files or test IDs filled in:
+{{test_runs}}
+Each runs the profile's test check scoped, in the worktree, and saves its
+output; `--tests` runs only the named tests, and `run` says which form ran on
+its `scope:` line. The quality gate runs the test check whole
+({{test_command}}), so never run it whole to test a step.
 Never type the test command yourself: a permission check refuses `cd
 <worktree> && …` and every rewritten form. When `run` exits 2 because the
 check has no scoped form, run the whole suite. Scope hints: {{test_notes}}. Do NOT

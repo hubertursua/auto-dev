@@ -74,11 +74,14 @@ The user's instruction:
    Whatever you change before returning either of these is put back.
 3. Otherwise, make the change, in the files it needs:
    - **Code, tests, config.** Follow the repo's conventions. When you change
-     code, run the tests that cover it with
-     `python3 {{skill_dir}}/scripts/autodev.py run test --dir {{artifact_dir}} --files <test file> …`
-     (the profile's test command, {{test_command}}, scoped; hints:
-     {{test_notes}}), and the quality gate's commands on what you changed
-     when the stop was about them:
+     code, run the tests that cover it with one of these lines, copied as
+     written with your test files or test IDs filled in (hints:
+     {{test_notes}}):
+     {{test_runs}}
+     They run the profile's test check scoped; the quality gate runs it whole
+     ({{test_command}}), so never run it whole to test a change. Run the
+     quality gate's commands on what you changed when the stop was about
+     them:
      {{gate_commands}}
      Never type the test command yourself.
    - **PLAN.md** (`{{artifact_dir}}/PLAN.md`), when the instruction says to

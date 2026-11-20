@@ -2941,6 +2941,35 @@ class RunCommandTest(unittest.TestCase):
         self.assertNotIn("unrecognized arguments", r.stdout + r.stderr)
         self.assertEqual(self.run_outputs(), ran)
 
+    def test_a_run_gate_tests_that_fell_back_to_whole_warns_with_run_gate_lines(self):
+        # setUp's test check (3) has a files form and no test-ID form.
+        r = self.run_("gate", "3", "--tests", "deletes one")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("    ['all']", r.stdout.splitlines())
+        self.assertTrue(any(x.startswith("  warning:") for x in r.stdout.splitlines()),
+                        r.stdout)
+        ad = shlex.quote(str(self.ad))
+        self.assertIn(f"run gate 3 --dir {ad} --files <test file> …", r.stdout)
+        self.assertNotIn("--tests <test id>", r.stdout)
+        self.assertNotIn("run test --dir", r.stdout)
+
+    def test_show_prints_the_test_id_command_and_runs_nothing(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        r = self.run_("test", "--tests", "a b", "c", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(), "COMMAND: " + self.gate[2]["tests"].replace(
+            "<tests>", "'a b' c"))
+        self.assertFalse((self.ad / "tmp").exists())
+
+    def test_a_scoped_run_prints_its_scope_and_no_warning(self):
+        r = self.run_("test", "--files", "src/c.test.ts", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual((data["scope"], data["warning"]), ("files", None))
+        r = self.run_("test", "--files", "src/c.test.ts")
+        self.assertEqual(r.stdout.splitlines()[1], "  scope: files")
+        self.assertNotIn("warning:", r.stdout)
+
 
 VERIFY_SPEC = """\
 # Spec
