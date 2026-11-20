@@ -29,20 +29,23 @@ worktree, so a default would find no run, or an old one.
     replaced by the paths given, quoted, relative to the worktree (a relative
     path is taken from the worktree root). Each must exist inside the
     worktree. A check with no `files` form can't be scoped: exit 2, and so
-    is a `files` form that holds `<tests>` or `<test>`.
+    is a `files` form that holds `<tests>` or `<test>`, or whose `<files>` is
+    quoted, since `run` quotes each path itself.
 --tests <id> ...
     Runs the check's test-ID form instead: its `tests` command, with `<tests>`
     replaced by the IDs given, each quoted as one argument, or `<test>`
     replaced by the one ID given (a form with `<test>` takes exactly one: a
     second is exit 2, never a fallback). An ID is the runner's own syntax and
     is passed as given; one that is empty, starts with `-` or holds a control
-    character (or, on Windows, ends in a backslash) is exit 2, and so is a form whose
-    placeholder is quoted, since `run` quotes each ID itself, or that holds
-    `<files>`, which it would leave for the shell to read. A repeated
-    --tests adds its IDs to the ones before. When the check has no `tests`
-    form, the `files` form runs on the --files paths given with it, else the
-    whole check runs. Paths given with --files are always checked, whichever
-    form runs.
+    character is exit 2, and so is a form whose placeholder is quoted, since
+    `run` quotes each ID itself, or that holds `<files>`, which it would leave
+    for the shell to read. On Windows an ID that ends in a backslash or holds
+    `"`, `%` or `!` (cmd.exe's delayed expansion) is exit 2 too, checked again
+    with fullwidth lookalikes mapped to ASCII (NFKC), and so is a --files
+    path with `"`, `%` or `!`. A repeated --tests adds its IDs to the ones
+    before. When the check has no `tests` form, the `files` form runs on the
+    --files paths given with it, else the whole check runs. Paths given with
+    --files are always checked, whichever form runs.
 
 Each run prints its scope on the line after the token:
 `  scope: tests|files|whole`, with ` — <why>` when --tests fell back or the
@@ -75,9 +78,12 @@ Exit codes:
     1  FAILED: the command exited non-zero
     2  could not run (no state, no such check, no `files` form, a path outside
        the worktree or missing, a test ID that is empty, starts with `-` or
-       holds a control character, more than one ID for a `<test>` form, a
-       quoted `<tests>` or `<test>`, a form holding the other form's
-       placeholder, --out outside the artifact dir) — `ERROR: …`
+       holds a control character, on Windows also a test ID that ends in a
+       backslash or a test ID or path that holds `"`, `%` or `!`, each checked
+       again with fullwidth lookalikes mapped to ASCII, more than one ID
+       for a `<test>` form, a quoted `<files>`, `<tests>` or `<test>`, a form
+       holding the other form's placeholder, --out outside the artifact dir)
+       — `ERROR: …`
     3  TIMED_OUT: the command and everything it started were stopped
 """
 
@@ -88,6 +94,7 @@ import signal
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 from . import state as st
@@ -201,12 +208,30 @@ def relative_paths(worktree, files):
     return out
 
 
+def windows_forms(text):
+    """The text, and its NFKC form when that differs: a Windows program that
+    reads its command line through the ANSI API gets the fullwidth forms
+    (U+FF0D, U+FF02, U+FF3C, U+FF05, U+FF01) best-fit mapped to `-` `"` `\\`
+    `%` `!`."""
+    folded = unicodedata.normalize("NFKC", text)
+    return (text,) if folded == text else (text, folded)
+
+
 def quote(paths):
     if os.name == "nt":  # cmd.exe: double quotes, and no name it would expand
-        bad = [p for p in paths if '"' in p or "%" in p]
-        if bad:
-            raise Fail(f"{bad[0]}: a name with `\"` or `%` can't be passed safely on "
-                       "Windows", CANNOT_RUN, "ERROR")
+        for p in paths:
+            for form in windows_forms(p):
+                if '"' in form or "%" in form:
+                    why = "`\"` would end the quotes around it, and `%` expand a variable"
+                elif "!" in form:
+                    why = ("cmd.exe's delayed expansion would replace `!…!` with a "
+                           "variable's value, inside the quotes too")
+                else:
+                    continue
+                lookalike = " (as a fullwidth lookalike)" if form != p else ""
+                raise Fail(f"{p}: a name or test ID with `\"`, `%` or `!`{lookalike} "
+                           f"can't be passed safely on Windows: {why}", CANNOT_RUN,
+                           "ERROR")
         return " ".join(f'"{p}"' for p in paths)
     return " ".join(shlex.quote(p) for p in paths)
 
@@ -223,7 +248,20 @@ def command_for(n, check, worktree, files):
                    f"the profile gives it no `files` command with {PLACEHOLDER}, so "
                    f"it can only run whole (drop --files)", CANNOT_RUN, "ERROR")
     unfilled(n, form, "files", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER))
+    refuse_quoted(n, form, "files", (PLACEHOLDER,), "path")
     return form.replace(PLACEHOLDER, quote(relative_paths(worktree, files)))
+
+
+def refuse_quoted(n, form, key, placeholders, what):
+    """Refuse a form that quotes its placeholder: `run` quotes each value
+    itself, so the form's own quotes would reach the runner, or let the shell
+    expand what the value holds (a file named `$(…)`)."""
+    bad = quoted_placeholder(form, placeholders)
+    if bad:
+        raise Fail(f"gate check {n}'s `{key}` form (`{form}`) has {bad} inside quotes "
+                   f"or next to a quote or backslash: `run` quotes each {what} itself, "
+                   f"so write {bad} unquoted, as a word of its own, in the profile",
+                   CANNOT_RUN, "ERROR")
 
 
 def unfilled(n, form, key, placeholders):
@@ -240,22 +278,32 @@ def unfilled(n, form, key, placeholders):
 def test_ids(ids):
     """The IDs, unchanged, once each is checked to be data the runner can only
     read as a test ID: not empty, not an option, no control character, and on
-    Windows no trailing backslash."""
+    Windows no trailing backslash, for the ID as given or (on Windows) its
+    fullwidth lookalikes mapped to ASCII. `quote` refuses the rest."""
     for test in ids:
-        if not test:
-            why = "it is empty"
-        elif test.startswith("-"):
-            why = "it starts with `-`, so the runner would read it as an option"
-        elif any(c < " " or c == "\x7f" for c in test):
-            why = "it holds a control character, such as a newline"
-        elif os.name == "nt" and test.endswith("\\"):
-            # The C runtime reads `\"` as a literal quote, so the closing quote
-            # `quote` adds would be lost and the next ID's words would shift.
-            why = "on Windows a trailing backslash would escape the quote around it"
-        else:
-            continue
-        raise Fail(f"{test!r} is not a test ID: {why}", CANNOT_RUN, "ERROR")
+        why = not_a_test_id(test)
+        folded = windows_forms(test)[-1] if os.name == "nt" else test
+        if not why and folded != test and not_a_test_id(folded):
+            why = (f"{not_a_test_id(folded)}, once Windows maps its fullwidth "
+                   f"lookalikes to ASCII ({folded!r})")
+        if why:
+            raise Fail(f"{test!r} is not a test ID: {why}", CANNOT_RUN, "ERROR")
     return ids
+
+
+def not_a_test_id(test):
+    """Why `test` can't be passed as a test ID, or ''."""
+    if not test:
+        return "it is empty"
+    if test.startswith("-"):
+        return "it starts with `-`, so the runner would read it as an option"
+    if any(c < " " or c == "\x7f" for c in test):
+        return "it holds a control character, such as a newline"
+    if os.name == "nt" and test.endswith("\\"):
+        # The C runtime reads `\"` as a literal quote, so the closing quote
+        # `quote` adds would be lost and the next ID's words would shift.
+        return "on Windows a trailing backslash would escape the quote around it"
+    return ""
 
 
 def quoted_placeholder(form, placeholders=(TESTS_PLACEHOLDER, TEST_PLACEHOLDER)):
@@ -315,12 +363,7 @@ def resolve(n, check, worktree, files, tests):
         relative_paths(worktree, files)  # a given path is checked whatever runs
     form = str(check.get("tests") or "")
     unfilled(n, form, "tests", (PLACEHOLDER,))
-    bad = quoted_placeholder(form)
-    if bad:
-        raise Fail(f"gate check {n}'s test-ID form (`{form}`) has {bad} inside quotes "
-                   f"or next to a quote or backslash: `run` quotes each test ID itself, "
-                   f"so write {bad} unquoted, as a word of its own, in the profile",
-                   CANNOT_RUN, "ERROR")
+    refuse_quoted(n, form, "tests", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER), "test ID")
     if TESTS_PLACEHOLDER in form:
         return form.replace(TESTS_PLACEHOLDER, quote(tests)), "tests", ""
     if TEST_PLACEHOLDER in form:

@@ -3137,6 +3137,84 @@ class RunCommandTest(unittest.TestCase):
             r = self.run_("test", "--tests", "x\\", "--show")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_a_refused_test_id_after_a_good_one_refuses_the_whole_call(self):
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        for args, named in ((("--tests", "a", "--tests=-x"), "-x"),
+                            (("--tests", "a", "--tests="), "''"),
+                            (("--tests", "a", "b\nc"), repr("b\nc"))):
+            r = self.run_("test", *args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertNotIn("unrecognized arguments", r.stdout + r.stderr, args)
+            self.assertIn(named, r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), [], args)
+        r = self.run_as_windows("--tests", "a", "b\\")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR:", r.stdout + r.stderr)
+        self.assertIn("backslash", r.stdout + r.stderr)
+        self.assertEqual(self.run_outputs(), [])
+
+    def test_on_windows_an_exclamation_mark_in_a_test_id_or_path_is_refused(self):
+        # cmd.exe's delayed expansion reads `!VAR!` and `!VAR:old=new!` inside
+        # double quotes too, so an ID could become `-rf`, end in `\` or carry a
+        # secret's value.
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose")
+        (self.wt / "src" / "!PATH!.test.ts").write_text("z\n")
+        for args in (("--tests", "!OS:Windows_NT=-rf!"), ("--tests", "!OS:Windows_NT=a\\!"),
+                     ("--tests", "!PATH!"), ("--tests", "a", "!PATH!"),
+                     ("--files", "src/!PATH!.test.ts")):
+            r = self.run_as_windows(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertIn("delayed expansion", r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), [], args)
+        if os.name != "nt":  # elsewhere `!` is plain data
+            r = self.run_("test", "--tests", "!PATH!", "--show")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_on_windows_a_fullwidth_lookalike_in_a_test_id_or_path_is_refused(self):
+        # A runner reading its command line through the ANSI API gets `－` `＂`
+        # `＼` best-fit mapped to `-` `"` `\`.
+        self.set_test_check(files="<runner> some <files> --verbose",
+                            tests="<runner> pick <tests> --verbose")
+        (self.wt / "src" / "x＂y.test.ts").write_text("z\n")
+        for args in (("--tests", "－－config=evil.js"),
+                     ("--tests", "a＂ -x ＂b"), ("--tests", "a＼"),
+                     ("--tests", "！PATH！"), ("--tests", "a％PATH％"),
+                     ("--tests", "a", "－x"), ("--files", "src/x＂y.test.ts")):
+            r = self.run_as_windows(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, args)
+            self.assertEqual(self.run_outputs(), [], args)
+        # Other non-ASCII text is fine there.
+        r = self.run_as_windows("--tests", "café über", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('pick "café über" --verbose', r.stdout)
+
+    @unittest.skipIf(os.name == "nt", "a POSIX shell's quoting")
+    def test_a_quoted_placeholder_in_the_files_form_is_refused_and_nothing_runs(self):
+        # `run` quotes each path itself: inside the form's own double quotes a
+        # file named `$(…)` would run.
+        name = "src/x$(touch PWNED).test.ts"
+        (self.wt / name).write_text("z\n")
+        for form in ('<runner> some "<files>" --verbose', "<runner> some '<files>'",
+                     '<runner> some "./<files>"'):
+            self.set_test_check(files=form)
+            for args in (("--files", name), ("--tests", "x", "--files", name)):
+                r = self.run_("test", *args)
+                self.assertEqual(r.returncode, 2, (form, args, r.stdout, r.stderr))
+                self.assertIn("ERROR:", r.stdout + r.stderr, (form, args))
+                self.assertIn("unquoted", r.stdout + r.stderr, (form, args))
+                self.assertEqual(self.run_outputs(), [], (form, args))
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+        # Unquoted, the same file is one argument, and nothing it names runs.
+        self.set_test_check(files="<runner> some <files> --verbose")
+        r = self.run_("test", "--files", name)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"['some', '{name}', '--verbose']", r.stdout)
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+
 
 VERIFY_SPEC = """\
 # Spec

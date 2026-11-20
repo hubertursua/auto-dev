@@ -90,7 +90,10 @@ Fields:
   `{ kind, command, report }`, and one must be `kind: test`. The pipeline is
   only "green" when every `command` exits clean. A check may add `files`: the
   same check run on only some files, with `<files>` where the paths go (quoted,
-  relative to the worktree). Workers run a check through `autodev.py run gate
+  relative to the worktree). Write `<files>` unquoted, as a word of its own:
+  `run` quotes each path itself, so the form's own quotes would let the shell
+  expand a file named `$(…)`, and both `validate-config.py` and `run` refuse a
+  quoted one. Workers run a check through `autodev.py run gate
   <n>`, which runs `command` in the worktree, or `files` with `--files <path>
   …`; the quality gate runs every check, the test check included, this way.
   `run test` runs the test check scoped, with `--files` or `--tests` (below);
@@ -118,7 +121,8 @@ Fields:
   beside the form; it needs `tests`. Put `tests` on the same check as the
   `files` form `run test` uses. `run gate <n> --tests <id> …` and `run test
   --tests <id> …` run the test-ID form; an ID that is empty, starts with `-`
-  or holds a control character (or, on Windows, ends in a backslash) is
+  or holds a control character (or, on Windows, ends in a backslash or holds
+  `"`, `%` or `!`, also once fullwidth lookalikes are mapped to ASCII) is
   refused, a repeated `--tests` adds its IDs, and a `<test>` form given a
   second ID is refused rather than run on one. When the check has no `tests`
   form, `--tests` falls back to the `files` form on the `--files` paths given

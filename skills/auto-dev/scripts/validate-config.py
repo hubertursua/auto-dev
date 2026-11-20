@@ -182,6 +182,12 @@ def check_gate(gate, profile=False):
                               f"{' or '.join(TESTS_PLACEHOLDERS)}: only the `tests` "
                               f"form fills them, and one left in is read by the "
                               f"shell as a redirect")
+            elif (key == "files" and isinstance(val, str)
+                  and quoted_placeholder(val, (FILES_PLACEHOLDER,))):
+                errors.append(f"{where}.files: write {FILES_PLACEHOLDER} unquoted, as a "
+                              f"word of its own: `autodev.py run` quotes each path "
+                              f"itself, so quotes around it would reach the runner, or "
+                              f"let the shell expand a file named `$(…)`")
             elif key == "tests" and isinstance(val, str) and FILES_PLACEHOLDER in val:
                 errors.append(f"{where}.tests: the command may not contain "
                               f"{FILES_PLACEHOLDER}: only the `files` form fills it, "

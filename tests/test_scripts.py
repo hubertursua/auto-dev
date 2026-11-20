@@ -960,6 +960,35 @@ class ValidateConfigTest(unittest.TestCase):
             self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
             self.assertIn("<test", line, form)
 
+    def test_a_files_form_must_leave_its_placeholder_unquoted(self):
+        # `run` quotes each path itself: inside the form's own quotes the shell
+        # would expand a file named `$(…)`. Each form as written in the YAML
+        # string; the comment shows the command it holds.
+        def profile(form):
+            return ('stack: typescript\nsetup: ["npm ci"]\ngate:\n'
+                    '  - { kind: test, command: "npm test", report: "TEST.md", '
+                    f'files: "{form}" }}\n')
+        for form in ('npx jest \\"<files>\\"',        # npx jest "<files>"
+                     "npx jest '<files>'",            # npx jest '<files>'
+                     'npx eslint \\"./<files>\\"',    # npx eslint "./<files>"
+                     "npx jest `<files>`"):           # npx jest `<files>`
+            for r in (self.validate_profile(profile(form)),
+                      self.validate('gate:\n  - { kind: test, command: "npm test", '
+                                    f'report: "TEST.md", files: "{form}" }}\n')):
+                self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+                line = next((x for x in r.stderr.splitlines() if "gate[0].files" in x), "")
+                self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+                self.assertIn("unquoted", line, form)
+        # The schema's own forms, and a loop that takes the paths as words.
+        for form in ("npx eslint <files>", "npx prettier --check <files>",
+                     "npx vitest run --reporter=verbose <files>",
+                     'npx tsc -p \\"web\\" <files>',  # npx tsc -p "web" <files>
+                     # npx vitest run $(for f in <files>; do basename "$f"; done)
+                     'npx vitest run $(for f in <files>; do basename \\"$f\\"; done)'):
+            r = self.validate_profile(profile(form))
+            self.assertEqual(r.returncode, 0, (form, r.stdout, r.stderr))
+            self.assertIn("VALID:", r.stdout)
+
 
 class ProfilePathTest(GitRepoCase):
     def setUp(self):

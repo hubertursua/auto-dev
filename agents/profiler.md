@@ -72,8 +72,10 @@ Find, from the repo itself:
    `kind: test` check; if you find no way to run the tests, say so under
    QUESTIONS rather than invent one.
 3. Each check's scoped form, in `files`: the same check run on only some
-   files, with `<files>` where the paths go (the workers run it on the files
-   they changed or wrote, through `autodev.py run`). For
+   files, with `<files>` where the paths go, unquoted, as a word of its own
+   (the workers run it on the files they changed or wrote, through
+   `autodev.py run`, which quotes each path itself and refuses a quoted
+   `<files>`). For
    the test check, the form must also name every test it runs and its result
    (the runner's verbose reporter, if its default only counts passing tests).
    When the gate has several test checks, give the `files` form to the one
