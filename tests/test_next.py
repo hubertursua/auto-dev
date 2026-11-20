@@ -2549,6 +2549,172 @@ class ShipTest(NextCase):
         self.assertIn("We put 5 small deliberate bugs", text)
         self.assertIn("They caught 4.", text)
 
+    # ------------------------------------------- a description over GitHub's limit
+
+    LIMIT = 60000
+
+    def long_output_body(self, lines=1200, last=None):
+        """S3 to the draft's first description, its quality gate quoting `lines`
+        lines of a check's output (`line 0001 ok …`, then `last` when given);
+        the comment calls a cut makes are scripted. Returns the commit."""
+        if lines:
+            output = [f"line {i:04d} ok: the step ran and passed" for i in range(1, lines + 1)]
+            self.lint_tail = "\n".join(output + ([last] if last else []))
+        sha, _, _, body = self.to_body(first=[
+            {"args": ["pr", "view", "12", "--json", "comments"],
+             "stdout": json.dumps({"comments": []})},
+            {"args": ["pr", "comment", "12"],
+             "stdout": "https://github.com/acme/app/pull/12#issuecomment-99\n"}])
+        if lines:  # generated whole: only the written Summary takes it over
+            self.assertIn(f"line {lines:04d} ok", body.read_text())
+        return sha
+
+    def finished(self, summary):
+        """Write pr-write.md with `summary` as its Summary; return the finished
+        description `pr publish` assembles from it (a draft: no live one)."""
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        if not hasattr(self, "unwritten"):  # pr-write.md as generate wrote it
+            self.unwritten = (self.dir / "pr-write.md").read_text()
+        sources, mine = self.unwritten.split(self.MARK)
+        mine = re.sub(r"<!-- WRITE: .*?-->", lambda _: summary, mine, count=1)
+        mine = re.sub(r"<!-- WRITE: .*?-->", "Due dates are stored in UTC.", mine)
+        self.write_slots(sources, mine)
+        return cmd_pr.splice_written((self.dir / "pr-body.md").read_text(), self.dir,
+                                     self.state()["phase6"].get("slots"))
+
+    @staticmethod
+    def padding(size):
+        """`size` characters of plain sentences, ending in a full stop."""
+        text = ("\nDue dates sort the list, the earliest first." * (size // 40 + 1))[:size]
+        return text[:-1] + "." if size else ""
+
+    def written_to(self, total, head="Todos can carry a due date."):
+        """Write a Summary that brings the finished description to `total`
+        characters; return the finished description."""
+        size = len(self.finished(head))
+        text = self.finished(head + self.padding(total - size))
+        self.assertEqual(len(text), total)
+        return text
+
+    def publish_now(self):
+        """`pr publish`; returns (the run, the gh calls it made)."""
+        log = self.tmp / "gh.log"
+        before = len(log.read_text().splitlines()) if log.exists() else 0
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        calls = [json.loads(ln) for ln in log.read_text().splitlines()[before:]] \
+            if log.exists() else []
+        return r, calls
+
+    @staticmethod
+    def called(calls, *prefix):
+        return [c for c in calls if c["args"][:len(prefix)] == list(prefix)]
+
+    @staticmethod
+    def problems(r):
+        return [ln.split("problem: ", 1)[1] for ln in r.stdout.splitlines()
+                if ln.strip().startswith("problem: ")]
+
+    def assert_nothing_published(self, calls):
+        self.assertEqual(self.called(calls, "pr", "create"), [])
+        self.assertEqual(self.called(calls, "pr", "edit"), [])
+
+    def test_publish_cuts_long_output_to_its_last_lines_when_over_the_limit(self):
+        self.long_output_body()
+        text = self.written_to(60293)
+        self.assertGreater(len(text), self.LIMIT)
+        r, _ = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PUBLISHED", r.stdout)
+        sent = self.published()
+        self.assertLessEqual(len(sent), self.LIMIT)
+        for i in range(1191, 1201):
+            self.assertIn(f"line {i:04d} ok", sent)
+        self.assertNotIn("line 1190 ok", sent)
+
+    def test_a_description_at_exactly_the_limit_is_published_as_assembled(self):
+        self.long_output_body()
+        text = self.written_to(self.LIMIT)
+        r, calls = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sent = self.published()
+        self.assertEqual(sent, text)
+        for i in range(1, 1201):
+            self.assertIn(f"line {i:04d} ok", sent)
+        self.assertEqual(self.called(calls, "pr", "comment"), [])
+
+    def test_output_cut_from_the_description_goes_whole_to_one_comment_it_names(self):
+        sha = self.long_output_body()
+        self.written_to(60293)
+        r, calls = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        posted = self.called(calls, "pr", "comment")
+        self.assertEqual(len(posted), 1, calls)
+        self.assertEqual(self.called(calls, "api", "-X", "PATCH"), [])
+        comment = "".join(posted[0]["files"].values())
+        self.assertEqual(comment.split("\n")[0], f"Command output for commit {sha[:12]}")
+        for i in range(1, 1201):
+            self.assertIn(f"line {i:04d} ok", comment)
+        sent = self.published().split("\n")
+        last = max(i for i, ln in enumerate(sent) if "line 1200 ok" in ln)
+        pointer = f'comment "Command output for commit {sha[:12]}"'
+        self.assertTrue(any(pointer in ln for ln in sent[last + 1:last + 6]),
+                        "\n".join(sent[last - 2:last + 6]))
+
+    def test_cut_output_that_names_a_criterion_still_passes_the_wording_checks(self):
+        self.long_output_body(last="PASS criterion S1: owner only")
+        self.written_to(60293)
+        r, _ = self.publish_now()
+        self.assertNotIn("uses a condition or finding ID", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PUBLISHED", r.stdout)
+
+    def test_an_id_written_in_the_summary_of_an_over_limit_description_is_refused(self):
+        self.long_output_body(last="PASS criterion S1: owner only")
+        self.written_to(60293, head="Todos can carry a due date (S1).")
+        r, calls = self.publish_now()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("PROBLEMS", r.stdout)
+        problems = self.problems(r)  # the output was cut: the ID is all that is left
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("uses a condition or finding ID: S1", problems[0])
+        self.assert_nothing_published(calls)
+        self.assertEqual(self.called(calls, "pr", "comment"), [])
+
+    def assert_written_text_too_long(self, r):
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("PROBLEMS", r.stdout)
+        problems = self.problems(r)
+        for problem in problems:
+            self.assertNotIn("cut output blocks", problem)
+
+        def over(problem):
+            return any(int(n.replace(",", "")) > self.LIMIT
+                       for n in re.findall(r"\d[\d,]*\d", problem))
+        long = [p for p in problems if over(p)]
+        self.assertEqual(len(long), 1, problems)
+        self.assertTrue("60000" in long[0] or "60,000" in long[0], long[0])
+        for section in ("Summary", "Assumptions", "template"):
+            self.assertIn(section, long[0])
+
+    def test_a_summary_too_long_by_itself_is_refused_without_asking_to_cut_output(self):
+        self.long_output_body(lines=0)
+        summary = "Todos can carry a due date." + self.padding(61000 - 27)
+        self.assertEqual(len(summary), 61000)
+        self.finished(summary)
+        r, calls = self.publish_now()
+        self.assert_written_text_too_long(r)
+        self.assert_nothing_published(calls)
+
+    def test_a_summary_too_long_with_long_output_is_refused_and_posts_no_comment(self):
+        self.long_output_body()
+        summary = "Todos can carry a due date." + self.padding(61000 - 27)
+        self.finished(summary)
+        r, calls = self.publish_now()
+        self.assert_written_text_too_long(r)
+        self.assert_nothing_published(calls)
+        self.assertEqual(self.called(calls, "pr", "comment"), [])
+
 
 # A standard-risk plan: no Security/Compliance criteria, so no S1 check.
 STANDARD_PLAN = (PLAN.replace("Risk: high — only the owner may set a due date",
@@ -3427,6 +3593,88 @@ class PublishTest(NextCase):
         body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text))
         r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    # ------------------------------------------ cutting output to fit the limit
+
+    def quoting(self, blocks):
+        """A description quoting each (label, output lines) of `blocks` as one
+        check's output in a quoted region of its own, the way generate does."""
+        body = self.cmd_pr().Body()
+        for line in ("## Summary", "Todos can carry a due date.", "", "## Quality gate",
+                     "The repo's own checks, run on commit aaaaaaaaaaaa:"):
+            body.text(line)
+        for label, lines in blocks:
+            body.text(f"- `{label}`: passed")
+            start = body.quote()
+            body.block(label, [("Output:", lines)])
+            body.unquote(start)
+        body.text("")
+        body.text("## Assumptions")
+        return body
+
+    def cut(self, body, padding):
+        """cut_output on what `body` renders, with `padding` characters of plain
+        sentences after it; returns (the text it was given, what it returned)."""
+        cmd_pr = self.cmd_pr()
+        from lib.cmd_ship import quoted_digests
+        text = body.render()[0] + ShipTest.padding(padding)
+        return text, cmd_pr.cut_output(text, "a" * 40, quoted_digests(text))
+
+    def comment_dir(self):
+        tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        return tmp
+
+    def test_the_longest_output_block_is_cut_first_and_a_shorter_one_keeps_its_output(self):
+        short = [f"short {i:04d} ok" for i in range(1, 31)]
+        long = [f"long {i:04d} ok: the step ran and passed" for i in range(1, 1201)]
+        body = self.quoting([("check two", short), ("check one", long)])
+        text, result = self.cut(body, 60300 - len(body.render()[0]))
+        self.assertEqual(len(text), 60300)
+        cut = result[0]
+        self.assertLessEqual(len(cut), 60000)
+        for i in range(1191, 1201):
+            self.assertIn(f"long {i:04d} ok", cut)
+        self.assertNotIn("long 1190 ok", cut)
+        for i in range(1, 31):
+            self.assertIn(f"short {i:04d} ok", cut)
+
+    def test_blocks_are_moved_whole_only_when_cutting_them_all_is_not_enough(self):
+        wide = " the step ran and passed;" * 10
+        short = [f"short {i:04d} ok" for i in range(1, 31)]
+        long = [f"long {i:04d} ok:{wide}" for i in range(1, 1201)]
+        body = self.quoting([("check two", short), ("check one", long)])
+        # With both blocks cut to their last 10 lines, still 1,000 over.
+        _, result = self.cut(body, 61000 - len(body.render(10)[0]))
+        cut, moved = result[0], result[1]
+        self.assertLessEqual(len(cut), 60000)
+        pointer = '(output in the comment "Command output for commit aaaaaaaaaaaa")'
+        self.assertEqual(cut.count(pointer), 1, cut[-5000:])
+        self.assertNotIn("long 1200 ok", cut)
+        for i in range(21, 31):  # the shorter block stays, cut, in the description
+            self.assertIn(f"short {i:04d} ok", cut)
+        comment = self.cmd_pr().comment_text(self.comment_dir(), "a" * 40, moved)
+        for i in (1, 600, 1200):
+            self.assertIn(f"long {i:04d} ok", comment)
+
+    def test_output_too_long_for_the_comment_keeps_only_its_last_lines_there(self):
+        big = [f"big {i:04d} ok: the step ran and passed" for i in range(1, 1801)]
+        small = [f"small {i:04d} ok: the step ran and passed" for i in range(1, 501)]
+        body = self.quoting([("check one", big), ("check two", small)])
+        _, result = self.cut(body, 45000)  # over even with the big block cut
+        self.assertGreater(len("\n".join(big)), 60000)
+        comment = self.cmd_pr().comment_text(self.comment_dir(), "a" * 40, result[1])
+        self.assertLessEqual(len(comment), 60000)
+        self.assertEqual(comment.split("\n")[0], "Command output for commit aaaaaaaaaaaa")
+        for i in range(1, 501):  # the block that fits goes in whole
+            self.assertIn(f"small {i:04d} ok", comment)
+        for i in range(1791, 1801):
+            self.assertIn(f"big {i:04d} ok", comment)
+        self.assertNotIn("big 1790 ok", comment)
+        notes = [ln for ln in comment.split("\n")
+                 if re.search(r"earlier lines.*left out", ln, re.IGNORECASE)]
+        self.assertEqual(len(notes), 1, comment[:3000])
+        self.assertIn("limit", notes[0])
 
 
 class TemplateTest(unittest.TestCase):
