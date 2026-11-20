@@ -2735,6 +2735,64 @@ class ShipTest(NextCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("output_cut", r.stdout)
 
+    def test_a_refresh_of_an_open_pr_cuts_again_and_edits_its_output_comment(self):
+        sha = self.long_output_body()
+        self.written_to(60293)
+        r, _ = self.publish_now()  # the draft: output cut, its comment posted
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["phase6"]["output_comment"], "99")
+        live = self.published().replace("Todos can carry a due date.",
+                                        "Todos can carry a due date. Edited on GitHub.", 1)
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([{"args": ["pr", "view", "12", "--json", "body"],
+                         "stdout": json.dumps({"body": live})},
+                        {"args": ["api", "-X", "PATCH"], "stdout": "{}"}] + gh)
+        r, calls = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sent = self.published()
+        self.assertLessEqual(len(sent), self.LIMIT)
+        self.assertIn("Todos can carry a due date. Edited on GitHub.", sent)
+        self.assertIn("line 1200 ok", sent)
+        self.assertNotIn("line 1190 ok", sent)
+        self.assertEqual(self.called(calls, "pr", "comment"), [])
+        patched = self.called(calls, "api", "-X", "PATCH")
+        self.assertEqual(len(patched), 1, calls)
+        self.assertTrue(patched[0]["args"][3].endswith("/issues/comments/99"), patched)
+        comment = "".join(patched[0]["files"].values())
+        self.assertTrue(comment.startswith(f"Command output for commit {sha[:12]}\n"),
+                        comment[:200])
+        self.assertNotIn("superseded", comment)
+        for i in (1, 600, 1200):
+            self.assertIn(f"line {i:04d} ok", comment)
+
+    def test_a_live_summary_that_takes_the_merged_description_over_is_cut(self):
+        # The files fit; only the Summary a person lengthened on GitHub takes
+        # the description over, so the cut must run on the merged text.
+        self.long_output_body()
+        self.written_to(self.LIMIT)
+        r, _ = self.publish_now()  # the draft: it fits, nothing cut
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("output_cut", r.stdout)
+        live = self.published().replace("Todos can carry a due date.",
+                                        "Todos can carry a due date. Edited on GitHub.", 1)
+        self.assertIn("Edited on GitHub.", live)
+        cmd_pr = import_module("lib.cmd_pr")
+        spliced = cmd_pr.splice_written((self.dir / "pr-body.md").read_text(), self.dir,
+                                        self.state()["phase6"].get("slots"))
+        self.assertLessEqual(len(spliced), self.LIMIT)
+        self.assertGreater(len(cmd_pr.merge_live(live, spliced)), self.LIMIT)
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([{"args": ["pr", "view", "12", "--json", "body"],
+                         "stdout": json.dumps({"body": live})}] + gh)
+        r, _ = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PUBLISHED", r.stdout)
+        sent = self.published()
+        self.assertLessEqual(len(sent), self.LIMIT)
+        self.assertIn("Todos can carry a due date. Edited on GitHub.", sent)
+        self.assertIn("line 1200 ok", sent)
+        self.assertNotIn("line 1190 ok", sent)
+
 
 # A standard-risk plan: no Security/Compliance criteria, so no S1 check.
 STANDARD_PLAN = (PLAN.replace("Risk: high — only the owner may set a due date",
@@ -3741,6 +3799,70 @@ class PublishTest(NextCase):
         self.assertEqual(comment.count(cmd_pr.MARKER), 1)
         self.assertTrue(comment.endswith("</details>\n\n" + cmd_pr.MARKER + "\n"))
         self.assertIsNone(cmd_pr.comment_text(ad, "a" * 40, []))
+
+    def test_output_holding_a_line_that_reads_as_the_fence_is_still_cut(self):
+        long = [f"long {i:04d} ok: the step ran and passed" for i in range(1, 1201)]
+        for name, odd in (("a lone fence", ["```"]),
+                          ("a fenced snippet", ["```ts", "const due = 1;", "```"]),
+                          ("a fence, then the closing tag", ["```", "</details>"])):
+            with self.subTest(name):
+                output = long[:600] + odd + long[600:]
+                body = self.quoting([("check one", output)])
+                text, (cut, moved, _, counts) = self.cut(body, 60300 - len(body.render()[0]))
+                self.assertEqual(len(text), 60300)
+                self.assertLessEqual(len(cut), 60000)
+                self.assertEqual(counts, (1, 0))
+                for i in range(1191, 1201):
+                    self.assertIn(f"long {i:04d} ok", cut)
+                self.assertNotIn("long 1190 ok", cut)
+                self.assertNotIn("long 0601 ok", cut)
+                self.assertEqual(moved, [("`check one`: passed", [("Output:", output)])])
+
+    def test_a_block_whose_runs_do_not_read_back_is_moved_whole_as_written(self):
+        cmd_pr = self.cmd_pr()
+        from lib.cmd_ship import quoted_digests
+        long = [f"long {i:04d} ok: the step ran and passed" for i in range(1, 1201)]
+        body = self.quoting([("check one", long)])
+        rendered = body.render()[0]
+        # No fence opens the run: not a block details() writes.
+        rendered = rendered.replace("  Output:\n  ```\n", "  Output:\n", 1)
+        text = rendered + ShipTest.padding(60300 - len(rendered))
+        cut, moved, _, counts = cmd_pr.cut_output(text, "a" * 40, quoted_digests(text))
+        self.assertLessEqual(len(cut), 60000)
+        self.assertEqual(counts, (0, 1))
+        self.assertIn('(output in the comment "Command output for commit aaaaaaaaaaaa")', cut)
+        self.assertNotIn("long 1200 ok", cut)
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0][0], "`check one`: passed")
+        comment = cmd_pr.comment_text(self.comment_dir(), "a" * 40, moved)
+        self.assertLessEqual(len(comment), 60000)
+        for i in (1, 600, 1200):
+            self.assertIn(f"\nlong {i:04d} ok: the step ran and passed\n", comment)
+        self.assertIn("\nOutput:\n", comment)
+
+    def test_an_output_comment_with_an_id_is_edited_to_hold_the_cut_output(self):
+        cmd_pr = self.cmd_pr()
+        ad = self.comment_dir()
+        calls = []
+
+        def gh(_wt, *args):
+            name = args[args.index("-F") + 1].split("@", 1)[1]
+            calls.append((args, Path(name).read_text()))
+            return 0, "", ""
+        real = cmd_pr.gh
+        cmd_pr.gh = gh
+        self.addCleanup(setattr, cmd_pr, "gh", real)
+        moved = [("`check one`: passed",
+                  [("Output:", [f"line {i:04d} ok" for i in range(1, 1201)])])]
+        self.assertEqual(cmd_pr.output_comment(".", ad, 12, "55", "a" * 40, moved), "55")
+        self.assertEqual(len(calls), 1)
+        args, posted = calls[0]
+        self.assertEqual(args[:3], ("api", "-X", "PATCH"))
+        self.assertTrue(args[3].endswith("/issues/comments/55"), args)
+        self.assertEqual(posted, cmd_pr.comment_text(ad, "a" * 40, moved))
+        self.assertTrue(posted.startswith("Command output for commit aaaaaaaaaaaa\n"))
+        self.assertIn("line 0001 ok", posted)
+        self.assertNotIn("superseded", posted)
 
 
 class TemplateTest(unittest.TestCase):

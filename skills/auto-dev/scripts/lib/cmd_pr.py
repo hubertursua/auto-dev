@@ -172,6 +172,9 @@ MOVED_LINE = '  (output in the comment "' + COMMENT_HEAD + ' {short}")'
 TRIMMED_NOTE = ('(last {tail} lines of each run shown; the full output is in the comment "'
                 + COMMENT_HEAD + ' {short}")')
 TRIMMED_RE = re.compile(r"^  \(last \d+ lines of each run shown; ")
+# The lines condition_entry() and quality_gate() introduce a run with. An
+# output line can render as FENCE, so a run ends at the fence these follow.
+INTRO_RE = re.compile(r"^  (?:On the old code, ran |Now, ran |Also ran |Output:$)")
 # In the comment, a block whose full output would take it over the limit.
 COMMENT_CUT = "(earlier lines left out: a comment's length is limited)"
 COMMENT_DROPPED = "(its output was left out: a comment's length is limited)"
@@ -187,6 +190,15 @@ def details(runs, note=None):
         out.append(f"  {note}")
     out.append(DETAILS_CLOSE)
     return out
+
+
+class Raw(tuple):
+    """An output block's lines as the description shows them, for a block
+    whose runs could not be read back: it can only be moved whole."""
+
+
+def undent(line):
+    return line[2:] if line.startswith("  ") else line
 
 
 def generate(state, ad, sha, reviewed=True, ready=True):
@@ -554,7 +566,7 @@ def cut_output(text, sha, digests):
     while len(text) > BODY_LIMIT:
         found = []
         for block in output_blocks(text, trusted):
-            if block["trimmed"]:
+            if block["trimmed"] or isinstance(block["runs"], Raw):
                 continue
             lines = details([(i, o[-TAIL:]) for i, o in block["runs"]], note)
             if len("\n".join(lines)) < block["end"] - block["start"]:
@@ -586,7 +598,13 @@ def output_blocks(text, trusted):
     """Each output block in a quoted region whose digest is in `trusted`, in
     order: {region: (start, end), start, end (the block's lines), label, runs,
     trimmed}. The label is the line the region opens on, without its list
-    marker and box."""
+    marker and box.
+
+    Output is quoted as it was printed, so a line of it can read as the block's
+    fence or its closing tag. A block ends at the last DETAILS_CLOSE of the
+    region after which its runs read back (generate quotes one block per
+    region; a region holding more is read block by block); one that reads back
+    at none ends at the region's last DETAILS_CLOSE and comes as `Raw` lines."""
     blocks = []
     for match in QUOTED_RE.finditer(text):
         region = match.group(0)
@@ -594,49 +612,74 @@ def output_blocks(text, trusted):
             continue
         label = text[text.rfind("\n", 0, match.start()) + 1:match.start()].strip()
         label = re.sub(r"^- (?:\[[ xX]\] )?", "", label).strip() or "Command output"
-        offset, start, fenced, inner = match.start(), None, False, []
-        for line in region.split("\n"):
-            if start is None:
-                if line == DETAILS_OPEN:
-                    start, fenced, inner = offset, False, []
-            elif line == DETAILS_CLOSE and not fenced:
-                parsed = parse_details(inner)
-                if parsed:
-                    blocks.append({"region": (match.start(), match.end()), "start": start,
-                                   "end": offset + len(line), "label": label,
-                                   "runs": parsed[0], "trimmed": parsed[1]})
-                start = None
-            else:
-                fenced ^= line == FENCE
-                inner.append(line)
+        lines, offsets, offset = region.split("\n"), [], match.start()
+        for line in lines:
+            offsets.append(offset)
             offset += len(line) + 1
+        k = 0
+        while k < len(lines):
+            if lines[k] != DETAILS_OPEN:
+                k += 1
+                continue
+            closes = [c for c in range(k + 1, len(lines)) if lines[c] == DETAILS_CLOSE]
+            if not closes:
+                break
+            end, runs, trimmed = closes[-1], None, False
+            for c in reversed(closes):
+                parsed = parse_details(lines[k + 1:c])
+                if parsed:
+                    end, (runs, trimmed) = c, parsed
+                    break
+            if runs is None:
+                runs = Raw(lines[k:end + 1])
+                trimmed = bool(TRIMMED_RE.match(lines[end - 1]))
+            blocks.append({"region": (match.start(), match.end()), "start": offsets[k],
+                           "end": offsets[end] + len(lines[end]), "label": label,
+                           "runs": runs, "trimmed": trimmed})
+            k = end + 1
     return blocks
 
 
 def parse_details(lines):
     """([(intro, output lines)], trimmed) from the lines between a block's
-    DETAILS_OPEN and DETAILS_CLOSE, or None when details() did not write them."""
-    runs, intro, output, trimmed = [], None, None, False
-    for line in lines:
-        if output is not None:
-            if line == FENCE:
-                runs.append((intro or "", output))
-                intro, output = None, None
-            else:
-                output.append(line[2:] if line.startswith("  ") else line)
-        elif line == FENCE:
-            output = []
-        elif not line.strip():
+    DETAILS_OPEN and DETAILS_CLOSE, or None when details() did not write them.
+    A run's output ends at the first fence after which the lines end or the
+    next run starts: an INTRO_RE line, then a fence; failing that, any line."""
+    lines = list(lines)
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    trimmed = bool(lines) and bool(TRIMMED_RE.match(lines[-1]))
+    if trimmed:
+        lines.pop()
+    for starts_run in (INTRO_RE.match, lambda ln: ln.strip() and ln != FENCE):
+        runs = read_runs(lines, starts_run)
+        if runs:
+            return runs, trimmed
+    return None
+
+
+def read_runs(lines, starts_run):
+    """[(intro, output lines)] read from `lines` as details() writes its runs,
+    or None. From the last line back, `ends[i]` is where the run starting at
+    line i ends (its closing fence), when the lines from i on read as runs."""
+    n, ends = len(lines), {}
+    for i in range(n - 2, -1, -1):
+        if not lines[i].strip() or lines[i] == FENCE or lines[i + 1] != FENCE:
             continue
-        elif TRIMMED_RE.match(line):
-            trimmed = True
-        elif intro is None:
-            intro = line[2:] if line.startswith("  ") else line.strip()
-        else:
-            return None
-    if output is not None or intro is not None or not runs:
+        for j in range(i + 2, n):
+            if lines[j] == FENCE and (j == n - 1 or (
+                    j + 2 < n and starts_run(lines[j + 1]) and j + 1 in ends)):
+                ends[i] = j
+                break
+    if 0 not in ends:
         return None
-    return runs, trimmed
+    runs, i = [], 0
+    while i < n:
+        j = ends[i]
+        intro = lines[i][2:] if lines[i].startswith("  ") else lines[i].strip()
+        runs.append((intro, [undent(ln) for ln in lines[i + 2:j]]))
+        i = j + 1
+    return runs
 
 
 def splice_block(text, block, lines, trusted):
@@ -670,10 +713,15 @@ def comment_text(ad, sha, moved):
         return "\n".join([label, *lines]) + "\n\n"
 
     for label, runs in moved:
-        cut = [(i, o[-TAIL:]) for i, o in runs]
-        for option in (entry(label, [d[2:] for d in details(runs)]),
+        if isinstance(runs, Raw):  # its runs did not read back: whole or not at all
+            options = (entry(label, [undent(d) for d in runs]),
+                       entry(label, [COMMENT_DROPPED]))
+        else:
+            cut = [(i, o[-TAIL:]) for i, o in runs]
+            options = (entry(label, [d[2:] for d in details(runs)]),
                        entry(label, [d[2:] for d in details(cut, COMMENT_CUT)]),
-                       entry(label, [COMMENT_DROPPED])):
+                       entry(label, [COMMENT_DROPPED]))
+        for option in options:
             if len(text) + len(option) + len(end) <= BODY_LIMIT:
                 text += option
                 break
