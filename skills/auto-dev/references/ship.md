@@ -92,8 +92,11 @@ condition title and gate command it copies, is exempt from the ID,
 the follow-ups the user sent to a separate PR at the ready-for-review gate are
 listed in the description once `next` publishes it again.
 `pr publish` ends everything it posts with `<!-- auto-dev -->`, which tells
-the triager to skip it; never post on the PR yourself. Then run the `AFTER`
-line, `autodev.py pr publish`:
+the triager to skip it; never post on the PR yourself. A description over
+GitHub's limit has its quoted command output cut to the last lines, and moved
+to the PR's output comment, by `pr publish` itself; when it is still too long,
+its exit 1 names the sections written by hand to shorten in `pr-write.md`.
+Then run the `AFTER` line, `autodev.py pr publish`:
 
 | Exit | Do |
 |---|---|

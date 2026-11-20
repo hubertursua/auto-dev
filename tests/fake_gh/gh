@@ -8,7 +8,8 @@ The first entry whose `args` is a prefix of the call's arguments answers it.
 `times` (optional) limits how many calls an entry answers, so a test can script
 "pending, then green". An unmatched call exits 1 with `fake gh: no response`.
 $FAKE_GH_LOG, when set, gets one JSON line per call: {"args": [...]}, plus
-"files": {path: contents} for a file passed with --input or --body-file.
+"files": {path: contents} for a file passed with --input or --body-file, or as
+a field's value with `-F <key>=@<path>`.
 """
 
 import json
@@ -20,7 +21,11 @@ log = os.environ.get("FAKE_GH_LOG")
 if log:
     files = {}
     for flag, value in zip(args, args[1:]):
-        if flag in ("--input", "--body-file") and os.path.isfile(value):
+        if flag in ("-F", "--field") and "=@" in value:
+            value = value.split("=@", 1)[1]
+        elif flag not in ("--input", "--body-file"):
+            continue
+        if os.path.isfile(value):
             with open(value, encoding="utf-8") as fh:
                 files[value] = fh.read()
     with open(log, "a", encoding="utf-8") as fh:
