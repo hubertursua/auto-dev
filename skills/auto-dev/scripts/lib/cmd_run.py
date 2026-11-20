@@ -307,10 +307,12 @@ def not_a_test_id(test):
 
 
 def quoted_placeholder(form, placeholders=(TESTS_PLACEHOLDER, TEST_PLACEHOLDER)):
-    """The first of `placeholders` that `form` holds inside a quoted span or
-    with a quote, backtick or backslash right beside it, else None. `run`
-    quotes each value itself, so a placeholder the form quotes again hands the
-    runner those quotes too, or lets the shell expand what the value holds."""
+    """The first of `placeholders` that `form` holds inside a quoted span, with
+    a quote, backtick or backslash right beside it, or with a `$` right before
+    it, else None. `run` quotes each value itself, so a placeholder the form
+    quotes again hands the runner those quotes too, or lets the shell expand
+    what the value holds; a `$` would turn `run`'s own quotes into bash's
+    `$'…'`, where a backslash escapes the closing quote."""
     marks = ("'", '"', "`", "\\")
     quoted = [False] * len(form)
     inside, i = None, 0
@@ -335,7 +337,7 @@ def quoted_placeholder(form, placeholders=(TESTS_PLACEHOLDER, TEST_PLACEHOLDER))
         at = form.find(p)
         while at != -1:
             end = at + len(p)
-            if (quoted[at] or (at and form[at - 1] in marks)
+            if (quoted[at] or (at and form[at - 1] in marks + ("$",))
                     or (end < len(form) and form[end] in marks)):
                 return p
             at = form.find(p, end)

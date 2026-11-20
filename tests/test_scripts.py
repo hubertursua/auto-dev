@@ -989,6 +989,20 @@ class ValidateConfigTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, (form, r.stdout, r.stderr))
             self.assertIn("VALID:", r.stdout)
 
+    def test_a_dollar_sign_right_before_a_placeholder_is_refused(self):
+        # `$'…'` is bash's ANSI-C quoting, where `\'` doesn't close the
+        # string: `npx jest $<files>` would let a path ending in a backslash
+        # carry the next one out of its quotes.
+        for key, form in (("files", "npx jest $<files>"), ("tests", "npx jest $<tests>"),
+                          ("tests", "npx jest -t $<test>")):
+            r = self.validate_profile(
+                'stack: typescript\nsetup: ["npm ci"]\ngate:\n'
+                '  - { kind: test, command: "npm test", report: "TEST.md", '
+                f'{key}: "{form}" }}\n')
+            self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+            line = next((x for x in r.stderr.splitlines() if f"gate[0].{key}" in x), "")
+            self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+
 
 class ProfilePathTest(GitRepoCase):
     def setUp(self):

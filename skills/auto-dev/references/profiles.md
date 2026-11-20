@@ -89,8 +89,9 @@ Fields:
 - **`gate`** (required) — the ordered quality-gate checks. Each is
   `{ kind, command, report }`, and one must be `kind: test`. The pipeline is
   only "green" when every `command` exits clean. A check may add `files`: the
-  same check run on only some files, with `<files>` where the paths go (quoted,
-  relative to the worktree). Write `<files>` unquoted, as a word of its own:
+  same check run on only some files, with `<files>` where the paths go (`run`
+  fills in each path relative to the worktree, quoted). Write `<files>`
+  unquoted, as a word of its own, with no `$` before it:
   `run` quotes each path itself, so the form's own quotes would let the shell
   expand a file named `$(…)`, and both `validate-config.py` and `run` refuse a
   quoted one. Workers run a check through `autodev.py run gate
