@@ -1103,6 +1103,70 @@ class ShipTest(RunCase):
         r = self.watch("--max-wait", "0")
         self.assertIn("TIMEOUT", r.stdout)
 
+    def test_a_conflict_is_recorded_and_a_rewatch_restarts_the_clock(self):
+        self.set_settings(ci="github-actions", ci_timeout=30)
+        head = self.git("rev-parse", "HEAD").strip()
+        self.script_gh([{"args": ["pr", "view"],
+                         "stdout": json.dumps({"headRefOid": head,
+                                               "mergeable": "CONFLICTING"})},
+                        {"args": ["pr", "checks"], "exit": 1,
+                         "stderr": "no checks reported on the 'feat/due-dates' branch"}])
+        r = self.watch("--max-wait", "0", "--grace", "300")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("bring the base in", r.stdout)
+        self.assertEqual(self.state()["phase6"]["ci"]["status"], "conflict")
+        state = self.state()
+        state["phase6"]["ci"]["started"] = 1.0
+        self.write_state(state)
+        self.checks(self.PENDING)  # the base brought in: checks run again
+        r = self.watch("--max-wait", "0")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("PENDING", r.stdout)
+        self.assertGreater(self.state()["phase6"]["ci"]["started"], 1.0)
+
+    def test_a_conflict_ends_a_long_watch_at_its_first_poll(self):
+        self.set_settings(ci="github-actions")
+        head = self.checks_on_a_pr("CONFLICTING", **self.no_checks())
+        started = time.monotonic()
+        r = self.watch("--max-wait", "60", "--grace", "300", "--sha", head)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIsNotNone(self.conflict_line(r), r.stdout + r.stderr)
+        self.assertLess(time.monotonic() - started, 30)
+        calls = self.gh_calls()
+        self.assertEqual(len([c for c in calls if c[:2] == ["pr", "checks"]]), 1, calls)
+        # GitHub names `mergeable` only when asked for it.
+        view = next(c for c in calls if c[:2] == ["pr", "view"])
+        self.assertIn("mergeable", view[view.index("--json") + 1].split(","), view)
+
+    def test_a_conflict_past_the_ci_timeout_is_still_a_conflict(self):
+        self.set_settings(ci="github-actions", ci_timeout=30)
+        head = self.checks_on_a_pr("CONFLICTING", **self.no_checks())
+        state = self.state()
+        state["phase6"]["ci"] = {"sha": head, "started": time.time() - 31 * 60,
+                                 "status": "pending"}
+        self.write_state(state)
+        r = self.watch("--max-wait", "0", "--sha", head)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIsNotNone(self.conflict_line(r), r.stdout + r.stderr)
+        self.assertNotIn("TIMEOUT", r.stdout)
+        self.assertEqual(self.state()["phase6"]["ci"]["status"], "conflict")
+
+    def test_a_conflict_tells_the_user_to_bring_the_base_in(self):
+        self.set_settings(ci="github-actions")
+        head = self.checks_on_a_pr("CONFLICTING", **self.no_checks())
+        r = self.watch("--max-wait", "0", "--sha", head)
+        line = self.conflict_line(r) or ""
+        self.assertIn("Tell the user", line, r.stdout)
+        self.assertIn("they bring the base in themselves", line)
+        self.assertIn("You only run `next`", line)
+        # The base moved after the run last fetched it: a merge of the stale
+        # origin/<base> would be "Already up to date".
+        base = self.state()["repo"]["base"]
+        fetch, merge = f"git fetch origin {base}", f"git merge origin/{base}"
+        self.assertIn(fetch, line)
+        self.assertIn(merge, line)
+        self.assertLess(line.index(fetch), line.index(merge))
+
     def test_ci_ignores_checks_for_another_head(self):
         self.set_settings(ci="github-actions")
         self.checks([{"name": "test", "bucket": "fail", "state": "FAILURE", "link": "l"}],
@@ -1199,6 +1263,66 @@ class ShipTest(RunCase):
         self.assertIn("UNAVAILABLE", r.stdout)
         self.assertIn("run `next`; the main gate shows CI as not monitored", r.stdout)
         self.assertNotIn("hold at the gate", r.stdout)
+
+    @staticmethod
+    def no_checks():
+        return {"stderr": "no checks reported on the 'feat/due-dates' branch", "exit": 1}
+
+    def checks_on_a_pr(self, mergeable, checks=None, **response):
+        """GitHub says the PR at HEAD is `mergeable` (CONFLICTING, MERGEABLE or
+        UNKNOWN) and `gh pr checks` gives `checks` (or `response`). Returns HEAD."""
+        head = self.git("rev-parse", "HEAD").strip()
+        self.script_gh([{"args": ["pr", "view"],
+                         "stdout": json.dumps({"headRefOid": head, "mergeable": mergeable})},
+                        {"args": ["pr", "checks"],
+                         "stdout": json.dumps(checks) if checks is not None else "",
+                         **response}])
+        return head
+
+    def conflict_line(self, r):
+        return next((ln for ln in r.stdout.splitlines() if ln.startswith("CONFLICT:")), None)
+
+    def test_a_conflicting_pr_with_no_checks_is_reported_at_once(self):
+        self.set_settings(ci="github-actions")
+        for no_checks in (self.no_checks(), {"checks": []}):
+            with self.subTest(no_checks=no_checks):
+                head = self.checks_on_a_pr("CONFLICTING", **no_checks)
+                r = self.watch("--max-wait", "0", "--grace", "300", "--sha", head)
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                line = self.conflict_line(r)
+                self.assertIsNotNone(line, r.stdout + r.stderr)
+                self.assertRegex(line, r"\bmain\b")
+                self.assertNotIn("PENDING", r.stdout)
+                self.assertNotIn("UNAVAILABLE", r.stdout)
+
+    def test_no_checks_on_a_pr_that_does_not_conflict_still_waits_the_grace(self):
+        self.set_settings(ci="github-actions")
+        for mergeable in ("MERGEABLE", "UNKNOWN"):
+            with self.subTest(mergeable=mergeable):
+                head = self.checks_on_a_pr(mergeable, **self.no_checks())
+                r = self.watch("--max-wait", "0", "--grace", "300", "--sha", head)
+                self.assertEqual(r.returncode, 3, r.stdout + r.stderr)  # inside the grace
+                self.assertIn("PENDING", r.stdout)
+                self.assertIsNone(self.conflict_line(r), r.stdout)
+                r = self.watch("--max-wait", "0", "--grace", "0", "--sha", head)
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                self.assertIn("UNAVAILABLE", r.stdout)
+                self.assertIsNone(self.conflict_line(r), r.stdout)
+
+    def test_checks_that_reported_on_a_conflicting_pr_decide_the_result(self):
+        self.set_settings(ci="github-actions")
+        for checks, code, token in (
+                ([{"name": "test", "bucket": "pass", "state": "SUCCESS", "link": "l"}],
+                 0, "GREEN"),
+                ([{"name": "test", "bucket": "fail", "state": "FAILURE",
+                   "link": "https://ci/1"}], 1, "RED"),
+                (list(self.PENDING), 3, "PENDING")):
+            with self.subTest(token=token):
+                head = self.checks_on_a_pr("CONFLICTING", checks)
+                r = self.watch("--max-wait", "0", "--grace", "0", "--sha", head)
+                self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+                self.assertIn(token, r.stdout)
+                self.assertIsNone(self.conflict_line(r), r.stdout)
 
     def test_merge_staging_is_gone(self):
         r = self.cmd("merge-staging")

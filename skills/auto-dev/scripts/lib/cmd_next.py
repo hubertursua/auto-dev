@@ -2150,16 +2150,29 @@ def open_correction(c):
     if not corr["after_commit"]:
         return None  # before the first commit: the first pass reviews the whole change
     sha = c.p6.get("verified_sha")
-    if tests_only_since(c, sha):
-        # A repair or a fix was committed as a tests commit on top of the
-        # verified one: a working-tree pass would see nothing of it, and with a
-        # clean tree `commit` would find nothing to commit. `commit` verifies
-        # HEAD instead, and the pass reviews everything since `sha`.
+    past = past_by(c, sha)
+    if past:
+        # HEAD is past the verified commit: a repair or a fix committed as a
+        # tests commit on top of it, or commits the run did not make (a base
+        # merged in by hand while the correction ran, as a CONFLICT line says,
+        # or the branch rebased onto it). A working-tree pass would see nothing
+        # of them, and with a clean tree `commit` would find nothing to commit.
+        # `commit` verifies HEAD instead (or commits the correction on top), and
+        # the pass reviews everything since `sha`. HEAD is recorded with an edit
+        # on top too: the pass reviews it, so a PR branch pushed to it is no new
+        # outside push for moved_head while the pass's own findings are open.
+        tests = past == "tests"
         add, remove = changed_paths(c.wt)
         head = git(c.wt, "rev-parse", "HEAD").strip()
-        if not add and not remove and c.p6.get("unverified_commit") != head:
-            c.would("have `commit` verify the tests commit on top of the verified one",
-                    "the correction was committed as a tests commit")
+        if c.p6.get("unverified_commit") != head:
+            what = "tests commit" if tests else "commits"
+            c.would(f"have `commit` verify the {what} on top of the verified one"
+                    if not add and not remove else
+                    f"record the {what} on top of the verified one as under re-check, "
+                    "the correction to be committed on top of them",
+                    "the correction was committed as a tests commit" if tests else
+                    "HEAD moved past the verified commit through commits the run did "
+                    "not make")
             c.p6["unverified_commit"] = head
             c.dirty = True
         if not reviewed_whole(c):
@@ -2168,9 +2181,11 @@ def open_correction(c):
             cmd_checks.git_add_intent(c.wt)
         files = [f for f in git(c.wt, "diff", "--name-only", sha).splitlines()
                  if f and not f.startswith(".auto-dev/")]
-        return start_pass(c, "outside", files, "the correction's tests commit is on top "
-                          "of the verified commit: the pass checks everything since it",
-                          since=sha)
+        return start_pass(c, "outside", files, (
+            "the correction's tests commit is on top of the verified commit"
+            if tests else "commits the run did not make are past the verified commit "
+            "(a base merged in by hand, say)") + ": the pass checks everything "
+            "since it", since=sha)
     if unchanged(c):  # nothing to review or commit: the verified commit stands
         mark_committed(c, "the correction changed nothing")
         return None
@@ -2214,13 +2229,18 @@ def unchanged(c):
     return not add and not remove and git(c.wt, "rev-parse", "HEAD").strip() == sha
 
 
-def tests_only_since(c, sha):
-    """Whether HEAD is past `sha` by recorded tests commits alone."""
+def past_by(c, sha):
+    """How HEAD is past `sha`: None when no commit is (`rev-list sha..HEAD` is
+    empty), "tests" when by recorded tests commits alone, else "outside": the
+    commits include one the run did not make (a base merged in by hand, or the
+    branch rebased onto it or amended, when `sha` is no ancestor of HEAD)."""
     if not sha:
-        return False
+        return None
     code, out, _ = git(c.wt, "rev-list", f"{sha}..HEAD", check=False)
     revs = out.split() if code == 0 else []
-    return bool(revs) and set(revs) <= set(cmd_work.tests_shas(c.state))
+    if not revs:
+        return None
+    return "tests" if set(revs) <= set(cmd_work.tests_shas(c.state)) else "outside"
 
 
 def mark_committed(c, why):
@@ -2578,10 +2598,21 @@ def settle_pass(c, p, vrec, rows, sec, spent_out):
 def ci_fold(c):
     """(an action or stop to take first, or None; the CI triage to fold into
     the correction, or None). Before a pass's correction, CI settles on the
-    pushed commit, so one correction takes red CI too."""
+    pushed commit, so one correction takes red CI too; not while a PR head
+    pushed outside the run is under re-check, and a newly moved head is
+    re-checked (moved_head) before any wait."""
     if c.state["settings"].get("ci", "none") == "none":
         return None, None
+    outside = next((k for k in reversed(c.p6["corrections"]) if k["entry"] == "outside"),
+                   None)
+    if outside and outside.get("since") and outside["seq"] > c.p6.get("commit_seq", 0):
+        # A moved PR head is under re-check: CI on the old commit never reports,
+        # and the new head is watched once `commit` verifies it.
+        return None, None
     sha = c.p6.get("verified_sha")
+    moved = moved_head(c, sha)
+    if moved:
+        return moved, None
     ci = c.p6.get("ci") or {}
     if ci.get("sha") != sha or ci.get("status") == "pending":
         return ci_watch(c, "findings are open: CI settles on the pushed commit first, so "
@@ -2863,6 +2894,11 @@ def publish_step(c):
                 return open_pr_gate(c)
         return commit_step(c)
     if (c.mark("pushed") or {}).get("value") != sha:
+        # A pushed value the run didn't record may be a head someone else
+        # pushed: re-check it rather than push and record `sha` again.
+        moved = moved_head(c, sha)
+        if moved:
+            return moved
         return action(f"push the branch: `git -C {q(c.wt)} push -u origin HEAD` (never "
                       "--force)", "the verified commit is not pushed yet",
                       AFTER=[c.cmd("mark", "pushed", "--value", sha)])
@@ -2882,7 +2918,11 @@ def reviewed_pass(c):
 def ship_step(c, sha):
     """After the reviews: CI on the draft, the ready-for-review gate, the PR
     marked ready, Jira In Review, CI once more, people's comments, the main gate
-    and the merge."""
+    and the merge. A commit pushed to the PR branch outside the run is
+    re-checked (or stops the run) before any of them."""
+    moved = moved_head(c, sha)
+    if moved:
+        return moved
     p6 = c.p6
     ready = marked_ready(c)
     if not ready:
@@ -3309,17 +3349,94 @@ def remove_worktree(c):
                       "and the worktree stays")}
 
 
+def moved_head(c, sha):
+    """The step for a PR branch moved to a commit the run did not make (see
+    outside_push), or None. Fetches the branch (also when probing for a
+    checkpoint; a fetch that can't reach origin uses the last one fetched) and
+    compares commits, not trees: during a correction the reports describe the
+    corrected working tree, which is no outside push. None before the run's
+    first recorded push and when origin has no such branch (a tracking ref left
+    from an earlier branch of that name is no PR's head), when the branch is at
+    `sha` or at the commit under re-check, behind `sha` (the run's own commit
+    not pushed yet), or past it by the run's own tests commits alone. A branch
+    still at the commit the run verified and recorded as pushed, which `sha`
+    doesn't descend from, is no outside push either: the worktree's branch was
+    rewritten (see rewritten_push)."""
+    pushed = (c.mark("pushed") or {}).get("value")
+    if not sha or not pushed:
+        return None
+    branch = c.state["branch"]
+    if not c.readonly or c.probing:
+        code, _, _ = git(c.wt, "fetch", "-q", "origin", branch, check=False)
+        if code != 0:
+            # ls-remote exits 2 when origin answers without the branch (deleted
+            # on GitHub, say), and otherwise when origin can't be reached.
+            code, _, _ = git(c.wt, "ls-remote", "--exit-code", "origin",
+                             f"refs/heads/{branch}", check=False)
+            if code == 2:
+                return None
+    code, out, _ = git(c.wt, "rev-parse", "--verify", "--quiet",
+                       f"origin/{branch}^{{commit}}", check=False)
+    remote = out.strip() if code == 0 else ""
+    if not remote or remote in (sha, c.p6.get("unverified_commit")):
+        return None
+    code, _, _ = git(c.wt, "merge-base", "--is-ancestor", remote, sha, check=False)
+    if code == 0:
+        return None
+    code, out, _ = git(c.wt, "rev-list", f"{sha}..{remote}", check=False)
+    revs = out.split() if code == 0 else []
+    if revs and set(revs) <= set(cmd_work.tests_shas(c.state)):
+        return None
+    if remote == pushed and pushed in (c.p6.get("verified_shas") or []):
+        return rewritten_push(c, sha, remote)
+    # From the merge base: when the run's own unpushed commit and the outside
+    # commits diverged, only what the outside commits changed.
+    _, out, _ = git(c.wt, "diff", "--name-only", f"{sha}...{remote}", check=False)
+    files = [f for f in out.splitlines() if f and not f.startswith(".auto-dev/")]
+    detail = (f"the PR's branch is at {remote[:12]}, past the checked commit {sha[:12]}; "
+              "files changed on it: " + (", ".join(files) or "none"))
+    return outside_push(c, sha, detail)
+
+
+def rewritten_push(c, sha, remote):
+    """The PR's branch is still at `remote`, the commit the run pushed, but
+    `sha` doesn't descend from it: the user rebased or amended the branch in
+    the worktree and didn't push it. No one else pushed, so stop 16's merge
+    would bring the old commits back over the rewrite; the push needs a force,
+    which the run never uses, so the user pushes it."""
+    wt = q(c.wt)
+    branch = c.state["branch"]
+    # The lease names the commit the run pushed, so a push someone makes after
+    # the last fetch makes the force-push fail instead of being overwritten.
+    lease = q(f"--force-with-lease={branch}:{remote}")
+    return stop([(f"The PR's branch is still at {remote[:12]}, the commit the run "
+                  "pushed, but the branch in the worktree was rewritten since (rebased, "
+                  f"amended or reset there), so its head {sha[:12]} doesn't build on "
+                  "that commit and a plain push would be refused. As of the last fetch, "
+                  "no one else pushed to the PR. The run never force-pushes. Tell the "
+                  "user: to ship the rewritten branch, they push it themselves with "
+                  f"`git -C {wt} push {lease} origin HEAD` (it fails if anyone pushed "
+                  "since) and say `auto-dev continue`; the run then goes on from the "
+                  "push.")],
+                "the worktree's branch was rewritten", retry={},
+                no_signoff="the run never force-pushes", number=16)
+
+
 def outside_push(c, sha, stale):
-    """The PR's branch moved past the verified commit. Once the user has brought
-    those commits into the worktree, they are re-checked like any outside
-    change (the quality gate, the verifier, then a review pass on what they
-    changed since `sha`), and `commit` then verifies HEAD, or commits the
-    re-check's edits on top."""
+    """The PR's branch moved past the verified commit: seen by moved_head before
+    a CI watch, a push or a gate, and by the main gate's freshness check. Once
+    the user has brought those commits into the worktree (HEAD is the PR's
+    head), they are re-checked like any outside change (the quality gate, the
+    verifier, then a review pass on what changed since `sha`, the working tree
+    with it: a correction the run left uncommitted is reviewed with them), and
+    `commit` then verifies HEAD, or commits the re-check's edits on top.
+    With such a correction in the worktree, the report has the user stash it
+    around the merge, which git would otherwise refuse. `stale` names what
+    changed."""
     branch = c.state["branch"]
     head = git(c.wt, "rev-parse", "HEAD").strip()
     code, remote, _ = git(c.wt, "rev-parse", f"origin/{branch}", check=False)
-    add, remove = changed_paths(c.wt)
-    if code == 0 and remote.strip() == head and head != sha and not add and not remove:
+    if code == 0 and remote.strip() == head and head != sha:
         twice = stale_twice(c, stale, since=sha)  # before c.would: --explain shows it
         if twice:
             return twice
@@ -3328,12 +3445,38 @@ def outside_push(c, sha, stale):
         c.p6["unverified_commit"] = head  # a clean `commit` verifies it, no new commit
         c.dirty = True
         return stale_again(c, stale, since=sha)
+    ref = q("origin/" + branch)
+    behind = code == 0 and git(c.wt, "merge-base", "--is-ancestor", "HEAD",
+                               f"origin/{branch}", check=False)[0] == 0
+    wt = q(c.wt)
+    if code != 0 or behind:
+        bring = f"`git -C {wt} merge --ff-only {ref}`"
+    else:
+        # The run's own unpushed commit and the outside commits diverged: a
+        # fast-forward can't take them, a merge pushed to the branch can.
+        bring = (f"`git -C {wt} merge {ref}` (resolving any conflict and "
+                 f"committing the merge), then push it with `git -C {wt} push "
+                 "origin HEAD`,")
+    add, remove = changed_paths(c.wt)
+    if add or remove:
+        # git refuses a merge that would overwrite the uncommitted correction.
+        # Staged first, a file the correction added comes back from the stash
+        # as a merge, not as an untracked file the pop refuses to restore.
+        paths = sorted(printable(p) for p in add + remove)
+        named = ", ".join(paths[:5]) + (f" and {len(paths) - 5} more"
+                                        if len(paths) > 5 else "")
+        how = (f"the run's correction is uncommitted ({named}), so to ship those "
+               f"commits they first set it aside with `git -C {wt} add -A` and "
+               f"`git -C {wt} stash push --include-untracked`, bring the commits "
+               f"into the worktree with {bring.rstrip(',')}, then bring the "
+               f"correction back with `git -C {wt} stash pop`, resolving any "
+               "conflict it reports,")
+    else:
+        how = f"to ship them, they bring them into the worktree with {bring}"
     return stop([("The PR's branch holds commits the pipeline did not check (someone "
-                  "pushed to it). Tell the user: to ship them, they bring them into the "
-                  f"worktree with `git -C {q(c.wt)} merge --ff-only "
-                  f"{q('origin/' + branch)}` and say `auto-dev continue`; the pipeline "
-                  "then re-checks them (quality gate, verifier, review) and asks the "
-                  "main gate again:"), stale], "the PR head moved", retry={},
+                  f"pushed to it). Tell the user: {how} and say `auto-dev continue`; "
+                  "the pipeline then re-checks them (quality gate, verifier, review) "
+                  "before it goes on:"), stale], "the PR head moved", retry={},
                 no_signoff="the pipeline never ships commits it did not check", number=16)
 
 

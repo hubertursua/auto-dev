@@ -16,7 +16,7 @@ the eval suite end to end). -->
 ## Docs
 
 - [ ] README.md updated for any behavior change (checklist in CLAUDE.md), or not needed because: …
-- [ ] Version bumped and an *Upgrading* note added, if artifacts or resuming changed
+- [ ] Version bumped and an *Upgrading* note added, if artifacts or resuming changed (into a release branch: an `Upgrade note:` line in the Summary instead; see CLAUDE.md, Versioning)
 - [ ] Evals updated, if the expected behavior changed
 
 ## Not included

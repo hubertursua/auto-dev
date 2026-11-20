@@ -35,11 +35,14 @@ ci-watch [--pr N] [--sha COMMIT] [--max-wait SECONDS] [--interval SECONDS]
     and not yet pushed doesn't hide its checks. Gives up after --max-wait
     (default 540, under the Bash tool's limit) and reports PENDING; the overall
     bound is the profile's CI timeout, counted from the first watch of this
-    commit (a watch after a final result — green, red, timeout, unavailable —
+    commit (a watch after a final result — green, red, timeout, unavailable,
+    conflict —
     starts the clock again). Checks count only once the PR's head on GitHub is
     the watched commit; until then the watch is pending. "No checks reported", or a PR head
     that is still another commit, is pending for --grace seconds (default 300),
-    then the watcher is unavailable. Once the PR is marked ready (`mark
+    then the watcher is unavailable. No check on the watched commit while GitHub
+    says the PR conflicts with its base is CONFLICT at once: GitHub runs no
+    pull_request workflow on a conflicting PR. Once the PR is marked ready (`mark
     pr-ready`), green counts only when a check started after the mark, or
     --grace seconds after it: workflows that skip drafts take a moment to
     register, and until then the draft's old checks still read green.
@@ -48,10 +51,12 @@ ci-watch [--pr N] [--sha COMMIT] [--max-wait SECONDS] [--interval SECONDS]
     with their links; 3 pending (PENDING: `next` watches again) or timed out
     (TIMEOUT: CI still running at the profile's CI timeout); 4 the watcher is
     unavailable (no checks after the grace period, or a provider gh cannot
-    see); 2 could not run, as below, or --sha names no commit. Whatever
-    it exits, run `next`: it asks for `ci-watch` again only while CI is
-    PENDING, and after TIMEOUT or UNAVAILABLE the main gate shows CI as not
-    monitored. Never assume green.
+    see), or the PR conflicts with its base and no check reported (CONFLICT:
+    tell the user, who brings the base in, resolves and pushes; you only run
+    `next`); 2 could not run, as below, or --sha names no
+    commit. Whatever it exits, run `next`: it asks for `ci-watch` again only
+    while CI is PENDING, after TIMEOUT or UNAVAILABLE the gates show CI as not
+    monitored, and after CONFLICT as not run. Never assume green.
 
 merge-pr --pr N --sha <checked commit>
     `gh pr merge` with the repo's allowed method (squash first), locked with
@@ -156,7 +161,7 @@ GH_BROKEN_RE = re.compile(
 HEAD_MOVED_RE = re.compile(r"head (branch )?(was modified|has moved)|not the expected head|"
                            r"expected head (sha|oid)", re.IGNORECASE)
 # A stored CI status that ends a watch: watching the same commit again starts anew.
-FINAL_CI = ("green", "red", "unavailable", "timeout")
+FINAL_CI = ("green", "red", "unavailable", "timeout", "conflict")
 GH_MIN_WAIT, GH_MAX_WAIT = 10, 60  # seconds one gh call may take during a watch
 
 
@@ -319,6 +324,11 @@ def verify_commit(args, state, sha, paths):
         return EXIT_NOT_VERIFIED
     phase6.pop("unverified_commit", None)
     phase6["verified_sha"] = sha
+    # Every commit the run verified: `next` tells the run's own pushed commit,
+    # rewritten in the worktree since, from a head someone else pushed.
+    verified = phase6.setdefault("verified_shas", [])
+    if sha not in verified:
+        verified.append(sha)
     phase6["commit_seq"] = st.seq(state)
     st.add_note(state, f"verified commit {sha}")
     st.save(args.dir, state)
@@ -371,13 +381,13 @@ def ci_watch(args):
         elapsed = time.time() - ci["started"]
         if status in ("none", "elsewhere") and elapsed > args.grace:
             status = "unavailable"
-        if status in ("green", "red", "unavailable") or elapsed > timeout:
+        if status in ("green", "red", "unavailable", "conflict") or elapsed > timeout:
             break
         left = deadline - time.monotonic()
         if left <= 0:
             break
         time.sleep(min(max(args.interval, 1), left))
-    if status not in ("green", "red", "unavailable") and elapsed > timeout:
+    if status not in ("green", "red", "unavailable", "conflict") and elapsed > timeout:
         status = "timeout"
     ci["status"] = "pending" if status in ("none", "elsewhere") else status
     ci["failing"], ci["seq"] = failing, st.seq(state)
@@ -395,6 +405,17 @@ def ci_watch(args):
         emit(args.json, "UNAVAILABLE", f"{what}: CI can't be watched for {sha[:12]}: "
              "run `next`; the main gate shows CI as not monitored — never assume green",
              detail=detail)
+        return EXIT_UNAVAILABLE
+    if status == "conflict":
+        name = (state.get("repo") or {}).get("base")
+        base, ref = name or "its base", name or "<base>"
+        emit(args.json, "CONFLICT", f"PR #{pr} conflicts with its base {base}, so GitHub "
+             f"runs no pull_request checks on it and CI can't report on {sha[:12]}. "
+             "Tell the user: the PR conflicts with its base, and they bring the base in "
+             f"themselves in the worktree (fetch it first with `git fetch origin {ref}`: "
+             "the worktree's copy can predate the commit that conflicts; then `git merge "
+             f"origin/{ref}`, resolve, push). You only run `next`; the gates show CI as "
+             "not run — never assume green", detail=detail)
         return EXIT_UNAVAILABLE
     if status == "timeout":
         emit(args.json, "TIMEOUT", f"CI still running for {sha[:12]} after "
@@ -439,18 +460,23 @@ def epoch(stamp):
 
 
 def poll_checks(cwd, pr, sha, deadline, ready=None):
-    """('green'|'red'|'pending'|'none'|'elsewhere'|'stale-green', [lines], detail).
+    """('green'|'red'|'pending'|'none'|'conflict'|'elsewhere'|'stale-green', [lines],
+    detail).
 
     `gh pr checks` reports the PR's head on GitHub, so it counts only once that
     head is `sha`; until then the poll is 'elsewhere' (pending), never another
-    commit's result. With `ready` (when the PR was marked ready, in epoch
-    seconds), all-green checks none of which started after it are 'stale-green'.
+    commit's result. No check on `sha` is 'conflict' when GitHub says the PR
+    conflicts with its base (`mergeable` CONFLICTING), else 'none'. With `ready`
+    (when the PR was marked ready, in epoch seconds), all-green checks none of
+    which started after it are 'stale-green'.
     """
-    code, out, err = gh_poll(cwd, deadline, "pr", "view", str(pr), "--json", "headRefOid")
+    code, out, err = gh_poll(cwd, deadline, "pr", "view", str(pr), "--json",
+                             "headRefOid,mergeable")
     if code == 124:
         return "pending", [], "gh timed out; still waiting"
     try:
-        head = json.loads(out).get("headRefOid", "")
+        view = json.loads(out)
+        head, mergeable = view.get("headRefOid", ""), view.get("mergeable", "")
     except (ValueError, AttributeError):
         raise Fail(f"gh pr view {pr} failed (exit {code}): {(err or out).strip()}",
                    CANNOT_RUN, "ERROR") from None
@@ -462,15 +488,18 @@ def poll_checks(cwd, pr, sha, deadline, ready=None):
                              "name,state,bucket,link,startedAt")
     if code == 124:
         return "pending", [], "gh timed out; still waiting"
+    # GitHub runs no pull_request workflow on a PR that conflicts with its base,
+    # so no checks there is a conflict at once, not a wait for the grace period.
+    none = "conflict" if mergeable == "CONFLICTING" else "none"
     if "no checks reported" in (out + err).lower():
-        return "none", [], (out + err).strip()
+        return none, [], (out + err).strip()
     try:
         checks = json.loads(out)
     except ValueError:
         raise Fail(f"gh pr checks failed (exit {code}): {(err or out).strip()}",
                    CANNOT_RUN, "ERROR") from None
     if not checks:
-        return "none", [], "no checks"
+        return none, [], "no checks"
     buckets = {c.get("bucket", "") for c in checks}
     failed = [f"{c['name']} — {c.get('link', '')}"
               + (" (cancelled)" if c.get("bucket") == "cancel" else "")

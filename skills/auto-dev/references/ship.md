@@ -22,7 +22,12 @@ are yours, besides steps 3–9 below:
   printed, with the Bash tool's timeout at 600000 ms. Whatever it exits, run
   its `AFTER` line.
 - **`ci-watch`.** Whatever it exits, run its `AFTER` line (`next`). Never
-  report CI as green when it never ran.
+  report CI as green when it never ran. On `CONFLICT` (exit 4: the PR conflicts
+  with its base, so no check runs), tell the user the PR conflicts with its
+  base and that they bring the base in themselves, with the commands its line
+  names (fetch the base, merge it in the worktree, resolve, push). You never
+  merge or edit the code: you only run `next`, which re-checks a head pushed
+  from the worktree that the run didn't make.
 - **The ready-for-review gate (exit 5).** With pre-existing security findings
   it asks one more question per finding (_What each gate option does_ in
   `references/tables.md`): run the `mark triage-<ID>` line for each answer.
@@ -42,7 +47,9 @@ result, whatever the exit code).
 
 `git -C <worktree> push -u origin HEAD`, exactly as printed. Never `--force`.
 If the push is rejected, tell the user what git printed and stop; don't run the
-`AFTER` line.
+`AFTER` line. When the user rebased or amended the branch in the worktree, so
+it no longer builds on the commit the run pushed, `next` stops (#16) instead of
+printing the push: only the user force-pushes.
 
 ## 5. The PR body
 
@@ -192,11 +199,24 @@ Every stop is exit 4 with its reason in `REPORT`
   finding or red check the `REPORT` names, and that they can go on with more
   rounds if they say how many (`references/tables.md`, _The iteration
   budget_).
-- **Someone pushed to the PR branch (#16):** tell the user what the `REPORT`
-  says: to ship those commits, they bring them into the worktree with the
-  `git merge --ff-only` command it names and say `auto-dev continue`. `next`
-  then re-checks them (quality gate, verifier, a review pass on what they
-  changed), `commit` verifies the new head, or commits the re-check's edits on
-  top, and the main gate is asked again.
+- **Someone pushed to the PR branch (#16):** `next` notices it before a CI
+  watch, a push or a gate, as well as at the main gate. Tell the user what
+  the `REPORT` says: to ship those commits, they bring them into the worktree
+  with the `git merge --ff-only` command it names (or, when the run's own
+  unpushed commit and theirs diverged, the `git merge` and the push it names)
+  and say `auto-dev continue`. When the run's correction is still uncommitted,
+  the `REPORT` has them set it aside first (`git add -A` and `git stash push
+  --include-untracked`) and bring it back after (`git stash pop`, resolving
+  any conflict). `next` then re-checks them (quality gate, verifier, a review
+  pass on what they changed), `commit` verifies the new head, or commits the
+  re-check's edits on top, and the run goes on from there: the push, CI on
+  the new head and the gate it was at. A head pushed from the worktree itself
+  needs no stop: `next` re-checks it the same way. When no one pushed but the
+  user rebased or amended the branch in the worktree without pushing it, the
+  PR branch is still at the commit the run pushed and a plain push would be
+  refused: the `REPORT` says so and asks the user to push the rewritten branch
+  themselves with the `git push --force-with-lease` command it names and say
+  `auto-dev continue`. Never force-push it yourself, and never merge the old
+  commits back in.
 - **GitHub refused or queued the merge (#18):** say what blocks it; Jira stays
   where it is.

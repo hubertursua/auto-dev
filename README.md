@@ -451,8 +451,13 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   and never with `--admin`: `--squash` by default, `--merge` if the repo
   disallows squash, `--rebase` only when it is the one method allowed. It is
   locked to the checked commit with `--match-head-commit`. If someone pushed to
-  the PR branch, the run stops and tells you how to bring those commits in to
-  be checked. auto-dev has no staging step; the PR targets the base branch.
+  the PR branch, the run stops before it watches CI, pushes or asks a gate, and
+  tells you how to bring those commits in to be checked; a commit you pushed
+  from the run's worktree (a base merged in by hand, say) is checked again with
+  no stop. If you rebase or amend the branch in the worktree and don't push it,
+  the run stops before its push and asks you to force-push it yourself: auto-dev
+  never force-pushes. auto-dev has no staging step; the PR targets the base
+  branch.
 - **Jira** only moves the ticket (In Progress → In Review → Done), and is
   skipped without a ticket. The ticket's text is stored at setup and given to
   the planner and the plan critic, which have no Jira access
@@ -460,7 +465,10 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
 - **CI** is watched with a time limit on the draft PR, again once it is marked
   ready (some workflows skip drafts), and after the merge. A draft with no
   check after a grace period doesn't hold the run up. CI that timed out, never
-  ran or couldn't be watched is shown as not monitored, never as green. When
+  ran or couldn't be watched is shown as not monitored, never as green. A PR
+  that conflicts with its base gets no checks from GitHub: the watch says so at
+  once, you're told to fetch the base and merge it in yourself (the run never
+  merges it), and the gates show CI as not run because of the conflict. When
   a review pass leaves findings open, CI settles first, and red CI that the
   code caused is fixed in the same correction, on the same round. CI is
   watched on the pushed commit, even when an unpushed tests commit sits on top
@@ -827,8 +835,9 @@ Autonomous but bounded:
 No stop is a dead end. Each one asks how to go on, in the session that hit it
 or a new one: your instruction to the fixer, a retry once you fixed the cause
 yourself, or, where it is safe, a sign-off (above). Only the step that stopped
-runs again, not the run. A push to the PR branch stops the run until you bring
-those commits into the worktree, where they are checked again. The budget used
+runs again, not the run. A push to the PR branch from elsewhere stops the run
+until you bring those commits into the worktree, where they are checked again;
+one pushed from the worktree is checked again with no stop. The budget used
 up stays until you add rounds.
 
 ## Repository layout

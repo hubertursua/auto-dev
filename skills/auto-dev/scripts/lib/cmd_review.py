@@ -674,6 +674,10 @@ def ci_text(state):
     ci = state.get("phase6", {}).get("ci", {}).get("status", "not watched")
     if ci in ("unavailable", "timeout"):
         return f"not monitored ({ci}) — never assume green"
+    if ci == "conflict":
+        base = (state.get("repo") or {}).get("base") or "branch"
+        return (f"not run — the PR conflicts with its base {base}, so GitHub ran no "
+                "pull_request checks; bring the base in — never assume green")
     return ci
 
 
