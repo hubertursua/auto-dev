@@ -208,8 +208,8 @@ weakening them. Verification is built around that:
   acceptance checks, so it could special-case them. The verifier and the
   reviewer both look for that: a branch on a value only the tests use, a check
   for a test environment, a constant where the condition asks for a
-  computation. On a high-risk run the verifier also runs a **probe** of its own
-  for each condition, with inputs the committed checks don't use.
+  computation. The verifier also runs a **probe** of its own for each
+  condition, on every run, with inputs the committed checks don't use.
 - **A test-integrity audit.** `skills/auto-dev/scripts/check-tests.py` flags
   deleted, skipped or focused tests, removed assertions, new tests that assert
   nothing, changes to the test runner's config, and any change to a line a
@@ -326,8 +326,7 @@ adds holding one of those words, or a large change (over 25 files or 800
 lines, lock files left out) makes it high. It never goes down. A high tier before the build turns on the post-plan
 gate; one raised after the build is shown at the ready-for-review gate. The
 tier decides how much review the draft gets: a high tier adds the review
-panel with its judge, the separate security reviewer, mutation testing and
-the verifier's probes.
+panel with its judge, the separate security reviewer and mutation testing.
 
 ## Review on the draft PR
 

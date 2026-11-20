@@ -147,16 +147,16 @@ class BriefTest(WorkCase):
         self.assertEqual(values["review_file"], "none")
         self.assertEqual(values["direction"], "use UTC")
 
-    def test_a_standard_risk_verifier_runs_no_mutation_and_no_probes(self):
+    def test_a_standard_risk_verifier_probes_but_runs_no_mutation(self):
         r = self.cmd("brief", "verifier", "--set", "mode=first pass")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         values = self.brief_values(self.dir / "briefs" / "verifier-1.md")
         self.assertEqual(values["mutation_cap"], "0 (off: a standard-risk run)")
-        self.assertEqual(values["probes"], "off (a standard-risk run)")
+        self.assertNotIn("probes", values)
 
     def test_verifier_brief_carries_the_last_survivors(self):
         state = json.loads((self.dir / "state.json").read_text())
-        state["high_risk"] = True  # mutation and probes run on a high-risk run
+        state["high_risk"] = True  # mutation runs on a high-risk run
         (self.dir / "state.json").write_text(json.dumps(state))
         (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
             tree="0" * 40, v1="met", v2="met", e2="x", judgment="Justified",
@@ -167,7 +167,7 @@ class BriefTest(WorkCase):
         text = (self.dir / "briefs" / "verifier-1.md").read_text()
         self.assertIn("| M2 | `src/sort.ts:4` |", text)
         self.assertIn("mutation_cap: 20", text)
-        self.assertIn("probes: on", text)
+        self.assertEqual([ln for ln in text.splitlines() if ln.startswith("probes:")], [])
         modes = [ln for ln in text.splitlines() if ln.startswith("mode:")]
         self.assertEqual(modes, ["mode: re-check"])
 

@@ -2687,12 +2687,12 @@ class LeanTest(NextCase):
         at_push, at_ready = self.walk_to_ready("REVISE")
         self.assertEqual((at_push, at_ready), (6, 8))
 
-    def test_a_standard_run_verifies_without_mutation_or_probes(self):
+    def test_a_standard_run_verifies_with_probes_but_without_mutation(self):
         self.draft_pr()
         ver, rev = self.solo(verifier=None)
         brief = (self.dir / "briefs" / f"verifier-{ver[1]}.md").read_text()
         self.assertIn("mutation_cap: 0 (off: a standard-risk run)", brief)
-        self.assertIn("probes: off (a standard-risk run)", brief)
+        self.assertEqual([ln for ln in brief.splitlines() if ln.startswith("probes:")], [])
         self.assertEqual(self.sets(*rev)["scope"], "first")
         self.assertEqual(self.sets(*rev)["tree"], self.state()["phase6"]["passes"][0]["tree"])
         self.assertEqual(self.state()["phase6"]["passes"][0]["lane"], "standard")
