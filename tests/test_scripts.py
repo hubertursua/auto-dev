@@ -853,6 +853,43 @@ class ValidateConfigTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("did you mean `sensitive_paths`", r.stderr)
 
+    def profile_with_test_ids(self, tests=None, example=None):
+        """A saved profile whose test check carries the given test-ID form and example."""
+        extra = "".join(f', {key}: "{value}"' for key, value in
+                        (("tests", tests), ("tests_example", example)) if value is not None)
+        return ('stack: typescript\nsetup: ["npm ci"]\ngate:\n'
+                '  - { kind: test, command: "npm test", report: "TEST.md", '
+                f'files: "npx vitest run --reporter=verbose <files>"{extra} }}\n')
+
+    def test_a_profile_may_give_a_test_id_form_with_a_list_or_one_id_and_an_example(self):
+        r = self.validate_profile(self.profile_with_test_ids(
+            "npx vitest run --reporter=verbose <tests>", "src/todos/delete.test.ts:14"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("VALID:", r.stdout)
+        r = self.validate_profile(self.profile_with_test_ids("npx jest -t <test>"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("VALID:", r.stdout)
+
+    def test_an_override_may_give_a_test_id_form_and_an_example(self):
+        r = self.validate('gate:\n  - { kind: test, command: "npm test", report: "TEST.md",'
+                          ' tests: "npx vitest run <tests>", tests_example: "src/a.test.ts:3" }\n')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("VALID:", r.stdout)
+
+    def test_a_test_id_form_needs_exactly_one_placeholder_and_an_example_needs_the_form(self):
+        r = self.validate_profile(self.profile_with_test_ids("npx vitest run"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        line = next((x for x in r.stderr.splitlines() if "gate[0].tests" in x), "")
+        self.assertTrue(line.startswith("ERROR"), r.stderr)
+        self.assertIn("<tests>", line)
+        r = self.validate_profile(self.profile_with_test_ids("npx jest <tests> -t <test>"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("gate[0].tests", r.stderr)
+        r = self.validate_profile(self.profile_with_test_ids(example="src/todos/delete.test.ts:14"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        line = next((x for x in r.stderr.splitlines() if "gate[0].tests_example" in x), "")
+        self.assertTrue(line.startswith("ERROR"), r.stderr)
+
 
 class ProfilePathTest(GitRepoCase):
     def setUp(self):

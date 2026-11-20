@@ -6,6 +6,7 @@ Run: python3 -m unittest discover -s tests -v   (from the repo root)
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -321,6 +322,84 @@ class BriefTest(WorkCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         values = self.brief_values(self.dir / "briefs" / "coder-1.md")
         self.assertEqual(values["test_command"], "npm test")
+
+    def set_gate(self, *gate):
+        state = self.state()
+        state["settings"]["gate"] = list(gate)
+        self.write_state(state)
+
+    def runs_value(self, path):
+        """The brief's `test_runs` value, with its continuation lines ('' when absent)."""
+        lines = Path(path).read_text().splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith("test_runs: "):
+                value = [line[len("test_runs: "):]]
+                for more in lines[i + 1:]:
+                    if not more.startswith("  "):
+                        break
+                    value.append(more[2:])
+                return "\n".join(value)
+        return ""
+
+    def coder_runs(self, n=1):
+        r = self.cmd("brief", "coder", "--mode", "build")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return self.runs_value(self.dir / "briefs" / f"coder-{n}.md")
+
+    def test_test_running_briefs_give_ready_to_copy_scoped_runs(self):
+        self.set_gate({"kind": "test", "command": "true", "report": "TEST.md",
+                       "files": "true <files>", "tests": "true <tests>",
+                       "tests_example": "todos.deletes one"})
+        script = shlex.quote(str(SCRIPTS / "autodev.py"))
+        ad = shlex.quote(str(self.dir))
+        value = self.coder_runs()
+        self.assertIn(f"python3 {script} run test --dir {ad} --files <test file> …", value)
+        self.assertIn(f" run test --dir {ad} --tests <test id> …", value)
+        self.assertIn("todos.deletes one", value)
+        self.assertIn("quality gate", value)
+        for worker, args in (("fixer", ("--set", "instruction=fix the gate",
+                                        "--set", "stopped=the quality gate failed")),
+                             ("acceptance-tester", ("--mode", "write",
+                                                    "--set", "scope=ALL CONDITIONS"))):
+            r = self.cmd("brief", worker, *args)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(self.runs_value(self.dir / "briefs" / f"{worker}-1.md"), value,
+                             worker)
+        # The --tests line runs as written, from another folder, once an ID is filled in.
+        line = next((x for x in value.splitlines() if "--tests <test id> …" in x), "")
+        self.assertIn("python3 ", line)
+        line = line[line.index("python3 "):line.index("<test id> …")] + "x"
+        done = subprocess.run(line, shell=True, cwd=self.tmp, env=self.env,
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 0, (line, done.stdout, done.stderr))
+        self.assertTrue(done.stdout.startswith("PASSED:"), done.stdout)
+        self.assertIn("  scope: tests", done.stdout.splitlines())
+
+    def test_test_runs_says_when_the_test_check_has_no_test_id_form_or_no_scoped_form(self):
+        self.set_gate({"kind": "test", "command": "true", "report": "TEST.md"})
+        value = self.coder_runs(1)
+        self.assertNotIn(value, ("", "none"))
+        self.assertIn("run test", value)
+        self.assertIn("whole", value)
+        self.assertNotIn("--files", value)
+        self.assertNotIn("--tests", value)
+        self.set_gate({"kind": "test", "command": "true", "report": "TEST.md",
+                       "files": "true <files>"})
+        value = self.coder_runs(2)
+        self.assertIn(f" run test --dir {shlex.quote(str(self.dir))} --files <test file> …",
+                      value)
+        self.assertIn("no test-ID form", value)
+        self.assertNotIn("--tests", value)
+
+    def test_test_runs_shows_a_one_id_test_form_as_one_test_id_per_run(self):
+        self.set_gate({"kind": "test", "command": "true", "report": "TEST.md",
+                       "files": "true <files>", "tests": "true -t <test>",
+                       "tests_example": "deletes one"})
+        value = self.coder_runs()
+        self.assertIn(f" run test --dir {shlex.quote(str(self.dir))} --tests <test id>", value)
+        self.assertNotIn("--tests <test id> …", value)
+        self.assertIn("one test ID", value)
+        self.assertIn("deletes one", value)
 
 
 class RecordTest(WorkCase):
