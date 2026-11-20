@@ -3642,7 +3642,8 @@ class PublishTest(NextCase):
     def test_blocks_are_moved_whole_only_when_cutting_them_all_is_not_enough(self):
         wide = " the step ran and passed;" * 10
         short = [f"short {i:04d} ok" for i in range(1, 31)]
-        long = [f"long {i:04d} ok:{wide}" for i in range(1, 1201)]
+        long = [f"long {i:04d} ok:{wide}" for i in range(1, 201)]
+        self.assertLess(len("\n".join(long)), 55000)  # fits whole in the comment
         body = self.quoting([("check two", short), ("check one", long)])
         # With both blocks cut to their last 10 lines, still 1,000 over.
         _, result = self.cut(body, 61000 - len(body.render(10)[0]))
@@ -3650,11 +3651,12 @@ class PublishTest(NextCase):
         self.assertLessEqual(len(cut), 60000)
         pointer = '(output in the comment "Command output for commit aaaaaaaaaaaa")'
         self.assertEqual(cut.count(pointer), 1, cut[-5000:])
-        self.assertNotIn("long 1200 ok", cut)
+        self.assertNotIn("long 0200 ok", cut)
         for i in range(21, 31):  # the shorter block stays, cut, in the description
             self.assertIn(f"short {i:04d} ok", cut)
         comment = self.cmd_pr().comment_text(self.comment_dir(), "a" * 40, moved)
-        for i in (1, 600, 1200):
+        self.assertLessEqual(len(comment), 60000)
+        for i in (1, 100, 200):
             self.assertIn(f"long {i:04d} ok", comment)
 
     def test_output_too_long_for_the_comment_keeps_only_its_last_lines_there(self):
