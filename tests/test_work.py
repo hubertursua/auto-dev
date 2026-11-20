@@ -448,6 +448,69 @@ class BriefTest(WorkCase):
         self.assertNotIn("no test-ID form", value)
 
 
+class VerifierBriefCase(WorkCase):
+    """The verifier's brief and instructions on a standard- or high-risk run."""
+
+    def mark_risk(self, high, mutation_max=None):
+        state = json.loads((self.dir / "state.json").read_text())
+        state["high_risk"] = high
+        if mutation_max is not None:
+            state["settings"]["mutation_max"] = mutation_max
+        (self.dir / "state.json").write_text(json.dumps(state))
+
+    def verifier_brief(self):
+        r = self.cmd("brief", "verifier", "--set", "mode=first pass")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        path = Path(r.stdout.split("BRIEF:")[1].split()[0])
+        agent = [ln for ln in r.stdout.splitlines() if ln.startswith("agent:")]
+        return path.read_text(), agent
+
+    def probes_step(self):
+        """The verifier's numbered step headed "Probes", up to step 8."""
+        lines = (SCRIPTS.parents[2] / "agents" / "verifier.md").read_text().splitlines()
+        start = next(i for i, ln in enumerate(lines) if re.match(r"\d+\. Probes\b", ln))
+        end = next(i for i in range(start + 1, len(lines)) if re.match(r"8\. ", lines[i]))
+        return re.sub(r"\s+", " ", "\n".join(lines[start:end]))
+
+
+class VerifierProbeBriefTest(VerifierBriefCase):
+    def test_a_standard_risk_verifier_is_told_to_probe_each_checked_condition(self):
+        (self.dir / "PLAN.md").write_text(PLAN_NO_SECURITY)
+        self.mark_risk(False)
+        brief, _ = self.verifier_brief()
+        self.assertEqual([ln for ln in brief.splitlines() if ln.startswith("probes:")], [])
+        step = self.probes_step()
+        self.assertNotIn("{{probes}}", step)
+        self.assertNotIn("high-risk", step)
+        self.assertIn("one probe", step)
+        self.assertIn("each condition with acceptance checks", step)
+
+    def test_a_high_risk_verifier_brief_has_no_probe_switch_either(self):
+        self.mark_risk(False)
+        _, standard_agent = self.verifier_brief()
+        self.mark_risk(True)
+        brief, high_agent = self.verifier_brief()
+        self.assertEqual([ln for ln in brief.splitlines() if ln.startswith("probes:")], [])
+        # Both tiers' verifiers read the same instructions.
+        self.assertEqual(high_agent, standard_agent)
+        self.assertNotIn("{{probes}}", self.probes_step())
+
+
+class VerifierMutationBriefTest(VerifierBriefCase):
+    def test_mutation_stays_off_for_a_standard_risk_verifier_and_capped_for_a_high_one(self):
+        self.mark_risk(False)
+        brief, _ = self.verifier_brief()
+        self.assertIn("mutation_cap: 0 (off: a standard-risk run)", brief.splitlines())
+        self.mark_risk(True)
+        brief, _ = self.verifier_brief()
+        self.assertIn("mutation_cap: 20", brief.splitlines())
+
+    def test_a_high_risk_run_with_mutation_max_zero_turns_mutation_off(self):
+        self.mark_risk(True, mutation_max=0)
+        brief, _ = self.verifier_brief()
+        self.assertIn("mutation_cap: 0 (off)", brief.splitlines())
+
+
 class RecordTest(WorkCase):
     def test_the_planner_s_size_and_risk_are_recorded_and_checked_against_the_plan(self):
         self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})
