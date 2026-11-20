@@ -2865,6 +2865,25 @@ class RunCommandTest(unittest.TestCase):
         self.assertIn(f"run test --dir {ad} --files <test file> …", warning)
         self.assertIn(f"run test --dir {ad} --tests <test id> …", warning)
         self.assertIn("src/todos/delete.test.ts:14", warning)
+        # One part per line: the sentence first, then the --files line and the
+        # --tests line on lines of their own; the example ID is never on the
+        # sentence's line or the --files line.
+        parts = warning.split("\n")
+        self.assertIn("quality gate", parts[0], warning)
+        self.assertNotIn(" --files ", parts[0], warning)
+        self.assertNotIn(" --tests ", parts[0], warning)
+        on = {name: [i for i, x in enumerate(parts) if text in x]
+              for name, text in (("files", f"run test --dir {ad} --files <test file> …"),
+                                 ("tests", f"run test --dir {ad} --tests <test id> …"),
+                                 ("example", "src/todos/delete.test.ts:14"))}
+        self.assertEqual(len(on["files"]), 1, warning)
+        self.assertEqual(len(on["tests"]), 1, warning)
+        self.assertNotEqual(on["files"], on["tests"], warning)
+        self.assertNotIn(" --tests ", parts[on["files"][0]], warning)
+        self.assertNotIn(" --files ", parts[on["tests"][0]], warning)
+        self.assertTrue(on["example"], warning)
+        self.assertNotIn(0, on["example"], warning)
+        self.assertNotIn(on["files"][0], on["example"], warning)
 
     def test_the_gates_own_run_and_an_unscopable_test_check_print_no_warning(self):
         self.set_test_check(files="<runner> some <files> --verbose",
