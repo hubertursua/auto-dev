@@ -52,7 +52,8 @@ ci-watch [--pr N] [--sha COMMIT] [--max-wait SECONDS] [--interval SECONDS]
     (TIMEOUT: CI still running at the profile's CI timeout); 4 the watcher is
     unavailable (no checks after the grace period, or a provider gh cannot
     see), or the PR conflicts with its base and no check reported (CONFLICT:
-    bring the base in and push); 2 could not run, as below, or --sha names no
+    tell the user, who brings the base in, resolves and pushes; you only run
+    `next`); 2 could not run, as below, or --sha names no
     commit. Whatever it exits, run `next`: it asks for `ci-watch` again only
     while CI is PENDING, after TIMEOUT or UNAVAILABLE the gates show CI as not
     monitored, and after CONFLICT as not run. Never assume green.
@@ -401,12 +402,15 @@ def ci_watch(args):
              detail=detail)
         return EXIT_UNAVAILABLE
     if status == "conflict":
-        base = (state.get("repo") or {}).get("base") or "its base"
+        name = (state.get("repo") or {}).get("base")
+        base, ref = name or "its base", name or "<base>"
         emit(args.json, "CONFLICT", f"PR #{pr} conflicts with its base {base}, so GitHub "
-             f"runs no pull_request checks on it and CI can't report on {sha[:12]}: "
-             f"bring the base in (merge origin/{base} into the branch in the worktree, "
-             "resolve, push), then run `next`; the gates show CI as not run — never "
-             "assume green", detail=detail)
+             f"runs no pull_request checks on it and CI can't report on {sha[:12]}. "
+             "Tell the user: the PR conflicts with its base, and they bring the base in "
+             f"themselves in the worktree (fetch it first with `git fetch origin {ref}`: "
+             "the worktree's copy can predate the commit that conflicts; then `git merge "
+             f"origin/{ref}`, resolve, push). You only run `next`; the gates show CI as "
+             "not run — never assume green", detail=detail)
         return EXIT_UNAVAILABLE
     if status == "timeout":
         emit(args.json, "TIMEOUT", f"CI still running for {sha[:12]} after "

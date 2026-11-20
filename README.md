@@ -462,7 +462,8 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   check after a grace period doesn't hold the run up. CI that timed out, never
   ran or couldn't be watched is shown as not monitored, never as green. A PR
   that conflicts with its base gets no checks from GitHub: the watch says so at
-  once, and the gates show CI as not run because of the conflict. When
+  once, you're told to fetch the base and merge it in yourself (the run never
+  merges it), and the gates show CI as not run because of the conflict. When
   a review pass leaves findings open, CI settles first, and red CI that the
   code caused is fixed in the same correction, on the same round. CI is
   watched on the pushed commit, even when an unpushed tests commit sits on top

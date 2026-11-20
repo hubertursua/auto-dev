@@ -4617,6 +4617,9 @@ class MovedHeadTest(NextCase):
     re_check = OutsidePushTest.re_check
     asked_push_of = OutsidePushTest.asked_push_of
     publish_the_new_head = OutsidePushTest.publish_the_new_head
+    corrected_and_committed = OutsidePushTest.corrected_and_committed
+    watched = OutsidePushTest.watched
+    assert_never_watched = OutsidePushTest.assert_never_watched
 
     def setUp(self):
         self.seen = []
@@ -4661,6 +4664,602 @@ class MovedHeadTest(NextCase):
         self.assertIn("app.ts", report)
         self.assertIn(f"origin/{branch}", report)
         self.assertNotIn("ci-watch", json.dumps(out))
+        self.assert_counted(16, "the PR head moved", 6)
+
+    def pass_must_fix(self):
+        """The pass the panel is spawned for leaves C1 (in sort.ts) open."""
+        _, jobs = self.reviewers()
+        pass_dir = self.dir / "review" / f"pass-{self.state()['phase6']['review_pass']}"
+        for w, n in jobs:
+            (pass_dir / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (pass_dir / "corrections.md").write_text(self.FIX)
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+
+    def correction_left_uncommitted(self, extra=()):
+        """Pass 1 on the draft (CI on GitHub, green) leaves C1 open; the coder
+        corrects sort.ts (and writes each of `extra`), the gate is green, and
+        the after-commit pass leaves a must-fix open, the correction still
+        uncommitted. Returns the pushed commit."""
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        for rel in extra:
+            (self.worktree / rel).write_text("export const more = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        return verified
+
+    def base_merge_fast_forwarded(self):
+        """base.ts lands on main and a merge of it is pushed to the PR branch;
+        the worktree, its correction uncommitted, fast-forwards to the merge (a
+        merge made in it would need the correction set aside first). Returns
+        the merge commit, HEAD and the PR's head both."""
+        base = self.tmp / "base-clone"
+        self.sh("git", "clone", "-q", "-b", "main", str(self.tmp / "origin.git"), str(base))
+        (base / "base.ts").write_text("export const base = 1;\n")
+        self.sh("git", "add", "base.ts", cwd=base)
+        self.sh("git", "commit", "-q", "-m", "add base.ts", cwd=base)
+        self.sh("git", "push", "-q", "origin", "main", cwd=base)
+        branch = self.state()["branch"]
+        merging = self.tmp / "merge-clone"
+        self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"), str(merging))
+        self.sh("git", "merge", "-q", "--no-edit", "origin/main", cwd=merging)
+        self.sh("git", "push", "-q", "origin", branch, cwd=merging)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+        self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
+        return self.head()
+
+    def committed_on_top_of(self, parent):
+        """`commit` after the re-check commits the uncommitted correction on top
+        of `parent`."""
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "fix: guard the sort", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        head = self.head()
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD^", cwd=self.worktree).strip(),
+                         parent)
+        self.assertIn("sort.ts", self.sh("git", "show", "--name-only", "--format=", "HEAD",
+                                         cwd=self.worktree).split())
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+
+    def test_a_base_merge_pushed_with_a_correction_uncommitted_is_re_checked(self):
+        verified = self.correction_left_uncommitted()
+        merged = self.base_merge_fast_forwarded()
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+        sets = self.re_check()
+        self.assertIn("base.ts", sets["files"])
+        self.assertIn("sort.ts", sets["files"])
+        self.committed_on_top_of(merged)
+        self.assertFalse([o for o in self.seen if o.get("exit") == 4])
+        self.assertEqual(len([o for o in self.seen if self.watched(o, verified)]), 1)
+
+    def test_a_push_from_another_clone_with_a_correction_uncommitted_is_re_checked(self):
+        self.correction_left_uncommitted()
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("app.ts", report)
+        self.assertIn(f"merge --ff-only origin/{branch}", report)
+        self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
+        pushed = self.head()
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+        self.re_check()
+        self.committed_on_top_of(pushed)
+
+    def test_a_push_over_the_uncommitted_correction_asks_to_stash_it_first(self):
+        self.correction_left_uncommitted()  # sort.ts, new in the worktree
+        branch = self.state()["branch"]
+        other = self.tmp / "other"
+        self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"), str(other))
+        (other / "sort.ts").write_text("export const sort = 2;\n")
+        self.sh("git", "add", "sort.ts", cwd=other)
+        self.sh("git", "commit", "-q", "-m", "sort it", cwd=other)
+        self.sh("git", "push", "-q", "origin", branch, cwd=other)
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("correction is uncommitted", report)
+        wt, ref = re.escape(str(self.worktree)), re.escape(f"origin/{branch}")
+        steps = [rf"git -C '?{wt}'? add -A",
+                 rf"git -C '?{wt}'? stash push --include-untracked",
+                 rf"git -C '?{wt}'? merge --ff-only '?{ref}",
+                 rf"git -C '?{wt}'? stash pop"]
+        at = [re.search(s, report) for s in steps]
+        self.assertTrue(all(at), report)
+        self.assertEqual([m.start() for m in at], sorted(m.start() for m in at), report)
+        self.assert_counted(16, "the PR head moved", 6)
+        # Without the stash, git refuses: the fast-forward would overwrite sort.ts.
+        r = subprocess.run(["git", "merge", "--ff-only", f"origin/{branch}"],
+                           cwd=self.worktree, env=self.env, capture_output=True, text=True,
+                           check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "stash", "push", "--include-untracked", cwd=self.worktree)
+        self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
+        pushed = self.head()
+        r = subprocess.run(["git", "stash", "pop"], cwd=self.worktree, env=self.env,
+                           capture_output=True, text=True, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)  # both changed sort.ts
+        self.assertIn("<<<<<<<", (self.worktree / "sort.ts").read_text())
+        (self.worktree / "sort.ts").write_text("export const sort = 3;\n")  # resolved
+        self.sh("git", "add", "sort.ts", cwd=self.worktree)
+        self.sh("git", "stash", "drop", "-q", cwd=self.worktree)
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+        self.assertIn("sort.ts", self.re_check()["files"])
+        self.committed_on_top_of(pushed)
+
+    def test_a_push_over_a_clean_tree_asks_for_no_stash(self):
+        self.reviewed_with_ci()
+        self.push_outside("export const one = 1; // reworded\n")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("merge --ff-only", report)
+        self.assertNotIn("stash", report)
+        self.assertNotIn("uncommitted", report)
+
+    def test_a_push_that_diverged_from_the_run_s_unpushed_commit_is_merged_and_pushed(self):
+        self.corrected_and_committed()
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("app.ts", report)
+        self.assertNotIn("sort.ts", report)  # the run's own commit is no outside change
+        self.assertNotIn("--ff-only", report)  # git can't fast-forward diverged commits
+        wt = re.escape(str(self.worktree))
+        self.assertRegex(report, rf"git -C '?{wt}'? merge '?origin/{re.escape(branch)}")
+        self.assertRegex(report, rf"git -C '?{wt}'? push origin HEAD")
+        self.assert_counted(16, "the PR head moved", 6)
+        self.sh("git", "merge", "-q", "--no-edit", f"origin/{branch}", cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+
+    def stale_tracking_ref(self):
+        """refs/remotes/origin/<branch> at a commit unrelated to the run's (an
+        earlier branch of that name, deleted on GitHub). Returns the branch."""
+        branch = self.state()["branch"]
+        stale = self.sh("git", "commit-tree", "HEAD^{tree}", "-m", "an earlier branch",
+                        cwd=self.worktree).strip()
+        self.sh("git", "update-ref", f"refs/remotes/origin/{branch}", stale,
+                cwd=self.worktree)
+        return branch
+
+    def test_a_stale_tracking_ref_before_the_first_push_is_no_outside_push(self):
+        self.ship_ready()
+        self.lint()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "feat(todos): add due dates", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.stale_tracking_ref()  # origin.git holds only the base branch
+        out = self.next(0)
+        self.assertIn("push -u origin HEAD", out.get("ACTION", ""), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def committed_not_pushed(self):
+        """The build verified and committed, its first push not made yet."""
+        self.ship_ready()
+        self.lint()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "feat(todos): add due dates", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.state().get("marks") or {}).get("pushed"))
+
+    def asks_for_the_first_push(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertIn("push -u origin HEAD", out.get("ACTION", ""), shown)
+        self.assertNotIn("REPORT", out, shown)
+
+    def test_an_earlier_pr_s_branch_on_origin_before_the_first_push_is_no_outside_push(self):
+        self.committed_not_pushed()
+        branch = self.stale_tracking_ref()
+        # Left on origin by an earlier PR of that name: the fetch succeeds.
+        self.sh("git", "push", "-q", "origin",
+                f"refs/remotes/origin/{branch}:refs/heads/{branch}", cwd=self.worktree)
+        self.asks_for_the_first_push(self.next(0))
+
+    def test_an_unreachable_origin_before_the_first_push_is_no_outside_push(self):
+        self.committed_not_pushed()
+        self.stale_tracking_ref()
+        self.sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"),
+                cwd=self.worktree)  # fetch and ls-remote exit 128, not 2
+        self.asks_for_the_first_push(self.next(0))
+
+    def test_explain_before_the_first_push_shows_the_push_not_a_stop(self):
+        self.committed_not_pushed()
+        self.stale_tracking_ref()  # --explain fetches nothing: only this ref is read
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("push -u origin HEAD", r.stdout)
+        self.assertNotIn("someone pushed", r.stdout)
+
+    def test_a_tracking_ref_for_a_branch_deleted_on_origin_is_no_outside_push(self):
+        verified = self.reviewed_with_ci()
+        branch = self.stale_tracking_ref()
+        self.sh("git", "update-ref", "-d", f"refs/heads/{branch}",
+                cwd=self.tmp / "origin.git")  # gone from origin, still tracked here
+        out = self.next(0)
+        self.assertTrue(self.watched(out, verified), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_the_run_s_own_tests_commit_pushed_starts_no_re_check(self):
+        verified = self.reviewed_with_ci()
+        self.assertTrue(self.state().get("tests_commits"))  # the acceptance checks'
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.assertNotEqual(self.head(), verified)
+        self.assertGreater(len(self.state()["tests_commits"]), 1)
+        out = self.next(0)
+        self.assertTrue(self.watched(out, verified), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_after_a_re_check_is_committed_a_pass_s_findings_wait_for_ci_on_it(self):
+        self.github_ci()
+        self.ship_ready()
+        self.lint()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "feat(todos): add due dates", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("push -u origin HEAD", self.next(0)["ACTION"])
+        self.sh("git", "push", "-q", "-u", "origin", "HEAD", cwd=self.worktree)
+        merged = self.base_merged_and_pushed()  # before the draft PR opens
+        r = self.autodev("mark", "pushed", "--value", merged, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.asks_for_the_re_check(self.next(0))
+        self.re_check()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)
+        self.script_gh(GH_OK + [
+            {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": self.URL})},
+            {"args": ["pr", "list"], "stdout": "[]"},
+            {"args": ["pr", "create"], "stdout": f"{self.URL}/pull/12\n"},
+            {"args": ["pr", "edit", "12"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json", "number,url,body"],
+             "stdout": json.dumps({"number": 12, "url": f"{self.URL}/pull/12",
+                                   "body": f"Checked at commit {merged}"})},
+            *self.GREEN])
+        out = self.next(0)
+        body = self.dir / "pr-body.md"
+        self.assertIn(str(body), out["ACTION"], json.dumps(out, indent=2))
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        self.after(out)
+        self.pass_must_fix()  # the first pass, after the re-check's commit
+        out = self.next(0)
+        self.assertTrue(self.watched(out, merged), json.dumps(out, indent=2))
+
+    def test_a_base_merge_pushed_while_pass_1_runs_is_re_checked_before_its_ci_wait(self):
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.base_merged_and_pushed()
+        self.asks_for_the_re_check(self.next(0))
+        self.assert_never_watched(verified)
+
+    def test_a_base_merged_during_a_correction_after_a_conflict_is_re_checked(self):
+        # CONFLICT on the draft while pass 1's findings are open: the coder's
+        # correction starts, and the user brings the base in, as the CONFLICT
+        # line says, while the coder's edit is still uncommitted. The pass
+        # before `commit` reviews the merge too, not only the coder's edit.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        responses = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([
+            {"args": ["pr", "view", "12", "--json"], "times": 1,
+             "stdout": json.dumps({"headRefOid": verified, "mergeable": "CONFLICTING"})},
+            {"args": ["pr", "checks"], "times": 1, "exit": 1,
+             "stderr": "no checks reported on the 'feat/due-dates' branch"},
+            *responses])
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("CONFLICT:", r.stdout)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        merged = self.base_merged_and_pushed()
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual(p["scope"], "outside", json.dumps(p, indent=2))
+        self.assertEqual(p.get("since"), verified)
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("sort.ts", p["files"])
+        n = max(b["n"] for b in self.state()["briefs"] if b["worker"] == "code-reviewer")
+        self.assertIn("base.ts", self.sets("code-reviewer", n)["files"])
+        self.committed_on_top_of(merged)
+
+    def test_a_base_merged_during_a_correction_with_nothing_left_to_commit_is_verified(
+            self):
+        # As above, but the correction leaves the tree as the merge has it: the
+        # re-check reviews the merge, and `commit` verifies the merge commit.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        merged = self.base_merged_and_pushed()
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual(p["scope"], "outside", json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)
+
+    def land_base(self):
+        """base.ts lands on main, pushed from another clone, and the worktree
+        fetches it."""
+        base = self.tmp / "base-clone"
+        self.sh("git", "clone", "-q", "-b", "main", str(self.tmp / "origin.git"), str(base))
+        (base / "base.ts").write_text("export const base = 1;\n")
+        self.sh("git", "add", "base.ts", cwd=base)
+        self.sh("git", "commit", "-q", "-m", "add base.ts", cwd=base)
+        self.sh("git", "push", "-q", "origin", "main", cwd=base)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+
+    def base_merged_not_pushed(self):
+        """base.ts lands on main; the user merges main into the worktree by
+        hand and does not push the merge. Returns the merge commit."""
+        self.land_base()
+        self.sh("git", "merge", "-q", "--no-edit", "origin/main", cwd=self.worktree)
+        return self.head()
+
+    def merged_during_the_correction(self, edit=True, push=True):
+        """CI on GitHub, green on the draft; pass 1 leaves C1 open and the
+        coder's correction starts. While it runs (its edit to sort.ts left
+        uncommitted when `edit`), the user merges the base in (and pushes the
+        merge when `push`); the coder returns and the gate is green. Returns
+        (the verified commit, the merge commit)."""
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        if edit:
+            (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        merged = self.base_merged_and_pushed() if push else self.base_merged_not_pushed()
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.seen = []  # the watch of the verified commit before the merge was right
+        return verified, merged
+
+    def re_check_finding_goes_to_the_coder(self, verified, merged):
+        """The pass since `verified` leaves a must-fix open: the next step is
+        the coder for it, with no second re-check and no watch of `verified`.
+        The merge is recorded as the commit under re-check."""
+        self.panel(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        p6 = self.state()["phase6"]
+        self.assertEqual(p6.get("unverified_commit"), merged)
+        p = p6["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        passes, corrections = len(p6["passes"]), len(p6["corrections"])
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual([w for w, _ in self.spawned(out)], ["coder"], shown)
+        self.assertNotIn("quality-gate", out["ACTION"], shown)
+        p6 = self.state()["phase6"]
+        self.assertEqual(len(p6["passes"]), passes)
+        self.assertEqual([k["entry"] for k in p6["corrections"][corrections:]], ["review"])
+        self.assertFalse([k for k in p6["corrections"] if k["entry"] == "outside"])
+        self.assert_never_watched(verified)
+
+    def test_a_re_check_over_an_uncommitted_correction_sends_its_finding_to_the_coder(
+            self):
+        verified, merged = self.merged_during_the_correction(edit=True)
+        self.re_check_finding_goes_to_the_coder(verified, merged)
+
+    def test_a_re_check_with_nothing_left_to_commit_sends_its_finding_to_the_coder(self):
+        verified, merged = self.merged_during_the_correction(edit=False)
+        self.re_check_finding_goes_to_the_coder(verified, merged)
+
+    def test_a_base_merge_pushed_while_the_after_commit_pass_runs_is_re_checked(self):
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()  # the after-commit pass, its reports on the tree before the merge
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], "after-commit")
+        # The pass staged sort.ts as intent-to-add: git merges only with it set
+        # aside, as stop 16's report says.
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "stash", "push", "-q", "--include-untracked", cwd=self.worktree)
+        merged = self.base_merged_and_pushed()
+        self.sh("git", "stash", "pop", "-q", cwd=self.worktree)
+        self.seen = []  # the watch of the verified commit before the merge was right
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "fix: guard the sort", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("STALE", r.stdout + r.stderr)
+        self.assertEqual(self.head(), merged)
+        self.asks_for_the_re_check(self.next(0))
+        sets = self.re_check()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("sort.ts", p["files"])
+        self.assertIn("base.ts", sets["files"])
+        self.committed_on_top_of(merged)
+        self.assert_never_watched(verified)
+
+    def test_a_base_merged_in_and_not_pushed_during_a_correction_is_re_checked(self):
+        verified, merged = self.merged_during_the_correction(edit=True, push=False)
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("sort.ts", p["files"])
+        self.committed_on_top_of(merged)
+        out = self.next(0)
+        self.assertTrue(self.asked_push_of(out, self.head()), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_a_base_merged_over_a_check_repair_s_tests_commit_is_re_checked_as_outside(
+            self):
+        # The repair is a tests commit T on the verified commit; the base is
+        # merged in on top of T: HEAD is past the verified commit by T and by
+        # commits the run did not make.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.panel(CHECK_REVIEW, "MUST_FIX", corrections="# Required changes\nNone.\n")
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("acceptance-tester")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, repaired")
+        self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
+        out = self.next(0)  # records the repair, commits it as a tests commit
+        self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+        tests = self.head()
+        self.assertEqual(self.state()["tests_commits"][-1]["sha"], tests)
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD^", cwd=self.worktree).strip(),
+                         verified)
+        self.base_merged_not_pushed()
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("commits the run did not make", r.stdout)
+        self.assertNotIn("as a tests commit", r.stdout)
+        self.assertNotIn("tests commit is on top", r.stdout)
+        out = self.next(0)  # the pass starts: the verifier first
+        self.assertIn("auto-dev:verifier", out["AGENT"], json.dumps(out, indent=2))
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+
+    def test_a_rebase_onto_the_base_during_a_correction_is_re_checked_before_a_push(self):
+        # The user rebases the PR branch onto the base, the coder's edit
+        # stashed around it, and force-pushes: the verified commit is no
+        # ancestor of HEAD any more, yet the commits since it are re-checked.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.land_base()
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "stash", "push", "-q", "--include-untracked", cwd=self.worktree)
+        self.sh("git", "rebase", "-q", "origin/main", cwd=self.worktree)
+        self.sh("git", "push", "-q", "--force", "origin", "HEAD", cwd=self.worktree)
+        self.sh("git", "stash", "pop", "-q", cwd=self.worktree)
+        rebased = self.head()
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", verified, rebased],
+                           cwd=self.worktree, env=self.env, check=False)
+        self.assertNotEqual(r.returncode, 0)  # the rebase rewrote the verified commit
+        self.seen = []
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("sort.ts", p["files"])
+        self.assertFalse([o for o in self.seen if "push -u origin HEAD" in o.get("ACTION", "")])
+
+    def test_a_diverged_push_over_an_uncommitted_correction_is_stashed_merged_and_pushed(
+            self):
+        # The run's own tests commit on the verified commit, not pushed, the
+        # coder's edit uncommitted; someone pushes on the verified commit.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD^", cwd=self.worktree).strip(),
+                         verified)
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("correction is uncommitted (sort.ts)", report)
+        self.assertNotIn("--ff-only", report)
+        wt, ref = re.escape(str(self.worktree)), re.escape(f"origin/{branch}")
+        steps = [rf"git -C '?{wt}'? add -A",
+                 rf"git -C '?{wt}'? stash push --include-untracked",
+                 rf"git -C '?{wt}'? merge '?{ref}",
+                 rf"git -C '?{wt}'? push origin HEAD",
+                 rf"git -C '?{wt}'? stash pop"]
+        at = [re.search(s, report) for s in steps]
+        self.assertTrue(all(at), report)
+        self.assertEqual([m.start() for m in at], sorted(m.start() for m in at), report)
+        self.assertNotRegex(report, r",\s*,")
+        self.assert_counted(16, "the PR head moved", 6)
+
+    def test_more_than_five_uncommitted_paths_are_counted_not_listed(self):
+        self.correction_left_uncommitted(extra=[f"a{i}.ts" for i in range(1, 6)])
+        self.push_outside("export const one = 1; // reworded\n")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("correction is uncommitted (a1.ts, a2.ts, a3.ts, a4.ts, a5.ts and 1 "
+                      "more)", report)
+        self.assertNotIn("sort.ts", report)
+
+    def test_an_unreachable_origin_uses_the_branch_last_fetched(self):
+        verified = self.reviewed_with_ci()
+        self.base_merged_and_pushed()  # the push moved origin/<branch> here too
+        self.sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"),
+                cwd=self.worktree)
+        self.asks_for_the_re_check(self.next(0))
+        self.assert_never_watched(verified)
+
+    def test_a_checkpoint_probe_fetches_and_sees_a_push_first(self):
+        self.reviewed_with_ci()
+        self.push_outside("export const one = 1; // reworded\n")  # not fetched here
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # a checkpoint is due
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("someone pushed", " ".join(out["REPORT"]))
         self.assert_counted(16, "the PR head moved", 6)
 
 

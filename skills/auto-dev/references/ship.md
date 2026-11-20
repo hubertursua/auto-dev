@@ -64,14 +64,18 @@ see in the Ship stage, in order:
    the run goes on, and CI is watched again once the PR is marked ready; CI
    that never ran is shown as not monitored, never as green. A PR that
    conflicts with its base gets no `pull_request` checks at all, so a watch
-   that finds none there prints `CONFLICT` at once (exit 4): the run goes on,
-   and the gates show CI as not run because of the conflict; bring the base
-   in (merge it in the worktree, resolve, push). Before it watches CI, asks
+   that finds none there prints `CONFLICT` at once (exit 4): tell the user the
+   PR conflicts with its base and that they bring the base in themselves
+   (fetch it and merge it in the worktree, resolve, push); you never merge or
+   edit the code, you only run `next`. The run goes on, and the gates show CI
+   as not run because of the conflict. Before it watches CI, asks
    for a push or asks a gate, `next` fetches the PR branch: a head pushed from
    the worktree that the run didn't make (a base merged in by hand, say) is
-   re-checked as in #16 below, with no stop, and CI is then watched on it; a
-   head the worktree doesn't have stops the run (#16). A red check
-   sends the `triager`. A code failure runs a correction, a pass and a new
+   re-checked as in #16 below, with no stop, and CI is then watched on it (a
+   base merged in, or the branch rebased onto it, while a correction runs is
+   reviewed with the correction, in the pass before its commit); a head the
+   worktree doesn't have stops the run (#16). A red check sends the
+   `triager`. A code failure runs a correction, a pass and a new
    commit (when findings are open too, it joined their correction in step 2). Any other class (`INFRA`, `FLAKY`, `UNKNOWN`, `SECRET`) is not the
    code's to fix: `next` stops and reports it (exit 4). Once the cause is
    fixed and CI re-run, _I fixed it myself_ (or `auto-dev continue`) watches
@@ -256,8 +260,12 @@ Every stop is exit 4 with its reason in `REPORT`
 - **Someone pushed to the PR branch (#16):** `next` notices it before a CI
   watch, a push or a gate, as well as at the main gate. Tell the user what
   the `REPORT` says: to ship those commits, they bring them into the worktree
-  with the `git merge --ff-only` command it names and say `auto-dev
-  continue`. `next` then re-checks them (quality gate, verifier, a review
+  with the `git merge --ff-only` command it names (or, when the run's own
+  unpushed commit and theirs diverged, the `git merge` and the push it names)
+  and say `auto-dev continue`. When the run's correction is still uncommitted,
+  the `REPORT` has them set it aside first (`git add -A` and `git stash push
+  --include-untracked`) and bring it back after (`git stash pop`, resolving
+  any conflict). `next` then re-checks them (quality gate, verifier, a review
   pass on what they changed), `commit` verifies the new head, or commits the
   re-check's edits on top, and the run goes on from there: the push, CI on
   the new head and the gate it was at. A head pushed from the worktree itself

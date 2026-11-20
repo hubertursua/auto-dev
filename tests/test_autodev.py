@@ -1124,6 +1124,49 @@ class ShipTest(RunCase):
         self.assertIn("PENDING", r.stdout)
         self.assertGreater(self.state()["phase6"]["ci"]["started"], 1.0)
 
+    def test_a_conflict_ends_a_long_watch_at_its_first_poll(self):
+        self.set_settings(ci="github-actions")
+        head = self.checks_on_a_pr("CONFLICTING", **self.no_checks())
+        started = time.monotonic()
+        r = self.watch("--max-wait", "60", "--grace", "300", "--sha", head)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIsNotNone(self.conflict_line(r), r.stdout + r.stderr)
+        self.assertLess(time.monotonic() - started, 30)
+        calls = self.gh_calls()
+        self.assertEqual(len([c for c in calls if c[:2] == ["pr", "checks"]]), 1, calls)
+        # GitHub names `mergeable` only when asked for it.
+        view = next(c for c in calls if c[:2] == ["pr", "view"])
+        self.assertIn("mergeable", view[view.index("--json") + 1].split(","), view)
+
+    def test_a_conflict_past_the_ci_timeout_is_still_a_conflict(self):
+        self.set_settings(ci="github-actions", ci_timeout=30)
+        head = self.checks_on_a_pr("CONFLICTING", **self.no_checks())
+        state = self.state()
+        state["phase6"]["ci"] = {"sha": head, "started": time.time() - 31 * 60,
+                                 "status": "pending"}
+        self.write_state(state)
+        r = self.watch("--max-wait", "0", "--sha", head)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIsNotNone(self.conflict_line(r), r.stdout + r.stderr)
+        self.assertNotIn("TIMEOUT", r.stdout)
+        self.assertEqual(self.state()["phase6"]["ci"]["status"], "conflict")
+
+    def test_a_conflict_tells_the_user_to_bring_the_base_in(self):
+        self.set_settings(ci="github-actions")
+        head = self.checks_on_a_pr("CONFLICTING", **self.no_checks())
+        r = self.watch("--max-wait", "0", "--sha", head)
+        line = self.conflict_line(r) or ""
+        self.assertIn("Tell the user", line, r.stdout)
+        self.assertIn("they bring the base in themselves", line)
+        self.assertIn("You only run `next`", line)
+        # The base moved after the run last fetched it: a merge of the stale
+        # origin/<base> would be "Already up to date".
+        base = self.state()["repo"]["base"]
+        fetch, merge = f"git fetch origin {base}", f"git merge origin/{base}"
+        self.assertIn(fetch, line)
+        self.assertIn(merge, line)
+        self.assertLess(line.index(fetch), line.index(merge))
+
     def test_ci_ignores_checks_for_another_head(self):
         self.set_settings(ci="github-actions")
         self.checks([{"name": "test", "bucket": "fail", "state": "FAILURE", "link": "l"}],
