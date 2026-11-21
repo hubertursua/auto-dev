@@ -559,7 +559,11 @@ it, else to the whole check, and `run` prints which it used. The quality gate
 runs every check whole through `run gate <n>`; a `run test` that runs the test
 check whole when it could have been scoped prints a warning with the
 ready-to-copy scoped lines, which the coder's, fixer's and acceptance tester's
-briefs also carry.
+briefs also carry. Claude Code moves a Bash call still running after 180 s to
+the background, so a worker keeps each command under 3 minutes and waits on a
+`run` that went to the background with `autodev.py run wait`, which blocks up
+to 170 s, then prints that run's result exactly as `run` would have (or
+`RUNNING`, to call it again), so the worker never polls.
 
 ### Where saved profiles live
 
@@ -798,7 +802,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `profile-origin.json`, `profile.yml`, `profile-retry.yml` | Phase 1 (`next`) | where the run's profile came from (the saved file and the checks left out of this run or kept at the gate-check question, a draft kept for this run only in `profile.yml`, or `.auto-dev.yml`), so a failed setup is retried from it; `profile-retry.yml` is the profile a retry re-read |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
-| `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output |
+| `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output; `tmp/run/records/` holds each `run`'s record and result, which `run wait` reads |
 | `HANDOFF.md` | a checkpoint, or the user asking to stop | the brief for the next session |
 | `metrics.json` | `autodev.py next`, each time it completes or stops the run | the run's numbers for tuning auto-dev: spawns per worker, rounds spent, left and added, stops by their number, refused results, review findings kept and dropped, events and the build's diff size. Counts only, no code or task text. `next` writes the same file to `~/.config/auto-dev/metrics/<repo>/<branch>.json` (or `$AUTO_DEV_METRICS_DIR`, or `$XDG_CONFIG_HOME/auto-dev/metrics`), so it outlives the worktree |
 | `PLAN.md` | Phase 2 | the plan: the conditions (the testable contract), size check, risk tier and build steps |

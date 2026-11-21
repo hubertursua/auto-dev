@@ -1,5 +1,6 @@
-"""autodev.py run gate|test — run one of the profile's own commands in the
-run's worktree, and save its output.
+"""autodev.py run gate|test|wait — run one of the profile's own commands in the
+run's worktree, and save its output; or wait for a run that went to the
+background.
 
 Usage:
     autodev.py run gate <n | REPORT> --dir <artifact-dir> [--files <path> ...]
@@ -8,6 +9,8 @@ Usage:
     autodev.py run test --dir <artifact-dir> [--files <path> ...]
                         [--tests <id> ...] [--out <file>] [--timeout <seconds>]
                         [--tail <lines>] [--show] [--json]
+    autodev.py run wait --dir <artifact-dir> [--wait <seconds>] [--tail <lines>]
+                        [--json]
 
 A worker's shell doesn't start in the worktree, and a permission check refuses
 `cd <worktree> && <command>` and rewritten forms of it. This runs the command
@@ -22,6 +25,19 @@ gate <n | REPORT>
 test
     Runs the test check: the first `kind: test` check with a `files` form,
     else the first `kind: test` check (`run gate <n>` runs any other).
+wait
+    Waits for the `run gate` or `run test` started last under --dir (one the
+    Bash tool moved to the background) to end, then prints exactly what that
+    run printed, and exits with its code (0, 1 or 3). With no --tail of its
+    own it shows as many last lines as the run did. It waits at most --wait
+    seconds (default and most 170: the Bash tool moves a call still running
+    after 180 s to the background, so a longer wait would be moved too). A
+    run still going then prints `RUNNING: <command> is still running …` and
+    an `output:` line, exit 4, and is left running: run `run wait` again. It
+    only reads: it never stops the run, so the run's own --timeout is what
+    ends a hung check. Each `run gate|test` (never --show) keeps a record of
+    itself, and its result once it ends, in
+    <artifact-dir>/tmp/run/records/<k>.json; `wait` reads the newest.
 --dir is required: it names the run, and a worker's shell isn't in the
 worktree, so a default would find no run, or an old one.
 --files <path> ...
@@ -82,9 +98,11 @@ Exit codes:
        backslash or a test ID or path that holds `"`, `%` or `!`, each checked
        again with fullwidth lookalikes mapped to ASCII, more than one ID
        for a `<test>` form, a quoted `<files>`, `<tests>` or `<test>`, a form
-       holding the other form's placeholder, --out outside the artifact dir)
-       — `ERROR: …`
+       holding the other form's placeholder, --out outside the artifact dir;
+       wait: no run was started, the run ended without a result, an argument
+       only gate or test takes, --wait outside 1 to 170) — `ERROR: …`
     3  TIMED_OUT: the command and everything it started were stopped
+    4  RUNNING: wait only: the run is still going; run `run wait` again
 """
 
 import json
@@ -97,10 +115,13 @@ import time
 import unicodedata
 from pathlib import Path
 
+from . import cmd_init
 from . import state as st
 from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
 TIMED_OUT = 3
+RUNNING = 4
+WAIT_MAX = 170  # under the 180 s after which the Bash tool backgrounds a call
 PLACEHOLDER = "<files>"
 TESTS_PLACEHOLDER = "<tests>"  # a list of test IDs
 TEST_PLACEHOLDER = "<test>"  # exactly one test ID
@@ -116,7 +137,7 @@ class Stopped(Exception):
 
 
 def add_arguments(parser):
-    parser.add_argument("what", choices=("gate", "test"))
+    parser.add_argument("what", choices=("gate", "test", "wait"))
     parser.add_argument("check", nargs="?",
                         help="gate: the check's number or its report name")
     parser.add_argument("--files", nargs="+", default=None,
@@ -131,8 +152,12 @@ def add_arguments(parser):
                                                       "many seconds (exit 3)")
     parser.add_argument("--show", action="store_true",
                         help="print the command it would run, and run nothing")
-    parser.add_argument("--tail", type=int, default=TAIL,
-                        help="how many of the output's last lines to print")
+    parser.add_argument("--tail", type=int, default=None,
+                        help=f"how many of the output's last lines to print (default "
+                             f"{TAIL}; wait: the run's own)")
+    parser.add_argument("--wait", type=int, default=None,
+                        help=f"wait: seconds to wait for the run, 1 to {WAIT_MAX} "
+                             f"(default {WAIT_MAX})")
 
 
 def test_check(gate):
@@ -502,13 +527,182 @@ def execute(command, worktree, path, timeout):
     return code, round(time.monotonic() - start, 1)
 
 
+def records_dir(ad):
+    return ad.resolve() / "tmp" / "run" / "records"
+
+
+def record_number(path):
+    """<k> of a record file <k>.json, else None."""
+    return int(path.stem) if path.suffix == ".json" and path.stem.isdigit() else None
+
+
+def newest_record(ad):
+    """The record of the run started last under `ad`, or None."""
+    folder = records_dir(ad)
+    if not folder.is_dir():
+        return None
+    found = [(record_number(p), p) for p in folder.iterdir()]
+    found = [(k, p) for k, p in found if k is not None]
+    return max(found)[1] if found else None
+
+
+def claim_record(ad):
+    """A new record file, numbered after every one there."""
+    folder = records_dir(ad)
+    folder.mkdir(parents=True, exist_ok=True)
+    newest = newest_record(ad)
+    k = record_number(newest) + 1 if newest else 1
+    while True:
+        path = folder / f"{k}.json"
+        try:
+            with open(path, "x", encoding="utf-8"):
+                return path
+        except FileExistsError:
+            k += 1
+
+
+def write_record(path, rec):
+    """Write the record whole (a reader never sees half of it)."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(rec), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def read_record(path):
+    """The record as a dict, or None while it can't be read (being written)."""
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def keep(path, rec):
+    """Save the record; a failed write never changes `run`'s own result."""
+    if path is None:
+        return
+    try:
+        write_record(path, rec)
+    except OSError:
+        pass
+
+
+def report(args, rec, tail):
+    """Print a finished run's result from its record, as `run` does; its exit code."""
+    path = Path(rec["output"])
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    shown = lines[-tail:] if tail else []
+    token, message, warning = rec["token"], rec["message"], rec.get("warning")
+    if args.json:
+        print(json.dumps({"result": token, "message": message, "command": rec["command"],
+                          "exit_code": rec.get("exit_code"), "seconds": rec.get("seconds"),
+                          "output": str(path), "lines": len(lines), "tail": shown,
+                          "scope": rec["scope"], "warning": warning},
+                         indent=2, sort_keys=True))
+        return rec["exit"]
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")  # output that isn't UTF-8 never crashes
+    print(f"{token}: {message}")
+    why = rec.get("why")
+    print(f"  scope: {rec['scope']}" + (f" — {why}" if why else ""))
+    if warning:
+        first, *more = warning.split("\n")
+        print(f"  warning: {first}")
+        for line in more:
+            print(f"    {line}")
+    print(f"  output: {path} ({len(lines)} lines)")
+    if shown:
+        which = "all" if len(shown) == len(lines) else f"the last {len(shown)}"
+        print(f"  {which} of its lines:")
+        for line in shown:
+            print(f"    {line}")
+    return rec["exit"]
+
+
+def check_wait_arguments(args):
+    if args.what == "wait":
+        given = [name for name, value in (("a check name", args.check),
+                                          ("--files", args.files), ("--tests", args.tests),
+                                          ("--out", args.out), ("--timeout", args.timeout),
+                                          ("--show", args.show or None))
+                 if value is not None]
+        if given:
+            raise Fail(f"`run wait` takes only --dir, --wait, --tail and --json, not "
+                       f"{', '.join(given)}", CANNOT_RUN, "ERROR")
+        if args.wait is not None and not 1 <= args.wait <= WAIT_MAX:
+            raise Fail(f"--wait must be 1 to {WAIT_MAX} seconds: the Bash tool moves a call "
+                       "still running after 180 s to the background", CANNOT_RUN, "ERROR")
+        if args.tail is not None and args.tail < 0:
+            raise Fail("--tail must be 0 or more", CANNOT_RUN, "ERROR")
+    elif args.wait is not None:
+        raise Fail(f"--wait is for `run wait` only, not `run {args.what}`", CANNOT_RUN,
+                   "ERROR")
+
+
+def finished(args, rec):
+    """A run's recorded result, printed as `run` printed it."""
+    if rec["token"] == "ERROR":
+        raise Fail(f"{rec.get('message')} (its output: {rec.get('output')})", CANNOT_RUN,
+                   "ERROR")
+    return report(args, rec, rec.get("tail", TAIL) if args.tail is None else args.tail)
+
+
+def wait(args, ad):
+    """Wait up to --wait seconds for the run started last; print its result,
+    or RUNNING."""
+    path = newest_record(ad)
+    if path is None:
+        raise Fail(f"no `run test` or `run gate` was started under {os.path.abspath(ad)}",
+                   CANNOT_RUN, "ERROR")
+    deadline = time.monotonic() + (args.wait or WAIT_MAX)
+    rec = None
+    while True:
+        rec = read_record(path) or rec
+        if rec and rec.get("token"):
+            return finished(args, rec)
+        if rec and not cmd_init.runner_alive(rec.get("pid")):
+            time.sleep(0.2)  # it may have written its result as it ended
+            again = read_record(path)
+            if again and again.get("token"):
+                return finished(args, again)
+            raise Fail(f"the run of `{rec.get('command')}` ended without a result (its "
+                       f"output: {rec.get('output')})", CANNOT_RUN, "ERROR")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        time.sleep(min(0.5, left))
+    if rec is None:
+        raise Fail(f"the run record {path} can't be read", CANNOT_RUN, "ERROR")
+    output = Path(rec["output"])
+    try:
+        count = len(output.read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        count = 0
+    seconds = round(time.time() - rec.get("started", time.time()), 1)
+    message = (f"`{rec['command']}` is still running after {seconds:g}s; run "
+               f"`{run_line(ad, 'run wait')}` again")
+    if args.json:
+        print(json.dumps({"result": "RUNNING", "message": message,
+                          "command": rec["command"], "output": str(output),
+                          "seconds": seconds}, indent=2, sort_keys=True))
+        return RUNNING
+    print(f"RUNNING: {message}")
+    print(f"  output: {output} ({count} lines so far)")
+    return RUNNING
+
+
 def main(args):
     ad = Path(args.dir)
+    check_wait_arguments(args)
+    if args.what == "wait":
+        st.load(ad)  # a run's artifact dir
+        return wait(args, Path(os.path.abspath(ad)))
     state = st.load(ad)
     worktree = Path(state["worktree"])
     if not worktree.is_dir():
         raise Fail(f"the worktree {worktree} does not exist", CANNOT_RUN, "ERROR")
-    if args.tail < 0 or (args.timeout is not None and args.timeout <= 0):
+    tail = TAIL if args.tail is None else args.tail
+    if tail < 0 or (args.timeout is not None and args.timeout <= 0):
         raise Fail("--tail must be 0 or more and --timeout more than 0", CANNOT_RUN,
                    "ERROR")
     n, check = pick(state["settings"].get("gate", []), args.what, args.check)
@@ -517,36 +711,28 @@ def main(args):
         emit(args.json, "COMMAND", command)
         return OK
     path = output_file(ad, args.out, "test" if args.what == "test" else f"gate-{n}")
-    code, seconds = execute(command, worktree, path, args.timeout)
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    tail = lines[-args.tail:] if args.tail else []
+    warning = warning_text(Path(os.path.abspath(ad)), n, check, args.what, args.files,
+                           args.tests, scope)
+    rec = {"pid": os.getpid(), "what": args.what, "command": command, "output": str(path),
+           "scope": scope, "why": why, "warning": warning, "tail": tail,
+           "started": time.time()}
+    try:
+        record = claim_record(ad)
+    except OSError:
+        record = None
+    keep(record, rec)
+    try:
+        code, seconds = execute(command, worktree, path, args.timeout)
+    except BaseException as exc:
+        keep(record, {**rec, "token": "ERROR", "exit": CANNOT_RUN,
+                      "message": str(exc) or type(exc).__name__})
+        raise
     if code is None:
         token, result = "TIMED_OUT", TIMED_OUT
         message = f"`{command}` ran past {args.timeout:g}s and was stopped"
     else:
         token, result = ("PASSED", OK) if code == 0 else ("FAILED", FAILED)
         message = f"`{command}` exited {code} in {seconds:g}s"
-    warning = warning_text(Path(os.path.abspath(ad)), n, check, args.what, args.files,
-                           args.tests, scope)
-    if args.json:
-        print(json.dumps({"result": token, "message": message, "command": command,
-                          "exit_code": code, "seconds": seconds, "output": str(path),
-                          "lines": len(lines), "tail": tail, "scope": scope,
-                          "warning": warning}, indent=2, sort_keys=True))
-        return result
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")  # output that isn't UTF-8 never crashes
-    print(f"{token}: {message}")
-    print(f"  scope: {scope}" + (f" — {why}" if why else ""))
-    if warning:
-        first, *more = warning.split("\n")
-        print(f"  warning: {first}")
-        for line in more:
-            print(f"    {line}")
-    print(f"  output: {path} ({len(lines)} lines)")
-    if tail:
-        shown = "all" if len(tail) == len(lines) else f"the last {len(tail)}"
-        print(f"  {shown} of its lines:")
-        for line in tail:
-            print(f"    {line}")
-    return result
+    rec.update(token=token, message=message, exit=result, exit_code=code, seconds=seconds)
+    keep(record, rec)
+    return report(args, rec, tail)

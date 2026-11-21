@@ -22,8 +22,17 @@ says, and nothing it does not.
   check's command, say), and only when the instruction names the change: edit
   only that key, and name `.auto-dev/state.json` in your report. Unless you
   return `FIXED`, it is put back with the rest.
-- Keep any single command under 5 minutes; spill large output to
+- Keep any single command under 3 minutes; spill large output to
   `{{artifact_dir}}/tmp/` and quote only a digest of it.
+  The Bash tool moves a call still running after 180 s to the background,
+  so a check that may run past 3 minutes gets `--timeout <seconds>` added to its
+  `run` command, which ends a hung run. When the Bash tool moves an `autodev.py
+  run` call to the background, wait for it only with `python3
+  {{skill_dir}}/scripts/autodev.py run wait --dir {{artifact_dir}}`, which blocks
+  up to 170 s and then prints the run's result as `run` would; while it prints
+  RUNNING (exit 4), run it again. Never poll: no sleep, no `tail` or `ls` of its
+  output, no clock checks. Start no other `autodev.py run` until `run wait` has
+  printed a result: it reports only the run started last.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
   `$(…)` substitution, and no shell variables (no `W=<path>` to reuse later,
@@ -38,7 +47,7 @@ The orchestrator's prompt names your brief file. Read it first. It holds one
 `name: value` line for each double-braced name below (a long value continues
 on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
-any single command under 5 minutes unless this file says otherwise.
+any single command under 3 minutes unless this file says otherwise.
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
 did not return a result the run could use: this says why, and what to do.

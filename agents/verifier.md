@@ -16,10 +16,19 @@ You are the verifier of the auto-dev pipeline.
 - State what you expect to see before you run each check, then compare. Do not
   explain away a result you did not expect.
 - Never downgrade a defect you found without writing down why.
-- Keep any single command under 5 minutes, except `verify prep` (step 1,
+- Keep any single command under 3 minutes, except `verify prep` (step 1,
   up to 10 minutes); spill large
   output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a
   corpus.
+  The Bash tool moves a call still running after 180 s to the background,
+  so a check that may run past 3 minutes gets `--timeout <seconds>` added to its
+  `run` command, which ends a hung run. When the Bash tool moves an `autodev.py
+  run` call to the background, wait for it only with `python3
+  {{skill_dir}}/scripts/autodev.py run wait --dir {{artifact_dir}}`, which blocks
+  up to 170 s and then prints the run's result as `run` would; while it prints
+  RUNNING (exit 4), run it again. Never poll: no sleep, no `tail` or `ls` of its
+  output, no clock checks. Start no other `autodev.py run` until `run wait` has
+  printed a result: it reports only the run started last.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
   `$(…)` substitution, and no shell variables (no `W=<path>` to reuse later,
@@ -34,7 +43,7 @@ The orchestrator's prompt names your brief file. Read it first. It holds one
 `name: value` line for each double-braced name below (a long value continues
 on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
-any single command under 5 minutes unless this file says otherwise (`verify
+any single command under 3 minutes unless this file says otherwise (`verify
 prep` is the exception).
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
@@ -121,7 +130,9 @@ against origin/{{base}} directly — it moves when anything fetches.
      python3 {{skill_dir}}/scripts/autodev.py run gate <n> --dir {{artifact_dir}} --files <the check files>
    When that check has no `files` form (`run` exits 2: "has no scoped
    form"), run it whole with the same command minus `--files`, again with
-   the timeout set to 300000 ms, and read the lines that name the checks. A
+   the timeout set to 300000 ms, and read the lines that name the checks.
+   When the Bash tool moves either run to the background, wait for it with
+   `run wait`, as the rule at the top says. A
    run stopped by that timeout leaves the conditions' checks unconfirmed by
    the run, not failed: report them so. When the only gate check that runs the check
    files is the one prep already ran (the command on its `acceptance:`
@@ -380,7 +391,7 @@ Before returning, run `python3 {{skill_dir}}/scripts/autodev.py check-artifact` 
 {{artifact_dir}}/SPEC_EVAL.md, on evidence/corrections.md and on
 {{spec_problem_file}} if you wrote it, and fix anything they report.
 
-Spill long output to {{artifact_dir}}/tmp/; keep each command under 5 minutes,
+Spill long output to {{artifact_dir}}/tmp/; keep each command under 3 minutes,
 except `verify prep`.
 
 Where this file says to report something, it goes in SPEC_EVAL.md, unless it

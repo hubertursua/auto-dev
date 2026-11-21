@@ -3429,6 +3429,59 @@ class RunWaitTest(unittest.TestCase):
                             (extra, r.stderr))
             self.assertNotIn("PASSED", r.stdout, extra)
 
+    def test_wait_shows_the_runs_own_tail(self):
+        py = shlex.quote(sys.executable)
+        self.checks(f"{py} -c 'import time; print(\"started\", flush=True); "
+                    "time.sleep(2); print(\"one\"); print(\"two\")'")
+        proc = self.start("gate", "1", "--tail", "1")
+        self.started("gate-1-1.txt")
+        waited = self.cli("wait")
+        self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+        out = self.same_result(proc, waited)
+        self.assertIn("the last 1 of its lines:", out)
+        # A --tail of its own overrides the run's.
+        more = self.cli("wait", "--tail", "3")
+        self.assertIn("all of its lines:", more.stdout)
+        self.assertIn("    started", more.stdout)
+
+    def test_wait_json_matches_runs_json(self):
+        self.checks(self.slow(2, 0))
+        proc = self.start("gate", "1", "--json")
+        self.started("gate-1-1.txt")
+        waited = self.cli("wait", "--json")
+        self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, out + err)
+        self.assertEqual(waited.stdout, out)
+        self.assertEqual(json.loads(out)["result"], "PASSED")
+
+    @unittest.skipIf(os.name == "nt", "POSIX signals")
+    def test_wait_reports_a_run_stopped_by_a_signal_as_an_error(self):
+        self.checks(self.slow(5, 0))
+        proc = self.start("gate", "1")
+        self.started("gate-1-1.txt")
+        proc.terminate()
+        proc.wait()
+        r = self.cli("wait")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("was stopped by a signal", r.stderr)
+        self.assertNotIn("PASSED", r.stdout + r.stderr)
+
+    def test_gate_and_test_refuse_wait(self):
+        self.checks(self.quick(0))
+        for what in (("gate", "1"), ("test",)):
+            r = self.cli(*what, "--wait", "5")
+            self.assertEqual(r.returncode, 2, (what, r.stdout, r.stderr))
+            self.assertIn("--wait", r.stderr)
+        self.assertFalse((self.ad / "tmp" / "run" / "records").exists())
+
+    def test_show_keeps_no_record(self):
+        self.checks(self.quick(0))
+        self.assertEqual(self.cli("gate", "1", "--show").returncode, 0)
+        r = self.cli("wait")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("was started", r.stderr)
+
 
 VERIFY_SPEC = """\
 # Spec
