@@ -6101,6 +6101,44 @@ class AddedLineWordsTest(NextCase):
         self.assertFalse(state["high_risk"])
 
 
+class StaleLocalBaseTest(NextCase):
+    """The risk re-check measures the build against origin/<base>, the branch
+    the worktree was cut from, not the main checkout's local base branch: that
+    one can lag far behind, and every commit merged since would count as the
+    build's."""
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def init(self, *extra, **kw):
+        # Origin's main moves on by 30 files; the main checkout only fetches, so
+        # its local main stays behind origin/main.
+        seed = self.tmp / "seed"
+        for i in range(30):
+            (seed / "src" / "merged").mkdir(parents=True, exist_ok=True)
+            # A sensitive word on a merged line: the added-line scan must not
+            # count it either.
+            (seed / "src" / "merged" / f"f{i}.ts").write_text(f"export const token{i} = {i};\n")
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "merged since", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+    def test_a_stale_local_base_branch_does_not_count_merged_commits_as_the_build(self):
+        local = self.sh("git", "rev-parse", "main", cwd=self.repo).strip()
+        remote = self.sh("git", "rev-parse", "origin/main", cwd=self.repo).strip()
+        self.assertNotEqual(local, remote)  # the local base branch is behind
+        self.standard_session()
+        self.write("src/due.ts")
+        state = self.verified()
+        # The build and its acceptance checks, not the 30 files merged since.
+        self.assertLess(state["risk_recheck"]["files"], 30, state["risk_recheck"])
+        self.assertEqual(state["risk_recheck"]["why"], [], state["risk_recheck"])
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+
 class SensitiveScanTest(NextCase):
     """More of the risk re-check's declared globs and added-line scan."""
     standard_session = RiskRecheckTest.standard_session

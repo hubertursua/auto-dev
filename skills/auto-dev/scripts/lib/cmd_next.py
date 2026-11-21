@@ -1739,7 +1739,7 @@ def build_diff(c):
     # Names are read NUL-separated and unquoted, as `changed_paths` reads them,
     # so a name git quotes (non-ASCII, `"`, `\`) is the same string everywhere.
     add, remove = changed_paths(c.wt)
-    base = out("merge-base", c.state["repo"]["base"], "HEAD").strip()
+    base = cmd_work.base_commit(c.wt, c.state["repo"]["base"])
     committed = out("-c", "core.quotePath=false", "diff", "--name-only", "-z",
                     "--no-renames", f"{base}..HEAD").split("\0") if base else []
     paths = sorted({p for p in add + remove + committed

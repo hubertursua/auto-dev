@@ -54,7 +54,7 @@ from pathlib import Path
 
 from . import state as st
 from .cmd_ship import TRAILER
-from .cmd_work import check_files
+from .cmd_work import base_commit, check_files
 from .output import CANNOT_RUN, FAILED, Fail, emit
 from .proc import git
 
@@ -85,8 +85,7 @@ def adopt(state, paths):
     if known:
         since = known[-1]
     else:
-        code, out, _ = git(wt, "merge-base", state["repo"]["base"], "HEAD", check=False)
-        since = out.strip() if code == 0 else ""
+        since = base_commit(wt, state["repo"]["base"])
     if not since:
         return []
     log = git(wt, "log", "--reverse", "--format=%H%x00%s", f"{since}..HEAD")
