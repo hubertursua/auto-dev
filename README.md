@@ -742,8 +742,8 @@ The levels start from Anthropic's guidance for the Claude 5.5 models
 ([choosing a model](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model)),
 which says to start at each model's default and tune from your own evals.
 The last five below were then checked on small scenarios (planted bugs for
-the reviewers and lookups, a ticket with hidden checks for the coder and the
-acceptance tester), each against the stronger setting it replaced:
+the reviewers, the lookups and the acceptance tester's checks; a ticket with
+hidden checks for the coder), each against the stronger setting it replaced:
 
 - **`sonnet` workers run at `high`, Sonnet's default.** At `medium`, Sonnet 5.5
   scores 7 to 15 points lower on Anthropic's coding benchmarks
@@ -761,11 +761,13 @@ acceptance tester), each against the stronger setting it replaced:
   2. The plan and the acceptance checks state what to build, and the
   verifier and the review check the result.
 - **The acceptance tester runs on `sonnet`.** Its checks are the build's
-  contract, so a weak one lets bad code pass. In the scenarios, Sonnet's
-  checks were as good as Opus's: every check failed on the untouched tree,
-  every run's checks caught all 8 planted bugs, and both models' few false
-  alarms on correct builds came from the same gaps in the plan. Sonnet cost
-  about half as much and took about a third less time.
+  contract, so a weak one lets bad code pass, but in the scenarios (3 runs
+  each) Sonnet's checks were as good as Opus's. Every new-behavior check
+  failed on the untouched tree, every run's checks caught all 8 planted
+  bugs, and both models' false alarms on correct builds came from the same
+  gaps in the plan. Two Sonnet runs also caught builds that showed a
+  downgrade's total as negative. Sonnet cost about half as much and took
+  about a third less time.
 - **The code reviewers run at `high`.** In the scenarios, `high` found every
   planted bug that `xhigh` did, in a little over half the time; the plan
   still asks for `xhigh` on a large change.
