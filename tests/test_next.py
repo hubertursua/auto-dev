@@ -6116,7 +6116,9 @@ class StaleLocalBaseTest(NextCase):
         seed = self.tmp / "seed"
         for i in range(30):
             (seed / "src" / "merged").mkdir(parents=True, exist_ok=True)
-            (seed / "src" / "merged" / f"f{i}.ts").write_text(f"export const v{i} = {i};\n")
+            # A sensitive word on a merged line: the added-line scan must not
+            # count it either.
+            (seed / "src" / "merged" / f"f{i}.ts").write_text(f"export const token{i} = {i};\n")
         self.sh("git", "add", "-A", cwd=seed)
         self.sh("git", "commit", "-q", "-m", "merged since", cwd=seed)
         self.sh("git", "push", "-q", "origin", "main", cwd=seed)
@@ -6132,6 +6134,7 @@ class StaleLocalBaseTest(NextCase):
         state = self.verified()
         # The build and its acceptance checks, not the 30 files merged since.
         self.assertLess(state["risk_recheck"]["files"], 30, state["risk_recheck"])
+        self.assertEqual(state["risk_recheck"]["why"], [], state["risk_recheck"])
         self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
         self.assertFalse(state["high_risk"])
 

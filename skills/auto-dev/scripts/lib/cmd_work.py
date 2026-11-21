@@ -367,6 +367,19 @@ def cut_commit(worktree, base):
     return cut
 
 
+def base_commit(worktree, base):
+    """`cut_commit`, or '' where that fails: measured against origin/<base>,
+    never the main checkout's local base branch, which can lag far behind
+    (every commit merged since would count as the run's). The local branch
+    is read only when origin's can't be: it can only reach back further."""
+    for ref in (f"origin/{base}", base):
+        out = subprocess.run(["git", "-C", str(worktree), "merge-base", ref, "HEAD"],
+                             capture_output=True, text=True, check=False)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    return ""
+
+
 def issues_text(issues):
     return "\n".join(f"- {i}" for i in issues)
 
