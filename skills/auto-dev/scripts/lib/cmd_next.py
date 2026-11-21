@@ -56,8 +56,9 @@ Once the build's quality gate is green, the change is committed, pushed and
 opened as a draft PR; the verifier and the review then run together, alongside
 CI. On a standard-risk run the review is one reviewer (code and security); a
 high-risk run adds the panel of three with the judge, the separate security
-reviewer, mutation and the verifier's own probes. One correction, one round,
-takes what a pass left open and red CI on the pushed commit together.
+reviewer and mutation. The verifier runs its own probes on every run. One
+correction, one round, takes what a pass left open and red CI on the pushed
+commit together.
 
 Workers never negotiate the contract between themselves. A coder that finds
 a plan step wrong builds it the way that works and lists the deviation

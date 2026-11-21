@@ -147,16 +147,16 @@ class BriefTest(WorkCase):
         self.assertEqual(values["review_file"], "none")
         self.assertEqual(values["direction"], "use UTC")
 
-    def test_a_standard_risk_verifier_runs_no_mutation_and_no_probes(self):
+    def test_a_standard_risk_verifier_probes_but_runs_no_mutation(self):
         r = self.cmd("brief", "verifier", "--set", "mode=first pass")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         values = self.brief_values(self.dir / "briefs" / "verifier-1.md")
         self.assertEqual(values["mutation_cap"], "0 (off: a standard-risk run)")
-        self.assertEqual(values["probes"], "off (a standard-risk run)")
+        self.assertNotIn("probes", values)
 
     def test_verifier_brief_carries_the_last_survivors(self):
         state = json.loads((self.dir / "state.json").read_text())
-        state["high_risk"] = True  # mutation and probes run on a high-risk run
+        state["high_risk"] = True  # mutation runs on a high-risk run
         (self.dir / "state.json").write_text(json.dumps(state))
         (self.dir / "SPEC_EVAL.md").write_text(SPEC_EVAL.format(
             tree="0" * 40, v1="met", v2="met", e2="x", judgment="Justified",
@@ -167,7 +167,7 @@ class BriefTest(WorkCase):
         text = (self.dir / "briefs" / "verifier-1.md").read_text()
         self.assertIn("| M2 | `src/sort.ts:4` |", text)
         self.assertIn("mutation_cap: 20", text)
-        self.assertIn("probes: on", text)
+        self.assertEqual([ln for ln in text.splitlines() if ln.startswith("probes:")], [])
         modes = [ln for ln in text.splitlines() if ln.startswith("mode:")]
         self.assertEqual(modes, ["mode: re-check"])
 
@@ -446,6 +446,108 @@ class BriefTest(WorkCase):
                       value)
         self.assertNotIn("--files", value)
         self.assertNotIn("no test-ID form", value)
+
+
+class VerifierBriefCase(WorkCase):
+    """The verifier's brief and instructions on a standard- or high-risk run."""
+
+    def mark_risk(self, high, mutation_max=None):
+        state = json.loads((self.dir / "state.json").read_text())
+        state["high_risk"] = high
+        if mutation_max is not None:
+            state["settings"]["mutation_max"] = mutation_max
+        (self.dir / "state.json").write_text(json.dumps(state))
+
+    def verifier_brief(self):
+        r = self.cmd("brief", "verifier", "--set", "mode=first pass")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        path = Path(r.stdout.split("BRIEF:")[1].split()[0])
+        agent = [ln for ln in r.stdout.splitlines() if ln.startswith("agent:")]
+        return path.read_text(), agent
+
+    def probes_step(self):
+        """The verifier's numbered step headed "Probes", up to step 8."""
+        lines = (SCRIPTS.parents[2] / "agents" / "verifier.md").read_text().splitlines()
+        start = next(i for i, ln in enumerate(lines) if re.match(r"\d+\. Probes\b", ln))
+        end = next(i for i in range(start + 1, len(lines)) if re.match(r"8\. ", lines[i]))
+        return re.sub(r"\s+", " ", "\n".join(lines[start:end]))
+
+
+class VerifierProbeBriefTest(VerifierBriefCase):
+    def test_a_standard_risk_verifier_is_told_to_probe_each_checked_condition(self):
+        (self.dir / "PLAN.md").write_text(PLAN_NO_SECURITY)
+        self.mark_risk(False)
+        brief, _ = self.verifier_brief()
+        self.assertEqual([ln for ln in brief.splitlines() if ln.startswith("probes:")], [])
+        step = self.probes_step()
+        self.assertNotIn("{{probes}}", step)
+        self.assertNotIn("high-risk", step)
+        self.assertIn("one probe", step)
+        self.assertIn("each condition with acceptance checks", step)
+
+    def test_a_high_risk_verifier_brief_has_no_probe_switch_either(self):
+        self.mark_risk(False)
+        _, standard_agent = self.verifier_brief()
+        self.mark_risk(True)
+        brief, high_agent = self.verifier_brief()
+        self.assertEqual([ln for ln in brief.splitlines() if ln.startswith("probes:")], [])
+        # Both tiers' verifiers read the same instructions.
+        self.assertEqual(high_agent, standard_agent)
+        self.assertNotIn("{{probes}}", self.probes_step())
+
+
+class VerifierMutationBriefTest(VerifierBriefCase):
+    def test_mutation_stays_off_for_a_standard_risk_verifier_and_capped_for_a_high_one(self):
+        self.mark_risk(False)
+        brief, _ = self.verifier_brief()
+        self.assertIn("mutation_cap: 0 (off: a standard-risk run)", brief.splitlines())
+        self.mark_risk(True)
+        brief, _ = self.verifier_brief()
+        self.assertIn("mutation_cap: 20", brief.splitlines())
+
+    def test_a_high_risk_run_with_mutation_max_zero_turns_mutation_off(self):
+        self.mark_risk(True, mutation_max=0)
+        brief, _ = self.verifier_brief()
+        self.assertIn("mutation_cap: 0 (off)", brief.splitlines())
+
+
+class VerifierProbeStepTest(VerifierBriefCase):
+    """What the verifier's Probes step says, whatever the tier."""
+
+    def test_the_probes_step_has_no_switch_that_skips_it(self):
+        step = self.probes_step().lower()
+        for switch in ("skip", "unless", "only on"):
+            self.assertNotIn(switch, step)
+        # "off" as a switch ("at `off`", "off on a standard-risk run").
+        self.assertIsNone(re.search(r"\boff\b", step), step)
+        self.assertTrue("whatever the risk tier" in step or "every pass" in step, step)
+
+    def test_the_probes_step_keeps_probe_files_in_a_folder_of_their_own(self):
+        step = self.probes_step()
+        self.assertIn("{{artifact_dir}}/tmp/probes/", step)
+        # Deletion is confined to that folder, never the rest of tmp/.
+        self.assertIn("delete only files in that folder", step.lower())
+        self.assertIn("never the rest of {{artifact_dir}}/tmp/", step)
+
+    def test_the_probes_step_deletes_every_probe_file_before_returning_whatever_the_outcome(self):
+        step = self.probes_step()
+        lower = step.lower()
+        self.assertIn("before you return, whatever the outcome, delete every file in "
+                      "{{artifact_dir}}/tmp/probes/", lower)
+        # A probe whose group is never saved is deleted too.
+        self.assertIn("its group saved or not", lower)
+        self.assertIn("abandoned", lower)
+        self.assertIn("before a `blocked` or `failed` return", step)
+        # No saved group gates the deletion any more.
+        self.assertNotIn("once that group is saved", lower)
+
+    def test_the_probes_step_clears_a_cut_short_spawn_s_probe_files_before_its_first_probe(self):
+        step = self.probes_step()
+        lower = step.lower()
+        clear = lower.index("before your first probe, delete any file already in that folder")
+        self.assertIn("earlier spawn", lower[clear:])
+        # The clearing comes before the probes are saved and the final deletion.
+        self.assertLess(clear, lower.index("before you return, whatever the outcome"))
 
 
 class RecordTest(WorkCase):

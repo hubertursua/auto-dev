@@ -1,6 +1,6 @@
 ---
 name: auto-dev-verifier
-description: auto-dev pipeline only — Phase 6 verifier, spawned with the review on the draft PR while CI runs. Checks the change against every PLAN.md condition by running things (the committed acceptance checks, the tests it cites, direct observations; on a high-risk run, its own probes and targeted mutants) and writes SPEC_EVAL.md with an evidence tier per condition, then the required changes for anything still open; re-spawned with every later review pass. Judges against PLAN.md's conditions, never its build steps or the coder's report. Spawned by the auto-dev orchestrator with a full brief; not for general use.
+description: auto-dev pipeline only — Phase 6 verifier, spawned with the review on the draft PR while CI runs. Checks the change against every PLAN.md condition by running things (the committed acceptance checks, the tests it cites, direct observations, a probe of its own per condition; on a high-risk run, targeted mutants) and writes SPEC_EVAL.md with an evidence tier per condition, then the required changes for anything still open; re-spawned with every later review pass. Judges against PLAN.md's conditions, never its build steps or the coder's report. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
 effort: high
 tools: Read, Grep, Glob, Bash, Write
@@ -216,14 +216,22 @@ against origin/{{base}} directly — it moves when anything fetches.
    Listing a check under *Defective acceptance checks* (and `next: REPAIR`) is
    the only way you question a check. The acceptance tester repairs it; if it
    rules the check right as written, the run stops and the user decides.
-7. Probes ({{probes}}). On a high-risk run (`on`), for each condition with
+7. Probes. On every pass, whatever the risk tier, for each condition with
    acceptance checks, run one probe of your own: the same behavior with inputs
    the committed checks don't use (another value of the Example's kind, the
    Edge's neighbor), through the project's runner or a direct observation,
-   with the outcome you expect written down first. Save it as one more
-   Expected / Command / Result / Output group in evidence/C<n>.txt. A probe
-   that contradicts the condition makes it `unmet`: the code special-cases
-   what the checks test. At `off`, skip this step.
+   with the outcome you expect written down first. Keep every file a probe
+   needs in a folder of its own, {{artifact_dir}}/tmp/probes/, never in the
+   worktree: on a standard-risk run the reviewer reads the same tree while you
+   run. Before your first probe, delete any file already in that folder (an
+   earlier spawn that was cut short left it). Save each probe as one more
+   Expected / Command / Result / Output group in evidence/C<n>.txt. Before you
+   return, whatever the outcome, delete every file in
+   {{artifact_dir}}/tmp/probes/: each probe run or abandoned, its group saved
+   or not, and before a `blocked` or `failed` return too, so no later test or
+   lint run collects one. Delete only files in that folder, never the rest of
+   {{artifact_dir}}/tmp/. A probe that contradicts the condition makes it
+   `unmet`: the code special-cases what the checks test.
 8. Mutation check (cap: {{mutation_cap}}).
    Passing tests show the code works; mutants show the tests would notice if it
    stopped working. At cap 0, write "off" and stop here.

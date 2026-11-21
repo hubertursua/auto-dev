@@ -54,8 +54,8 @@ post-plan gate. The planner proposes the risk tier, the critic can raise it,
 and `next` re-checks it from the diff once the quality gate is green, before
 anything is pushed; it never goes down. A standard-risk run gets one verifier
 and one reviewer (code and security); a high-risk run adds the review panel
-with its judge, the separate security reviewer, mutation and the verifier's
-own probes.
+with its judge, the separate security reviewer and mutation. The verifier
+runs its own probes on every run.
 
 ## Paths
 

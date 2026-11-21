@@ -389,12 +389,12 @@ def auto_values(worker, n, state, ad, mode):
         "ticket": st.ticket_line(state["task"]).split(" — ")[0],
         "binding_rules": BINDING_RULES.format(artifact_dir=ad),
         "test_command": test or "none", "test_notes": s.get("test_notes") or "none",
-        # Mutation and the verifier's own probes run on a high-risk run only.
+        # Mutation runs on a high-risk run only (the verifier's probes run on
+        # every run: agents/verifier.md).
         "mutation_cap": (str(s.get("mutation_max", 20))
                          if state.get("high_risk") and s.get("mutation_max", 20) else
                          "0 (off)" if state.get("high_risk") else
                          "0 (off: a standard-risk run)"),
-        "probes": "on" if state.get("high_risk") else "off (a standard-risk run)",
         "gate_commands": gate or "none",
         "test_runs": test_runs(found[1], ad) if found else "none",
         "result_file": str(ad / "returns" / f"{worker}-{n}.json"),

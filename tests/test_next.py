@@ -2931,12 +2931,12 @@ class LeanTest(NextCase):
         at_push, at_ready = self.walk_to_ready("REVISE")
         self.assertEqual((at_push, at_ready), (6, 8))
 
-    def test_a_standard_run_verifies_without_mutation_or_probes(self):
+    def test_a_standard_run_verifies_with_probes_but_without_mutation(self):
         self.draft_pr()
         ver, rev = self.solo(verifier=None)
         brief = (self.dir / "briefs" / f"verifier-{ver[1]}.md").read_text()
         self.assertIn("mutation_cap: 0 (off: a standard-risk run)", brief)
-        self.assertIn("probes: off (a standard-risk run)", brief)
+        self.assertEqual([ln for ln in brief.splitlines() if ln.startswith("probes:")], [])
         self.assertEqual(self.sets(*rev)["scope"], "first")
         self.assertEqual(self.sets(*rev)["tree"], self.state()["phase6"]["passes"][0]["tree"])
         self.assertEqual(self.state()["phase6"]["passes"][0]["lane"], "standard")
@@ -3407,6 +3407,24 @@ class LeanTest(NextCase):
         self.assertEqual(state["phase6"]["ci"]["status"], "green")
         self.assertLess(state["phase6"]["ci"]["seq"], state["marks"]["pr-ready"]["seq"])
         self.assert_watches(self.next(0), verified)
+
+    def briefs_at_push_and_ready(self, verdict):
+        """Brief files written by the first push and by the ready-for-review gate."""
+        self.plan_session(verdict)
+        self.build_session()
+        self.draft_pr(started=True)
+        self.assertTrue(self.state()["marks"]["pushed"])
+        at_push = len(self.brief_files())
+        self.solo()
+        self.refresh_body()
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+        return at_push, len(self.brief_files())
+
+    def test_the_standard_happy_path_still_spawns_four_by_the_push_and_six_by_ready(self):
+        self.assertEqual(self.briefs_at_push_and_ready("APPROVE"), (4, 6))
+
+    def test_one_plan_revision_still_spawns_six_by_the_push_and_eight_by_ready(self):
+        self.assertEqual(self.briefs_at_push_and_ready("REVISE"), (6, 8))
 
 
 class PublishTest(NextCase):
@@ -9909,3 +9927,41 @@ class MetricsCleanupTest(OverrideCase):
         self.assertEqual(again, self.DONE)
         self.assertTrue(self.worktree.is_dir())
         self.assert_finished()
+
+
+class RiskDocsCase(unittest.TestCase):
+    """What the README, SKILL.md and `next --help` say about probes and mutation."""
+
+    HIGH = ("high-risk", "high risk", "high tier")
+
+    def texts(self):
+        r = subprocess.run([sys.executable, str(AUTODEV), "next", "--help"],
+                           capture_output=True, text=True, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        root = SCRIPTS.parents[2]
+        return {"README.md": (root / "README.md").read_text(encoding="utf-8"),
+                "SKILL.md": (root / "skills" / "auto-dev" / "SKILL.md").read_text(
+                    encoding="utf-8"),
+                "next --help": r.stdout}
+
+    def sentences(self, text):
+        return re.sub(r"\s+", " ", text).split(". ")
+
+
+class ProbeDocsTest(RiskDocsCase):
+    def test_no_description_ties_the_verifier_s_probe_to_a_high_risk_run(self):
+        texts = self.texts()
+        for name, text in texts.items():
+            for sentence in self.sentences(text):
+                low = sentence.lower()
+                if "probe" in low:
+                    self.assertFalse(any(w in low for w in self.HIGH), (name, sentence))
+        self.assertTrue(any("probe" in s.lower() and "every run" in s.lower()
+                            for s in self.sentences(texts["README.md"])))
+
+
+class MutationDocsTest(RiskDocsCase):
+    def test_every_description_still_keeps_mutation_to_a_high_risk_run(self):
+        for name, text in self.texts().items():
+            self.assertTrue(any("mutation" in s.lower() and any(w in s.lower() for w in self.HIGH)
+                                for s in self.sentences(text)), name)
