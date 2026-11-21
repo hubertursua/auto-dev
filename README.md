@@ -749,8 +749,7 @@ against the stronger setting it replaced:
   scores 7 to 15 points lower on Anthropic's coding benchmarks
   ([optimizing for cost and intelligence](https://platform.claude.com/docs/en/about-claude/models/optimizing-for-cost-and-intelligence)).
 - **`opus` workers other than the coder run at `high`, above Opus's default
-  (`medium`).** A
-  worker's miss costs a correction round. 5.0 lowered the planner, the judge
+  (`medium`).** A worker's miss costs a correction round. 5.0 lowered the planner, the judge
   and the security reviews from `xhigh` to `high`: the plan critic now checks
   the plan, and the run's time to its first push matters more.
 - **The coder runs at `medium`, Opus's default.** Its misses cost a
