@@ -85,8 +85,14 @@ def adopt(state, paths):
     if known:
         since = known[-1]
     else:
-        code, out, _ = git(wt, "merge-base", state["repo"]["base"], "HEAD", check=False)
-        since = out.strip() if code == 0 else ""
+        since = ""
+        # origin/<base> first, as `cut_commit` reads it: a stale local base
+        # branch would reach back past the cut.
+        for ref in (f"origin/{state['repo']['base']}", state["repo"]["base"]):
+            code, out, _ = git(wt, "merge-base", ref, "HEAD", check=False)
+            if code == 0 and out.strip():
+                since = out.strip()
+                break
     if not since:
         return []
     log = git(wt, "log", "--reverse", "--format=%H%x00%s", f"{since}..HEAD")
