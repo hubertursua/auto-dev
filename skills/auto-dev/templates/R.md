@@ -9,6 +9,7 @@ Lens: <your lens, word for word from your instructions' line for your slot>
 1. **<title>** — `path:line` — <correctness | tests | scope | performance | design | conventions>
    Trigger path: <entry point `file:line` → … → the failure, with the input>
    Why it is wrong: <one or two sentences>
+   Checked: <the definitions, guards, callers and tests you read (`file:line`), and why none of them stops it>
 
 ## Security leads
 - `path:line` — <one line, unchased>

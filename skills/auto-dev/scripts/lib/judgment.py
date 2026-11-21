@@ -33,7 +33,7 @@ LEVEL, COUNTS = "\0level\0", "\0counts\0"  # filled in once the rows are known
 
 FINDING_RE = re.compile(r"^\s*(\d+)\.\s+\*\*(.+?)\*\*\s+[—–-]+\s+`([^`]+)`\s+[—–-]+\s+"
                         r"`?([A-Za-z-]+)`?\s*$")
-SUB_RE = re.compile(r"^\s+(Trigger path|Why it is wrong):\s*(.*)$")
+SUB_RE = re.compile(r"^\s+(Trigger path|Why it is wrong|Checked):\s*(.*)$")
 NONE_RE = re.compile(r"none\b", re.IGNORECASE)
 LOOKS_LIKE_FINDING = re.compile(r"^\s*(\d+\.|[-*])\s")
 DISPOSED = re.compile(r"→\s*(passed to the security review|covered by S\d+)\.?\s*$")
@@ -73,7 +73,7 @@ def parse_report(text):
     if body is None:
         problems.append("no `## Findings` section")
         body = ""
-    current, unparsed, none_said = None, [], False
+    current, last, unparsed, none_said = None, None, [], False
     for line in body.splitlines():
         if not line.strip():
             continue
@@ -84,15 +84,17 @@ def parse_report(text):
                 problems.append(f"finding {match.group(1)}: category `{category}` is not one "
                                 f"of {', '.join(CATEGORIES)}")
             current = {"title": match.group(2).strip(), "location": match.group(3).strip(),
-                       "category": category, "Trigger path": "", "Why it is wrong": ""}
+                       "category": category, "Trigger path": "", "Why it is wrong": "",
+                       "Checked": ""}
             findings.append(current)
+            last = "Trigger path"
             continue
         sub = SUB_RE.match(line)
         if sub and current is not None:
-            current[sub.group(1)] = sub.group(2).strip()
+            last = sub.group(1)
+            current[last] = sub.group(2).strip()
             continue
         if current is not None and line.startswith("   "):
-            last = "Why it is wrong" if current["Why it is wrong"] else "Trigger path"
             current[last] = (current[last] + " " + line.strip()).strip()
             continue
         if not findings and not LOOKS_LIKE_FINDING.match(line) and (
@@ -138,7 +140,7 @@ def findings_text(pass_n, reports, earlier_open=()):
                           "Trigger path": "none given",
                           "Why it is wrong": f"this line of {reviewer}.md is not in the "
                           f"template's shape: read {reviewer}.md for it",
-                          "raised_by": reviewer})
+                          "Checked": "", "raised_by": reviewer})
     for i, item in enumerate(items, 1):
         item["id"] = f"F{i}"
     finished = len(reports)
@@ -161,6 +163,8 @@ def findings_text(pass_n, reports, earlier_open=()):
                 f"- Category: {item['category']}",
                 f"- Trigger path: {item['Trigger path'] or 'none given'}",
                 f"- Why it is wrong: {item['Why it is wrong'] or 'none given'}"]
+        if item.get("Checked"):
+            out.append(f"- Checked: {item['Checked']}")
         if near:
             out.append(f"- Near: {', '.join(near)} (the same file, within {NEAR} lines: "
                        "maybe the same finding)")
