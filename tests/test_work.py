@@ -9,6 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1720,3 +1721,54 @@ class AmendedNamesTest(WorkCase):
     def test_an_edge_row_counts_for_its_condition(self):
         self.assertEqual([self.work.row_id(c) for c in ("3 (Edge)", " S1 ", "2")],
                          ["3", "S1", "2"])
+
+
+class WorkerWaitRuleTest(unittest.TestCase):
+    """What the worker files say about slow commands and waiting on a run."""
+
+    AGENTS = Path(__file__).resolve().parents[1] / "agents"
+    RUNS_CHECKS = ("coder", "acceptance-tester", "verifier", "fixer")
+    WAIT_COMMAND = "python3 {{skill_dir}}/scripts/autodev.py run wait --dir {{artifact_dir}}"
+
+    def text(self, name):
+        """agents/<name>.md with its whitespace collapsed to single spaces."""
+        return " ".join((self.AGENTS / f"{name}.md").read_text().split())
+
+    def test_each_command_running_worker_waits_only_with_run_wait(self):
+        for name in self.RUNS_CHECKS:
+            text = self.text(name)
+            for said in (self.WAIT_COMMAND, "RUNNING", "Never poll", "--timeout <seconds>",
+                         "no other `autodev.py run`"):
+                self.assertIn(said, text, name)
+
+    def test_coder_no_longer_backgrounds_a_check_on_its_own(self):
+        text = self.text("coder")
+        self.assertNotIn("goes in the background", text)
+        self.assertIn("--timeout <seconds>", text)
+
+    def test_top_bullets_keep_their_other_rules(self):
+        self.assertIn("scope slow suites to the affected files", self.text("coder"))
+        for name in ("fixer", "acceptance-tester", "verifier"):
+            self.assertIn("spill large output", self.text(name), name)
+
+    def test_no_worker_file_says_5_minutes(self):
+        names = sorted(p.stem for p in self.AGENTS.glob("*.md"))
+        self.assertGreaterEqual(len(names), 14, names)
+        for name in names:
+            text = self.text(name)
+            self.assertIn("under 3 minutes", text, name)
+            self.assertNotIn("5 minutes", text, name)
+
+    def test_verifier_keeps_verify_prep_as_its_exception(self):
+        text = self.text("verifier")
+        self.assertIn("except `verify prep`", text)
+        self.assertIn("600000 ms", text)
+
+    def test_coder_never_writes_its_own_mutants(self):
+        sentences = re.split(r"(?<=[.!?])\s+", self.text("coder"))
+        rule = [s for s in sentences if "Never write mutants" in s]
+        self.assertTrue(rule, "no sentence says `Never write mutants`")
+        self.assertTrue(any("stash" in s and "the verifier" in s for s in rule), rule)
+
+    def test_coder_still_works_test_first(self):
+        self.assertIn("run it and see it FAIL, then make it pass", self.text("coder"))
