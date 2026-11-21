@@ -741,22 +741,26 @@ so a new release is picked up without editing the plugin.
 The levels start from Anthropic's guidance for the Claude 5.5 models
 ([choosing a model](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model)),
 which says to start at each model's default and tune from your own evals.
-The last four below were then checked against small scenarios with planted
-bugs, against the stronger setting each replaced:
+The last four below were then checked on small scenarios (planted bugs for
+the reviewers and lookups, a ticket with hidden checks for the coder), each
+against the stronger setting it replaced:
 
 - **`sonnet` workers run at `high`, Sonnet's default.** At `medium`, Sonnet 5.5
   scores 7 to 15 points lower on Anthropic's coding benchmarks
   ([optimizing for cost and intelligence](https://platform.claude.com/docs/en/about-claude/models/optimizing-for-cost-and-intelligence)).
-- **The other `opus` workers run at `high`, above Opus's default (`medium`).** A
+- **`opus` workers other than the coder run at `high`, above Opus's default
+  (`medium`).** A
   worker's miss costs a correction round. 5.0 lowered the planner, the judge
   and the security reviews from `xhigh` to `high`: the plan critic now checks
   the plan, and the run's time to its first push matters more.
-- **The coder runs at `medium`, Opus's default.** The plan and the
-  acceptance checks state what to build, and the verifier and the review
-  check it. In the scenarios, `medium` built every condition correctly, as
-  `high` did, at about two-thirds of the cost and in half the time. `high`
-  avoided a flaw the ticket didn't state (in code the change calls) in 3
-  of 3 runs, `medium` in 2 and `low` in 1.
+- **The coder runs at `medium`, Opus's default.** Its misses cost a
+  correction round too, but in the scenarios `medium` missed nothing the
+  ticket stated: it built every condition correctly, as `high` did, at a
+  little under two-thirds of the cost and in half the time. The one
+  difference was a rounding flaw in existing code the change calls, which
+  the ticket didn't mention: `high` avoided it in 3 of 3 runs, `medium` in
+  2. The plan and the acceptance checks state what to build, and the
+  verifier and the review check the result.
 - **The code reviewers run at `high`.** In the scenarios, `high` found every
   planted bug that `xhigh` did, in a little over half the time; the plan
   still asks for `xhigh` on a large change.
