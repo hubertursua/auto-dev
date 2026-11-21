@@ -220,12 +220,18 @@ against origin/{{base}} directly — it moves when anything fetches.
    acceptance checks, run one probe of your own: the same behavior with inputs
    the committed checks don't use (another value of the Example's kind, the
    Edge's neighbor), through the project's runner or a direct observation,
-   with the outcome you expect written down first. Keep any file a probe needs
-   under {{artifact_dir}}/tmp/, never in the worktree: on a standard-risk run
-   the reviewer reads the same tree while you run. Save it as one more
-   Expected / Command / Result / Output group in evidence/C<n>.txt. A probe
-   that contradicts the condition makes it `unmet`: the code special-cases
-   what the checks test.
+   with the outcome you expect written down first. Keep every file a probe
+   needs in a folder of its own, {{artifact_dir}}/tmp/probes/, never in the
+   worktree: on a standard-risk run the reviewer reads the same tree while you
+   run. Before your first probe, delete any file already in that folder (an
+   earlier spawn that was cut short left it). Save each probe as one more
+   Expected / Command / Result / Output group in evidence/C<n>.txt. Before you
+   return, whatever the outcome, delete every file in
+   {{artifact_dir}}/tmp/probes/: each probe run or abandoned, its group saved
+   or not, and before a `blocked` or `failed` return too, so no later test or
+   lint run collects one. Delete only files in that folder, never the rest of
+   {{artifact_dir}}/tmp/. A probe that contradicts the condition makes it
+   `unmet`: the code special-cases what the checks test.
 8. Mutation check (cap: {{mutation_cap}}).
    Passing tests show the code works; mutants show the tests would notice if it
    stopped working. At cap 0, write "off" and stop here.

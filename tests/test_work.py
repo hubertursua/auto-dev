@@ -511,6 +511,45 @@ class VerifierMutationBriefTest(VerifierBriefCase):
         self.assertIn("mutation_cap: 0 (off)", brief.splitlines())
 
 
+class VerifierProbeStepTest(VerifierBriefCase):
+    """What the verifier's Probes step says, whatever the tier."""
+
+    def test_the_probes_step_has_no_switch_that_skips_it(self):
+        step = self.probes_step().lower()
+        for switch in ("skip", "unless", "only on"):
+            self.assertNotIn(switch, step)
+        # "off" as a switch ("at `off`", "off on a standard-risk run").
+        self.assertIsNone(re.search(r"\boff\b", step), step)
+        self.assertTrue("whatever the risk tier" in step or "every pass" in step, step)
+
+    def test_the_probes_step_keeps_probe_files_in_a_folder_of_their_own(self):
+        step = self.probes_step()
+        self.assertIn("{{artifact_dir}}/tmp/probes/", step)
+        # Deletion is confined to that folder, never the rest of tmp/.
+        self.assertIn("delete only files in that folder", step.lower())
+        self.assertIn("never the rest of {{artifact_dir}}/tmp/", step)
+
+    def test_the_probes_step_deletes_every_probe_file_before_returning_whatever_the_outcome(self):
+        step = self.probes_step()
+        lower = step.lower()
+        self.assertIn("before you return, whatever the outcome, delete every file in "
+                      "{{artifact_dir}}/tmp/probes/", lower)
+        # A probe whose group is never saved is deleted too.
+        self.assertIn("its group saved or not", lower)
+        self.assertIn("abandoned", lower)
+        self.assertIn("before a `blocked` or `failed` return", step)
+        # No saved group gates the deletion any more.
+        self.assertNotIn("once that group is saved", lower)
+
+    def test_the_probes_step_clears_a_cut_short_spawn_s_probe_files_before_its_first_probe(self):
+        step = self.probes_step()
+        lower = step.lower()
+        clear = lower.index("before your first probe, delete any file already in that folder")
+        self.assertIn("earlier spawn", lower[clear:])
+        # The clearing comes before the probes are saved and the final deletion.
+        self.assertLess(clear, lower.index("before you return, whatever the outcome"))
+
+
 class RecordTest(WorkCase):
     def test_the_planner_s_size_and_risk_are_recorded_and_checked_against_the_plan(self):
         self.returned("planner", 1, next="FITS", **{**PLANNED, "risk": "standard"})

@@ -83,7 +83,8 @@
         "A test that exercises the illegal transition and expects a handled error is added or extended",
         "At least one lint/*.md file exists after the Build stage, and SPEC_EVAL.md once the first review pass has run",
         "The orchestrator runs `autodev.py quality-gate` once the coder has built, and lint/*.md exist before the first commit; no auto-dev:cleanup agent is spawned",
-        "On this standard-risk run, each evidence/C<n>.txt for a condition with acceptance checks holds a second Expected / Command / Result / Output group (the verifier's probe), and no evidence/mutants.json is written"
+        "On this standard-risk run, each evidence/C<n>.txt for a condition with acceptance checks holds a second Expected / Command / Result / Output group (the verifier's probe), and no evidence/mutants.json is written",
+        "Once the verifier returns, no probe file is left under `.auto-dev/tmp/` (its `tmp/probes/` folder is empty or gone) for a later test or lint run to collect"
       ]
     },
     {
