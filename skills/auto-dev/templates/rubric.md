@@ -10,7 +10,9 @@ Zero findings is a correct result for a clean change, once you have tried to
 break it.
 
 **Read before you judge.** Read each changed file in full as the scope has it,
-not only its hunks, and the binding rules (under _Code review findings_). Read
+not only its hunks, and the binding rules (the repo's CLAUDE.md or AGENTS.md,
+CONTRIBUTING and coding-guideline docs, and the security directives
+`profile.md` names). Read
 the docs, comments and PLAN.md text the change touches: behavior they describe
 as intended is not a defect. A comment this change adds is the exception: it is
 the author's claim, to check like the code. Behavior PLAN.md asks for that you
@@ -37,11 +39,12 @@ one as judge:
 4. **Name a path that real use takes.** The trigger path starts where normal
    use starts: a real caller, a request, the command as users run it, a file
    the code really reads. A finding that only old data, a hand edit or an
-   impossible state can reach is dropped.
-5. **Try to prove it wrong.** If you can, drop it. If you still aren't sure,
-   drop it. A security finding is the one exception: one you can't prove wrong
-   but can't trace either is Low (_Security findings_, below), listed as
-   advisory rather than dropped.
+   impossible state can reach is not a finding: leave it out (as judge,
+   `Holds: no`).
+5. **Try to prove it wrong.** If you can, or if you still aren't sure, leave
+   it out (as judge, `Holds: no`). A security finding is the one exception:
+   one you can't prove wrong but can't trace either is Low (_Security
+   findings_, below), listed as advisory rather than left out.
 
 A finding's `path:line` is a line that exists in the file as the scope has it:
 open the file to confirm it. A performance finding shows its cost from the code

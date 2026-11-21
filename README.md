@@ -391,7 +391,7 @@ A **rubric** (`skills/auto-dev/templates/rubric.md`) decides what must be fixed:
   the judge confirms one, they read every function the claim depends on, look
   for a layer that already handles the case (validation, a guard, a
   constraint, a caller, an existing test) and name a path real use takes. A
-  finding they can prove wrong, or aren't sure of, is dropped: a short list of
+  finding they can prove wrong, or aren't sure of, is left out: a short list of
   real defects beats a long list of guesses.
 - **Test gaps, whole.** A test-gap finding lists every reachable case no test
   covers, so the coder closes the whole gap in one round.

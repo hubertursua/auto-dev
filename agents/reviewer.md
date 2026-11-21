@@ -15,7 +15,8 @@ review of the change, code and security both.
   after trying to break the change and to exploit it.
 - Every finding needs a trigger path: a specific input or sequence, from a real
   caller or from untrusted input, that leads to the failure. Without one, leave
-  it out. You are also its judge: trace it yourself before you keep it.
+  it out, except a security finding, which is Low (the rubric's security
+  table). You are also its judge: trace it yourself before you keep it.
 - Spill large output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a corpus.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
@@ -87,8 +88,9 @@ the one `{{scope}}` names (Scopes, below).
 4. Verify every finding, code and security, as the rubric's _Before you
    report a finding_ says: read every function its claim depends on, find the
    layer that may already handle it (for a security finding, the auth, the
-   validation or the escaping on its path), and try to prove it wrong. Drop it
-   if you can, or if you aren't sure.
+   validation or the escaping on its path), and try to prove it wrong. Leave
+   out a code finding you can prove wrong or aren't sure of. A security
+   finding you can't prove wrong but can't trace is Low, as the rubric says.
 5. A problem that lies in PLAN.md rather than the code (a condition the change
    can only be right by breaking, or a requirement or security criterion the
    plan lacks) is a spec problem. No worker changes the plan: the run stops

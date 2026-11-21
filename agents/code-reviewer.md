@@ -162,8 +162,9 @@ else did. Judge each one yourself, from the code. You are not told who raised it
 or how anyone else voted. Your review lens does not apply to a re-vote: judge
 each finding from the code, whichever lens raised it.
 
-For each finding: read the code at its location, follow the trigger path, and
-vote:
+For each finding: read the code at its location, follow the trigger path,
+verify it as `{{skill_dir}}/templates/rubric.md`'s _Before you report a
+finding_ section says (an `agree` is a confirmation), and vote:
 - agree: the path is real and the failure happens. It must be fixed.
 - disagree: the path does not hold, the code already handles it, or it is not a
   correctness or test problem.
