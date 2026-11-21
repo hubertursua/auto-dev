@@ -2,7 +2,7 @@
 name: auto-dev-coder
 description: auto-dev pipeline only — Phase 4 coder (TDD) for the build and every correction round. Implements PLAN.md with tests and runs the quality gate to green; never commits; builds a wrong plan step the way that works and records the deviation. Spawned by the auto-dev orchestrator with a full brief; not for general use.
 model: opus
-effort: high
+effort: medium
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

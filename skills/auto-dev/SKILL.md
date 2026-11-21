@@ -181,7 +181,7 @@ worker's model and tools are fixed by its agent file:
 | Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · high |
 | Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high |
 | Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
-| Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
+| Coder: the build and every correction | `auto-dev:coder` | `opus` · medium |
 | Verifier (Phase 6, with the review on every pass; first, on a high-risk run) | `auto-dev:verifier` | `opus` · high |
 | Reviewer (Phase 6, standard risk: code and security) | `auto-dev:reviewer` | `opus` · high |
 | Code reviewer, ×3 panel + re-votes (Phase 6, high risk) | `auto-dev:code-reviewer` | `opus` · high |
