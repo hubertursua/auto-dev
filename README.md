@@ -387,6 +387,12 @@ A **rubric** (`skills/auto-dev/templates/rubric.md`) decides what must be fixed:
   acceptance check can be must-fix, and each needs a concrete trigger path and,
   on the panel, 2 of the 3 reviewers' votes. Scope, performance and design findings are
   advisory. Problems the change didn't introduce are dropped.
+- **Checked before it's reported.** Before a reviewer reports a finding, or
+  the judge confirms one, they read every function the claim depends on, look
+  for a layer that already handles the case (validation, a guard, a
+  constraint, a caller, an existing test) and name a path real use takes. A
+  finding they can prove wrong, or aren't sure of, is dropped: a short list of
+  real defects beats a long list of guesses.
 - **Test gaps, whole.** A test-gap finding lists every reachable case no test
   covers, so the coder closes the whole gap in one round.
 - **Security findings.** One this change introduced, rated High or Medium with

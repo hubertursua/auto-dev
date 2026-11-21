@@ -88,8 +88,8 @@ weak test is `tests`.
    (a correction's re-review), skip the skill and review the correction
    yourself in step 2, following what it changed downstream: every caller
    and every use of the values it changed, however few lines it touched.
-2. Then go further yourself. Read the changed files and their tests,
-   {{artifact_dir}}/PLAN.md, and the binding rules
+2. Then go further yourself. Read each changed file in full, not only its
+   hunks, its tests, {{artifact_dir}}/PLAN.md, and the binding rules
    ({{binding_rules}}). Try to break the change through your lens first
    (Your lens, above), then through the other two lenses as time allows.
    Scope, performance, design and convention problems may be reported, but they
@@ -107,14 +107,19 @@ weak test is `tests`.
    failure. For a test finding, the changed behavior (file:line) and each input no
    test exercises. A finding you cannot trace, drop; a case you cannot trace,
    leave off the list.
-5. A problem that lies in PLAN.md rather than the code (a condition the change
+5. Verify every finding as the rubric's _Before you report a finding_ says:
+   read every function its claim depends on, find the layer that may already
+   handle it, and try to prove it wrong. Drop it if you can, or if you aren't
+   sure. On its `Checked:` line, name what you read and why it doesn't stop
+   the failure.
+6. A problem that lies in PLAN.md rather than the code (a condition the change
    can only be right by breaking, or a requirement the plan lacks) goes in the
    report's `## Spec problems` section, with the finding or trigger path that
    shows it. The judge decides whether it holds and reports it for the
    user; you never edit PLAN.md.
 
 How your findings will be judged:
-read `{{skill_dir}}/templates/rubric.md`: its code review findings and overall report confidence sections
+read `{{skill_dir}}/templates/rubric.md`: its before you report a finding, code review findings and overall report confidence sections
 
 Write {{artifact_dir}}/review/pass-{{pass}}/{{reviewer}}.md to the template at
 `{{skill_dir}}/templates/R.md` (strict): read it there and copy everything below
@@ -133,6 +138,8 @@ A finding shaped like this, example in TypeScript:
    redirects to `index`, which calls `page()` with `[]`; `items[0].id` at
    `src/todos/list.ts:42` throws a TypeError on the empty list.
    Why it is wrong: the page should render empty, not 500.
+   Checked: `page()` (`src/todos/list.ts:38`) has no empty-list branch;
+   `index` (`src/web/todo-controller.ts:12`) passes the list unfiltered.
 ```
 
 ### Scopes

@@ -57,8 +57,8 @@ the one `{{scope}}` names (Scopes, below).
    skills and review the correction yourself, following what it changed
    downstream: every caller and every use of the values it changed, however
    few lines it touched.
-2. Then go further yourself. Read the changed files and their tests,
-   {{artifact_dir}}/PLAN.md, the acceptance checks
+2. Then go further yourself. Read each changed file in full, not only its
+   hunks, its tests, {{artifact_dir}}/PLAN.md, the acceptance checks
    {{artifact_dir}}/acceptance/MANIFEST.md names, the security directives
    named in {{artifact_dir}}/profile.md, and the binding rules
    ({{binding_rules}}). Try to break the change:
@@ -84,7 +84,12 @@ the one `{{scope}}` names (Scopes, below).
    blame`). For a security finding, also one where the change exposes old
    code to new untrusted input. Count pre-existing code findings without
    listing them; list pre-existing security findings for the user.
-4. A problem that lies in PLAN.md rather than the code (a condition the change
+4. Verify every finding, code and security, as the rubric's _Before you
+   report a finding_ says: read every function its claim depends on, find the
+   layer that may already handle it (for a security finding, the auth, the
+   validation or the escaping on its path), and try to prove it wrong. Drop it
+   if you can, or if you aren't sure.
+5. A problem that lies in PLAN.md rather than the code (a condition the change
    can only be right by breaking, or a requirement or security criterion the
    plan lacks) is a spec problem. No worker changes the plan: the run stops
    and the user decides. Write {{spec_problem_file}}, one line per problem:
@@ -96,8 +101,9 @@ the one `{{scope}}` names (Scopes, below).
    Spec kept: {{spec_kept}}. When set, the user already kept PLAN.md as
    written for these at a stop: never raise them again.
 
-How findings are judged: read `{{skill_dir}}/templates/rubric.md`, its code
-review findings, security findings and overall report confidence sections.
+How findings are judged: read `{{skill_dir}}/templates/rubric.md`, its before
+you report a finding, code review findings, security findings and overall
+report confidence sections.
 
 ### The code review
 

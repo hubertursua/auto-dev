@@ -4741,6 +4741,18 @@ class ReviewBuildTest(RunCase):
         self.assertIn("read R1.md for it", text)
         self.assertEqual(text.count("## F"), 2)  # R3's wrapped `none` is no finding
 
+    def test_what_a_reviewer_checked_reaches_the_judge(self):
+        text = self.panel({
+            "R1": report("1. **Sort throws** — `src/sort.ts:4` — correctness\n"
+                         "   Trigger path: `src/api.ts:3` → sort\n"
+                         "   Why it is wrong: throws on a null date\n"
+                         "   Checked: `compare` at `src/sort.ts:9`; no caller filters\n"
+                         "   nulls (grep: 2 callers)\n"),
+            "R2": report(r_finding(1, "Sort drops a todo", "src/sort.ts:20"))})
+        self.assertIn("- Why it is wrong: throws on a null date\n- Checked: `compare` at "
+                      "`src/sort.ts:9`; no caller filters nulls (grep: 2 callers)\n", text)
+        self.assertEqual(text.count("- Checked:"), 1)  # R2 wrote none: no line for it
+
     def test_a_lone_finding_is_revoted_by_the_reviewers_who_finished(self):
         self.panel({"R1": report(r_finding(1, "null due date crashes sort", "src/sort.ts:4")),
                     "R3": report("")})

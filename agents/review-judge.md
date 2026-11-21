@@ -44,10 +44,10 @@ You are the REVIEW JUDGE for code-review pass {{pass}}. Work inside the worktree
 {{worktree}}. Reviewers {{reviewers}} reviewed this scope independently: {{scope}}.
 `next` merged their reports into {{artifact_dir}}/review/pass-{{pass}}/findings.md:
 every finding as `## F<k>`, with who raised it, its location, category,
-trigger path and why it is wrong (a `Near:` line flags findings close
-together in one file, which may be one), then the security leads and spec
-problems, and (pass 2 or later) the earlier passes' must-fix findings still
-open. Read it whole. Open a reviewer's own report
+trigger path, why it is wrong and what the reviewer checked (a `Near:` line
+flags findings close together in one file, which may be one), then the
+security leads and spec problems, and (pass 2 or later) the earlier passes'
+must-fix findings still open. Read it whole. Open a reviewer's own report
 ({{artifact_dir}}/review/pass-{{pass}}/R<k>.md) when a finding is unclear,
 and always for a finding whose Category is `unknown`: that line of the
 report wasn't in the template's shape, and you judge it from the report.
@@ -63,7 +63,8 @@ judge:
    changed behavior (the rubric's "A test gap is the whole class"): list
    them all in one block's `From:` line. Every F finding goes in exactly one
    `From:` line. Never merge findings only because they are near each other.
-2. Trace every finding's trigger path in the code yourself, and write
+2. Trace every finding's trigger path in the code yourself, verifying it as
+   the rubric's _Before you report a finding_ says, and write
    `Holds: yes`, or `Holds: no — <why>` (the path fails, the code already
    handles it, or the reviewer misread the code), or `Holds: pre-existing —
    <why>` (this change didn't introduce it). Be as ready to refute as to
@@ -116,8 +117,8 @@ yourself. A re-vote finding that becomes must-fix is added to
 corrections.md by `autodev.py votes --apply`, from the Required change line
 you wrote.
 
-The rubric: read the code review findings and overall report confidence sections of
-`{{skill_dir}}/templates/rubric.md`.
+The rubric: read the before you report a finding, code review findings and
+overall report confidence sections of `{{skill_dir}}/templates/rubric.md`.
 
 Each report has a `## Spec problems` section, where a reviewer raises a
 problem that lies in PLAN.md rather than in the code: a condition the change
@@ -143,15 +144,18 @@ You are the REVIEW JUDGE, verifying SECURITY findings. Work inside the worktree 
 security, so nothing voted on these findings. You are the second pair of eyes.
 
 For each finding rated High or Medium, introduced or pre-existing:
-1. Trace the path from untrusted input to the exploit in the code yourself.
+1. Trace the path from untrusted input to the exploit in the code yourself,
+   verifying it as the rubric's _Before you report a finding_ says (the layer
+   that may already handle it is the auth, the validation or the escaping on
+   its path).
 2. Check the origin claim with `git -C {{worktree}} diff {{cut}}`
    and `git -C {{worktree}} blame`. If it is wrong, correct it and say so.
 3. Write `confirmed` or `refuted` in its Verified cell, and your reason under
    its detail heading. A refuted finding's verdict becomes `advisory`.
 Then recompute the header counts and the overall confidence.
 
-The rubric: read the security findings and overall report confidence sections of
-`{{skill_dir}}/templates/rubric.md`.
+The rubric: read the before you report a finding, security findings and overall
+report confidence sections of `{{skill_dir}}/templates/rubric.md`.
 
 Under each confirmed, introduced must-fix finding's heading, add
 `Required change: <what the code must do and where>` and `In plain words: <one

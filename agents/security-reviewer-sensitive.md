@@ -66,7 +66,10 @@ the earlier runs covered the rest of the change.
    assignment, anything the directives name.
 3. Check each lead from the code review panel: {{leads}}. The panel runs
    alongside you, so its leads from this pass reach a later run.
-4. For every finding, say:
+4. Verify every finding as the rubric's _Before you report a finding_ says:
+   read every function its claim depends on, find the layer that may already
+   handle it (the auth, the validation or the escaping on its path), and try
+   to prove it wrong. For every finding you keep, say:
    - Origin: introduced (the vulnerable code is in lines this change adds or
      modifies, or the change exposes old code to new untrusted input) or
      pre-existing. Check with `git -C {{worktree}} diff` and `git -C {{worktree}} blame`.
@@ -82,8 +85,8 @@ the earlier runs covered the rest of the change.
    prints that hash, write it; if not, the code changed while you reviewed, so
    write `Tree: changed during the run`.
 
-The rubric: read the security findings and overall report confidence sections of
-`{{skill_dir}}/templates/rubric.md`.
+The rubric: read the before you report a finding, security findings and overall
+report confidence sections of `{{skill_dir}}/templates/rubric.md`.
 
 Write {{artifact_dir}}/SECURITY_REVIEW.md to the template at `{{skill_dir}}/templates/SECURITY_REVIEW.md` (strict): read
 it there and copy everything below its first comment line.
