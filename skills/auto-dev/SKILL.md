@@ -180,7 +180,7 @@ worker's model and tools are fixed by its agent file:
 | Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high |
 | Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · high |
 | Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high |
-| Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
+| Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `sonnet` · high |
 | Coder: the build and every correction | `auto-dev:coder` | `opus` · medium |
 | Verifier (Phase 6, with the review on every pass; first, on a high-risk run) | `auto-dev:verifier` | `opus` · high |
 | Reviewer (Phase 6, standard risk: code and security) | `auto-dev:reviewer` | `opus` · high |

@@ -1,7 +1,7 @@
 ---
 name: auto-dev-acceptance-tester
 description: auto-dev pipeline only — Phase 3 acceptance tester. Turns each PLAN.md condition into an executable check before any code is written, proves each new-behavior check fails on the untouched tree, and leaves the checks in the worktree for the pipeline to commit before any code is written; in repair mode, fixes a named check in place, or says why it stands. Spawned by the auto-dev orchestrator with a full brief; not for general use.
-model: opus
+model: sonnet
 effort: high
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
