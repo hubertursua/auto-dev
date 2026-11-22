@@ -5801,18 +5801,37 @@ class QualityGateTest(RunCase):
     def test_a_scoped_skipped_or_stopped_check_saves_no_time(self):
         self.the_change()
         self.set_ci("github-actions")
-        self.set_gate(self.lint_check(), self.unit_check(),
-                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
-        self.assertEqual(self.gate().returncode, 0)
-        for command in ("echo all", "echo some src/b.test.ts tests/a.test.ts", "true"):
+        # The gate's one test check, run on the change's tests, saves nothing.
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for command in ("echo all", "echo some src/b.test.ts tests/a.test.ts"):
             self.assertNotIn(command, self.timings())
+        # The gate's one test check, left to CI, saves nothing.
+        self.set_gate(self.lint_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("skipped:", r.stdout)
+        self.assertNotIn("true", self.timings())
+        # The gate's one test check, stopped at its timeout, saves nothing.
         py = shlex.quote(sys.executable)
         sleeper = f"{py} -c 'import time; time.sleep(30)'"
-        self.set_ci("none")
-        self.set_gate({"kind": "test", "command": sleeper, "report": "TEST.md"})
+        self.set_gate(self.lint_check(), {"kind": "test", "command": sleeper,
+                                          "report": "TEST.md", "files": f"{sleeper} <files>"})
         r = self.gate("--timeout", "1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertNotIn(sleeper, self.timings())
+        self.assertEqual([c for c in self.timings() if c.startswith(sleeper)], [])
+        # Two test checks both run whole, and each saves its time.
+        self.set_gate(self.lint_check(), self.unit_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(), r.stdout)
+        self.assertIn(self.line_of("CHECKS.md", "true"), r.stdout.splitlines(), r.stdout)
+        for command in ("echo all", "true"):
+            self.assertEqual(self.timings()[command]["by"], "quality-gate", self.timings())
+        self.assertNotIn("echo some src/b.test.ts tests/a.test.ts", self.timings())
 
     def test_the_gate_run_records_what_it_scoped_and_left_to_ci(self):
         self.the_change()
