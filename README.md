@@ -182,10 +182,15 @@ weakening them. Verification is built around that:
   worker was out, or while setup ran
   (`skills/auto-dev/scripts/lib/tree_guard.py`).
 - **The quality gate, confirmed before the push.** The coder runs the
-  profile's quality gate to green itself; then `autodev.py quality-gate` runs
-  every check again, as a script with no worker, and writes its reports. A red
-  gate goes back to the coder once (no round); red again, the run stops and
-  asks you.
+  profile's quality gate to green itself, each non-test check in full and each
+  test check only scoped, on the tests it wrote or touched (one with no scoped
+  form it leaves to CI); then `autodev.py quality-gate` runs the gate again, as
+  a script with no worker, and writes its reports. When CI is watched, it runs
+  each non-test check whole and each test check only on the change's tests
+  (the test files the branch changed and the acceptance check files), and
+  leaves a test check it can't scope to CI: CI is the one full run of the test
+  suite. When CI isn't watched it runs every check whole. A red gate goes back
+  to the coder once (no round); red again, the run stops and asks you.
 - **An independent verifier that runs things.** Once the build is pushed as a
   draft PR, a fresh verifier, spawned with the review while CI runs,
   **runs** the checks, judging against PLAN.md's conditions, not its
@@ -473,7 +478,11 @@ disk. What each option does is in `skills/auto-dev/references/tables.md`.
   ran or couldn't be watched is shown as not monitored, never as green. A PR
   that conflicts with its base gets no checks from GitHub: the watch says so at
   once, you're told to fetch the base and merge it in yourself (the run never
-  merges it), and the gates show CI as not run because of the conflict. When
+  merges it), and the gates show CI as not run because of the conflict. With
+  CI that can't be watched (none, GitLab, or a watch that timed out or found
+  no checks), the quality gate runs the whole test suite before the push; when
+  that is only learned after the push, `next` runs the gate again, every check
+  whole, before the ready-for-review gate, and a red run stops. When
   a review pass leaves findings open, CI settles first, and red CI that the
   code caused is fixed in the same correction, on the same round. CI is
   watched on the pushed commit, even when an unpushed tests commit sits on top
@@ -556,14 +565,21 @@ test IDs or `<test>` for one, plus a `tests_example`), so it can run only the
 tests it names with `--tests`; the profiler looks for both. With no test-ID
 form, `--tests` falls back to the file-scoped form on the `--files` given with
 it, else to the whole check, and `run` prints which it used. The quality gate
-runs every check whole through `run gate <n>`; a `run test` that runs the test
-check whole when it could have been scoped prints a warning with the
-ready-to-copy scoped lines, which the coder's, fixer's and acceptance tester's
-briefs also carry. Claude Code moves a Bash call still running after 180 s to
-the background, so a worker keeps each command under 3 minutes and waits on a
-`run` that went to the background with `autodev.py run wait`, which blocks up
-to 170 s, then prints that run's result exactly as `run` would have (or
-`RUNNING`, to call it again), so the worker never polls.
+runs each non-test check whole through `run gate <n>`, and each test check
+only on the change's tests when CI is watched (its `files` form; every check
+whole when CI isn't watched); the coder runs test checks only scoped. CI is
+the one full run of the test suite. A `run test` that runs the test check
+whole when it could have been scoped prints a warning with the ready-to-copy
+scoped lines, which the coder's, fixer's and acceptance tester's briefs also
+carry. `run` stops a check at its own timeout: twice the check's whole run as
+the quality gate or `verify prep` last measured it, and at least 600 s,
+unless it is given `--timeout`; `run gate` counts a check's failed runs and
+says when the third has failed, where the coder stops fixing it. Claude Code
+moves a Bash call still running after 180 s to the background, so a worker
+keeps each command under 3 minutes and waits on a `run` that went to the
+background with `autodev.py run wait`, which blocks up to 170 s, then prints
+that run's result exactly as `run` would have (or `RUNNING`, to call it
+again), so the worker never polls.
 
 ### Where saved profiles live
 
@@ -707,7 +723,7 @@ library, except where they read YAML:
 
 | Script | What it does |
 | ------ | ------------ |
-| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action (from Phase 1's setup, with `--repo`, on; `autodev.py setup-answer` records the answer to the profile question or the gate-check question). `autodev.py quality-gate` runs the profile's whole quality gate before the push. `autodev.py --help` lists every subcommand |
+| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action (from Phase 1's setup, with `--repo`, on; `autodev.py setup-answer` records the answer to the profile question or the gate-check question). `autodev.py quality-gate` runs the profile's quality gate before the push (test checks only on the change's tests when CI is watched). `autodev.py --help` lists every subcommand |
 | `validate-config.py` | checks `.auto-dev.yml`, or a saved profile with `--profile` (setup runs it) |
 | `profile-path.py` | prints the saved profile's path for a repo and whether it exists (setup runs it) |
 | `exclude-artifacts.py` | makes `.auto-dev/` ignore itself and checks it with git |
@@ -810,7 +826,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `profile-origin.json`, `profile.yml`, `profile-retry.yml` | Phase 1 (`next`) | where the run's profile came from (the saved file and the checks left out of this run or kept at the gate-check question, a draft kept for this run only in `profile.yml`, or `.auto-dev.yml`), so a failed setup is retried from it; `profile-retry.yml` is the profile a retry re-read |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
-| `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output; `tmp/run/records/` holds each `run`'s record and result, which `run wait` reads |
+| `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output; `tmp/run/records/` holds each `run`'s record and result, which `run wait` reads; `tmp/run/timings.json` holds how long each check's whole run took, measured by the quality gate and `verify prep`, for `run`'s default timeout |
 | `HANDOFF.md` | a checkpoint, or the user asking to stop | the brief for the next session |
 | `metrics.json` | `autodev.py next`, each time it completes or stops the run | the run's numbers for tuning auto-dev: spawns per worker, rounds spent, left and added, stops by their number, refused results, review findings kept and dropped, events and the build's diff size. Counts only, no code or task text. `next` writes the same file to `~/.config/auto-dev/metrics/<repo>/<branch>.json` (or `$AUTO_DEV_METRICS_DIR`, or `$XDG_CONFIG_HOME/auto-dev/metrics`), so it outlives the worktree |
 | `PLAN.md` | Phase 2 | the plan: the conditions (the testable contract), size check, risk tier and build steps |

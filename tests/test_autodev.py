@@ -3345,6 +3345,37 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(self.attempts(r), [])
         self.assertEqual(self.failed_attempt(), ["  attempt: 2 of 3 failed for check 2"])
 
+    def test_the_timeout_line_says_why_and_run_wait_replays_it(self):
+        self.plant_timing(self.gate[0]["command"], 100)
+        r = self.run_("gate", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        line = "  timeout: 600s — the floor: twice the 100s whole run quality-gate measured is less"
+        self.assertIn(line, r.stdout.splitlines(), r.stdout)
+        self.assertIn(line, self.run_("wait").stdout.splitlines())
+        r = self.run_("gate", "1", "--timeout", "50")
+        self.assertIn("  timeout: 50s — given with --timeout", r.stdout.splitlines(), r.stdout)
+        # the lines come before the output line, after the scope line
+        out = r.stdout.splitlines()
+        self.assertLess(out.index("  timeout: 50s — given with --timeout"),
+                        next(i for i, x in enumerate(out) if x.startswith("  output: ")))
+
+    def test_a_scoped_run_s_default_timeout_is_from_the_check_s_whole_run(self):
+        self.plant_timing(self.gate[2]["command"], 500)
+        _, data = self.run_json("test", "--files", "src/c.test.ts")
+        self.assertEqual(data.get("timeout"), 1000, data)
+
+    def test_attempts_are_counted_per_check(self):
+        self.check_2_fails_until_told_to_pass()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        py = shlex.quote(sys.executable)
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"][0]["command"] = f"{py} -c 'raise SystemExit(1)'"
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.run_("gate", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.attempts(r), ["  attempt: 1 of 3 failed for check 1"])
+        self.assertEqual(self.failed_attempt(), ["  attempt: 2 of 3 failed for check 2"])
+
 class RunWaitTest(unittest.TestCase):
     """`autodev.py run wait`: waiting on a `run gate|test` that went to the background."""
 
@@ -5747,6 +5778,45 @@ class QualityGateTest(RunCase):
         r = self.gate("--timeout", "1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertNotIn(sleeper, self.timings())
+
+    def test_the_gate_run_records_what_it_scoped_and_left_to_ci(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        r = self.gate("--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual([c["scope"] for c in data["checks"]], ["whole", "files", "skipped"])
+        self.assertEqual([c["status"] for c in data["checks"]], ["pass", "pass", "skipped"])
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["scoped"], run["skipped"], run["ci_watched"]),
+                         (["TEST.md"], ["CHECKS.md"], True))
+        self.assertIn("TEST.md scoped to the change, CHECKS.md left to CI",
+                      self.state()["notes"][-1]["text"])
+        self.assertIn("- **Runs:** 0", (self.dir / "lint" / "CHECKS.md").read_text())
+        self.set_ci("none")
+        self.gate()
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["scoped"], run["skipped"], run["ci_watched"]), ([], [], False))
+
+    def test_a_check_with_only_a_test_id_form_is_left_to_ci(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate({"kind": "test", "command": "false", "report": "TEST.md",
+                       "tests": "false <tests>"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("(no scoped form; CI runs it)", r.stdout)
+
+    def test_a_non_test_check_with_a_files_form_still_runs_whole(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate({"kind": "lint", "command": "echo lint", "report": "LINT.md",
+                       "files": "echo lint-some <files>"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.line_of("LINT.md", "echo lint"), r.stdout.splitlines(), r.stdout)
 
 class SetupAnswerTest(RunCase):
     """`autodev.py setup-answer`: the profile question's answers, before a run exists."""

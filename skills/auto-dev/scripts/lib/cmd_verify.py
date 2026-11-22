@@ -30,6 +30,8 @@ prep
        scoped to the files that hold the checks when it has a `files` form,
        saved to evidence/acceptance.txt; it gets what is left of 570
        seconds after the wait in 1, at least 60, and is stopped past that.
+       A whole run that finished saves its time to tmp/run/timings.json, for
+       `autodev.py run`'s default timeout.
     6. For each PLAN.md condition with acceptance checks, evidence/C<n>.txt:
        Expected, Command and Result lines and the lines of the run's output
        that name the condition's checks (its last 30 lines when none does). A
@@ -209,6 +211,8 @@ def acceptance_run(ad, wt, state, budget):
     command = cmd_run.command_for(n, check, wt, files if scoped and files else None)
     path = ad / "evidence" / "acceptance.txt"
     code, seconds = cmd_run.execute(command, wt, path, budget)
+    if code is not None and not (scoped and files):  # a whole run that finished
+        cmd_run.save_timing(ad, command, seconds, "verify prep")
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     return command, code, seconds, lines, scoped
 

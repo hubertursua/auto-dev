@@ -24,9 +24,10 @@ says, and nothing it does not.
   return `FIXED`, it is put back with the rest.
 - Keep any single command under 3 minutes; spill large output to
   `{{artifact_dir}}/tmp/` and quote only a digest of it.
-  The Bash tool moves a call still running after 180 s to the background,
-  so a check that may run past 3 minutes gets `--timeout <seconds>` added to its
-  `run` command, which ends a hung run. When the Bash tool moves an `autodev.py
+  The Bash tool moves a call still running after 180 s to the background.
+  `run` ends a hung check itself, at its default timeout (twice the check's
+  measured whole run, at least 600 s); give a check you expect to run longer
+  its own `--timeout <seconds>`. When the Bash tool moves an `autodev.py
   run` call to the background, wait for it only with `python3
   {{skill_dir}}/scripts/autodev.py run wait --dir {{artifact_dir}}` with that Bash
   call's timeout set to 300000 ms, so it ends on its own first: it blocks up to
@@ -89,7 +90,8 @@ The user's instruction:
      {{test_notes}}):
      {{test_runs}}
      They run the profile's test check, scoped when it has a scoped form;
-     the quality gate runs it whole ({{test_command}}). Run the quality
+     the quality gate runs it only on the change's tests when CI is watched,
+     else whole ({{test_command}}). Run the quality
      gate's commands on what you changed when the stop was about them:
      {{gate_commands}}
      Never type the test command yourself.

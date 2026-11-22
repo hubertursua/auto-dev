@@ -20,7 +20,12 @@ each worker to spawn. The steps that are yours:
   worker: `autodev.py quality-gate --dir <artifact-dir>`, with the Bash tool's
   timeout at 600000 ms (when the whole gate can take longer, run it in the
   background and wait for it). Whatever it exits, run its `AFTER` line
-  (`next`). You never read the lint reports or the code.
+  (`next`). You never read the lint reports or the code. It runs each
+  non-test check whole, and each test check only on the change's tests when
+  CI is watched (a test check it can't scope is left to CI): CI is the one
+  full run of the test suite. When CI isn't watched it runs every check whole,
+  and when a CI watch after the push can't see CI, `next` asks for it again,
+  every check whole, before the PR goes on.
 - **Into the Ship stage.** Once the gate is green, `next` says the run goes on
   to the Ship stage in this session: read `references/ship.md`, as its
   `ACTION` says, then run `next`. Don't stop or hand off.

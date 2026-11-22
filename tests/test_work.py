@@ -200,6 +200,10 @@ class BriefTest(WorkCase):
     def test_coder_brief_gives_a_run_command_for_each_gate_check(self):
         # The coder runs each check through `autodev.py run`, never by typing
         # the profile's command (a permission check refuses `cd <wt> && …`).
+        # A non-test check gets its whole run; a test check with no scoped
+        # form gets none (CI runs it).
+        self.set_gate({"kind": "lint", "command": "true", "report": "LINT.md"},
+                      {"kind": "test", "command": "true", "report": "TEST.md"})
         r = self.cmd("brief", "coder", "--mode", "build")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         text = (self.dir / "briefs" / "coder-1.md").read_text()
@@ -380,8 +384,10 @@ class BriefTest(WorkCase):
         self.set_gate({"kind": "test", "command": "true", "report": "TEST.md"})
         value = self.coder_runs(1)
         self.assertNotIn(value, ("", "none"))
-        self.assertIn("run test", value)
+        self.assertNotIn("run test", value)  # the coder never runs it whole: CI does
+        self.assertIn("no scoped form", value)
         self.assertIn("whole", value)
+        self.assertIn("left to CI", value)
         self.assertNotIn("--files", value)
         self.assertNotIn("--tests", value)
         self.set_gate({"kind": "test", "command": "true", "report": "TEST.md",
@@ -420,7 +426,11 @@ class BriefTest(WorkCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             brief = self.dir / "briefs" / f"{worker}-1.md"
             value = self.runs_value(brief)
-            self.assertIn(f"`{whole}`", value, worker)
+            if worker == "coder":  # the coder never runs it whole: CI does
+                self.assertNotIn(whole, value, worker)
+                self.assertIn("left to CI", value, worker)
+            else:
+                self.assertIn(f"`{whole}`", value, worker)
             self.assertNotIn("--files", value, worker)
             self.assertNotIn("--tests", value, worker)
             agent = (SCRIPTS.parents[2] / "agents" / f"{worker}.md").read_text()
@@ -1906,8 +1916,6 @@ class WorkerWaitRuleTest(unittest.TestCase):
         start = text.index("3. The acceptance run:")
         return text[start:text.index("4. For each PLAN.md condition", start)]
 
-    BASH_TIMEOUT_SECONDS = 300  # the 300000 ms Bash timeout step 3 sets
-
     def verifier_fallback(self, step):
         """Step 3's sentence for a gate check with no `files` form."""
         sentences = re.split(r"(?<=[.!?:])\s+(?=[A-Z`])", step)
@@ -1915,47 +1923,11 @@ class WorkerWaitRuleTest(unittest.TestCase):
         self.assertEqual(len(fallback), 1, sentences)
         return fallback[0]
 
-    def assert_fallback_keeps_its_timeout(self, fallback):
-        """The fallback drops only `--files …` and says to keep a `--timeout <n>` under 300."""
-        kept = re.search(r"minus\s+`--files <the check files>`\s+\(keep\s+`--timeout (\d+)`\)",
-                         fallback)
-        self.assertIsNotNone(kept, fallback)
-        self.assertLess(int(kept.group(1)), self.BASH_TIMEOUT_SECONDS, fallback)
-
-    def test_fallback_check_refuses_wordings_that_drop_the_timeout(self):
+    def test_verifier_fallback_drops_only_the_files_flag_and_keeps_the_bash_timeout(self):
         fallback = self.verifier_fallback(self.verifier_step_3())
-        self.assert_fallback_keeps_its_timeout(fallback)
-        kept = re.search(r"\(keep\s+`--timeout 280`\)", fallback)
-        self.assertIsNotNone(kept, fallback)
-        for reworded in (
-            fallback[:kept.start()] + "(drop `--timeout 280`)" + fallback[kept.end():],
-            fallback.replace("minus `--files <the check files>` " + kept.group(0),
-                             "minus `--files <the check files>` and `--timeout 280`"),
-            fallback[:kept.start()] + "(keep `--timeout 400`)" + fallback[kept.end():],
-        ):
-            self.assertNotEqual(reworded, fallback)
-            with self.assertRaises(AssertionError, msg=reworded):
-                self.assert_fallback_keeps_its_timeout(reworded)
-
-    def test_verifier_bounds_its_own_acceptance_run(self):
-        step = self.verifier_step_3()
-        scoped = re.search(r"run gate <n> --dir \{\{artifact_dir\}\} --files "
-                           r"<the check files> --timeout (\d+)", step)
-        self.assertIsNotNone(scoped, step)
-        self.assertLess(int(scoped.group(1)), self.BASH_TIMEOUT_SECONDS, step)
-        self.assert_fallback_keeps_its_timeout(self.verifier_fallback(step))
-        self.assertIn("TIMED_OUT (exit 3), whether from `run` or from `run wait`, leaves "
-                      "the conditions' checks unconfirmed by the run, not failed", step)
-
-    def test_verifier_acceptance_run_stops_before_its_bash_timeout(self):
-        step = self.verifier_step_3()
-        scoped = re.search(r"--files <the check files> --timeout (\d+)", step)
-        self.assertIsNotNone(scoped, step)
-        self.assertIn("timeout set to 300000 ms", step[:scoped.start()])
-        self.assertLess(int(scoped.group(1)), self.BASH_TIMEOUT_SECONDS)
-        fallback = self.verifier_fallback(step)
+        self.assertRegex(fallback, r"the same command minus `--files <the check files>`,")
         self.assertIn("timeout set to 300000 ms", fallback)
-        self.assert_fallback_keeps_its_timeout(fallback)
+        self.assertIsNone(re.search(r"--timeout\s+\d", fallback), fallback)
 
     def assert_says(self, text, said, name, present=True):
         """`said` is (or, with `present` false, is not) in `text`, reported briefly."""

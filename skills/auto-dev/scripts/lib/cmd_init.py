@@ -622,11 +622,13 @@ def setup_and_gate_lines(settings):
     lines = [SETUP_HEADING]
     lines += [f"{i}. `{cmd}`" for i, cmd in enumerate(settings["setup"], 1)] or ["none"]
     lines += ["", "## Quality gate — run in order, verbatim (the Definition of Done)",
-              ("The quality gate runs every check, the test check included, with "
-               "`autodev.py run gate <n> --dir <artifact dir>`. To run only some tests, "
-               "use `autodev.py run test --dir <artifact dir>` with `--files <path> …` "
-               "(its scoped form) or `--tests <id> …` (its test-ID form; one ID when the "
-               "form holds `<test>`); a whole test run is for the quality gate only."), "",
+              ("The quality gate runs each non-test check whole with `autodev.py run "
+               "gate <n> --dir <artifact dir>`, and each test check only on the change's "
+               "tests when CI is watched (every check whole when it isn't): CI is the one "
+               "full run of the test suite. The coder runs test checks only scoped. To "
+               "run only some tests, use `autodev.py run test --dir <artifact dir>` with "
+               "`--files <path> …` (its scoped form) or `--tests <id> …` (its test-ID "
+               "form; one ID when the form holds `<test>`)."), "",
               "| # | kind | command | report | scoped form | test-ID form |",
               "|---|------|---------|--------|-------------|--------------|"]
     lines += [f"| {i} | {c.get('kind', '')} | `{c.get('command', '')}` | "

@@ -991,9 +991,17 @@ def quality_gate(body, ad, state):
     for check in state["settings"].get("gate", []):
         path = ad / "lint" / check.get("report", "")
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
-        first = text.splitlines()[0] if text else ""
-        status = "passed" if first.rstrip().endswith("pass") else "failed"
-        body.text(f"- `{check['command']}`: {status}")
+        found = art.lint_report(path)
+        if found["status"] == "skipped":
+            body.text(f"- `{check['command']}`: not run before the push; CI runs it")
+            continue
+        status = "passed" if found["status"] == "pass" else "failed"
+        ran = check["command"]
+        if found["scope"].startswith(art.SCOPED_PREFIX) and found["command"]:
+            ran = found["command"]  # its scoped form, on the change's tests
+            body.text(f"- `{ran}`: {status} (the change's tests; CI runs the whole check)")
+        else:
+            body.text(f"- `{ran}`: {status}")
         start = body.quote()
         tail = art.find_section(text, "Output tail") or ""
         output = [ln for ln in tail.splitlines() if not ln.startswith("```")
@@ -1010,7 +1018,7 @@ def quality_gate(body, ad, state):
             output.append(f"({len(scratch)} line(s) about git-ignored pipeline files "
                           "left out)")
         if output:
-            body.block(check["command"], [("Output:", output)])
+            body.block(ran, [("Output:", output)])
         body.unquote(start)
 
 

@@ -99,7 +99,8 @@ Output lines (only the ones that apply):
     REPORT:   what to tell the user (exits 4 and 6)
     AFTER:    a command to run once the action is done; for a question,
               `"<answer>" → <command>`, one per answer
-    RULE:     the rule that chose the action (--explain)
+    RULE:     the rule that chose the action (--explain; also when the quality
+              gate runs again, every check whole, because CI can't be watched)
     RECORDED: each worker result `next` recorded before deciding,
               `<worker>-<n>: <status> <next>`, or `<worker>-<n>: refused
               (<token>)` (it is then briefed again with the issues). Under
@@ -254,6 +255,10 @@ UNSAVED = "UNSAVED"
 # The artifact dir of the run `next --repo` created and whose setup failed:
 # main() writes its metrics, show() drops it.
 RUN_DIR = "RUN_DIR"
+# Set on an action whose RULE is printed without --explain too, because it
+# says why a step runs again (the quality gate, every check whole, once CI
+# can't be watched): show() drops it.
+SHOW_RULE = "SHOW_RULE"
 FILL = ("replace each '<...>' placeholder, inside its single quotes, with text that "
         "holds no single quote (rephrase, or use the typographic apostrophe U+2019)")
 
@@ -842,7 +847,7 @@ def show(result, args):
     result.pop(TALLY, None)
     result.pop(UNSAVED, None)
     result.pop(RUN_DIR, None)
-    if not args.explain:
+    if not result.pop(SHOW_RULE, False) and not args.explain:
         result.pop("RULE", None)
     elif result.get("ACTION"):
         result["ACTION"] = ("(--explain: nothing was done; run `next` to act) "
@@ -1846,9 +1851,14 @@ def gate_step(c, start):
 GATE_ASKS = 3  # the gate asked for this many times on one tree, with no run recorded
 
 
-def ask_gate(c, tree):
+GATE_RULE = ("the code changed since the quality gate last ran: `next` confirms it "
+             "before anything is pushed (no worker)")
+
+
+def ask_gate(c, tree, rule=GATE_RULE, show_rule=False):
     """Ask the orchestrator to run the quality gate; a stop once it was asked
-    GATE_ASKS times on this tree and no run was recorded (it never finishes)."""
+    GATE_ASKS times on this tree and no run was recorded (it never finishes).
+    With `show_rule`, the rule is printed without --explain too."""
     asked = c.state.setdefault("gate_asked", {})
     if asked.get(tree, 0) >= GATE_ASKS:
         return stop([(f"The quality gate was asked for {GATE_ASKS} times on this code and "
@@ -1862,13 +1872,13 @@ def ask_gate(c, tree):
     if not c.readonly:
         asked[tree] = asked.get(tree, 0) + 1
         c.dirty = True
-    return action(f"run the quality gate: `{c.cmd('quality-gate')}`. It runs every check "
-                  "of the profile's gate and writes their reports. Run it with the Bash "
-                  "tool's timeout at 600000 ms; if the gate can take longer than that, "
-                  "run it in the background and wait for it to finish. Then run AFTER "
-                  "whatever it exits", "the code changed since the quality gate last "
-                  "ran: `next` confirms it before anything is pushed (no worker)",
-                  AFTER=[c.cmd("next")])
+    return action(f"run the quality gate: `{c.cmd('quality-gate')}`. It runs every "
+                  "non-test check whole, and each test check only on the change's tests "
+                  "when CI is watched (every check whole when it isn't), and writes "
+                  "their reports. Run it with the Bash tool's timeout at 600000 ms; if "
+                  "the gate can take longer than that, run it in the background and "
+                  "wait for it to finish. Then run AFTER whatever it exits", rule,
+                  AFTER=[c.cmd("next")], **({SHOW_RULE: True} if show_rule else {}))
 
 
 def settle_change(c, start, first):
@@ -3137,8 +3147,10 @@ def ci_step(c, sha):
     if ci.get("sha") != sha or ci.get("status") == "pending" or (rewatch and \
             ci.get("status") != "green"):
         return ci_watch(c, "CI has not settled on the pushed commit", sha)
+    if ci["status"] in cmd_gate.UNWATCHED_STATUS:
+        return whole_gate_step(c, ci["status"])  # the main gate says which
     if ci["status"] != "red":
-        return None  # green, timeout or unavailable: the main gate says which
+        return None  # green or a conflict: the main gate says which
     triage = c.last("triager", after=ci["seq"], mode="ci")
     if triage is None:
         return spawn(c, "triager", "ci", {"failing": "\n".join(ci.get("failing", []))
@@ -3172,6 +3184,37 @@ def ci_step(c, sha):
                  "or re-run, `auto-dev continue` watches it again.")],
                 f"the triager returned {kind}", retry={"lift": True},
                 no_signoff="never merge over red CI", number=15)
+
+
+def whole_gate_step(c, status):
+    """CI turned out not to be watched (its watch ended `status`): when the
+    newest quality gate ran a test check only on the change's tests or left one
+    to CI, the gate runs again, every check whole, before the PR goes on; None
+    once such a run is green (or fails only on checks the user signed off)."""
+    runs = c.state.get("gate_runs") or []  # set aside or not: a retry asks again
+    # The newest run made while CI was watched; one from before scoped gates
+    # (no `ci_watched` key), or one that ran every check whole, owes nothing.
+    owed = next((g for g in reversed(runs) if g.get("ci_watched")), None)
+    if owed is None or not (owed.get("scoped") or owed.get("skipped")):
+        return None
+    now = cmd_review.print_tree(c.wt)
+    key = cmd_gate.gate_key(c.state)
+    later = [g for g in runs if g.get("seq", 0) > owed.get("seq", 0) and not g.get("aside")
+             and g.get("ci_watched") is False and g["tree"] == now and g.get("gate") == key]
+    if not later:
+        return ask_gate(c, now, rule=f"CI can't be watched ({status}): the quality gate "
+                                     "runs every check whole before the PR goes on",
+                        show_rule=True)
+    latest = later[-1]
+    failing = latest.get("failing") or []
+    if latest["result"] == "GREEN" or (failing and set(failing) <= overrides.signed_reports(
+            c.state)):
+        return None
+    reports = ", ".join(f"{c.ad}/lint/{r}" for r in failing)
+    return stop([("CI can't be watched and the quality gate, run whole, is red: never ship "
+                 f"a red build. Tell the user which checks fail: {reports}.")],
+                "the quality gate run whole is red", retry={"gate": True},
+                signoff={"reports": failing}, kind="red-gate", number=9)
 
 
 def triage_file(c, triage, key="triage_file"):

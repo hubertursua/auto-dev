@@ -20,9 +20,10 @@ You are the verifier of the auto-dev pipeline.
   up to 10 minutes); spill large
   output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a
   corpus.
-  The Bash tool moves a call still running after 180 s to the background,
-  so a check that may run past 3 minutes gets `--timeout <seconds>` added to its
-  `run` command, which ends a hung run. When the Bash tool moves an `autodev.py
+  The Bash tool moves a call still running after 180 s to the background.
+  `run` ends a hung check itself, at its default timeout (twice the check's
+  measured whole run, at least 600 s); give a check you expect to run longer
+  its own `--timeout <seconds>`. When the Bash tool moves an `autodev.py
   run` call to the background, wait for it only with `python3
   {{skill_dir}}/scripts/autodev.py run wait --dir {{artifact_dir}}` with that Bash
   call's timeout set to 300000 ms, so it ends on its own first: it blocks up to
@@ -128,12 +129,12 @@ against origin/{{base}} directly — it moves when anything fetches.
    the gate check in profile.md that does run the check files (its number
    <n> in the `gate` list) and run it yourself (not `run test`, which is the
    run prep just made), with that Bash call's timeout set to 300000 ms:
-     python3 {{skill_dir}}/scripts/autodev.py run gate <n> --dir {{artifact_dir}} --files <the check files> --timeout 280
-   `--timeout 280` stops a hung check before that Bash timeout. When that
+     python3 {{skill_dir}}/scripts/autodev.py run gate <n> --dir {{artifact_dir}} --files <the check files>
+   `run` ends a hung check itself, at its default timeout. When that
    check has no `files` form (`run` exits 2: "has no scoped form"), run it
-   whole with the same command minus `--files <the check files>` (keep
-   `--timeout 280`), again with the Bash call's timeout set to 300000 ms,
-   and read the lines that name the checks.
+   whole with the same command minus `--files <the check files>`, again
+   with the Bash call's timeout set to 300000 ms, and read the lines that
+   name the checks.
    When the Bash tool moves either run to the background, wait for it with
    `run wait`, as the rule at the top says. A run that prints TIMED_OUT
    (exit 3), whether from `run` or from `run wait`, leaves the conditions'

@@ -122,7 +122,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from datetime import datetime
@@ -389,10 +388,7 @@ def auto_values(worker, n, state, ad, mode):
     s = state["settings"]
     found = cmd_run.test_check(s.get("gate", []))
     test = str(found[1].get("command") or "") if found else ""
-    run = f"python3 {shlex.quote(str(SCRIPTS / 'autodev.py'))} run gate"
-    gate = "\n".join(f"{i}. `{c['command']}`\n"
-                     f"   run: `{run} {i} --dir {shlex.quote(str(ad))}`"
-                     for i, c in enumerate(s.get("gate", []), 1))
+    gate = gate_lines(s.get("gate", []), ad, worker)
     phase6 = state.get("phase6", {})
     values = {
         "worktree": state["worktree"], "artifact_dir": str(ad), "skill_dir": str(SKILL_DIR),
@@ -409,7 +405,7 @@ def auto_values(worker, n, state, ad, mode):
                          "0 (off)" if state.get("high_risk") else
                          "0 (off: a standard-risk run)"),
         "gate_commands": gate or "none",
-        "test_runs": test_runs(found[1], ad) if found else "none",
+        "test_runs": test_runs(found[1], ad, worker) if found else "none",
         "result_file": str(ad / "returns" / f"{worker}-{n}.json"),
         "pr": str(phase6.get("pr") or "none"),
         "pass": str(phase6.get("review_pass") or 1),
@@ -426,21 +422,58 @@ def auto_values(worker, n, state, ad, mode):
     return values
 
 
-def test_runs(check, ad):
+# After every `run` line a brief gives: the Bash tool's default 120 s would cut
+# a check short (a call still running at 180 s moves to the background, where
+# `run wait` waits for it; `run` ends a hung check at its own timeout).
+BASH = " with that Bash call's timeout set to 300000 ms"
+# The coder's line for a test check with no scoped form: CI runs it whole.
+LEFT_TO_CI = "left to CI; don't run it, and name it in one line above your result block"
+
+
+def gate_lines(gate, ad, worker):
+    """The gate_commands slot: each check with the `run:` line that runs it
+    whole; the coder's test checks only scoped (no line, left to CI, for one
+    with no scoped form): CI is the one full run of the test suite."""
+    entries = []
+    for i, c in enumerate(gate, 1):
+        invocation = f"run gate {i}"
+        if worker != "coder" or c.get("kind") != "test":
+            entries.append(f"{i}. `{c['command']}`\n"
+                           f"   run: `{cmd_run.run_line(ad, invocation)}`{BASH}")
+            continue
+        runs = cmd_run.scoped_runs(ad, c, invocation)
+        if not runs:
+            entries.append(f"{i}. `{c['command']}` (a test check with no scoped form: "
+                           f"{LEFT_TO_CI})")
+            continue
+        head = (f"{i}. `{c['command']}` (a test check: run it only scoped, on your "
+                "tests; never whole — CI runs it whole)")
+        entries.append("\n".join(
+            [head] + [f"   run: `{line}`{BASH}" + (f" ({note})" if note else "")
+                      for line, note in runs]))
+    return "\n".join(entries)
+
+
+def test_runs(check, ad, worker=None):
     """The test_runs slot: the run's scoped test commands, filled in and ready to
     copy, and that a whole run of the test check is for the quality gate only;
-    for a check with no scoped form, the one line that runs it whole."""
+    for a check with no scoped form, the one line that runs it whole (the
+    coder's: no line, since CI runs it)."""
     runs = cmd_run.scoped_runs(ad, check)
+    if not runs and worker == "coder":
+        return (f"No line: the test check (`{check.get('command', '')}`) has no scoped "
+                "form, so it runs only whole, and that is left to CI: don't run it, and "
+                "name it in one line above your result block.")
     if not runs:
-        return (f"- `{cmd_run.run_line(ad)}`\n"
+        return (f"- `{cmd_run.run_line(ad)}`{BASH}\n"
                 "The test check has no scoped form, so it only runs whole: this line "
                 "is the way to run its tests.")
-    lines = [f"- `{line}`" + (f" ({note})" if note else "") for line, note in runs]
+    lines = [f"- `{line}`{BASH}" + (f" ({note})" if note else "") for line, note in runs]
     if not cmd_run.has_form(check, "tests"):
         lines.append("- no test-ID form: scope by file")
-    lines.append("A whole run of the test check is for the quality gate only (its `run:` "
-                 "line under the gate commands); never run `run test` with neither flag "
-                 "to test your change.")
+    lines.append("A whole run of the test check is for the quality gate only (CI is the "
+                 "one full run of the test suite when it is watched); never run `run test` "
+                 "with neither flag to test your change.")
     return "\n".join(lines)
 
 

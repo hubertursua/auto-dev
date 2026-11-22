@@ -96,7 +96,11 @@ Fields:
   expand a file named `$(…)`, and both `validate-config.py` and `run` refuse a
   quoted one. Workers run a check through `autodev.py run gate
   <n>`, which runs `command` in the worktree, or `files` with `--files <path>
-  …`; the quality gate runs every check, the test check included, this way.
+  …`. The quality gate runs each non-test check whole this way, and each test
+  check only on the change's tests when CI is watched (its `files` form, on the
+  test files the branch changed and the acceptance check files; every check
+  whole when CI isn't watched), and the coder runs test checks only scoped: CI
+  is the one full run of the test suite.
   `run test` runs the test check scoped, with `--files` or `--tests` (below);
   run with neither it runs whole and warns. When the gate has several test checks,
   `run test`, the verifier's acceptance run and its mutation run use the first

@@ -1470,6 +1470,14 @@ class BuildTest(NextCase):
         self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
         self.assertIn("only on the change's tests when CI is watched", out["ACTION"])
 
+    def test_the_phase_5_gate_action_keeps_its_rule_for_explain(self):
+        self.plan_session()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        out = self.next(0)
+        self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+        self.assertNotIn("RULE", out)  # only the re-run CI that can't be watched asks shows it
+
 
 class ShipTest(NextCase):
     def ship_ready(self):
@@ -4631,6 +4639,7 @@ class CiTest(NextCase):
         state["phase6"]["ci"]["status"] = "timeout"
         state["phase6"]["ci"]["seq"] = state["events"] + 1
         self.write_state(state)
+        self.quality_gate()  # its test check was left to CI: it runs whole now
         self.no_comments()
         out = self.next(5)
         self.assertIn("CI: not monitored (timeout) — never assume green",
@@ -4676,6 +4685,7 @@ class CiTest(NextCase):
                          "--dir", self.dir)
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
         self.assertIn("UNAVAILABLE", r.stdout)
+        self.quality_gate()  # its test check was left to CI: it runs whole now
         out = self.next(5)
         self.assertIn("ready gate", out["QUESTION"])
         summary = " ".join(out["SUMMARY"])
