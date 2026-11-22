@@ -78,7 +78,15 @@ Everything else is free but bounded: the tester goes once more for gaps, a
 red quality gate gets one coder correction, a BLOCKED step one planner
 decision; the same again is a stop. With
 none left, `next` stops, except a correction in Phase 6 before the PR is marked
-ready: what is open goes to the ready-for-review gate instead.
+ready: what is open goes to the ready-for-review gate instead, which then
+offers "Add a round and fix it" (`budget raise --by 1`): the next `next` spends
+that round on the correction for what is open.
+
+A correction the review pass checked in the working tree and the user then
+committed (and pushed) by hand leaves `commit` nothing to commit: when HEAD
+holds exactly the checked code (a clean tree, the acceptance checks intact,
+check-fresh.py passing on HEAD), `next` records HEAD as the verified commit
+itself and goes on to the push.
 
 Output lines (only the ones that apply):
     ACTION:   what to do, in one line
@@ -176,7 +184,11 @@ fixer's FIXED), once 3 hours have passed, or with `--reissue`; while any
 brief is waited for, nothing is re-issued. One `next` refused is re-issued
 as a new brief that carries the refused issues (as `brief --retry <n>`
 writes). Spawned three times with no usable result, it stops; a brief that
-stop ended is no longer waited for, so the stop is asked again. A stop on a
+stop ended is no longer waited for, so the stop is asked again. A worker whose
+agent file caps its turns (`maxTurns`: the coder, the acceptance tester) and
+that ended with no result file is instead re-issued once as a new brief whose
+previous_issues tells it to keep its earlier edits and finish; ending with no
+result file again, since the last resume or lifting retry, stops (stop 7). A stop on a
 worker (blocked, failed twice, never returned) is lifted by `resume`: the
 next session spawns that worker again. A stop on a result (a red quality gate, an impossible spec)
 comes back until the user overrides it. Every stop but the budget's, a gate's
@@ -205,6 +217,7 @@ from . import (
     cmd_checks,
     cmd_gate,
     cmd_review,
+    cmd_ship,
     cmd_tests,
     cmd_work,
     judgment,
@@ -1067,6 +1080,37 @@ def wait_for(c, out):
         "be running")
 
 
+def capped_reissue(c, b, cap, tries):
+    """Open brief `b` of a worker capped at `cap` turns, which ended with no
+    result file: (the new brief that sends it out once more, told to keep its
+    edits and finish (a stand-in under --explain), None), or, when `b` already
+    was that re-spawn since the last resume or lifting retry, (b, the stop)."""
+    worker = b["worker"]
+    if b.get("turn_retry") and issued(b)[1] > c.resumed():
+        if not c.readonly and b.get("stopped_seq", 0) <= issued(b)[1]:
+            # The stop ends this spawn: it is not waited for, so the stop is
+            # asked again (after talk, leave, or a fixer's proposal).
+            b["stopped_seq"] = c.seq()
+            c.quiet = True
+        report = (f"{worker} #{b['n']} ended without writing its result file twice: once, "
+                  "then again after it was sent out once more and told to keep its edits "
+                  "and finish. It may be running out of turns (its agent file caps it at "
+                  f"{cap}). Its edits are still in the worktree; its brief is "
+                  f"{c.ad}/briefs/{worker}-{b['n']}.md. Tell the user; once the cause is "
+                  "fixed, `auto-dev continue` spawns it again.")
+        return b, stop([report], "a worker with a turn cap ended twice without a result "
+                       "file", retry={"lift": True}, number=7)
+    if c.readonly:  # --explain writes no brief
+        return {"worker": worker, "n": c.peek(worker)}, None
+    cmd_work.write_brief(c.state, c.ad, worker, b.get("mode"), dict(b.get("sets", {})),
+                         retry=b["n"], note=cmd_work.NO_RESULT_RETRY)
+    new = c.state["briefs"][-1]  # write_brief marked b retried_as it
+    new["turn_retry"] = True
+    new["emitted"] = tries
+    c.dirty = True
+    return new, None
+
+
 def pending_briefs(c):
     """Re-issue the briefs issued after the last recorded result and not recorded,
     unless one is still in flight (sent out in this session, after the latest
@@ -1074,7 +1118,13 @@ def pending_briefs(c):
 
     A job `record` refused (MISSING, MALFORMED, MISMATCH) is re-spawned as
     `brief --retry <n>` would: a new brief whose previous_issues carries the
-    issues, replacing the old one."""
+    issues, replacing the old one.
+
+    A worker whose agent file caps its turns (briefs.max_turns) and that ended
+    with no result file may have run out of turns mid-job: it is sent out once
+    as a new brief whose previous_issues tells it to keep its earlier edits and
+    finish (cmd_work.NO_RESULT_RETRY); a second miss since the last resume or
+    lifting retry stops the run (stop 7)."""
     done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
     issued_ = c.state.get("briefs", [])
     open_ = [b for b in issued_ if (b["worker"], b["n"]) not in done
@@ -1088,6 +1138,13 @@ def pending_briefs(c):
     refused = c.state.get("refused", {})
     for i, b in enumerate(open_):
         tries = b.get("emitted", 1) + 1
+        cap = None if cmd_work.job(b["worker"], b["n"]) in refused else \
+            briefs.max_turns(b["worker"])
+        if cap is not None:
+            open_[i], halt = capped_reissue(c, b, cap, tries)
+            if halt:
+                return halt  # its second miss
+            continue
         if tries > MAX_EMITS:
             if not c.readonly:
                 # The stop ends these spawns: none is waited for, so the stop is
@@ -1525,9 +1582,10 @@ def gate_question(c, gate, answers, rule):
         return stop([f"The {gate} gate's checks failed, so it can't be asked: {exc}"],
                     f"a {gate} gate precondition failed", retry={},
                     no_signoff="the gate's checks protect what ships", number=None)
+    options = cmd_review.gate_options(c.state, gate)
     questions = [cmd_review.question("Gate", f"{gate} gate: how do you want to proceed?",
-                                     cmd_review.GATE_OPTIONS[gate])] + extra
-    pairs = [(label, answers[label]) for label in cmd_review.GATE_OPTIONS[gate]]
+                                     options)] + extra
+    pairs = [(label, answers[label]) for label in options]
     for triage in extra:  # one answer per pre-existing security finding
         for label, value in cmd_review.TRIAGE_VALUES.items():
             pairs.append((f"{triage['header']}: {label}",
@@ -2513,7 +2571,9 @@ def spent_before(c, p):
     """Whether no round was left for pass p's correction before the
     ready-for-review gate: its open findings go to that gate. After it, that
     covers only the passes the user marked the PR ready with: once they add
-    rounds, a later pass's findings get their correction."""
+    rounds, a later pass's findings get their correction. A round added at
+    the gate ("Add a round and fix it") clears phase6.exhausted, so the pass's
+    findings get their correction then."""
     ready = marked_ready(c)
     return bool(c.p6.get("exhausted")) and (ready is None or p["seq"] < ready.get("seq", 0))
 
@@ -2876,6 +2936,33 @@ def scope_text(p):
 
 # ---------------------------------------------------------------- Phase 6: shipping
 
+def committed_by_hand(c, sha):
+    """HEAD's id when a correction after verified commit `sha` was committed
+    outside the pipeline and HEAD already holds the code every result checked:
+    the tree is clean, HEAD is neither `sha` nor a commit under re-check, the
+    committed acceptance checks are intact (the guard `commit` applies) and
+    check-fresh.py passes on HEAD. It is recorded as the verified commit, as
+    `commit` would, since `commit` would find nothing to commit. Else None."""
+    add, remove = changed_paths(c.wt)
+    if add or remove:
+        return None
+    head = git(c.wt, "rev-parse", "HEAD").strip()
+    if head in (sha, c.p6.get("unverified_commit")):
+        return None
+    if cmd_ship.changed_checks(c.state):
+        return None
+    if check_fresh(c, "--ref", head, *cmd_ship.fresh_phase(c.state)):
+        return None
+    c.would(f"record HEAD {head[:12]} as the verified commit: it already holds the "
+            "checked code", "a correction was committed outside the pipeline")
+    cmd_ship.record_verified(c.state, head)
+    st.add_note(c.state, f"HEAD {head} already holds the code every result checked "
+                "(committed outside the pipeline): recorded as the verified commit; "
+                "nothing to commit")
+    c.dirty = True
+    return head
+
+
 def publish_step(c):
     """Commit what is verified (and, after a correction, reviewed), push it, and
     publish the PR's description for it: a draft PR on the first publish. None
@@ -2887,6 +2974,10 @@ def publish_step(c):
     if needs_commit and sha and unchanged(c):
         mark_committed(c, "the correction after the commit changed nothing")
         needs_commit = False
+    if needs_commit and sha:
+        head = committed_by_hand(c, sha)
+        if head:  # the push, the description and CI go on with that commit
+            sha, needs_commit = head, False
     if needs_commit:
         if sha is None and c.state["settings"].get("open_pr_gate"):
             # Asked again after a re-check changed the code it was asked on.
@@ -2984,7 +3075,10 @@ def ready_gate(c):
     return gate_question(c, "ready", {
         "Mark ready for review": c.cmd("gate", "ready", "proceed"),
         "Hold (keep it a draft)": c.cmd("gate", "ready", "hold", "--reason", "<why>"),
-        "Stop": c.cmd("gate", "ready", "stop", "--reason", "<why>")},
+        "Stop": c.cmd("gate", "ready", "stop", "--reason", "<why>"),
+        # Offered only when a pass left findings open for want of a round
+        # (cmd_review.gate_options); `budget raise` lifts that at this gate.
+        cmd_review.ADD_ROUND: c.cmd("budget", "raise", "--by", "1")},
         "the reviews have settled on the draft: the ready-for-review gate")
 
 

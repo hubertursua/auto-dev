@@ -24,7 +24,10 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     staged-set check or the commit failed; 3 committed but NOT verified: do
     not push, stop and report.
     A refusal is recorded for `next` as `commit_attempt`, except "nothing to
-    commit" (`next` never asks for a commit with nothing changed) and exit 2.
+    commit" (`next` never asks for a commit with nothing changed: when a
+    correction was committed by hand and HEAD already holds the code every
+    result checked, `next` records HEAD as the verified commit itself) and
+    exit 2.
 
 ci-watch [--pr N] [--sha COMMIT] [--max-wait SECONDS] [--interval SECONDS]
          [--grace SECONDS]
@@ -303,6 +306,21 @@ def fresh_phase(state):
     return () if state.get("phase6", {}).get("passes") else ("--phase", "5")
 
 
+def record_verified(state, sha):
+    """Record `sha`, checked to carry the checked code, as the verified commit
+    (in `state`, not saved). `next` uses it too, for a commit made by hand
+    that already holds that code (cmd_next.committed_by_hand)."""
+    phase6 = state.setdefault("phase6", {})
+    phase6.pop("unverified_commit", None)
+    phase6["verified_sha"] = sha
+    # Every commit the run verified: `next` tells the run's own pushed commit,
+    # rewritten in the worktree since, from a head someone else pushed.
+    verified = phase6.setdefault("verified_shas", [])
+    if sha not in verified:
+        verified.append(sha)
+    phase6["commit_seq"] = st.seq(state)
+
+
 def verify_commit(args, state, sha, paths):
     """Check the commit carries the checked code; record it as verified or not."""
     wt, ad = state["worktree"], state["artifact_dir"]
@@ -322,14 +340,7 @@ def verify_commit(args, state, sha, paths):
         emit(args.json, "NOT-VERIFIED", f"commit {sha} holds code no result checked: "
              "do not push; stop and report", detail=detail)
         return EXIT_NOT_VERIFIED
-    phase6.pop("unverified_commit", None)
-    phase6["verified_sha"] = sha
-    # Every commit the run verified: `next` tells the run's own pushed commit,
-    # rewritten in the worktree since, from a head someone else pushed.
-    verified = phase6.setdefault("verified_shas", [])
-    if sha not in verified:
-        verified.append(sha)
-    phase6["commit_seq"] = st.seq(state)
+    record_verified(state, sha)
     st.add_note(state, f"verified commit {sha}")
     st.save(args.dir, state)
     emit(args.json, "COMMITTED", sha, paths=paths,

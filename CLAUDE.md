@@ -180,7 +180,9 @@ wrong about something? If yes, fix the README.
 
 - **Models.** The worker table in `SKILL.md` (_Spawning a worker_), the
   table in `README.md` (_Models and effort_), and each `agents/<name>.md`
-  frontmatter must agree.
+  frontmatter must agree on the model, the effort and the turn cap
+  (`maxTurns`, `—` in the tables when an agent sets none);
+  `tools/check-repo.py` checks all three.
 - **Version.** Bump `.claude-plugin/plugin.json` as _Branches, commits and
   PRs_ says (a PR into a release branch doesn't: see **Versioning** there). An
   *Upgrading from X.Y* section in `UPGRADING.md` (newest first) says what

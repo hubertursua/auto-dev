@@ -1549,6 +1549,32 @@ class BuildTest(NextCase):
         self.assert_sent_once_more_to_finish("coder", self.next_reissue())
         self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
 
+    def test_explain_previews_the_capped_re_spawn_and_writes_no_brief(self):
+        self.coder_ended_with_no_result_file()
+        before, briefs = (self.dir / "state.json").read_text(), self.brief_files()
+        r = self.autodev("next", "--explain", "--reissue", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("coder-2.md", r.stdout)
+        self.assertNotIn("coder-2.md", briefs)
+        self.assertEqual(self.brief_files(), briefs)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+
+    def test_the_capped_stop_is_asked_again_and_a_retry_sends_one_more_noted_brief(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+        out = self.next(4)  # not waited for: the stop is asked again
+        self.assertIn("twice", " ".join(out.get("REPORT", [])))
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 7, stops)
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertEqual(self.spawned(out), [("coder", 3)], json.dumps(out, indent=2))
+        self.assertEqual(self.sets("coder", 3), self.sets("coder", 1))
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+
 
 class ShipTest(NextCase):
     def ship_ready(self):

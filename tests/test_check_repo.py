@@ -636,6 +636,49 @@ class CheckRepoTest(unittest.TestCase):
             json.dumps(e))]
         self.assertTrue(by_hand, [e["id"] for e in new])
 
+    def check_turn_caps(self, caps, rows):
+        """check_agents on a temp agent file per worker in `caps` ({worker: its
+        maxTurns, or None}) and one worker table of `rows` ({worker: its Turn
+        cap cell, or None for a row without that cell})."""
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp) / "agents"
+            agents.mkdir()
+            for worker, cap in caps.items():
+                (agents / f"{worker}.md").write_text(
+                    f"---\nname: auto-dev-{worker}\nmodel: opus\neffort: high\n"
+                    + (f"maxTurns: {cap}\n" if cap is not None else "")
+                    + "tools: Read\n---\n", encoding="utf-8")
+            table = Path(tmp) / "TABLE.md"
+            lines = ["| Worker | Agent type | Model · effort | Turn cap |",
+                     "| ------ | ---------- | -------------- | -------- |"]
+            for worker, cell in rows.items():
+                lines.append(f"| {worker} | `auto-dev:{worker}` | `opus` · high |"
+                             + (f" {cell} |" if cell is not None else ""))
+            table.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            tool.check_agents(agents, (table,))
+        return tool.errors
+
+    def test_a_turn_cap_the_tables_disagree_on_fails(self):
+        caps = {"coder": "150", "planner": None}
+        self.assertEqual(self.check_turn_caps(caps, {"coder": "150", "planner": "—"}), [])
+        for rows, shown, says in (({"coder": "200", "planner": "—"}, "200", "150"),
+                                  ({"coder": "—", "planner": "—"}, "—", "150"),
+                                  ({"coder": None, "planner": "—"}, "missing", "150")):
+            with self.subTest(rows=rows):
+                errors = self.check_turn_caps(caps, rows)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("TABLE.md", errors[0])
+                self.assertIn("auto-dev:coder", errors[0])
+                self.assertIn(shown, errors[0])
+                self.assertIn(says, errors[0])
+        errors = self.check_turn_caps(caps, {"coder": "150", "planner": "120"})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("auto-dev:planner", errors[0])
+        self.assertIn("no maxTurns", errors[0])
+        errors = self.check_turn_caps({"coder": "lots"}, {"coder": "lots"})
+        self.assertTrue([e for e in errors if "maxTurns is 'lots'" in e], errors)
+
 
 if __name__ == "__main__":
     unittest.main()

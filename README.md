@@ -442,7 +442,11 @@ made).
 
 Declining is safe at every gate: `Stop` ends the run; `Hold`, at the
 open-the-PR, ready-for-review and main gates, pauses it so you can resume later. Both leave the branch, the worktree and every artifact on
-disk. What each option does is in `skills/auto-dev/references/tables.md`.
+disk. When a review pass left must-fix findings open because no round was
+left to correct them, the ready-for-review gate names them and offers a fourth
+answer, **Add a round and fix it**: it adds one round to the budget, the run
+corrects what is open, reviews and commits it, and asks the gate again. What
+each option does is in `skills/auto-dev/references/tables.md`.
 
 - **The PR** opens as a draft before any review, its description saying it is
   not reviewed yet; once the reviews settle the description is published
@@ -722,22 +726,22 @@ Each worker is its own agent type in `agents/`, which fixes its tools, model and
 effort. The types name model families (`opus`, `sonnet`, `haiku`), not versions,
 so a new release is picked up without editing the plugin.
 
-| Worker                                   | Agent type                       | Model · effort    |
-| ---------------------------------------- | -------------------------------- | ----------------- |
-| Profiler (first run on a repo)           | `auto-dev:profiler`              | `sonnet` · high   |
-| Planner                                  | `auto-dev:planner`               | `opus` · high     |
-| Plan critic                              | `auto-dev:plan-critic`           | `opus` · high     |
-| Acceptance tester                        | `auto-dev:acceptance-tester`     | `sonnet` · high   |
-| Coder (the build, all corrections)       | `auto-dev:coder`                 | `opus` · medium   |
-| Verifier                                 | `auto-dev:verifier`              | `opus` · high     |
-| Reviewer (standard risk: code and security) | `auto-dev:reviewer`           | `opus` · high     |
-| Code reviewer (high risk: ×3 panel, and re-votes) | `auto-dev:code-reviewer` | `opus` · high     |
-| Review judge (high risk)                 | `auto-dev:review-judge`          | `opus` · high     |
-| Security reviewer (high risk)            | `auto-dev:security-reviewer`     | `opus` · high     |
-| Security reviewer (`PLAN.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `opus` · high |
-| Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   |
-| Orchestrator lookups                     | `auto-dev:lookup`                | `haiku` · medium  |
-| Fixer (your instruction at a stop)       | `auto-dev:fixer`                 | `opus` · high     |
+| Worker                                   | Agent type                       | Model · effort    | Turn cap |
+| ---------------------------------------- | -------------------------------- | ----------------- | -------- |
+| Profiler (first run on a repo)           | `auto-dev:profiler`              | `sonnet` · high   | —        |
+| Planner                                  | `auto-dev:planner`               | `opus` · high     | —        |
+| Plan critic                              | `auto-dev:plan-critic`           | `opus` · high     | —        |
+| Acceptance tester                        | `auto-dev:acceptance-tester`     | `sonnet` · high   | 120      |
+| Coder (the build, all corrections)       | `auto-dev:coder`                 | `opus` · medium   | 150      |
+| Verifier                                 | `auto-dev:verifier`              | `opus` · high     | —        |
+| Reviewer (standard risk: code and security) | `auto-dev:reviewer`           | `opus` · high     | —        |
+| Code reviewer (high risk: ×3 panel, and re-votes) | `auto-dev:code-reviewer` | `opus` · high     | —        |
+| Review judge (high risk)                 | `auto-dev:review-judge`          | `opus` · high     | —        |
+| Security reviewer (high risk)            | `auto-dev:security-reviewer`     | `opus` · high     | —        |
+| Security reviewer (`PLAN.md` has security criteria) | `auto-dev:security-reviewer-sensitive` | `opus` · high | —        |
+| Triager (red CI, human PR comments)      | `auto-dev:triager`               | `sonnet` · high   | —        |
+| Orchestrator lookups                     | `auto-dev:lookup`                | `haiku` · medium  | —        |
+| Fixer (your instruction at a stop)       | `auto-dev:fixer`                 | `opus` · high     | —        |
 
 `next` names each type as `auto-dev:<worker>`; a plugin install lists them as
 `auto-dev:auto-dev-<worker>`, and the orchestrator maps one to the other.
@@ -783,8 +787,14 @@ hidden checks for the coder), each against the stronger setting it replaced:
 
 The orchestrator runs on the session's model; `sonnet` at medium effort is
 enough, since `next` makes the decisions and the workers do the judging. To
-retune a worker, edit the `model:` / `effort:` frontmatter in `agents/<name>.md`
-and the tables in `SKILL.md` and this README.
+retune a worker, edit the `model:` / `effort:` (or `maxTurns:`) frontmatter in
+`agents/<name>.md` and the tables in `SKILL.md` and this README;
+`tools/check-repo.py` fails when they disagree.
+
+The coder and the acceptance tester cap their turns (`maxTurns`), so a spawn
+that loops stops instead of running on. A capped spawn stopped at its cap
+writes no result file; `next` then sends it out once more, told to keep its
+edits and finish (see _Safety_).
 
 The code reviewers' effort is set per run. The planner writes a
 `Review effort:` line in `PLAN.md`: `high` by default, `xhigh` for
@@ -840,9 +850,16 @@ Autonomous but bounded:
   the same again stops and asks you. When the budget
   runs out the run stops and names what is still open, except for review
   findings before the PR is marked ready: those go to the ready-for-review gate, which names each one,
-  and you decide. To go on after a budget stop, say how many more rounds you
+  and you decide: ship them listed in the PR, or add a round there to fix
+  them. To go on after a budget stop, say how many more rounds you
   want (1 to 10): the run adds them and carries on from the step that
   stopped. It never adds rounds unasked.
+- **A capped worker gets one more go.** The coder (150 turns) and the
+  acceptance tester (120) cap their turns, so a spawn that loops ends. One
+  that ends without writing its result file is sent out once more, as a new
+  brief that tells it to keep the edits its earlier spawn made and finish; a
+  second miss stops the run and asks you. Any other worker that returns no
+  result is sent the same brief again, up to three spawns.
 - **No worker changes the contract.** The conditions, the checks and the
   plan's intent change only through you, once the plan critic's one round is
   over. A later worker that finds a criterion wrong
@@ -871,8 +888,9 @@ or a new one: your instruction to the fixer, a retry once you fixed the cause
 yourself, or, where it is safe, a sign-off (above). Only the step that stopped
 runs again, not the run. A push to the PR branch from elsewhere stops the run
 until you bring those commits into the worktree, where they are checked again;
-one pushed from the worktree is checked again with no stop. The budget used
-up stays until you add rounds.
+one pushed from the worktree is checked again with no stop. A correction the
+run checked that you commit (and push) yourself is recorded as the verified
+commit, not asked for again. The budget used up stays until you add rounds.
 
 ## Repository layout
 

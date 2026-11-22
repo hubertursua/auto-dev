@@ -160,12 +160,13 @@
       "session": "Ship (budget exhausted before the ready-for-review gate)",
       "setup": "Run eval 1 until `next` prints the first review pass on the draft PR (the auto-dev:verifier spawn with the review), and stop the session there without spawning them (their briefs stay issued and `next` re-issues them next session; no mutation run is cut off). Plant a defect the spec catches (e.g. the guard accepts an out-of-set value in one context). Then use up the budget from the worktree: run `autodev.py budget spend --id eval-setup-<k> --what \"eval setup\"` with k = 1, 2, … until it prints EXHAUSTED (exit 3). Start a fresh session.",
       "prompt": "auto-dev continue",
-      "expected_output": "`resume` prints RESUME in the Ship stage, Phase 6. The verifier and the review run on the draft PR. The verifier finds the unmet condition (its acceptance check fails) and writes it in SPEC_EVAL.md and evidence/corrections.md, but with no round left `next` spends nothing and spawns no coder: before the PR is marked ready, what is open goes to the ready-for-review gate, whose summary names it and says no round was left to correct it. The orchestrator shows that summary and asks the gate; it does not run the quality gate again, commit a correction, or report success. Had the PR already been marked ready, the same open items would stop the run on the budget instead.",
+      "expected_output": "`resume` prints RESUME in the Ship stage, Phase 6. The verifier and the review run on the draft PR. The verifier finds the unmet condition (its acceptance check fails) and writes it in SPEC_EVAL.md and evidence/corrections.md, but with no round left `next` spends nothing and spawns no coder: before the PR is marked ready, what is open goes to the ready-for-review gate, whose summary names it and says no round was left to correct it. The gate offers a fourth answer, `Add a round and fix it` (its AFTER line is `autodev.py budget raise --by 1`), beside the usual three. The orchestrator shows that summary and asks the gate; it does not run the quality gate again, commit a correction, or report success. Had the PR already been marked ready, the same open items would stop the run on the budget instead.",
       "files": [],
       "expectations": [
         "SPEC_EVAL.md, written by auto-dev:verifier, marks the planted condition partial or unmet, with evidence it ran",
         "No auto-dev:coder is spawned in this session, and nothing new is committed or pushed after the draft",
         "`next` exits 5 at the ready-for-review gate, and its SUMMARY says no round was left to correct what is still open, naming it",
+        "The ready-for-review gate's QUESTION offers four answers, `Mark ready for review`, `Hold (keep it a draft)`, `Stop` and `Add a round and fix it`, and the AFTER line for `Add a round and fix it` is `autodev.py budget raise --by 1`",
         "The orchestrator runs no `budget raise` unasked",
         "state.json's budget shows 0 remaining and no spend other than the setup's `eval-setup-<k>` ones, and the orchestrator ran no `budget spend` itself"
       ]
@@ -692,6 +693,35 @@
         "`autodev.py commit` prints `COMMITTED:` with the merge commit, and the worktree's HEAD is still that commit afterwards; or, when the re-check left something its correction fixed, it prints `COMMITTED:` with a head that descends from the merge commit through the run's own correction commits only (a tests commit for a check repair, the coder's commit, or both)",
         "Every `autodev.py ci-watch` after the re-check names `--sha` the head `commit` verified after the re-check (the merge commit, or the run's own commit on top of it), never the commit the run pushed before the merge",
         "The ready-for-review gate is asked again after the CI watch"
+      ]
+    },
+    {
+      "id": 46,
+      "session": "Ship (a round added at the ready-for-review gate)",
+      "setup": "Set the eval up as eval 8 (the planted defect, and the budget spent until `budget spend` prints EXHAUSTED). Run the session interactively: when `next` asks the ready-for-review gate with no round left, answer `Add a round and fix it`; answer the gate's next asking with `Hold (keep it a draft)`.",
+      "prompt": "auto-dev continue",
+      "expected_output": "As in eval 8, the verifier and the review run on the draft PR, the verifier finds the unmet condition, and with no round left `next` asks the ready-for-review gate, whose summary says no round was left to correct what is still open and whose question offers `Add a round and fix it` beside the usual three answers. For that answer the orchestrator runs its AFTER line, `autodev.py budget raise --by 1`, which prints `RAISED: 1 of <n> left`, then `next`: it prints a BUDGET line that spends `pass-1` (the review correction) and spawns auto-dev:coder with the pass's required changes as its `corrections_file`, not the gate again and not a stop. The correction then runs as any other: the quality gate, a review pass on the correction, the commit on top of the draft and its push, and the ready-for-review gate is asked again, naming nothing left open for want of a round when the correction closed it.",
+      "files": [],
+      "expectations": [
+        "The first ready-for-review gate's QUESTION offers `Add a round and fix it`, and the orchestrator runs its AFTER line, `autodev.py budget raise --by 1`, only after that answer",
+        "`budget raise --by 1` exits 0 and prints `RAISED:`, and state.json's budget shows one more round in total and a `raises` entry",
+        "The `next` after the raise exits 0, prints a BUDGET line spending `pass-1`, and spawns auto-dev:coder (a correction brief whose `corrections_file` holds the pass's required changes); it asks no gate and stops nothing",
+        "After the coder, the quality gate and a review pass run on the correction, `autodev.py commit` commits it on top of the draft's commit, and it is pushed",
+        "The ready-for-review gate is asked again after the correction, and the orchestrator runs no second `budget raise` unasked"
+      ]
+    },
+    {
+      "id": 47,
+      "session": "Ship (a checked correction committed and pushed by hand)",
+      "setup": "Set the eval up as eval 8, but leave the budget as it is (no `budget spend`), so the planted defect gets its correction. Run the session interactively until `next`, after the correction's review pass, asks for `autodev.py commit`, and stop the session there without running it. Then, in the run's worktree, commit the working tree and push it by hand: `git add -A`, `git commit -m \"fix: <a subject you pick>\"` and `git push`. Start a fresh session, interactively, and answer the ready-for-review gate with `Hold (keep it a draft)`.",
+      "prompt": "auto-dev continue",
+      "expected_output": "`resume` picks the run up in the Ship stage. `next` sees that HEAD, the commit made by hand, already holds the code the quality gate and the review pass checked (a clean tree, the acceptance checks intact, every report fresh on HEAD): it records that commit as the verified commit, notes in WORK_LOG.md that HEAD already held the checked code and was recorded as the verified commit, and asks for no `autodev.py commit`. It goes on with the push action (a no-op, since the commit is pushed already), the PR description for that commit and a CI watch on it, then asks the ready-for-review gate. Had the hand commit carried an edit no check ran on, `next` would have asked for `commit` as before, which refuses it as stale.",
+      "files": [],
+      "expectations": [
+        "No `next` in the session asks for `autodev.py commit`, and the orchestrator runs no `autodev.py commit`",
+        "state.json's `phase6.verified_sha` is the commit made by hand, and WORK_LOG.md notes that HEAD already held the checked code and was recorded as the verified commit",
+        "`next` asks for the push, then the PR description, then `autodev.py ci-watch --sha <the commit made by hand>`, with no `next` exiting 4 on the way",
+        "The ready-for-review gate is asked after the CI watch"
       ]
     }
   ]
