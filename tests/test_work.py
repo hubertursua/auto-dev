@@ -448,6 +448,129 @@ class BriefTest(WorkCase):
         self.assertNotIn("--files", value)
         self.assertNotIn("no test-ID form", value)
 
+    BASH_TEXT = "` with that Bash call's timeout set to 300000 ms"
+    FIXER_SETS = ("--set", "instruction=fix the gate",
+                  "--set", "stopped=the quality gate failed")
+    TESTER_SETS = ("--mode", "write", "--set", "scope=ALL CONDITIONS")
+
+    def slot_text(self, path, name):
+        """The brief's `name` value, its continuation lines included ('' when absent)."""
+        lines = Path(path).read_text().splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith(f"{name}: "):
+                value = [line[len(name) + 2:]]
+                for more in lines[i + 1:]:
+                    if not more.startswith("  "):
+                        break
+                    value.append(more[2:])
+                return "\n".join(value)
+        return ""
+
+    def brief_of(self, worker, *args):
+        r = self.cmd("brief", worker, *args)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        path = Path(r.stdout.split("BRIEF:")[1].split()[0])
+        return self.slot_text(path, "gate_commands"), self.slot_text(path, "test_runs")
+
+    def three_check_gate(self, third=None):
+        self.set_gate({"kind": "lint", "command": "npx eslint .", "report": "LINT.md"},
+                      {"kind": "test", "command": "npm test", "report": "TEST.md",
+                       "files": "npx vitest run <files>"},
+                      third or {"kind": "test", "command": "npm run e2e",
+                                "report": "E2E.md"})
+
+    def entry(self, gate, n):
+        """Check `n`'s entry in a gate list: its numbered line and the lines under it."""
+        lines = gate.splitlines()
+        start = next(i for i, ln in enumerate(lines) if ln.startswith(f"{n}. "))
+        end = next((i for i in range(start + 1, len(lines))
+                    if re.match(r"\d+\. ", lines[i])), len(lines))
+        return "\n".join(lines[start:end])
+
+    def test_the_coder_s_gate_list_runs_lint_whole_tests_only_scoped_and_leaves_the_rest_to_ci(
+            self):
+        self.three_check_gate()
+        ad = shlex.quote(str(self.dir))
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assertRegex(gate, re.escape(f" run gate 1 --dir {ad}") + "`", gate)
+        self.assertIn(f" run gate 2 --dir {ad} --files <test file> …", gate)
+        for m in re.finditer(re.escape(f" run gate 2 --dir {ad}"), gate):
+            self.assertRegex(gate[m.end():], r"^ --(files|tests) ", gate)
+        self.assertNotIn("run gate 3", gate)
+        self.assertIn("left to CI", self.entry(gate, 3))
+        self.assertNotIn("autodev.py", self.entry(gate, 3))
+
+    def test_a_tests_only_check_gets_a_test_id_line_not_left_to_ci(self):
+        self.three_check_gate({"kind": "test", "command": "npm run e2e", "report": "E2E.md",
+                               "tests": "npx vitest run <tests>"})
+        ad = shlex.quote(str(self.dir))
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assertIn(f" run gate 3 --dir {ad} --tests <test id> …", gate)
+        self.assertNotIn("left to CI", self.entry(gate, 3))
+
+    def test_the_fixer_s_gate_list_keeps_a_whole_run_line_for_every_check(self):
+        self.three_check_gate()
+        ad = shlex.quote(str(self.dir))
+        gate, _ = self.brief_of("fixer", *self.FIXER_SETS)
+        for n in (1, 2, 3):
+            self.assertRegex(gate, re.escape(f" run gate {n} --dir {ad}") + "`", gate)
+
+    def test_the_coder_s_test_runs_leave_an_unscopable_test_check_to_ci(self):
+        self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md"})
+        _, coder = self.brief_of("coder", "--mode", "build")
+        self.assertNotIn("autodev.py", coder)
+        self.assertNotIn("run test --dir", coder)
+        self.assertIn("left to CI", coder)
+        self.assertRegex(coder, r"(?i)\b(don't|do not|never) run it\b")
+        self.assertIsNone(re.match(r"(?i)none\b", coder), coder)
+        _, tester = self.brief_of("acceptance-tester", *self.TESTER_SETS)
+        whole = (f"python3 {shlex.quote(str(SCRIPTS / 'autodev.py'))} run test "
+                 f"--dir {shlex.quote(str(self.dir))}")
+        self.assertIn(whole, tester)
+
+    def test_a_scopable_test_check_gives_every_worker_the_same_scoped_test_runs(self):
+        self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md",
+                       "files": "npx vitest run <files>"})
+        ad = shlex.quote(str(self.dir))
+        _, coder = self.brief_of("coder", "--mode", "build")
+        _, fixer = self.brief_of("fixer", *self.FIXER_SETS)
+        _, tester = self.brief_of("acceptance-tester", *self.TESTER_SETS)
+        self.assertEqual(coder, fixer)
+        self.assertEqual(coder, tester)
+        self.assertIn(f" run test --dir {ad} --files <test file> …", coder)
+        self.assertIsNone(re.match(r"(?i)none\b", coder), coder)
+
+    def assert_run_lines_set_the_bash_timeout(self, value, who):
+        found = 0
+        for line in value.splitlines():
+            for m in re.finditer(r"autodev\.py run [^`]*`", line):
+                found += 1
+                self.assertTrue(line[m.end() - 1:].startswith(self.BASH_TEXT), (who, line))
+        return found
+
+    def test_every_run_line_in_a_brief_sets_the_bash_call_s_timeout(self):
+        self.set_gate({"kind": "lint", "command": "npx eslint .", "report": "LINT.md"},
+                      {"kind": "test", "command": "npm test", "report": "TEST.md",
+                       "files": "npx vitest run <files>", "tests": "npx vitest run <tests>"})
+        for worker, args in (("coder", ("--mode", "build")), ("fixer", self.FIXER_SETS),
+                             ("acceptance-tester", self.TESTER_SETS)):
+            gate, runs = self.brief_of(worker, *args)
+            self.assertGreater(self.assert_run_lines_set_the_bash_timeout(runs, worker), 0,
+                               (worker, runs))
+            self.assert_run_lines_set_the_bash_timeout(gate, worker)
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assertGreater(self.assert_run_lines_set_the_bash_timeout(gate, "coder"), 0, gate)
+
+    def test_the_tester_s_whole_test_run_line_sets_the_bash_call_s_timeout_too(self):
+        self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md"})
+        whole = (f"python3 {shlex.quote(str(SCRIPTS / 'autodev.py'))} run test "
+                 f"--dir {shlex.quote(str(self.dir))}")
+        _, tester = self.brief_of("acceptance-tester", *self.TESTER_SETS)
+        self.assertIn(f"`{whole}{self.BASH_TEXT}", tester)
+        self.assert_run_lines_set_the_bash_timeout(tester, "tester")
+        _, coder = self.brief_of("coder", "--mode", "build")
+        self.assertEqual(self.assert_run_lines_set_the_bash_timeout(coder, "coder"), 0)
+
 
 class VerifierBriefCase(WorkCase):
     """The verifier's brief and instructions on a standard- or high-risk run."""
@@ -1833,3 +1956,57 @@ class WorkerWaitRuleTest(unittest.TestCase):
         fallback = self.verifier_fallback(step)
         self.assertIn("timeout set to 300000 ms", fallback)
         self.assert_fallback_keeps_its_timeout(fallback)
+
+    def assert_says(self, text, said, name, present=True):
+        """`said` is (or, with `present` false, is not) in `text`, reported briefly."""
+        self.assertEqual(said in text, present,
+                         f"{name}: {'missing' if present else 'still holds'} {said!r}")
+
+    def test_the_coder_runs_test_checks_only_scoped_and_stops_at_the_third_failed_attempt(
+            self):
+        text = self.text("coder")
+        for said in ("Never run a test check whole", "left to CI",
+                     "name it in one line above the result block", "the third has failed"):
+            self.assert_says(text, said, "coder")
+        self.assert_says(text, "run the whole suite", "coder", present=False)
+
+    def test_the_coder_still_runs_each_non_test_check_in_full(self):
+        self.assert_says(self.text("coder"), "IN FULL, never scoped or sampled", "coder")
+
+    def acceptance_run_step(self):
+        """The verifier's step 3, whitespace collapsed."""
+        text = self.text("verifier")
+        start = text.index("3. The acceptance run")
+        end = re.compile(r" 4\. [A-Z]").search(text, start)
+        return text[start:end.start() if end else len(text)]
+
+    def test_the_verifier_s_acceptance_run_names_no_timeout_and_lets_run_end_a_hung_check(
+            self):
+        step = self.acceptance_run_step()
+        scoped = "run gate <n> --dir {{artifact_dir}} --files <the check files>"
+        self.assert_says(step, scoped, "verifier step 3")
+        at = step.index(scoped)
+        after = step[at + len(scoped):].lstrip()
+        self.assertFalse(after.startswith("--timeout"),
+                         f"the scoped command is followed by {after[:16]!r}")
+        self.assert_says(step[:at], "timeout set to 300000 ms",
+                         "verifier step 3 before the scoped command")
+        rest = step[step.index("has no scoped form"):]
+        end = re.search(r"\.\s+[A-Z]", rest)
+        fallback = rest[:end.start()] if end else rest
+        self.assert_says(fallback, "timeout set to 300000 ms", "the fallback sentence")
+        self.assert_says(fallback, "--timeout", "the fallback sentence", present=False)
+        for said in ("`run` ends a hung check itself", "wait for it with `run wait`",
+                     ("TIMED_OUT (exit 3), whether from `run` or from `run wait`, leaves "
+                      "the conditions' checks unconfirmed by the run, not failed")):
+            self.assert_says(step, said, "verifier step 3")
+
+    def test_no_worker_gives_a_check_a_fixed_timeout_number(self):
+        for name in self.RUNS_CHECKS:
+            text = self.text(name)
+            self.assert_says(text, "--timeout 280", name, present=False)
+            fixed = re.search(r"--timeout\s+\d+", text)
+            self.assertIsNone(fixed, f"{name}: gives {fixed and fixed.group(0)!r}")
+            self.assert_says(text, "before that Bash timeout", name, present=False)
+            self.assert_says(text, "--timeout <seconds>", name)
+            self.assert_says(text, "`run` ends a hung check", name)

@@ -1462,6 +1462,14 @@ class BuildTest(NextCase):
         r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout)
 
+    def test_the_quality_gate_action_says_test_checks_run_only_on_the_change_s_tests(self):
+        self.plan_session()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        out = self.next(0)
+        self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+        self.assertIn("only on the change's tests when CI is watched", out["ACTION"])
+
 
 class ShipTest(NextCase):
     def ship_ready(self):
@@ -3882,6 +3890,48 @@ class PublishTest(NextCase):
         self.assertIn("line 0001 ok", posted)
         self.assertNotIn("superseded", posted)
 
+    def gate_on_the_change(self, ci):
+        """A lint check, a test check with a `files` form and one with none, on a
+        branch that added tests/a.test.ts and holds an untracked src/b.test.ts;
+        the quality gate run with `ci`, then the PR body generated."""
+        state = self.state()
+        state["settings"]["ci"] = ci
+        state["settings"]["gate"] = [
+            {"kind": "lint", "command": "echo lint", "report": "LINT.md"},
+            {"kind": "test", "command": "echo all", "report": "TEST.md",
+             "files": "echo some <files>"},
+            {"kind": "test", "command": "true", "report": "CHECKS.md"}]
+        self.write_state(state)
+        (self.worktree / "tests").mkdir(exist_ok=True)
+        (self.worktree / "tests" / "a.test.ts").write_text("a\n")
+        self.sh("git", "-C", str(self.worktree), "add", "tests/a.test.ts")
+        self.sh("git", "-C", str(self.worktree), "commit", "-q", "-m", "add a test")
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "b.test.ts").write_text("b\n")
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        state = self.state()
+        state["phase6"]["verified_sha"] = self.sh("git", "rev-parse", "HEAD",
+                                                  cwd=self.worktree).strip()
+        self.write_state(state)
+        r = self.lib("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return (self.dir / "pr-body.md").read_text()
+
+    def test_the_pr_body_names_a_check_run_on_the_change_s_tests_and_one_left_to_ci(self):
+        text = self.gate_on_the_change("github-actions")
+        gate = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+        scoped = ("- `echo some src/b.test.ts tests/a.test.ts`: passed (the change's tests; "
+                  "CI runs the whole check)")
+        for line in (scoped, "- `true`: not run before the push; CI runs it"):
+            self.assertTrue(line in text, f"no {line!r} in the quality-gate section:\n{gate}")
+
+    def test_the_pr_body_shows_a_whole_run_as_before_when_ci_is_not_watched(self):
+        text = self.gate_on_the_change("none")
+        gate = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+        for line in ("- `echo all`: passed", "- `true`: passed"):
+            self.assertTrue(line in text, f"no {line!r} in the quality-gate section:\n{gate}")
+
 
 class TemplateTest(unittest.TestCase):
     """The repo's own PR template and the ticket link in the generated body."""
@@ -4631,6 +4681,85 @@ class CiTest(NextCase):
         summary = " ".join(out["SUMMARY"])
         self.assertIn("not monitored (unavailable)", summary)
         self.assertNotIn("conflicts with its base", summary.lower())
+
+    def newest_gate_run_is(self, **fields):
+        """The newest quality-gate run, with only these of its CI fields."""
+        state = self.state()
+        newest = state["gate_runs"][-1]
+        for key in ("ci_watched", "scoped", "skipped"):
+            newest.pop(key, None)
+        newest.update(fields)
+        self.write_state(state)
+
+    def unwatchable_after_a_gate_that_left_a_check_to_ci(self):
+        """The reviewed draft; its newest quality gate left TEST.md to CI, then a
+        CI watch on the draft's commit found no checks (unavailable)."""
+        sha = self.no_checks_on_the_draft("MERGEABLE")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--sha", sha, "--max-wait", "0", "--grace", "0",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("UNAVAILABLE", r.stdout)
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+
+    def test_unwatchable_ci_runs_the_quality_gate_whole_before_the_ready_gate(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("quality-gate", out.get("ACTION", ""), shown)
+        self.assertNotIn("QUESTION", out, shown)
+        self.assertIn("CI can't be watched", out.get("RULE", ""), shown)
+        self.assertIn("the quality gate runs every check whole", out.get("RULE", ""), shown)
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Scope:** whole", (self.dir / "lint" / "TEST.md").read_text())
+        self.assertIs(self.state()["gate_runs"][-1].get("ci_watched"), False)
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+
+    def test_a_red_whole_rerun_after_unwatchable_ci_stops_and_names_the_failing_check(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        state = self.state()
+        state["phase6"]["ci"]["status"] = "timeout"  # a watch that timed out does the same
+        self.write_state(state)
+        self.quality_gate(red=True)
+        out = self.next(4)
+        self.assertIn("TEST.md", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        self.assertNotIn("ready gate", out.get("QUESTION", ""))
+        r = self.autodev("override", "retry", "--text", "I fixed the check", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.quality_gate(red=True)  # a retry runs the gate again
+        out = self.next(4)
+        self.assertIn("TEST.md", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        self.sign_off(out)  # a sign-off accepts the failing report
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def test_a_gate_run_that_owes_no_whole_run_goes_to_the_ready_gate(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        for fields in ({"ci_watched": False},
+                       {"ci_watched": True, "scoped": [], "skipped": []},
+                       {}):  # a run from before the change: no ci_watched key
+            self.newest_gate_run_is(**fields)
+            out = self.next(5)
+            self.assertIn("ready gate", out["QUESTION"], fields)
+
+    def test_a_green_watch_after_a_gate_that_left_a_check_to_ci_asks_no_gate_run(self):
+        self.github_ci()
+        self.reviewed_pr(extra=self.GREEN)
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+        self.watch()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertNotIn("quality-gate", out.get("ACTION", ""))
+
+    def test_a_red_watch_after_a_gate_that_left_a_check_to_ci_goes_to_the_triager(self):
+        self.github_ci()
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+        self.watch(1)
+        self.expect("triager")
 
 
 class HumanAndMainGateTest(NextCase):
@@ -10003,3 +10132,61 @@ class MutationDocsTest(RiskDocsCase):
         for name, text in self.texts().items():
             self.assertTrue(any("mutation" in s.lower() and any(w in s.lower() for w in self.HIGH)
                                 for s in self.sentences(text)), name)
+
+
+class CiFullRunDocsTest(unittest.TestCase):
+    """What the docs say about where the test suite runs in full."""
+
+    ROOT = SCRIPTS.parents[2]
+    PHRASE = "CI is the one full run of the test suite"
+
+    def read(self, rel):
+        return (self.ROOT / rel).read_text(encoding="utf-8")
+
+    def flat(self, text):
+        return " ".join(text.split())
+
+    def section(self, text, heading):
+        start = text.index(f"\n## {heading}\n")
+        end = text.find("\n## ", start + 1)
+        return text[start:end if end != -1 else len(text)]
+
+    def assert_says(self, text, said, where, present=True):
+        self.assertEqual(said in text, present,
+                         f"{where}: {'missing' if present else 'still holds'} {said!r}")
+
+    def test_the_docs_say_ci_is_the_one_full_run_of_the_test_suite(self):
+        readme = self.read("README.md")
+        for heading in ("How the build is verified", "Stack profiles"):
+            self.assert_says(self.flat(self.section(readme, heading)), self.PHRASE,
+                             f"README.md *{heading}*")
+        self.assert_says(self.flat(self.read("skills/auto-dev/references/build.md")),
+                         self.PHRASE, "references/build.md")
+        gates = self.section(readme, "Human gates & integrations")
+        bullets = [self.flat(b) for b in re.split(r"\n(?=- )", gates) if "CI" in b]
+        self.assertTrue(any("runs the whole test suite before the push" in b for b in bullets),
+                        "README.md *Human gates & integrations*: no CI bullet says it "
+                        "'runs the whole test suite before the push'")
+        scratch = self.section(readme, "The `.auto-dev/` scratch directory")
+        rows = [ln for ln in scratch.splitlines() if ln.startswith("| `tmp/`")]
+        self.assertEqual(len(rows), 1, "README.md: no single `tmp/` row in the scratch table")
+        self.assert_says(rows[0], "tmp/run/timings.json", "README.md's `tmp/` row")
+
+    def test_evals_expect_a_scoped_gate_with_ci_and_a_whole_gate_without(self):
+        evals = {e["id"]: e for e in json.loads(
+            self.read("skills/auto-dev/evals/evals.json"))["evals"]}
+        self.assertTrue([x for x in evals[1]["expectations"]
+                         if "quality gate" in x.lower() and "change's tests" in x],
+                        "eval 1 has no expectation that the quality gate ran the test check "
+                        "only on the change's tests")
+        self.assertTrue([x for x in evals[9]["expectations"]
+                         if "quality gate" in x.lower() and "every check whole" in x],
+                        "eval 9 has no expectation that the quality gate ran every check whole")
+
+    def test_the_docs_no_longer_say_the_gate_runs_every_check_whole(self):
+        self.assert_says(self.flat(self.read("README.md")),
+                         "runs every check whole through `run gate <n>`", "README.md",
+                         present=False)
+        self.assert_says(self.flat(self.read("skills/auto-dev/references/profiles.md")).lower(),
+                         "the quality gate runs every check, the test check included",
+                         "references/profiles.md", present=False)
