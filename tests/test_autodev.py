@@ -5689,6 +5689,33 @@ class QualityGateTest(RunCase):
         self.assertTrue(skipped[0].endswith("(no test file changed; CI runs it)"), skipped)
         self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["LINT.md"])
 
+    def test_with_ci_watched_only_the_test_check_run_test_uses_gets_the_change_s_test_files(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        e2e = {"kind": "test", "command": "echo e2e all", "report": "E2E.md",
+               "files": "false <files>"}
+        self.set_gate(self.lint_check(), self.unit_check(), e2e)
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"GREEN: every check run passed on tree {self.tree()}; "
+                                   "1 left to CI", r.stdout)
+        self.assertIn(self.line_of("TEST.md", "echo some src/b.test.ts tests/a.test.ts",
+                                   self.SCOPED), lines, r.stdout)
+        self.assertIn(f"  skipped: {self.dir / 'lint' / 'E2E.md'} — `echo e2e all` "
+                      "(another test check runs the change's tests; CI runs it)",
+                      lines, r.stdout)
+        report = (self.dir / "lint" / "E2E.md").read_text()
+        self.assertTrue(report.startswith("# E2E — skipped"), report)
+        self.assertIn("- **Scope:** not run: another test check runs the change's tests; "
+                      "CI runs it", report)
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["result"], run["failing"]), ("GREEN", []))
+        self.set_ci("none")
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.line_of("E2E.md", "echo e2e all"), r.stdout.splitlines(), r.stdout)
+
     def test_with_ci_not_watched_every_check_runs_whole(self):
         self.the_change()
         self.set_ci("none")
