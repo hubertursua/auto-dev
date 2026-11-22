@@ -9,6 +9,7 @@ import re
 import shlex
 import subprocess
 import sys
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1720,3 +1721,115 @@ class AmendedNamesTest(WorkCase):
     def test_an_edge_row_counts_for_its_condition(self):
         self.assertEqual([self.work.row_id(c) for c in ("3 (Edge)", " S1 ", "2")],
                          ["3", "S1", "2"])
+
+
+class WorkerWaitRuleTest(unittest.TestCase):
+    """What the worker files say about slow commands and waiting on a run."""
+
+    AGENTS = Path(__file__).resolve().parents[1] / "agents"
+    RUNS_CHECKS = ("coder", "acceptance-tester", "verifier", "fixer")
+    WAIT_COMMAND = "python3 {{skill_dir}}/scripts/autodev.py run wait --dir {{artifact_dir}}"
+
+    def text(self, name):
+        """agents/<name>.md with its whitespace collapsed to single spaces."""
+        return " ".join((self.AGENTS / f"{name}.md").read_text().split())
+
+    def test_each_command_running_worker_waits_only_with_run_wait(self):
+        for name in self.RUNS_CHECKS:
+            text = self.text(name)
+            for said in (self.WAIT_COMMAND, "RUNNING", "Never poll", "--timeout <seconds>",
+                         "no other `autodev.py run`"):
+                self.assertIn(said, text, name)
+
+    def test_coder_no_longer_backgrounds_a_check_on_its_own(self):
+        text = self.text("coder")
+        self.assertNotIn("goes in the background", text)
+        self.assertIn("--timeout <seconds>", text)
+
+    def test_top_bullets_keep_their_other_rules(self):
+        self.assertIn("scope slow suites to the affected files", self.text("coder"))
+        for name in ("fixer", "acceptance-tester", "verifier"):
+            self.assertIn("spill large output", self.text(name), name)
+
+    def test_no_worker_file_says_5_minutes(self):
+        names = sorted(p.stem for p in self.AGENTS.glob("*.md"))
+        self.assertGreaterEqual(len(names), 14, names)
+        for name in names:
+            text = self.text(name)
+            self.assertIn("under 3 minutes", text, name)
+            self.assertNotIn("5 minutes", text, name)
+
+    def test_verifier_keeps_verify_prep_as_its_exception(self):
+        text = self.text("verifier")
+        self.assertIn("except `verify prep`", text)
+        self.assertIn("600000 ms", text)
+
+    def test_coder_never_writes_its_own_mutants(self):
+        sentences = re.split(r"(?<=[.!?])\s+", self.text("coder"))
+        rule = [s for s in sentences if "Never write mutants" in s]
+        self.assertTrue(rule, "no sentence says `Never write mutants`")
+        self.assertTrue(any("stash" in s and "the verifier" in s for s in rule), rule)
+
+    def test_coder_still_works_test_first(self):
+        self.assertIn("run it and see it FAIL, then make it pass", self.text("coder"))
+
+    def test_run_wait_gets_a_bash_timeout_past_its_170_seconds(self):
+        for name in self.RUNS_CHECKS:
+            self.assertIn("run wait --dir {{artifact_dir}}` with that Bash call's timeout "
+                          "set to 300000 ms", self.text(name), name)
+
+    def verifier_step_3(self):
+        text = self.text("verifier")
+        start = text.index("3. The acceptance run:")
+        return text[start:text.index("4. For each PLAN.md condition", start)]
+
+    BASH_TIMEOUT_SECONDS = 300  # the 300000 ms Bash timeout step 3 sets
+
+    def verifier_fallback(self, step):
+        """Step 3's sentence for a gate check with no `files` form."""
+        sentences = re.split(r"(?<=[.!?:])\s+(?=[A-Z`])", step)
+        fallback = [s for s in sentences if "has no scoped form" in s]
+        self.assertEqual(len(fallback), 1, sentences)
+        return fallback[0]
+
+    def assert_fallback_keeps_its_timeout(self, fallback):
+        """The fallback drops only `--files …` and says to keep a `--timeout <n>` under 300."""
+        kept = re.search(r"minus\s+`--files <the check files>`\s+\(keep\s+`--timeout (\d+)`\)",
+                         fallback)
+        self.assertIsNotNone(kept, fallback)
+        self.assertLess(int(kept.group(1)), self.BASH_TIMEOUT_SECONDS, fallback)
+
+    def test_fallback_check_refuses_wordings_that_drop_the_timeout(self):
+        fallback = self.verifier_fallback(self.verifier_step_3())
+        self.assert_fallback_keeps_its_timeout(fallback)
+        kept = re.search(r"\(keep\s+`--timeout 280`\)", fallback)
+        self.assertIsNotNone(kept, fallback)
+        for reworded in (
+            fallback[:kept.start()] + "(drop `--timeout 280`)" + fallback[kept.end():],
+            fallback.replace("minus `--files <the check files>` " + kept.group(0),
+                             "minus `--files <the check files>` and `--timeout 280`"),
+            fallback[:kept.start()] + "(keep `--timeout 400`)" + fallback[kept.end():],
+        ):
+            self.assertNotEqual(reworded, fallback)
+            with self.assertRaises(AssertionError, msg=reworded):
+                self.assert_fallback_keeps_its_timeout(reworded)
+
+    def test_verifier_bounds_its_own_acceptance_run(self):
+        step = self.verifier_step_3()
+        scoped = re.search(r"run gate <n> --dir \{\{artifact_dir\}\} --files "
+                           r"<the check files> --timeout (\d+)", step)
+        self.assertIsNotNone(scoped, step)
+        self.assertLess(int(scoped.group(1)), self.BASH_TIMEOUT_SECONDS, step)
+        self.assert_fallback_keeps_its_timeout(self.verifier_fallback(step))
+        self.assertIn("TIMED_OUT (exit 3), whether from `run` or from `run wait`, leaves "
+                      "the conditions' checks unconfirmed by the run, not failed", step)
+
+    def test_verifier_acceptance_run_stops_before_its_bash_timeout(self):
+        step = self.verifier_step_3()
+        scoped = re.search(r"--files <the check files> --timeout (\d+)", step)
+        self.assertIsNotNone(scoped, step)
+        self.assertIn("timeout set to 300000 ms", step[:scoped.start()])
+        self.assertLess(int(scoped.group(1)), self.BASH_TIMEOUT_SECONDS)
+        fallback = self.verifier_fallback(step)
+        self.assertIn("timeout set to 300000 ms", fallback)
+        self.assert_fallback_keeps_its_timeout(fallback)

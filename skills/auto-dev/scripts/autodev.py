@@ -36,7 +36,8 @@ Subcommands:
     record             check a worker's result against its artifacts; update state
     check-artifact     check an artifact against its template before returning it
     mutants   pick which mutants a verifier re-check runs again; record a finished pass
-    run       run one of the profile's gate or test commands in the worktree
+    run       run one of the profile's gate or test commands in the worktree, or
+              wait for one
     quality-gate       run the whole quality gate and write its lint reports
     verify    the verifier's routine steps: prep a pass, then compare the tree
     next      print the pipeline's one next action (the orchestrator's loop); with

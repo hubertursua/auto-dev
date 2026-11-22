@@ -3216,6 +3216,353 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(list(self.tmp.rglob("PWNED")), [])
 
 
+class RunWaitTest(unittest.TestCase):
+    """`autodev.py run wait`: waiting on a `run gate|test` that went to the background."""
+
+    def setUp(self):
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wt = self.tmp / "app"
+        self.ad = self.wt / ".auto-dev"
+        self.ad.mkdir(parents=True)
+        (self.wt / "src").mkdir()
+        (self.wt / "src" / "a.txt").write_text("x\n")
+        self.cwd = self.tmp / "elsewhere"
+        self.cwd.mkdir()
+
+    def checks(self, *commands):
+        """Make these the gate's checks, numbered from 1."""
+        gate = [{"kind": "lint", "command": c, "report": f"CHECK{i}.md"}
+                for i, c in enumerate(commands, 1)]
+        gate.append({"kind": "test", "command": commands[0], "report": "TEST.md",
+                     "files": commands[0] + " <files>"})
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": gate}}))
+
+    def slow(self, seconds, code):
+        """A check that prints `started`, sleeps, then exits with `code`."""
+        py = shlex.quote(sys.executable)
+        return (f"{py} -c 'import sys, time; print(\"started\", flush=True); "
+                f"time.sleep({seconds}); sys.exit({code})'")
+
+    def quick(self, code):
+        py = shlex.quote(sys.executable)
+        return f"{py} -c 'import sys; print(\"done\"); sys.exit({code})'"
+
+    def cli(self, *args, timeout=200):
+        return subprocess.run([sys.executable, str(AUTODEV), "run", *args, "--dir",
+                               str(self.ad)], capture_output=True, text=True,
+                              cwd=self.cwd, check=False, timeout=timeout)
+
+    def start(self, *args):
+        """`run <args>` in a process of its own, as a call the Bash tool moved to
+        the background."""
+        proc = subprocess.Popen([sys.executable, str(AUTODEV), "run", *args, "--dir",
+                                 str(self.ad)], cwd=self.cwd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.reap, proc)
+        return proc
+
+    def reap(self, proc):
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate()
+
+    def started(self, name):
+        """Wait until the run's output file tmp/run/<name> holds `started`."""
+        path = self.ad / "tmp" / "run" / name
+        for _ in range(200):
+            if path.exists() and "started" in path.read_text():
+                return path
+            time.sleep(0.05)
+        self.fail(f"{path} never held `started`")
+
+    def output_line(self, stdout):
+        return next((x for x in stdout.splitlines() if x.strip().startswith("output:")), None)
+
+    def same_result(self, proc, waited):
+        """The backgrounded run's own stdout and exit code, checked against
+        what `run wait` printed."""
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(waited.stdout.splitlines()[:1], out.splitlines()[:1],
+                         (waited.stdout, waited.stderr, out, err))
+        self.assertIsNotNone(self.output_line(out), out)
+        self.assertEqual(self.output_line(waited.stdout), self.output_line(out))
+        self.assertEqual(waited.stdout, out)
+        self.assertEqual(waited.returncode, proc.returncode, (waited.stdout, out))
+        return out
+
+    def test_wait_prints_the_result_run_printed(self):
+        self.checks(self.slow(3, 0))
+        proc = self.start("gate", "1")
+        self.started("gate-1-1.txt")
+        begun = time.monotonic()
+        waited = self.cli("wait")
+        took = time.monotonic() - begun
+        self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+        self.assertGreater(took, 1.5, waited.stdout)  # it waited for the check to end
+        out = self.same_result(proc, waited)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertTrue(out.startswith("PASSED: "), out)
+        self.assertTrue(waited.stdout.splitlines()[0].startswith("PASSED: "), waited.stdout)
+        self.assertIn("exited 0 in ", waited.stdout.splitlines()[0])
+        self.assertIn(str(self.ad / "tmp" / "run" / "gate-1-1.txt"),
+                      self.output_line(waited.stdout))
+
+    def test_wait_gives_failed_and_timed_out_with_runs_exit_codes(self):
+        self.checks(self.slow(3, 4), self.slow(3, 0))
+        proc = self.start("gate", "1")
+        self.started("gate-1-1.txt")
+        waited = self.cli("wait")
+        self.assertEqual(waited.returncode, 1, waited.stdout + waited.stderr)
+        self.assertTrue(waited.stdout.startswith("FAILED: "), waited.stdout)
+        self.same_result(proc, waited)
+        self.assertEqual(proc.returncode, 1)
+        proc = self.start("gate", "2", "--timeout", "1")
+        self.started("gate-2-1.txt")
+        waited = self.cli("wait")
+        self.assertEqual(waited.returncode, 3, waited.stdout + waited.stderr)
+        self.assertTrue(waited.stdout.startswith("TIMED_OUT: "), waited.stdout)
+        self.same_result(proc, waited)
+        self.assertEqual(proc.returncode, 3)
+
+    def test_wait_reports_the_run_started_last(self):
+        self.checks(self.slow(3, 0), self.quick(4))
+        earlier = self.cli("gate", "2")
+        self.assertEqual(earlier.returncode, 1, earlier.stdout + earlier.stderr)
+        self.assertTrue(earlier.stdout.startswith("FAILED: "), earlier.stdout)
+        proc = self.start("gate", "1")
+        self.started("gate-1-1.txt")
+        waited = self.cli("wait")
+        self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+        self.assertTrue(waited.stdout.startswith("PASSED: "), waited.stdout)
+        self.assertNotIn("FAILED", waited.stdout)
+        self.same_result(proc, waited)
+
+    def test_wait_returns_running_while_the_run_goes_on(self):
+        self.checks(self.slow(6, 0))
+        proc = self.start("gate", "1")
+        output = self.started("gate-1-1.txt")
+        begun = time.monotonic()
+        waited = self.cli("wait", "--wait", "1")
+        took = time.monotonic() - begun
+        self.assertEqual(waited.returncode, 4, waited.stdout + waited.stderr)
+        self.assertLess(took, 5, waited.stdout)
+        first = waited.stdout.splitlines()[0]
+        self.assertTrue(first.startswith("RUNNING: "), waited.stdout)
+        self.assertIn(self.slow(6, 0), first)
+        self.assertIsNotNone(self.output_line(waited.stdout), waited.stdout)
+        self.assertIn(str(output), waited.stdout)
+        self.assertIsNone(proc.poll(), "the run was stopped")  # it still goes on
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, out + err)
+        self.assertTrue(out.startswith("PASSED: "), out)
+        again = self.cli("wait")
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(again.stdout.splitlines()[:1], out.splitlines()[:1])
+
+    def test_wait_refuses_a_wait_outside_1_to_170(self):
+        self.checks(self.slow(6, 0))
+        self.start("gate", "1")
+        self.started("gate-1-1.txt")
+        for wait in ("171", "0"):
+            begun = time.monotonic()
+            r = self.cli("wait", "--wait", wait)
+            took = time.monotonic() - begun
+            self.assertEqual(r.returncode, 2, (wait, r.stdout, r.stderr))
+            self.assertLess(took, 4, (wait, r.stdout, r.stderr))  # it waited for nothing
+            errors = [x for x in r.stderr.splitlines() if x.startswith("ERROR:")]
+            self.assertTrue(errors, (wait, r.stderr))
+            self.assertTrue(any("170" in x for x in errors), (wait, r.stderr))
+            self.assertNotIn("PASSED", r.stdout)
+
+    def test_help_says_wait_blocks_at_most_170_seconds(self):
+        r = subprocess.run([sys.executable, str(AUTODEV), "run", "--help"],
+                           capture_output=True, text=True, cwd=self.cwd, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("run wait", r.stdout)
+        self.assertIn("170", r.stdout)
+
+    def test_wait_with_no_run_is_an_error(self):
+        self.checks(self.quick(0))
+        begun = time.monotonic()
+        r = self.cli("wait")
+        took = time.monotonic() - begun
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertLess(took, 10, r.stderr)
+        self.assertTrue(r.stderr.startswith("ERROR:"), r.stderr)
+        self.assertRegex(r.stderr.lower(), r"\bno\b.*\bstarted\b")
+        self.assertNotIn("PASSED", r.stdout + r.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX signals")
+    def test_wait_on_a_killed_run_is_an_error_not_a_pass(self):
+        self.checks(self.slow(3, 0))
+        proc = self.start("gate", "1")
+        output = self.started("gate-1-1.txt")
+        proc.send_signal(signal.SIGKILL)
+        proc.wait()
+        begun = time.monotonic()
+        r = self.cli("wait")
+        took = time.monotonic() - begun
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertLess(took, 15, r.stdout + r.stderr)  # not its full wait
+        errors = [x for x in r.stderr.splitlines() if x.startswith("ERROR:")]
+        self.assertTrue(errors, r.stderr)
+        self.assertIn("without a result", r.stderr)
+        self.assertIn(str(output), r.stderr)
+        self.assertNotIn("PASSED", r.stdout + r.stderr)
+
+    def test_wait_refuses_arguments_only_run_takes(self):
+        self.checks(self.quick(0))
+        done = self.cli("gate", "1")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        # With nothing more, `run wait` reports that finished run.
+        plain = self.cli("wait")
+        self.assertEqual(plain.returncode, 0, plain.stdout + plain.stderr)
+        self.assertTrue(plain.stdout.startswith("PASSED: "), plain.stdout)
+        for extra in (("1",), ("--files", "src/a.txt"), ("--tests", "x"),
+                      ("--out", str(self.ad / "tmp" / "o.txt")), ("--timeout", "5"),
+                      ("--show",)):
+            r = self.cli("wait", *extra)
+            self.assertEqual(r.returncode, 2, (extra, r.stdout, r.stderr))
+            self.assertTrue([x for x in r.stderr.splitlines() if x.startswith("ERROR:")],
+                            (extra, r.stderr))
+            self.assertNotIn("PASSED", r.stdout, extra)
+
+    def test_wait_shows_the_runs_own_tail(self):
+        py = shlex.quote(sys.executable)
+        self.checks(f"{py} -c 'import time; print(\"started\", flush=True); "
+                    "time.sleep(2); print(\"one\"); print(\"two\")'")
+        proc = self.start("gate", "1", "--tail", "1")
+        self.started("gate-1-1.txt")
+        waited = self.cli("wait")
+        self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+        out = self.same_result(proc, waited)
+        self.assertIn("the last 1 of its lines:", out)
+        # A --tail of its own overrides the run's.
+        more = self.cli("wait", "--tail", "3")
+        self.assertIn("all of its lines:", more.stdout)
+        self.assertIn("    started", more.stdout)
+
+    def test_wait_json_matches_runs_json(self):
+        self.checks(self.slow(2, 0))
+        proc = self.start("gate", "1", "--json")
+        self.started("gate-1-1.txt")
+        waited = self.cli("wait", "--json")
+        self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+        out, err = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0, out + err)
+        self.assertEqual(waited.stdout, out)
+        self.assertEqual(json.loads(out)["result"], "PASSED")
+
+    @unittest.skipIf(os.name == "nt", "POSIX signals")
+    def test_wait_reports_a_run_stopped_by_a_signal_as_an_error(self):
+        self.checks(self.slow(5, 0))
+        proc = self.start("gate", "1")
+        self.started("gate-1-1.txt")
+        proc.terminate()
+        proc.wait()
+        r = self.cli("wait")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("was stopped by a signal", r.stderr)
+        self.assertNotIn("PASSED", r.stdout + r.stderr)
+
+    def test_gate_and_test_refuse_wait(self):
+        self.checks(self.quick(0))
+        for what in (("gate", "1"), ("test",)):
+            r = self.cli(*what, "--wait", "5")
+            self.assertEqual(r.returncode, 2, (what, r.stdout, r.stderr))
+            self.assertIn("--wait", r.stderr)
+        self.assertFalse((self.ad / "tmp" / "run" / "records").exists())
+
+    def test_show_keeps_no_record(self):
+        self.checks(self.quick(0))
+        self.assertEqual(self.cli("gate", "1", "--show").returncode, 0)
+        r = self.cli("wait")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("was started", r.stderr)
+
+    def test_wait_replays_a_whole_run_tests_warning(self):
+        self.checks(self.slow(2, 0))
+        proc = self.start("test")
+        self.started("test-1.txt")
+        waited = self.cli("wait")
+        self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+        out = self.same_result(proc, waited)
+        lines = out.splitlines()
+        warned = [i for i, x in enumerate(lines) if x.startswith("  warning: ")]
+        self.assertEqual(len(warned), 1, out)
+        self.assertTrue(lines[warned[0] + 1].startswith("    "), out)  # its scoped lines
+        self.assertIn("run test", lines[warned[0] + 1])
+
+    def test_wait_json_while_running(self):
+        self.checks(self.slow(6, 0))
+        self.start("gate", "1")
+        output = self.started("gate-1-1.txt")
+        r = self.cli("wait", "--json", "--wait", "1")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        reply = json.loads(r.stdout)
+        self.assertEqual(set(reply), {"result", "message", "command", "output", "seconds"})
+        self.assertEqual(reply["result"], "RUNNING")
+        self.assertEqual(reply["command"], self.slow(6, 0))
+        self.assertEqual(reply["output"], str(output))
+        self.assertIn("still running", reply["message"])
+        self.assertIsInstance(reply["seconds"], (int, float))
+
+    def test_wait_refuses_a_negative_tail(self):
+        self.checks(self.quick(0))
+        self.assertEqual(self.cli("gate", "1").returncode, 0)
+        r = self.cli("wait", "--tail", "-1")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR: --tail must be 0 or more", r.stderr)
+        self.assertNotIn("PASSED", r.stdout)
+
+
+class WriteRecordTest(unittest.TestCase):
+    """`cmd_run.write_record`: a replace Windows refuses while `run wait` reads."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_run
+        self.cmd_run = cmd_run
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.path = self.tmp / "1.json"
+        self.path.write_text(json.dumps({"pid": 1}))
+
+    def refuse(self, times):
+        """os.replace, refused with PermissionError its first `times` calls."""
+        real, calls = os.replace, []
+
+        def replace(src, dst):
+            calls.append(src)
+            if len(calls) <= times:
+                raise PermissionError(13, "in use by another process")
+            return real(src, dst)
+        return replace, calls
+
+    def test_a_refused_replace_is_tried_again(self):
+        from unittest import mock
+        replace, calls = self.refuse(2)
+        with mock.patch.object(self.cmd_run.os, "replace", replace):
+            self.cmd_run.write_record(self.path, {"pid": 1, "token": "PASSED"})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(json.loads(self.path.read_text())["token"], "PASSED")
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["1.json"])
+
+    def test_a_replace_refused_every_time_leaves_no_tmp_file(self):
+        from unittest import mock
+        replace, calls = self.refuse(1000)
+        with mock.patch.object(self.cmd_run.os, "replace", replace), \
+                mock.patch.object(self.cmd_run.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                self.cmd_run.write_record(self.path, {"pid": 1, "token": "PASSED"})
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(len(calls), self.cmd_run.REPLACE_TRIES)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["1.json"])
+        self.assertNotIn("token", json.loads(self.path.read_text()))
+
+
 VERIFY_SPEC = """\
 # Spec
 
@@ -3897,6 +4244,27 @@ class MutationRunTest(unittest.TestCase):
                         self.evidence("mutation-cmd.txt"))
         record = json.loads(self.evidence("mutation-record.json"))
         self.assertEqual({m["id"]: m["status"] for m in record["results"]}["M1"], "killed")
+
+    def help_of(self, subcommand):
+        """`autodev.py <subcommand> --help`, its whitespace collapsed to single spaces."""
+        r = subprocess.run([sys.executable, str(AUTODEV), subcommand, "--help"],
+                           capture_output=True, text=True, cwd=self.tmp, env=BASE_ENV,
+                           check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return " ".join(r.stdout.split())
+
+    def test_mutants_wait_defaults_to_170_seconds(self):
+        text = self.help_of("mutants")
+        self.assertIn("default 170", text)
+        self.assertNotIn("default 270", text)
+
+    def test_verify_prep_keeps_its_own_wait(self):
+        self.assertIn("default 270", self.help_of("verify"))
+
+    def test_mutants_help_states_the_wait_the_parser_uses(self):
+        # Built from the parser's own default, so it changes when the default does.
+        self.assertIn("--wait WAIT run/wait: seconds to wait for the runner (default 170)",
+                      self.help_of("mutants"))
 
 
 class CliTest(unittest.TestCase):

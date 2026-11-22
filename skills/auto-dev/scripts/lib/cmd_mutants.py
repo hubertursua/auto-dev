@@ -68,7 +68,7 @@ record --tree <hash>
 run
     Runs evidence/mutants.json (the mutants the verifier chose to run; `[]`
     for none) in a runner of its own, in the background, and waits for it up
-    to --wait seconds (default 270). The runner (lib/mutation_run.py):
+    to --wait seconds (default 170). The runner (lib/mutation_run.py):
     deletes the last run's mutate.exit, mutate.log and results; with
     --new-set (this pass chose the set) or --extended (it added mutants),
     saves `git diff <cut>` as evidence/mutation-base.diff; takes the scoped
@@ -160,7 +160,7 @@ def add_arguments(parser):
     chosen.add_argument("--extended", action="store_true",
                         help="run: this pass added mutants to the set")
     parser.add_argument("--wait", type=int, default=mutation_run.WAIT,
-                        help="run/wait: seconds to wait for the runner")
+                        help="run/wait: seconds to wait for the runner (default %(default)s)")
 
 
 def main(args):

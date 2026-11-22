@@ -52,7 +52,7 @@ FILES = {"exit": "mutate.exit", "log": "mutate.log", "results": "mutants.json.re
          "lock": "mutation-run.lock", "runner": "mutation-run.log",
          "pass": "mutation-pass.json", "coldlog": "mutation-cold.log"}
 COLD_CAP = 600      # a cold run past this is no basis for sizing mutants
-WAIT = 270
+WAIT = 170
 POLL = 2
 YOUNG = 30          # seconds a lock without a pid yet counts as a runner starting
 LIVE_CAP = 4 * 3600  # the longest the runner waits on another live mutate.py run
