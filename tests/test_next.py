@@ -3898,24 +3898,30 @@ class PublishTest(NextCase):
         self.assertIn("line 0001 ok", posted)
         self.assertNotIn("superseded", posted)
 
-    def gate_on_the_change(self, ci):
-        """A lint check, a test check with a `files` form and one with none, on a
-        branch that added tests/a.test.ts and holds an untracked src/b.test.ts;
-        the quality gate run with `ci`, then the PR body generated."""
+    def gate_check(self, name):
+        """A check for the PR-body gates: `lint`, `unit` (`echo all` with a `files`
+        form), `unscoped` (`echo all` with none) or `checks` (`true`, with none)."""
+        return {"lint": {"kind": "lint", "command": "echo lint", "report": "LINT.md"},
+                "unit": {"kind": "test", "command": "echo all", "report": "TEST.md",
+                         "files": "echo some <files>"},
+                "unscoped": {"kind": "test", "command": "echo all", "report": "TEST.md"},
+                "checks": {"kind": "test", "command": "true", "report": "CHECKS.md"}}[name]
+
+    def gate_on_the_change(self, ci, gate):
+        """The quality gate of the checks `gate` names (see `gate_check`), run
+        with `ci` on a branch that added tests/a.test.ts and holds an untracked
+        src/b.test.ts, then the PR body generated."""
         state = self.state()
         state["settings"]["ci"] = ci
-        state["settings"]["gate"] = [
-            {"kind": "lint", "command": "echo lint", "report": "LINT.md"},
-            {"kind": "test", "command": "echo all", "report": "TEST.md",
-             "files": "echo some <files>"},
-            {"kind": "test", "command": "true", "report": "CHECKS.md"}]
+        state["settings"]["gate"] = [self.gate_check(name) for name in gate]
         self.write_state(state)
-        (self.worktree / "tests").mkdir(exist_ok=True)
-        (self.worktree / "tests" / "a.test.ts").write_text("a\n")
-        self.sh("git", "-C", str(self.worktree), "add", "tests/a.test.ts")
-        self.sh("git", "-C", str(self.worktree), "commit", "-q", "-m", "add a test")
-        (self.worktree / "src").mkdir(exist_ok=True)
-        (self.worktree / "src" / "b.test.ts").write_text("b\n")
+        if not (self.worktree / "tests" / "a.test.ts").exists():
+            (self.worktree / "tests").mkdir(exist_ok=True)
+            (self.worktree / "tests" / "a.test.ts").write_text("a\n")
+            self.sh("git", "-C", str(self.worktree), "add", "tests/a.test.ts")
+            self.sh("git", "-C", str(self.worktree), "commit", "-q", "-m", "add a test")
+            (self.worktree / "src").mkdir(exist_ok=True)
+            (self.worktree / "src" / "b.test.ts").write_text("b\n")
         r = self.autodev("quality-gate", "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         state = self.state()
@@ -3927,15 +3933,23 @@ class PublishTest(NextCase):
         return (self.dir / "pr-body.md").read_text()
 
     def test_the_pr_body_names_a_check_run_on_the_change_s_tests_and_one_left_to_ci(self):
-        text = self.gate_on_the_change("github-actions")
-        gate = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
         scoped = ("- `echo some src/b.test.ts tests/a.test.ts`: passed (the change's tests; "
                   "CI runs the whole check)")
-        for line in (scoped, "- `true`: not run before the push; CI runs it"):
-            self.assertTrue(line in text, f"no {line!r} in the quality-gate section:\n{gate}")
+        for gate, lines in (
+                (("lint", "unit"), (scoped,)),
+                (("lint", "unscoped"), ("- `echo all`: not run before the push; CI runs it",)),
+                (("lint", "unit", "checks"), ("- `echo all`: passed", "- `true`: passed"))):
+            text = self.gate_on_the_change("github-actions", gate)
+            section = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+            for line in lines:
+                self.assertTrue(line in text,
+                                f"no {line!r} in the quality-gate section:\n{section}")
+            if len(gate) == 3:  # two test checks: both run whole, nothing left to CI
+                self.assertNotIn("not run before the push", text)
+                self.assertNotIn("the change's tests; CI runs the whole check", text)
 
     def test_the_pr_body_shows_a_whole_run_as_before_when_ci_is_not_watched(self):
-        text = self.gate_on_the_change("none")
+        text = self.gate_on_the_change("none", ("lint", "unit", "checks"))
         gate = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
         for line in ("- `echo all`: passed", "- `true`: passed"):
             self.assertTrue(line in text, f"no {line!r} in the quality-gate section:\n{gate}")

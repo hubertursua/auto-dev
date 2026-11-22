@@ -5689,7 +5689,7 @@ class QualityGateTest(RunCase):
         self.assertTrue(skipped[0].endswith("(no test file changed; CI runs it)"), skipped)
         self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["LINT.md"])
 
-    def test_with_ci_watched_only_the_test_check_run_test_uses_gets_the_change_s_test_files(self):
+    def test_with_two_test_checks_every_test_check_runs_whole_even_with_ci_watched(self):
         self.the_change()
         self.set_ci("github-actions")
         e2e = {"kind": "test", "command": "echo e2e all", "report": "E2E.md",
@@ -5698,23 +5698,23 @@ class QualityGateTest(RunCase):
         r = self.gate()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         lines = r.stdout.splitlines()
-        self.assertEqual(lines[0], f"GREEN: every check run passed on tree {self.tree()}; "
-                                   "1 left to CI", r.stdout)
-        self.assertIn(self.line_of("TEST.md", "echo some src/b.test.ts tests/a.test.ts",
-                                   self.SCOPED), lines, r.stdout)
-        self.assertIn(f"  skipped: {self.dir / 'lint' / 'E2E.md'} — `echo e2e all` "
-                      "(another test check runs the change's tests; CI runs it)",
-                      lines, r.stdout)
-        report = (self.dir / "lint" / "E2E.md").read_text()
-        self.assertTrue(report.startswith("# E2E — skipped"), report)
-        self.assertIn("- **Scope:** not run: another test check runs the change's tests; "
-                      "CI runs it", report)
+        self.assertEqual(lines[0], f"GREEN: every check passed on tree {self.tree()}", r.stdout)
+        self.assertIn(self.line_of("TEST.md", "echo all"), lines, r.stdout)
+        self.assertIn(self.line_of("E2E.md", "echo e2e all"), lines, r.stdout)
+        self.assertNotIn("skipped:", r.stdout)
+        self.assertNotIn("left to CI", r.stdout)
         run = self.state()["gate_runs"][-1]
-        self.assertEqual((run["result"], run["failing"]), ("GREEN", []))
-        self.set_ci("none")
+        self.assertEqual((run["result"], run["failing"], run.get("scoped", []),
+                          run.get("skipped", [])), ("GREEN", [], [], []))
+        # A second test check with no scoped form runs whole too, and its failure is red.
+        self.set_gate(self.lint_check(), self.unit_check(),
+                      {"kind": "test", "command": "false", "report": "E2E.md"})
         r = self.gate()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(self.line_of("E2E.md", "echo e2e all"), r.stdout.splitlines(), r.stdout)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("RED"), r.stdout)
+        self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(), r.stdout)
+        self.assertNotIn("skipped:", r.stdout)
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["E2E.md"])
 
     def test_with_ci_not_watched_every_check_runs_whole(self):
         self.the_change()
@@ -5750,14 +5750,22 @@ class QualityGateTest(RunCase):
     def test_the_gate_summary_names_checks_run_on_the_change_s_tests_and_left_to_ci(self):
         self.the_change()
         self.set_ci("github-actions")
-        self.set_gate(self.lint_check(), self.unit_check(),
-                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
-        r = self.gate()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        r, summary = self.summary()
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("Quality gate: LINT.md pass, TEST.md pass (the change's tests; CI runs "
-                      "the whole check), CHECKS.md skipped (CI runs it)", summary)
+        unscoped = {"kind": "test", "command": "echo all", "report": "TEST.md"}
+        checks = {"kind": "test", "command": "true", "report": "CHECKS.md"}
+        for gate, line in (
+                ((self.lint_check(), self.unit_check()),
+                 ("Quality gate: LINT.md pass, TEST.md pass (the change's tests; CI runs "
+                  "the whole check)")),
+                ((self.lint_check(), unscoped),
+                 "Quality gate: LINT.md pass, TEST.md skipped (CI runs it)"),
+                ((self.lint_check(), self.unit_check(), checks),
+                 "Quality gate: LINT.md pass, TEST.md pass, CHECKS.md pass")):
+            self.set_gate(*gate)
+            r = self.gate()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            r, summary = self.summary()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn(line, summary)
 
     def test_a_failing_report_still_refuses_the_summary_and_a_whole_run_reads_as_before(self):
         self.the_change()

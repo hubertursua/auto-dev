@@ -497,8 +497,7 @@ class BriefTest(WorkCase):
                     if re.match(r"\d+\. ", lines[i])), len(lines))
         return "\n".join(lines[start:end])
 
-    def test_the_coder_s_gate_list_runs_lint_whole_tests_only_scoped_and_leaves_the_rest_to_ci(
-            self):
+    def test_the_coder_s_gate_list_runs_lint_whole_and_only_the_test_check_run_test_uses(self):
         self.three_check_gate()
         ad = shlex.quote(str(self.dir))
         gate, _ = self.brief_of("coder", "--mode", "build")
@@ -507,16 +506,32 @@ class BriefTest(WorkCase):
         for m in re.finditer(re.escape(f" run gate 2 --dir {ad}"), gate):
             self.assertRegex(gate[m.end():], r"^ --(files|tests) ", gate)
         self.assertNotIn("run gate 3", gate)
-        self.assertIn("left to CI", self.entry(gate, 3))
-        self.assertNotIn("autodev.py", self.entry(gate, 3))
+        third = self.entry(gate, 3)
+        self.assertIn("the quality gate runs it whole", third)
+        self.assertIn("don't run it", third)
+        self.assertNotIn("left to CI", third)
+        self.assertNotIn("autodev.py", third)
 
-    def test_a_tests_only_check_gets_a_test_id_line_not_left_to_ci(self):
+    def test_only_the_gate_s_one_test_check_gets_a_test_id_line_or_is_left_to_ci(self):
         self.three_check_gate({"kind": "test", "command": "npm run e2e", "report": "E2E.md",
                                "tests": "npx vitest run <tests>"})
         ad = shlex.quote(str(self.dir))
         gate, _ = self.brief_of("coder", "--mode", "build")
-        self.assertIn(f" run gate 3 --dir {ad} --tests <test id> …", gate)
-        self.assertNotIn("left to CI", self.entry(gate, 3))
+        self.assertNotIn("run gate 3", gate)
+        self.assertIn("the quality gate runs it whole", self.entry(gate, 3))
+        lint = {"kind": "lint", "command": "npx eslint .", "report": "LINT.md"}
+        self.set_gate(lint, {"kind": "test", "command": "npm test", "report": "TEST.md",
+                             "tests": "npx vitest run <tests>"})
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assertIn(f" run gate 2 --dir {ad} --tests <test id> …", gate)
+        self.assertNotIn("left to CI", self.entry(gate, 2))
+        self.set_gate(lint, {"kind": "test", "command": "npm test", "report": "TEST.md"})
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assertNotIn("run gate 2", gate)
+        second = self.entry(gate, 2)
+        self.assertIn("left to CI", second)
+        self.assertIn("don't run it", second)
+        self.assertNotIn("autodev.py", second)
 
     def test_the_fixer_s_gate_list_keeps_a_whole_run_line_for_every_check(self):
         self.three_check_gate()
