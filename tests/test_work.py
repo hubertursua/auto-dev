@@ -1793,15 +1793,26 @@ class WorkerWaitRuleTest(unittest.TestCase):
         return fallback[0]
 
     def assert_fallback_keeps_its_timeout(self, fallback):
-        """The fallback keeps a `--timeout <n>` under 300, outside what it drops."""
-        dropped = re.search(r"minus `([^`]*)`", fallback)
-        self.assertIsNotNone(dropped, fallback)
-        self.assertNotIn("--timeout", dropped.group(1), fallback)
-        kept = re.findall(r"--timeout (\d+)",
-                          fallback[:dropped.start()] + fallback[dropped.end():])
-        self.assertTrue(kept, fallback)
-        for seconds in kept:
-            self.assertLess(int(seconds), self.BASH_TIMEOUT_SECONDS, fallback)
+        """The fallback drops only `--files …` and says to keep a `--timeout <n>` under 300."""
+        kept = re.search(r"minus\s+`--files <the check files>`\s+\(keep\s+`--timeout (\d+)`\)",
+                         fallback)
+        self.assertIsNotNone(kept, fallback)
+        self.assertLess(int(kept.group(1)), self.BASH_TIMEOUT_SECONDS, fallback)
+
+    def test_fallback_check_refuses_wordings_that_drop_the_timeout(self):
+        fallback = self.verifier_fallback(self.verifier_step_3())
+        self.assert_fallback_keeps_its_timeout(fallback)
+        kept = re.search(r"\(keep\s+`--timeout 280`\)", fallback)
+        self.assertIsNotNone(kept, fallback)
+        for reworded in (
+            fallback[:kept.start()] + "(drop `--timeout 280`)" + fallback[kept.end():],
+            fallback.replace("minus `--files <the check files>` " + kept.group(0),
+                             "minus `--files <the check files>` and `--timeout 280`"),
+            fallback[:kept.start()] + "(keep `--timeout 400`)" + fallback[kept.end():],
+        ):
+            self.assertNotEqual(reworded, fallback)
+            with self.assertRaises(AssertionError, msg=reworded):
+                self.assert_fallback_keeps_its_timeout(reworded)
 
     def test_verifier_bounds_its_own_acceptance_run(self):
         step = self.verifier_step_3()
