@@ -450,6 +450,52 @@ class NextCase(RunCase):
             brief["issued_at"] = when.isoformat()
         self.write_state(state)
 
+    def previous_issues(self, worker, n):
+        """The previous_issues line of `worker` #`n`'s brief file, with the
+        indented lines that continue it, joined into one."""
+        lines = (self.dir / "briefs" / f"{worker}-{n}.md").read_text().splitlines()
+        start = next((i for i, ln in enumerate(lines) if ln.startswith("previous_issues:")),
+                     None)
+        self.assertIsNotNone(start, f"{worker}-{n}.md has no previous_issues line")
+        slot = [lines[start].split(":", 1)[1]]
+        for line in lines[start + 1:]:
+            if not line[:1].isspace():
+                break
+            slot.append(line)
+        return " ".join(part.strip() for part in slot).strip()
+
+    def assert_sent_once_more_to_finish(self, worker, out):
+        """`out` spawns `worker` #2, a new brief with #1's mode and sets, whose
+        previous_issues tells it to keep the earlier spawn's edits and finish."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertEqual(out.get("AGENT"), [f"auto-dev:{worker}"], shown)
+        self.assertEqual(self.spawned(out), [(worker, 2)], shown)
+        self.assertTrue((self.dir / "briefs" / f"{worker}-2.md").is_file(), self.brief_files())
+        self.assertEqual(self.mode(worker, 2), self.mode(worker, 1))
+        self.assertEqual(self.sets(worker, 2), self.sets(worker, 1))
+        note = self.previous_issues(worker, 2).lower()
+        self.assertNotEqual(note, "none")
+        self.assertRegex(note, r"without writing (?:its|your|the|a) result file")
+        self.assertRegex(note, r"\bkeep\b[^.]*\bedits\b")
+        self.assertIn("finish", note)
+        self.assertRegex(note, r"\bwrite (?:its|your|the) result file")
+
+    def assert_stopped_after_two_misses(self, worker, label, cap, out):
+        """`out` is the stop for `worker`, sent out twice and twice ending with
+        no result file: a REPORT naming it, the misses and its turn cap, a
+        QUESTION, and no third brief."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 4, shown)
+        report = " ".join(out.get("REPORT", []))
+        self.assertRegex(report, label, shown)
+        self.assertRegex(report, r"without writing (?:its|your|the|a) result file", shown)
+        self.assertIn("twice", report, shown)
+        self.assertIn("turns", report, shown)
+        self.assertIn(str(cap), report, shown)
+        self.assertTrue(out.get("QUESTION"), shown)
+        self.assertFalse((self.dir / "briefs" / f"{worker}-3.md").exists(), self.brief_files())
+
 
 OVERSIZED_PLAN = PLAN.split("## Size check")[0] + (
     "## Size check\nOVERSIZED: three deliverables.\n"
@@ -1168,6 +1214,29 @@ class PlanTest(NextCase):
         self.assertIn("auto-dev:planner", out["ACTION"])
         self.assertIn("run_in_background: false", out["ACTION"])
 
+    def test_an_acceptance_tester_ending_with_no_result_file_is_sent_once_more_then_stops(
+            self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        self.assertEqual(jobs, [("acceptance-tester", 1)])
+        check = self.worktree / "src" / "due.acceptance.test.ts"
+        check.parent.mkdir(parents=True, exist_ok=True)
+        check.write_text("test: a todo keeps its due date\n")  # tester #1's edit
+        self.assert_sent_once_more_to_finish("acceptance-tester", self.next_reissue())
+        self.assertEqual(check.read_text(), "test: a todo keeps its due date\n")
+        self.assert_stopped_after_two_misses("acceptance-tester", r"acceptance[ -]tester",
+                                             120, self.next_reissue())
+
+    def test_a_worker_with_no_turn_cap_is_sent_the_same_brief_three_times_then_stops(self):
+        self.expect("planner")
+        for _ in range(2):
+            self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertTrue(out.get("QUESTION"), json.dumps(out, indent=2))
+        self.assertEqual(self.brief_files(), ["planner-1.md"])
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 7, stops)
+
 
 class BuildTest(NextCase):
     def test_the_run_goes_straight_through_in_one_session(self):
@@ -1461,6 +1530,24 @@ class BuildTest(NextCase):
         self.assertNotIn("stopped", self.state()["budget"])
         r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout)
+
+    def coder_ended_with_no_result_file(self):
+        """The build's coder #1 edits due.ts and returns with no result file."""
+        self.plan_session()
+        _, jobs = self.expect("coder")
+        self.assertEqual(jobs, [("coder", 1)])
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        self.assertFalse((self.dir / "returns" / "coder-1.json").exists())
+
+    def test_a_coder_ending_with_no_result_file_is_sent_once_more_to_keep_its_edits(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assertEqual((self.worktree / "due.ts").read_text(), "export const due = 1;\n")
+
+    def test_a_coder_ending_with_no_result_file_twice_stops_naming_its_turn_cap(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
 
 
 class ShipTest(NextCase):
@@ -2792,6 +2879,152 @@ class ShipTest(NextCase):
         self.assertIn("Todos can carry a due date. Edited on GitHub.", sent)
         self.assertIn("line 1200 ok", sent)
         self.assertNotIn("line 1190 ok", sent)
+
+    READY_ANSWERS = ("Mark ready for review", "Hold (keep it a draft)", "Stop")
+    ADD_A_ROUND = "Add a round and fix it"
+
+    def gate_labels(self, out):
+        """The answers the gate's first question in `out` offers, in order."""
+        questions = json.loads(out["QUESTION"])["questions"]
+        return [option["label"] for option in questions[0]["options"]]
+
+    def budget_line(self, out):
+        budget = out.get("BUDGET") or ""
+        return budget if isinstance(budget, str) else " ".join(budget)
+
+    def ready_gate_with_a_finding_left_open(self):
+        """A budget of 4 rounds, all spent, and review pass 1 leaving must-fix
+        C1 open: `next` asks the ready-for-review gate. Returns its output."""
+        self.draft_pr()
+        state = self.state()
+        state["budget"].update(total=4, remaining=0)
+        self.write_state(state)
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
+            "missing due date\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        self.refresh_body()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        return out
+
+    def test_a_ready_gate_with_a_finding_left_open_for_want_of_a_round_offers_one_more(self):
+        out = self.ready_gate_with_a_finding_left_open()
+        self.assertEqual(self.gate_labels(out), [*self.READY_ANSWERS, self.ADD_A_ROUND])
+        lines = [ln.split(" → ", 1)[1] for ln in out["AFTER"]
+                 if ln.startswith(f'"{self.ADD_A_ROUND}"')]
+        self.assertEqual(len(lines), 1, out["AFTER"])
+        self.assertIn("budget raise --by 1", lines[0])
+        r = subprocess.run(lines[0], shell=True, capture_output=True, text=True,
+                           env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, lines[0] + "\n" + r.stdout + r.stderr)
+        self.assertIn("RAISED: 1 of 5 left", r.stdout)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spent `pass-1` (review correction); 0 of 5 left",
+                      self.budget_line(out), shown)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:coder"], shown)
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["coder"], shown)
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/review/pass-1/corrections.md")
+        self.assertNotIn("QUESTION", out, shown)
+        self.assertNotIn("REPORT", out, shown)
+
+    def test_a_ready_gate_with_nothing_left_open_offers_the_three_answers_and_no_raise(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertEqual(self.gate_labels(out), list(self.READY_ANSWERS))
+        self.assertFalse([ln for ln in out["AFTER"] if "budget raise" in ln], out["AFTER"])
+        budget = self.state()["budget"]
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not stopped on the budget", r.stdout + r.stderr)
+        self.assertEqual(self.state()["budget"], budget)
+
+    def test_once_the_pr_is_marked_ready_a_round_can_not_be_added_for_what_is_open(self):
+        out = self.ready_gate_with_a_finding_left_open()
+        self.after(out, "Mark ready for review")
+        self.refresh_body()
+        out = self.next(0)
+        self.assertIn("gh pr ready 12", out["ACTION"])
+        self.after(out)
+        self.assertIn("pr-ready", self.state()["marks"])
+        budget = self.state()["budget"]
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not stopped on the budget", r.stdout + r.stderr)
+        self.assertEqual(self.state()["budget"], budget)
+
+    def correction_checked_in_the_working_tree(self):
+        """Pass 1 leaves must-fix C1 open; the coder's correction stays in the
+        working tree, review pass 2 checks it there, and `next` asks for
+        `commit`. Returns the verified commit before the correction."""
+        self.draft_pr()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.review_text = CLEAN_REVIEW
+        self.panel()
+        self.assertEqual(self.state()["phase6"]["review_pass"], 2)
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        return self.state()["phase6"]["verified_sha"]
+
+    def commit_and_push_by_hand(self, message):
+        """The user commits the working tree and pushes it, outside the run."""
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", message, cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        return self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+
+    def test_a_checked_correction_committed_and_pushed_by_hand_is_recorded_as_verified(
+            self):
+        earlier = self.correction_checked_in_the_working_tree()
+        logged = set((self.dir / "WORK_LOG.md").read_text().splitlines())
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertNotIn("commit: run", out["ACTION"], shown)
+        self.assertIn("push", out["ACTION"], shown)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        added = "\n".join(ln for ln in (self.dir / "WORK_LOG.md").read_text().splitlines()
+                          if ln not in logged)
+        self.assertIn(head[:7], added)
+        self.assertIn("verified commit", added.lower())
+        self.after(out)
+        self.refresh_body()  # asks to publish the description, not for `commit`
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+
+    def test_a_hand_commit_carrying_an_unchecked_edit_is_not_recorded_as_verified(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        (self.worktree / "due.ts").write_text("export const due = 3;\n")  # no check ran on it
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], earlier)
+        self.assertIn("commit: run", out["ACTION"], shown)
+        self.assertFalse([ln for ln in out.get("AFTER", []) if "git push" in ln], shown)
 
 
 # A standard-risk plan: no Security/Compliance criteria, so no S1 check.

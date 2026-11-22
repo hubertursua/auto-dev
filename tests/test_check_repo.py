@@ -519,6 +519,123 @@ class CheckRepoTest(unittest.TestCase):
         self.assertTrue([ln for ln in self.fail_lines(result)
                          if "R3" in ln and "not a panel slot" in ln], result.stdout)
 
+    TURN_CAPS = (("coder", "150"), ("acceptance-tester", "120"))
+    WORKER_TABLES = ("skills/auto-dev/SKILL.md", "README.md")
+
+    def turn_caps(self, path):
+        """{worker: its Turn cap cell} in the worker table of `path` (the
+        table whose header names the Agent type)."""
+        lines = path.read_text(encoding="utf-8").splitlines()
+        head = next((i for i, ln in enumerate(lines)
+                     if ln.startswith("|") and "Agent type" in ln), None)
+        self.assertIsNotNone(head, f"{path.name} has no worker table")
+        header = [cell.strip() for cell in lines[head].strip().strip("|").split("|")]
+        self.assertIn("Turn cap", header, f"{path.name}'s worker table has no Turn cap column")
+        col = header.index("Turn cap")
+        caps = {}
+        for line in lines[head + 2:]:
+            if not line.startswith("|"):
+                break
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            worker = re.search(r"`auto-dev:([a-z-]+)`", line)
+            if worker:
+                caps[worker.group(1)] = cells[col] if col < len(cells) else ""
+        return caps, head, col
+
+    def test_the_coder_and_tester_cap_their_turns_and_both_worker_tables_show_each_cap(self):
+        for worker, cap in self.TURN_CAPS:
+            text = (ROOT_DIR / "agents" / f"{worker}.md").read_text(encoding="utf-8")
+            front = text.split("---\n")[1]
+            self.assertIn(f"maxTurns: {cap}\n", front, f"agents/{worker}.md")
+        result = subprocess.run([sys.executable, str(TOOL)],
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        workers = {p.stem for p in (ROOT_DIR / "agents").glob("*.md")}
+        for table in self.WORKER_TABLES:
+            caps, _, _ = self.turn_caps(ROOT_DIR / table)
+            self.assertEqual(set(caps), workers, table)
+            for worker, shown in caps.items():
+                self.assertEqual(shown, dict(self.TURN_CAPS).get(worker, "—"), (table, worker))
+
+    def set_turn_cap(self, path, worker, value):
+        """Write `value` into `worker`'s Turn cap cell in `path`'s worker table."""
+        caps, head, col = self.turn_caps(path)
+        self.assertIn(worker, caps, path)
+        lines = path.read_text(encoding="utf-8").split("\n")
+        row = next(i for i in range(head + 2, len(lines))
+                   if f"`auto-dev:{worker}`" in lines[i])
+        cells = lines[row].split("|")
+        cells[col + 1] = f" {value} "
+        lines[row] = "|".join(cells)
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+    def test_a_worker_table_cap_that_disagrees_with_the_agent_file_fails_naming_both(self):
+        for table, value in (("README.md", "200"), ("skills/auto-dev/SKILL.md", "—")):
+            with self.subTest(table=table, value=value), \
+                    tempfile.TemporaryDirectory() as tmp:
+                copy = self.copy_of_the_repo(tmp)
+                tool = copy / "tools" / "check-repo.py"
+                result = subprocess.run([sys.executable, str(tool)], capture_output=True,
+                                        text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stdout)  # the copy passes
+                self.set_turn_cap(copy / table, "coder", value)
+                result = subprocess.run([sys.executable, str(tool)], capture_output=True,
+                                        text=True, check=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                named = [ln for ln in result.stdout.splitlines()
+                         if Path(table).name in ln and "auto-dev:coder" in ln
+                         and value in ln and "150" in ln]
+                self.assertTrue(named, result.stdout)
+
+    def section(self, path, heading):
+        """The `## <heading>` section of `path`, up to the next `## ` heading."""
+        text = (ROOT_DIR / path).read_text(encoding="utf-8")
+        found = re.search(rf"^## {re.escape(heading)}\n.*?(?=^## |\Z)", text,
+                          re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(found, f"{path} has no `## {heading}`")
+        return found.group(0)
+
+    def test_the_docs_name_the_add_a_round_answer_and_the_capped_re_spawn(self):
+        label = "Add a round and fix it"
+        self.assertTrue(label in self.section("README.md", "Human gates & integrations"),
+                        f"README.md's Human gates & integrations doesn't name {label!r}")
+        safety = self.section("README.md", "Safety")
+        for words in ("150", "120", "result file", "edits"):
+            self.assertTrue(words in safety, f"README.md's Safety doesn't say {words!r}")
+        for worker in (r"\bcoder\b", r"acceptance tester"):
+            self.assertTrue(re.search(rf"(?i){worker}", safety),
+                            f"README.md's Safety doesn't name {worker!r}")
+        tables = "skills/auto-dev/references/tables.md"
+        options = self.section(tables, "What each gate option does").splitlines()
+        rows = [i for i, ln in enumerate(options) if ln.startswith("|") and label in ln]
+        self.assertEqual(len(rows), 1, "no single gate-option row for " + label)
+        self.assertIn("budget raise --by 1", options[rows[0]])
+        gate = next(ln for ln in reversed(options[:rows[0] + 1])
+                    if ln.startswith("|") and ln.split("|")[1].strip())
+        self.assertTrue(gate.split("|")[1].strip().startswith("Ready for review"), gate)
+        self.assertTrue(label in self.section(tables, "The iteration budget"),
+                        f"{tables}'s iteration budget doesn't name {label!r}")
+        stop_7 = next(ln for ln in self.section(tables, "Stop conditions").splitlines()
+                      if ln.startswith("| 7 |"))
+        self.assertIn("twice", stop_7)
+        self.assertRegex(stop_7, r"(?i)\bturn")
+
+    def test_the_evals_expect_the_fourth_answer_and_cover_answering_it_and_a_hand_commit(
+            self):
+        label = "Add a round and fix it"
+        evals = json.loads((ROOT_DIR / "skills" / "auto-dev" / "evals" / "evals.json")
+                           .read_text(encoding="utf-8"))["evals"]
+        eight = next(e for e in evals if e["id"] == 8)
+        self.assertTrue([x for x in eight["expectations"] if label in x],
+                        eight["expectations"])
+        new = [e for e in evals if e["id"] > 45]  # 45 was the last before this change
+        answered = [e for e in new if label in json.dumps(e)]
+        self.assertTrue(answered, [e["id"] for e in new])
+        by_hand = [e for e in new if e not in answered and re.search(
+            r"(?i)commit\w*[^.]*\bby hand\b|\bby hand\b[^.]*commit|git commit",
+            json.dumps(e))]
+        self.assertTrue(by_hand, [e["id"] for e in new])
+
 
 if __name__ == "__main__":
     unittest.main()
