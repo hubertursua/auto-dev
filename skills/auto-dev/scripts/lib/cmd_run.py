@@ -122,6 +122,9 @@ from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 TIMED_OUT = 3
 RUNNING = 4
 WAIT_MAX = 170  # under the 180 s after which the Bash tool backgrounds a call
+# A record's replace Windows refuses while a reader has the file open: tries, and
+# the seconds between them.
+REPLACE_TRIES, REPLACE_DELAY = 10, 0.1
 PLACEHOLDER = "<files>"
 TESTS_PLACEHOLDER = "<tests>"  # a list of test IDs
 TEST_PLACEHOLDER = "<test>"  # exactly one test ID
@@ -562,10 +565,26 @@ def claim_record(ad):
 
 
 def write_record(path, rec):
-    """Write the record whole (a reader never sees half of it)."""
+    """Write the record whole (a reader never sees half of it). Windows refuses
+    the replace while `run wait` has the record open, so a refused one is tried
+    again; when every try fails, the temporary file is removed."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(rec), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        for attempt in range(REPLACE_TRIES):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == REPLACE_TRIES - 1:
+                    raise
+                time.sleep(REPLACE_DELAY)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def read_record(path):

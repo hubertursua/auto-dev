@@ -28,8 +28,9 @@ says, and nothing it does not.
   so a check that may run past 3 minutes gets `--timeout <seconds>` added to its
   `run` command, which ends a hung run. When the Bash tool moves an `autodev.py
   run` call to the background, wait for it only with `python3
-  {{skill_dir}}/scripts/autodev.py run wait --dir {{artifact_dir}}`, which blocks
-  up to 170 s and then prints the run's result as `run` would; while it prints
+  {{skill_dir}}/scripts/autodev.py run wait --dir {{artifact_dir}}` with that Bash
+  call's timeout set to 300000 ms, so it ends on its own first: it blocks up to
+  170 s and then prints the run's result as `run` would; while it prints
   RUNNING (exit 4), run it again. Never poll: no sleep, no `tail` or `ls` of its
   output, no clock checks. Start no other `autodev.py run` until `run wait` has
   printed a result: it reports only the run started last.

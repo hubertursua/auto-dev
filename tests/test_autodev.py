@@ -3482,6 +3482,86 @@ class RunWaitTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("was started", r.stderr)
 
+    def test_wait_replays_a_whole_run_tests_warning(self):
+        self.checks(self.slow(2, 0))
+        proc = self.start("test")
+        self.started("test-1.txt")
+        waited = self.cli("wait")
+        self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+        out = self.same_result(proc, waited)
+        lines = out.splitlines()
+        warned = [i for i, x in enumerate(lines) if x.startswith("  warning: ")]
+        self.assertEqual(len(warned), 1, out)
+        self.assertTrue(lines[warned[0] + 1].startswith("    "), out)  # its scoped lines
+        self.assertIn("run test", lines[warned[0] + 1])
+
+    def test_wait_json_while_running(self):
+        self.checks(self.slow(6, 0))
+        self.start("gate", "1")
+        output = self.started("gate-1-1.txt")
+        r = self.cli("wait", "--json", "--wait", "1")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        reply = json.loads(r.stdout)
+        self.assertEqual(set(reply), {"result", "message", "command", "output", "seconds"})
+        self.assertEqual(reply["result"], "RUNNING")
+        self.assertEqual(reply["command"], self.slow(6, 0))
+        self.assertEqual(reply["output"], str(output))
+        self.assertIn("still running", reply["message"])
+        self.assertIsInstance(reply["seconds"], (int, float))
+
+    def test_wait_refuses_a_negative_tail(self):
+        self.checks(self.quick(0))
+        self.assertEqual(self.cli("gate", "1").returncode, 0)
+        r = self.cli("wait", "--tail", "-1")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR: --tail must be 0 or more", r.stderr)
+        self.assertNotIn("PASSED", r.stdout)
+
+
+class WriteRecordTest(unittest.TestCase):
+    """`cmd_run.write_record`: a replace Windows refuses while `run wait` reads."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_run
+        self.cmd_run = cmd_run
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.path = self.tmp / "1.json"
+        self.path.write_text(json.dumps({"pid": 1}))
+
+    def refuse(self, times):
+        """os.replace, refused with PermissionError its first `times` calls."""
+        real, calls = os.replace, []
+
+        def replace(src, dst):
+            calls.append(src)
+            if len(calls) <= times:
+                raise PermissionError(13, "in use by another process")
+            return real(src, dst)
+        return replace, calls
+
+    def test_a_refused_replace_is_tried_again(self):
+        from unittest import mock
+        replace, calls = self.refuse(2)
+        with mock.patch.object(self.cmd_run.os, "replace", replace):
+            self.cmd_run.write_record(self.path, {"pid": 1, "token": "PASSED"})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(json.loads(self.path.read_text())["token"], "PASSED")
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["1.json"])
+
+    def test_a_replace_refused_every_time_leaves_no_tmp_file(self):
+        from unittest import mock
+        replace, calls = self.refuse(1000)
+        with mock.patch.object(self.cmd_run.os, "replace", replace), \
+                mock.patch.object(self.cmd_run.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                self.cmd_run.write_record(self.path, {"pid": 1, "token": "PASSED"})
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(len(calls), self.cmd_run.REPLACE_TRIES)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["1.json"])
+        self.assertNotIn("token", json.loads(self.path.read_text()))
+
 
 VERIFY_SPEC = """\
 # Spec
@@ -4180,6 +4260,11 @@ class MutationRunTest(unittest.TestCase):
 
     def test_verify_prep_keeps_its_own_wait(self):
         self.assertIn("default 270", self.help_of("verify"))
+
+    def test_mutants_help_states_the_wait_the_parser_uses(self):
+        # Built from the parser's own default, so it changes when the default does.
+        self.assertIn("--wait WAIT run/wait: seconds to wait for the runner (default 170)",
+                      self.help_of("mutants"))
 
 
 class CliTest(unittest.TestCase):

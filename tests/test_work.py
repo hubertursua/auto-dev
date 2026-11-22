@@ -1772,3 +1772,53 @@ class WorkerWaitRuleTest(unittest.TestCase):
 
     def test_coder_still_works_test_first(self):
         self.assertIn("run it and see it FAIL, then make it pass", self.text("coder"))
+
+    def test_run_wait_gets_a_bash_timeout_past_its_170_seconds(self):
+        for name in self.RUNS_CHECKS:
+            self.assertIn("run wait --dir {{artifact_dir}}` with that Bash call's timeout "
+                          "set to 300000 ms", self.text(name), name)
+
+    def verifier_step_3(self):
+        text = self.text("verifier")
+        start = text.index("3. The acceptance run:")
+        return text[start:text.index("4. For each PLAN.md condition", start)]
+
+    BASH_TIMEOUT_SECONDS = 300  # the 300000 ms Bash timeout step 3 sets
+
+    def verifier_fallback(self, step):
+        """Step 3's sentence for a gate check with no `files` form."""
+        sentences = re.split(r"(?<=[.!?:])\s+(?=[A-Z`])", step)
+        fallback = [s for s in sentences if "has no scoped form" in s]
+        self.assertEqual(len(fallback), 1, sentences)
+        return fallback[0]
+
+    def assert_fallback_keeps_its_timeout(self, fallback):
+        """The fallback keeps a `--timeout <n>` under 300, outside what it drops."""
+        dropped = re.search(r"minus `([^`]*)`", fallback)
+        self.assertIsNotNone(dropped, fallback)
+        self.assertNotIn("--timeout", dropped.group(1), fallback)
+        kept = re.findall(r"--timeout (\d+)",
+                          fallback[:dropped.start()] + fallback[dropped.end():])
+        self.assertTrue(kept, fallback)
+        for seconds in kept:
+            self.assertLess(int(seconds), self.BASH_TIMEOUT_SECONDS, fallback)
+
+    def test_verifier_bounds_its_own_acceptance_run(self):
+        step = self.verifier_step_3()
+        scoped = re.search(r"run gate <n> --dir \{\{artifact_dir\}\} --files "
+                           r"<the check files> --timeout (\d+)", step)
+        self.assertIsNotNone(scoped, step)
+        self.assertLess(int(scoped.group(1)), self.BASH_TIMEOUT_SECONDS, step)
+        self.assert_fallback_keeps_its_timeout(self.verifier_fallback(step))
+        self.assertIn("TIMED_OUT (exit 3), whether from `run` or from `run wait`, leaves "
+                      "the conditions' checks unconfirmed by the run, not failed", step)
+
+    def test_verifier_acceptance_run_stops_before_its_bash_timeout(self):
+        step = self.verifier_step_3()
+        scoped = re.search(r"--files <the check files> --timeout (\d+)", step)
+        self.assertIsNotNone(scoped, step)
+        self.assertIn("timeout set to 300000 ms", step[:scoped.start()])
+        self.assertLess(int(scoped.group(1)), self.BASH_TIMEOUT_SECONDS)
+        fallback = self.verifier_fallback(step)
+        self.assertIn("timeout set to 300000 ms", fallback)
+        self.assert_fallback_keeps_its_timeout(fallback)

@@ -160,7 +160,7 @@ def add_arguments(parser):
     chosen.add_argument("--extended", action="store_true",
                         help="run: this pass added mutants to the set")
     parser.add_argument("--wait", type=int, default=mutation_run.WAIT,
-                        help="run/wait: seconds to wait for the runner")
+                        help="run/wait: seconds to wait for the runner (default %(default)s)")
 
 
 def main(args):
