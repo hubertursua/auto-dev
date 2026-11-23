@@ -9,7 +9,8 @@ Checks:
 - plugin.json and marketplace.json agree on the plugin's name and description;
 - every helper script is executable and starts with a python3 shebang;
 - every agent file has name, model, effort and tools in its frontmatter, and its
-  model and effort match the worker tables in SKILL.md and README.md;
+  model, effort and turn cap (`maxTurns`, `—` when it sets none) match the
+  worker tables in SKILL.md and README.md;
 - every file path SKILL.md and README.md name under references/, scripts/ or
   templates/ exists, and README.md names every helper script;
 - every agent file's {{slots}} are slots `autodev.py brief` knows (AUTO, CALLER
@@ -105,21 +106,24 @@ def frontmatter(path):
     return fields
 
 
-# A worker-table row: | ... | `auto-dev:<x>` | `<model>` · <effort> |
-ROW = re.compile(r"\|\s*`auto-dev:([a-z-]+)`\s*\|\s*`([a-z]+)`\s*·\s*([a-z]+)\s*\|")
+# A worker-table row: | ... | `auto-dev:<x>` | `<model>` · <effort> | <turn cap> |
+# (the turn cap: digits, or `—` for none; None when the row has no such cell).
+ROW = re.compile(r"\|\s*`auto-dev:([a-z-]+)`\s*\|\s*`([a-z]+)`\s*·\s*([a-z]+)\s*\|"
+                 r"(?:[ \t]*([^|\n]*?)[ \t]*\|)?")
+NO_CAP = "—"
 
 
 def table_rows(path):
-    return {m.group(1): (m.group(2), m.group(3))
+    return {m.group(1): (m.group(2), m.group(3), m.group(4))
             for m in ROW.finditer(path.read_text(encoding="utf-8"))}
 
 
-def check_agents():
-    tables = {SKILL.relative_to(ROOT): table_rows(SKILL),
-              README.relative_to(ROOT): table_rows(README)}
+def check_agents(agents_dir=ROOT / "agents", tables=None):
+    tables = {(t.relative_to(ROOT) if t.is_relative_to(ROOT) else t): table_rows(t)
+              for t in (tables or (SKILL, README))}
     agents = {}
-    for path in sorted((ROOT / "agents").glob("*.md")):
-        rel = path.relative_to(ROOT)
+    for path in sorted(agents_dir.glob("*.md")):
+        rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
         fm = frontmatter(path)
         if fm is None:
             fail(f"{rel}: no frontmatter")
@@ -130,14 +134,24 @@ def check_agents():
             continue
         if fm["name"] != f"auto-dev-{path.stem}":
             fail(f"{rel}: name is {fm['name']!r}, expected 'auto-dev-{path.stem}'")
-        agents[path.stem] = (fm["model"], fm["effort"])
+        cap = fm.get("maxTurns")
+        if cap is not None and not cap.isdigit():
+            fail(f"{rel}: maxTurns is {cap!r}, not a whole number")
+        agents[path.stem] = (fm["model"], fm["effort"], cap or NO_CAP)
     for table, rows in tables.items():
         for agent, setting in agents.items():
             if agent not in rows:
                 fail(f"{table}: worker table has no row for auto-dev:{agent}")
-            elif rows[agent] != setting:
-                fail(f"{table}: auto-dev:{agent} is {rows[agent][0]} · {rows[agent][1]}, "
+                continue
+            row = rows[agent]
+            if row[:2] != setting[:2]:
+                fail(f"{table}: auto-dev:{agent} is {row[0]} · {row[1]}, "
                      f"but agents/{agent}.md says {setting[0]} · {setting[1]}")
+            if row[2] != setting[2]:
+                fail(f"{table}: auto-dev:{agent}'s Turn cap is "
+                     f"{row[2] if row[2] else 'missing'}, but agents/{agent}.md says "
+                     f"{setting[2]}" + (" (no maxTurns)" if setting[2] == NO_CAP else
+                                        " (maxTurns)"))
         for agent in rows.keys() - agents.keys():
             fail(f"{table}: worker table names auto-dev:{agent}, which has no agents/ file")
 

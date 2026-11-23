@@ -29,10 +29,14 @@ or for red CI alone.
 When none is left, `next` stops and its `REPORT` names what is still open, one
 item at a time, and `autodev.py budget raise --by <n>`. One exception: a review
 pass's correction with no round left before the PR is marked ready goes on to
-the ready-for-review gate, whose summary names every open must-fix finding. Run `budget raise` only when
-the user asks for more rounds and gives the number (1 to 10; it is refused
-unless `next` just stopped on the budget). Then `next` takes the step that
-stopped, spending the new rounds as usual.
+the ready-for-review gate, whose summary names every open must-fix finding.
+That gate then offers a fourth answer, "Add a round and fix it": its `AFTER`
+line, `budget raise --by 1`, adds one round there, and `next` spends it on the
+correction for what is open (the gate comes again after it). Run `budget raise`
+only when the user asks for more rounds and gives the number (1 to 10; it is
+refused unless `next` just stopped on the budget, or the ready-for-review gate
+is open with findings left for want of a round and the PR not marked ready).
+Then `next` takes the step that stopped, spending the new rounds as usual.
 
 Free (no round), but bounded: the acceptance tester's one more go for gaps
 (gaps again stop) and its rewrite for the other reading of an ambiguous
@@ -61,11 +65,11 @@ it (_Overriding a stop_, below).
 | 4 | the run was started on auto-dev 3.x or 4.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | the planner returns `OVERSIZED` |
 | 6 | a worker did not return ok twice running: it stopped on purpose, failed, or one of each (lifted by `auto-dev continue`) | `next` records a second result that is not ok |
-| 7 | a worker was spawned three times and never left a result `next` accepts (lifted by `auto-dev continue`) | `next` |
+| 7 | a worker was spawned three times and never left a result `next` accepts; or a worker with a turn cap (`maxTurns`: the coder 150 turns, the acceptance tester 120) ended without writing its result file twice: after the first miss `next` sends it out once more, as a new brief that tells it to keep its edits and finish (lifted by `auto-dev continue`, which gives it that one more go again) | `next` |
 | 8 | the planner judged the conditions impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
 | 9 | the quality gate is still red after the coder's correction for it, or the quality gate, run whole after CI can't be watched, is red, or a check rewrites the code on every run, or `next` asked for the gate 3 times on the same code and no run was recorded (it never finished: run it in the background). _I fixed it myself_ runs the gate again; a sign-off (not for a gate that never finished) counts the failing checks green for the rest of the run | `autodev.py quality-gate` exit 1, then `next` |
 | 10 | the mutation step (high risk only) may have left a planted change in the source | verifier returns `MUTATION_LEFT_CHANGES` |
-| 11 | the budget ran out (a review pass's correction before the PR is marked ready goes to the ready-for-review gate instead). Lifted when the user adds rounds (`budget raise`, above) | `next` |
+| 11 | the budget ran out (a review pass's correction before the PR is marked ready goes to the ready-for-review gate instead, which offers "Add a round and fix it"). Lifted when the user adds rounds (`budget raise`, above) | `next` |
 | 12 | a report is stale again right after its own re-run (lifted by `auto-dev continue`) | `check-fresh`, inside `next` |
 | 13 | no code reviewer of the panel wrote a usable report, twice; or the pass's verifier or reviewer did not return ok twice running (lifted by `auto-dev continue`) | `next` |
 | 14 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
@@ -112,7 +116,8 @@ the next session:
   check #21, …) comes back in a resumed run,
   since the result is still there. The user overrides it, in the same session
   or a new one (below). The budget stop (#11) is lifted only when the user
-  adds rounds: `budget raise`, then `next` takes the step that stopped.
+  adds rounds: `budget raise`, then `next` takes the step that stopped. The
+  ready-for-review gate's "Add a round and fix it" adds one the same way.
 
 ## Overriding a stop
 
@@ -155,6 +160,7 @@ what they said, then run `next`.
 | Ready for review (Phase 6, once the reviews on the draft PR settle and CI on it was watched) | Mark ready for review | `gate ready proceed` | `gh pr ready`, then Jira In Review, CI once more, people's comments, the main gate |
 | | Hold (keep it a draft) | `gate ready hold --reason "<why>"` | the run is held; the PR stays a draft |
 | | Stop | `gate ready stop --reason "<why>"` | the run stops; the draft PR stays open |
+| | Add a round and fix it (only when a review pass left must-fix findings open for want of a round, before the PR is marked ready) | `budget raise --by 1` | one round is added; `next` spends it on the correction for what is open, then the review pass and the commit, and asks this gate again |
 | Main (Phase 6, once CI and human comments are settled) | Merge PR to main | `gate main proceed` | `merge-pr`, then Jira Done and the final report |
 | | Hold | `gate main hold --reason "<why>"` | the run is held at the main gate |
 | | Stop | `gate main stop --reason "<why>"` | the run stops; the PR stays open |

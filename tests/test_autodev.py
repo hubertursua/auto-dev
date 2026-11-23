@@ -928,6 +928,58 @@ class StateCommandsTest(RunCase):
         r = self.cmd("show", "--json")
         self.assertEqual(json.loads(r.stdout)["result"], "STATE")
 
+    def ready_gate_with_findings_open(self):
+        """The ready-for-review gate's state when a review pass left a must-fix
+        finding open with no round to correct it: every round spent, and no
+        budget stop."""
+        state = self.state()
+        state["budget"].update(total=4, remaining=0)
+        state["budget"].pop("stopped", None)
+        state["phase6"] = {"commit_seq": 20, "verified_sha": "0" * 40,
+                           "exhausted": {"seq": 25, "open": ["review/pass-1/corrections.md"]}}
+        self.write_state(state)
+
+    def test_budget_raise_adds_a_round_at_a_ready_gate_with_findings_open(self):
+        self.ready_gate_with_findings_open()
+        r = self.cmd("budget", "raise", "--by", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("RAISED: 1 of 5 left", r.stdout)
+        budget = self.state()["budget"]
+        self.assertEqual((budget["total"], budget["remaining"]), (5, 1))
+
+    def test_budget_raise_is_refused_at_a_ready_gate_with_nothing_open_or_once_marked_ready(
+            self):
+        state = self.state()
+        state["budget"].update(total=4, remaining=0)
+        state["phase6"] = {"commit_seq": 20, "verified_sha": "0" * 40}
+        self.write_state(state)
+        budget = self.state()["budget"]
+        r = self.cmd("budget", "raise", "--by", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not stopped on the budget", r.stdout + r.stderr)
+        self.assertEqual(self.state()["budget"], budget)
+        self.ready_gate_with_findings_open()
+        self.assertEqual(self.cmd("mark", "pr-ready").returncode, 0)
+        budget = self.state()["budget"]
+        r = self.cmd("budget", "raise", "--by", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not stopped on the budget", r.stdout + r.stderr)
+        self.assertEqual(self.state()["budget"], budget)
+
+    def test_a_round_added_at_the_ready_gate_clears_its_call_and_is_noted(self):
+        self.ready_gate_with_findings_open()
+        r = self.cmd("budget", "raise", "--by", "2", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("starts the correction for what is open", r.stdout)
+        state = self.state()
+        self.assertNotIn("exhausted", state["phase6"])  # the pass's findings get a round
+        self.assertEqual([x["by"] for x in state["budget"]["raises"]], [2])
+        log = (self.dir / "WORK_LOG.md").read_text()
+        self.assertIn("at the ready-for-review gate", log)
+        self.assertIn("review/pass-1/corrections.md", log)
+        # Once cleared, a second raise has no gate call to answer.
+        self.assertEqual(self.cmd("budget", "raise", "--by", "1").returncode, 1)
+
 
 GOOD_BODY = """## Summary
 Adds due dates.

@@ -175,25 +175,28 @@ plugin. A spawn of one agent (a lookup too) goes in the foreground
 (`run_in_background: false`), so you hear back before your next step. Each
 worker's model and tools are fixed by its agent file:
 
-| Worker | Agent type | Model · effort |
-| ------ | ---------- | -------------- |
-| Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high |
-| Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · high |
-| Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high |
-| Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `sonnet` · high |
-| Coder: the build and every correction | `auto-dev:coder` | `opus` · medium |
-| Verifier (Phase 6, with the review on every pass; first, on a high-risk run) | `auto-dev:verifier` | `opus` · high |
-| Reviewer (Phase 6, standard risk: code and security) | `auto-dev:reviewer` | `opus` · high |
-| Code reviewer, ×3 panel + re-votes (Phase 6, high risk) | `auto-dev:code-reviewer` | `opus` · high |
-| Review judge (Phase 6, high risk) | `auto-dev:review-judge` | `opus` · high |
-| Security reviewer (Phase 6, high risk) | `auto-dev:security-reviewer` | `opus` · high |
-| Security reviewer, sensitive paths (Phase 6, high risk) | `auto-dev:security-reviewer-sensitive` | `opus` · high |
-| Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high |
-| Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium |
-| Fixer: the user's instruction at a stop | `auto-dev:fixer` | `opus` · high |
+| Worker | Agent type | Model · effort | Turn cap |
+| ------ | ---------- | -------------- | -------- |
+| Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high | — |
+| Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · high | — |
+| Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high | — |
+| Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `sonnet` · high | 120 |
+| Coder: the build and every correction | `auto-dev:coder` | `opus` · medium | 150 |
+| Verifier (Phase 6, with the review on every pass; first, on a high-risk run) | `auto-dev:verifier` | `opus` · high | — |
+| Reviewer (Phase 6, standard risk: code and security) | `auto-dev:reviewer` | `opus` · high | — |
+| Code reviewer, ×3 panel + re-votes (Phase 6, high risk) | `auto-dev:code-reviewer` | `opus` · high | — |
+| Review judge (Phase 6, high risk) | `auto-dev:review-judge` | `opus` · high | — |
+| Security reviewer (Phase 6, high risk) | `auto-dev:security-reviewer` | `opus` · high | — |
+| Security reviewer, sensitive paths (Phase 6, high risk) | `auto-dev:security-reviewer-sensitive` | `opus` · high | — |
+| Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high | — |
+| Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium | — |
+| Fixer: the user's instruction at a stop | `auto-dev:fixer` | `opus` · high | — |
 
-To change a worker's model, edit its `agents/<name>.md` frontmatter, this
-table and README.md's _Models and effort_ table together. The one per-run
+A worker with a turn cap (`maxTurns` in its frontmatter) that ends with no
+result file is sent out once more, told to keep its edits and finish; a
+second miss stops the run. To change a worker's model, effort or turn cap, edit
+its `agents/<name>.md` frontmatter, this table and README.md's _Models and
+effort_ table together. The one per-run
 override is the code reviewers' effort, which the plan sets (the `EFFORT`
 line of rule 3).
 

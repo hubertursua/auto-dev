@@ -98,6 +98,18 @@ def modes(worker):
     return MODE_RE.findall(agent_text(worker))
 
 
+def max_turns(worker):
+    """The turn cap the agent file's frontmatter sets (`maxTurns: <n>`), or
+    None when it sets none. A worker stopped at its cap returns with no last
+    turn, so it writes no result file."""
+    text = agent_text(worker)
+    front = re.match(r"---\n(.*?)\n---\n", text, re.DOTALL)
+    if not front:
+        return None
+    found = re.search(r"^maxTurns:\s*(\d+)\s*$", front.group(1), re.MULTILINE)
+    return int(found.group(1)) if found else None
+
+
 def slots(worker, mode=None):
     """The slots the worker's agent file uses in `mode` (outside any mode
     section, plus inside that mode's section)."""

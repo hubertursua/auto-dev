@@ -24,8 +24,11 @@ iteration budget_). Spending an id that was already spent is a no-op (exit 0,
 prints `EXHAUSTED` and exits 3.
 
 `budget raise` adds <n> rounds (1 to 10) to a run `next` stopped because no
-round was left, and is refused otherwise; the next `next` takes the step that
-stopped. It prints `RAISED`.
+round was left; the next `next` takes the step that stopped. It also works at
+the ready-for-review gate when a review pass left findings open for want of a
+round and the PR is not marked ready (the gate's "Add a round and fix it"): it
+clears that, and the next `next` starts their correction. It is refused
+otherwise. It prints `RAISED`.
 
 `mark` records a step done outside autodev.py, so `next` moves past it. Steps:
 jira-in-progress, jira-in-review, jira-done (a Jira transition made through the
@@ -48,8 +51,9 @@ Exit codes:
     0  done (and for `budget spend`, a round was spent or was already spent)
     1  refused: a bad value, a choice the gate doesn't offer, or a `mark` step
        that is not one of those above (or a triage answer not separate/ignore),
-       or a `budget raise` when the run is not stopped on the budget or <n> is
-       not 1 to 10
+       or a `budget raise` when the run is not stopped on the budget (nor at
+       the ready-for-review gate with findings open for want of a round) or
+       <n> is not 1 to 10
     2  could not run (no state.json, unreadable) — not a pass
     3  `budget spend` only: the budget is exhausted; nothing was spent
 """
@@ -166,22 +170,38 @@ def budget(args):
 def raise_budget(args, state):
     b = state["budget"]
     stopped = b.get("stopped")
-    if not stopped:
+    p6 = state.get("phase6") or {}
+    # The ready-for-review gate, asked with a pass's findings left open for
+    # want of a round (and the PR not marked ready yet): a round added there
+    # pays for their correction.
+    at_gate = not stopped and p6.get("exhausted") and \
+        not (state.get("marks") or {}).get("pr-ready")
+    if not stopped and not at_gate:
         raise Fail("the run is not stopped on the budget: rounds are added only after "
-                   "`next` stopped because none was left", FAILED, "ERROR")
+                   "`next` stopped because none was left, or at the ready-for-review "
+                   "gate while a pass's findings are open for want of one", FAILED, "ERROR")
     if args.by is None or not 1 <= args.by <= MAX_RAISE:
         raise Fail(f"budget raise needs --by <n>, 1 to {MAX_RAISE}", FAILED, "ERROR")
     b["total"] += args.by
     b["remaining"] += args.by
     b.setdefault("raises", []).append({"by": args.by, "at": st.now(),
                                        "seq": st.seq(state)})
-    del b["stopped"]
-    st.add_note(state, f"the user raised the iteration budget by {args.by} after it ran "
-                f"out ({stopped.get('what') or 'no round left'}): {b['remaining']} of "
-                f"{b['total']} left")
+    if stopped:
+        del b["stopped"]
+        st.add_note(state, f"the user raised the iteration budget by {args.by} after it "
+                    f"ran out ({stopped.get('what') or 'no round left'}): "
+                    f"{b['remaining']} of {b['total']} left")
+        after = "run `next`: it takes the step that stopped"
+    else:
+        open_ = "; ".join(str(x) for x in p6["exhausted"].get("open") or [] if x)
+        del p6["exhausted"]
+        st.add_note(state, f"the user added {args.by} round(s) at the ready-for-review "
+                    "gate to correct what is open"
+                    + (f" ({open_})" if open_ else "")
+                    + f": {b['remaining']} of {b['total']} left")
+        after = "run `next`: it starts the correction for what is open"
     st.save(args.dir, state)
-    emit(args.json, "RAISED", f"{b['remaining']} of {b['total']} left",
-         after="run `next`: it takes the step that stopped")
+    emit(args.json, "RAISED", f"{b['remaining']} of {b['total']} left", after=after)
     return 0
 
 

@@ -72,7 +72,10 @@ The gate summaries (post-plan, pr, ready, main)
     first (with more than three, the two most severe and one question for the
     rest, headed `Others`). Each answer is recorded with `mark triage-<ID or
     Others> --value separate|ignore`; a finding sent to a separate PR is listed
-    in the PR body as a follow-up.
+    in the PR body as a follow-up. When a review pass left findings open for
+    want of a round (phase6.exhausted) and the PR is not marked ready, the
+    gate offers a fourth answer, ADD_ROUND ("Add a round and fix it",
+    gate_options), whose AFTER line is `budget raise --by 1`.
     pr (the open-the-PR gate, before the first push, only with `gates.open_pr`
     on): the same checks and summary, without the reviews, which have not run.
     main: the PR is open and not a draft, and every result was checked on its
@@ -108,6 +111,21 @@ GATE_OPTIONS = {
     "ready": ["Mark ready for review", "Hold (keep it a draft)", "Stop"],
     "main": ["Merge PR to main", "Hold", "Stop"],
 }
+# The ready gate's fourth answer, offered only when a review pass left findings
+# open for want of a round (gate_options).
+ADD_ROUND = "Add a round and fix it"
+
+
+def gate_options(state, gate):
+    """The answers `gate` offers in `state`: GATE_OPTIONS[gate], plus ADD_ROUND
+    at the ready gate when no round was left to correct what is open and the PR
+    is not marked ready yet."""
+    options = list(GATE_OPTIONS[gate])
+    if gate == "ready" and (state.get("phase6") or {}).get("exhausted") and \
+            not (state.get("marks") or {}).get("pr-ready"):
+        options.append(ADD_ROUND)
+    return options
+
 # A pre-existing security finding's triage answers, and the value `mark
 # triage-<id>` records for each.
 TRIAGE_VALUES = {"Separate PR (note it as a follow-up)": "separate", "Ignore it": "ignore"}
