@@ -569,6 +569,21 @@ class BriefTest(WorkCase):
         self.assertIn(f" run gate 2 --dir {ad} --files <test file> …", gate)
         for m in re.finditer(re.escape(f" run gate 2 --dir {ad}"), gate):
             self.assertRegex(gate[m.end():], r"^ --(files|tests) ", gate)
+        # The user signed off E2E.md failing at a red-gate stop: it counts as
+        # green for the rest of the run, so the correction gets the build list.
+        build, _ = self.brief_of("coder", "--mode", "build")
+        state = self.state()
+        state.setdefault("overrides", []).append({
+            "k": len(state["overrides"]) + 1, "choice": "signoff", "text": "keep it",
+            "stop": {"kind": "red-gate", "number": 9, "signoff": {"reports": ["E2E.md"]}},
+            "seq": 1, "at": "2024-01-01T00:00:00Z"})
+        self.write_state(state)
+        self.gate_found_failing("E2E.md")
+        gate = self.correction_gate(
+            f"the failing quality-gate checks: {self.dir}/lint/E2E.md")
+        self.assertNotIn("run gate 3", gate)
+        self.assertIn("don't run it", self.entry(gate, 3))
+        self.assertEqual(gate, build)
 
     def test_only_the_gate_s_failing_checks_get_a_line_scoped_when_they_can(self):
         ad = shlex.quote(str(self.dir))

@@ -1359,6 +1359,29 @@ class BuildTest(NextCase):
         self.enter_stage("ship")
 
     def test_a_repair_commits_the_testers_change_not_the_coders_lines(self):
+    def test_the_gate_s_correction_lists_no_report_the_user_signed_off(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        state = self.state()
+        state["settings"]["gate"].append(
+            {"kind": "test", "command": "false", "report": "E2E.md"})
+        # An earlier red-gate stop, where the user signed off E2E.md failing.
+        state.setdefault("overrides", []).append({
+            "k": len(state["overrides"]) + 1, "choice": "signoff", "text": "keep it",
+            "stop": {"kind": "red-gate", "number": 9, "signoff": {"reports": ["E2E.md"]}},
+            "seq": 1, "at": "2024-01-01T00:00:00Z"})
+        self.write_state(state)
+        self.quality_gate(red=True)  # TEST.md and the signed-off E2E.md fail
+        self.assertEqual(sorted(self.state()["gate_runs"][-1]["failing"]),
+                         ["E2E.md", "TEST.md"])
+        _, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        listed = self.sets(*jobs[0])["corrections_file"]
+        self.assertIn(f"{self.dir}/lint/TEST.md", listed)
+        self.assertNotIn("E2E.md", listed)
+
         # The coder added its own test to a check file, then stopped a step;
         # the revised plan changed an entry point, so the tester repairs a
         # check in that file. The tests commit holds the repair alone: the
