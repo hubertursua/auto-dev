@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
@@ -1164,6 +1165,15 @@ class PlanTest(NextCase):
         self.assert_waits_for(self.next(0), "planner #1")
         self.assertEqual(self.brief_files(), before)
 
+    def test_a_brief_sent_again_as_is_starts_its_spawn_time_again(self):
+        # `run gate` counts a check's failed attempts from the brief's mtime;
+        # the same brief sent out again is a new spawn, so its count starts over.
+        self.expect("planner")
+        brief = self.dir / "briefs" / "planner-1.md"
+        os.utime(brief, (1_000_000, 1_000_000))
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        self.assertGreater(brief.stat().st_mtime, time.time() - 60)
+
     def test_a_retry_at_the_three_spawn_stop_sends_the_brief_again(self):
         self.stopped_after_three_spawns()
         r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
@@ -1427,6 +1437,29 @@ class BuildTest(NextCase):
         self.sign_off(self.next(4), "the flaky check is known")
         self.enter_stage("ship")
 
+    def test_the_gate_s_correction_lists_no_report_the_user_signed_off(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        state = self.state()
+        state["settings"]["gate"].append(
+            {"kind": "test", "command": "false", "report": "E2E.md"})
+        # An earlier red-gate stop, where the user signed off E2E.md failing.
+        state.setdefault("overrides", []).append({
+            "k": len(state["overrides"]) + 1, "choice": "signoff", "text": "keep it",
+            "stop": {"kind": "red-gate", "number": 9, "signoff": {"reports": ["E2E.md"]}},
+            "seq": 1, "at": "2024-01-01T00:00:00Z"})
+        self.write_state(state)
+        self.quality_gate(red=True)  # TEST.md and the signed-off E2E.md fail
+        self.assertEqual(sorted(self.state()["gate_runs"][-1]["failing"]),
+                         ["E2E.md", "TEST.md"])
+        _, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        listed = self.sets(*jobs[0])["corrections_file"]
+        self.assertIn(f"{self.dir}/lint/TEST.md", listed)
+        self.assertNotIn("E2E.md", listed)
+
     def test_a_repair_commits_the_testers_change_not_the_coders_lines(self):
         # The coder added its own test to a check file, then stopped a step;
         # the revised plan changed an entry point, so the tester repairs a
@@ -1530,6 +1563,42 @@ class BuildTest(NextCase):
         self.assertNotIn("stopped", self.state()["budget"])
         r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_the_quality_gate_action_says_test_checks_run_only_on_the_change_s_tests(self):
+        self.plan_session()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        out = self.next(0)
+        self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+        self.assertIn("only on the change's tests when CI is watched", out["ACTION"])
+
+    def test_the_phase_5_gate_action_keeps_its_rule_for_explain(self):
+        self.plan_session()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        out = self.next(0)
+        self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+        self.assertNotIn("RULE", out)  # only the re-run CI that can't be watched asks shows it
+
+    def test_a_reissued_coder_starts_the_gate_attempt_count_again(self):
+        self.plan_session()
+        self.expect("coder")  # spawned, and never returns
+        state = self.state()
+        state["settings"]["gate"][0]["command"] = "false"
+        self.write_state(state)
+
+        def failing_run():
+            r = self.autodev("run", "gate", "1", "--dir", self.dir)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            return [x for x in r.stdout.splitlines() if x.startswith("  attempt:")]
+
+        self.assertEqual(failing_run(), ["  attempt: 1 of 3 failed for check 1"])
+        self.assertEqual(failing_run(), ["  attempt: 2 of 3 failed for check 1"])
+        time.sleep(0.05)
+        # sent out again as a new brief, #2, since it returned with no result file
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), [("coder", 2)])
+        time.sleep(0.05)
+        self.assertEqual(failing_run(), ["  attempt: 1 of 3 failed for check 1"])
 
     def coder_ended_with_no_result_file(self):
         """The build's coder #1 edits due.ts and returns with no result file."""
@@ -4909,6 +4978,74 @@ class PublishTest(NextCase):
         self.assertIn("line 0001 ok", posted)
         self.assertNotIn("superseded", posted)
 
+    def gate_check(self, name):
+        """A check for the PR-body gates: `lint`, `unit` (`echo all` with a `files`
+        form), `unscoped` (`echo all` with none) or `checks` (`true`, with none)."""
+        return {"lint": {"kind": "lint", "command": "echo lint", "report": "LINT.md"},
+                "unit": {"kind": "test", "command": "echo all", "report": "TEST.md",
+                         "files": "echo some <files>"},
+                "unscoped": {"kind": "test", "command": "echo all", "report": "TEST.md"},
+                "checks": {"kind": "test", "command": "true", "report": "CHECKS.md"}}[name]
+
+    def gate_on_the_change(self, ci, gate):
+        """The quality gate of the checks `gate` names (see `gate_check`), run
+        with `ci` on a branch that added tests/a.test.ts and holds an untracked
+        src/b.test.ts, then the PR body generated."""
+        state = self.state()
+        state["settings"]["ci"] = ci
+        state["settings"]["gate"] = [self.gate_check(name) for name in gate]
+        self.write_state(state)
+        if not (self.worktree / "tests" / "a.test.ts").exists():
+            (self.worktree / "tests").mkdir(exist_ok=True)
+            (self.worktree / "tests" / "a.test.ts").write_text("a\n")
+            self.sh("git", "-C", str(self.worktree), "add", "tests/a.test.ts")
+            self.sh("git", "-C", str(self.worktree), "commit", "-q", "-m", "add a test")
+            (self.worktree / "src").mkdir(exist_ok=True)
+            (self.worktree / "src" / "b.test.ts").write_text("b\n")
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        state = self.state()
+        state["phase6"]["verified_sha"] = self.sh("git", "rev-parse", "HEAD",
+                                                  cwd=self.worktree).strip()
+        self.write_state(state)
+        r = self.lib("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return (self.dir / "pr-body.md").read_text()
+
+    def test_the_pr_body_names_a_check_run_on_the_change_s_tests_and_one_left_to_ci(self):
+        scoped = ("- `echo some src/b.test.ts tests/a.test.ts`: passed (the change's tests; "
+                  "CI runs the whole check)")
+        for gate, lines in (
+                (("lint", "unit"), (scoped,)),
+                (("lint", "unscoped"), ("- `echo all`: not run before the push; CI runs it",)),
+                (("lint", "unit", "checks"), ("- `echo all`: passed", "- `true`: passed"))):
+            text = self.gate_on_the_change("github-actions", gate)
+            section = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+            for line in lines:
+                self.assertTrue(line in text,
+                                f"no {line!r} in the quality-gate section:\n{section}")
+            if len(gate) == 3:  # two test checks: both run whole, nothing left to CI
+                self.assertNotIn("not run before the push", text)
+                self.assertNotIn("the change's tests; CI runs the whole check", text)
+
+    def test_a_scoped_command_naming_a_pipeline_term_passes_the_body_lint(self):
+        (self.worktree / "tests").mkdir(exist_ok=True)
+        (self.worktree / "tests" / "held-out-split.test.ts").write_text("split\n")
+        text = self.gate_on_the_change("github-actions", ("lint", "unit"))
+        scoped = ("- `echo some src/b.test.ts tests/a.test.ts tests/held-out-split.test.ts`: "
+                  "passed (the change's tests; CI runs the whole check)")
+        self.assertIn(scoped, text)
+        sys.path.insert(0, str(SCRIPTS))
+        from lib.cmd_ship import lint_body
+        problems = lint_body(text, self.state())
+        self.assertFalse([p for p in problems if "pipeline term" in p], problems)
+
+    def test_the_pr_body_shows_a_whole_run_as_before_when_ci_is_not_watched(self):
+        text = self.gate_on_the_change("none", ("lint", "unit", "checks"))
+        gate = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+        for line in ("- `echo all`: passed", "- `true`: passed"):
+            self.assertTrue(line in text, f"no {line!r} in the quality-gate section:\n{gate}")
+
 
 class TemplateTest(unittest.TestCase):
     """The repo's own PR template and the ticket link in the generated body."""
@@ -5608,6 +5745,7 @@ class CiTest(NextCase):
         state["phase6"]["ci"]["status"] = "timeout"
         state["phase6"]["ci"]["seq"] = state["events"] + 1
         self.write_state(state)
+        self.quality_gate()  # its test check was left to CI: it runs whole now
         self.no_comments()
         out = self.next(5)
         self.assertIn("CI: not monitored (timeout) — never assume green",
@@ -5653,11 +5791,163 @@ class CiTest(NextCase):
                          "--dir", self.dir)
         self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
         self.assertIn("UNAVAILABLE", r.stdout)
+        self.quality_gate()  # its test check was left to CI: it runs whole now
         out = self.next(5)
         self.assertIn("ready gate", out["QUESTION"])
         summary = " ".join(out["SUMMARY"])
         self.assertIn("not monitored (unavailable)", summary)
         self.assertNotIn("conflicts with its base", summary.lower())
+
+    def newest_gate_run_is(self, **fields):
+        """The newest quality-gate run, with only these of its CI fields."""
+        state = self.state()
+        newest = state["gate_runs"][-1]
+        for key in ("ci_watched", "scoped", "skipped"):
+            newest.pop(key, None)
+        newest.update(fields)
+        self.write_state(state)
+
+    def unwatchable_after_a_gate_that_left_a_check_to_ci(self):
+        """The reviewed draft; its newest quality gate left TEST.md to CI, then a
+        CI watch on the draft's commit found no checks (unavailable)."""
+        sha = self.no_checks_on_the_draft("MERGEABLE")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--sha", sha, "--max-wait", "0", "--grace", "0",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("UNAVAILABLE", r.stdout)
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+
+    def test_unwatchable_ci_runs_the_quality_gate_whole_before_the_ready_gate(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        action = out.get("ACTION", "")
+        # The ACTION is the gate's run itself: its first command is `quality-gate`,
+        # and it doesn't say nothing was done or send the orchestrator to `next` instead.
+        first = re.search(r"`([^`]*)`", action)
+        self.assertIsNotNone(first, shown)
+        words = shlex.split(first.group(1))
+        self.assertTrue(any(w.endswith("autodev.py") for w in words), shown)
+        self.assertIn("quality-gate", words, shown)
+        self.assertIn("--dir", words, shown)
+        self.assertNotIn("nothing was done", action, shown)
+        self.assertNotIn("--explain", action, shown)
+        self.assertNotIn("QUESTION", out, shown)
+        self.assertIn("CI can't be watched", out.get("RULE", ""), shown)
+        self.assertIn("the quality gate runs every check whole", out.get("RULE", ""), shown)
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Scope:** whole", (self.dir / "lint" / "TEST.md").read_text())
+        self.assertIs(self.state()["gate_runs"][-1].get("ci_watched"), False)
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+
+    def test_a_red_whole_rerun_after_unwatchable_ci_stops_and_names_the_failing_check(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        state = self.state()
+        state["phase6"]["ci"]["status"] = "timeout"  # a watch that timed out does the same
+        self.write_state(state)
+        self.quality_gate(red=True)
+        out = self.next(4)
+        self.assertIn("TEST.md", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        self.assertNotIn("ready gate", out.get("QUESTION", ""))
+        r = self.autodev("override", "retry", "--text", "I fixed the check", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.quality_gate(red=True)  # a retry runs the gate again
+        out = self.next(4)
+        self.assertIn("TEST.md", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        self.sign_off(out)  # a sign-off accepts the failing report
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def test_a_gate_run_that_owes_no_whole_run_goes_to_the_ready_gate(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        for fields in ({"ci_watched": False},
+                       {"ci_watched": True, "scoped": [], "skipped": []},
+                       {}):  # a run from before the change: no ci_watched key
+            self.newest_gate_run_is(**fields)
+            out = self.next(5)
+            self.assertIn("ready gate", out["QUESTION"], fields)
+
+    def test_a_green_watch_after_a_gate_that_left_a_check_to_ci_asks_no_gate_run(self):
+        self.github_ci()
+        self.reviewed_pr(extra=self.GREEN)
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+        self.watch()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertNotIn("quality-gate", out.get("ACTION", ""))
+
+    def test_a_red_watch_after_a_gate_that_left_a_check_to_ci_goes_to_the_triager(self):
+        self.github_ci()
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+        self.watch(1)
+        self.expect("triager")
+
+    def test_the_whole_gate_re_run_is_an_action_without_explain_and_a_dry_run_with_it(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        # --explain first: each plain `next` counts an ask, and a third stops.
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        explained = json.loads(r.stdout)
+        self.assertTrue(explained["ACTION"].startswith(
+            "(--explain: nothing was done; run `next` to act) run the quality gate"),
+            r.stdout)
+        self.assertIn("CI can't be watched", explained.get("RULE", ""), r.stdout)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue(out["ACTION"].startswith("run the quality gate"), shown)
+        self.assertNotIn("--explain", out["ACTION"], shown)
+        self.assertIn("CI can't be watched", out.get("RULE", ""), shown)
+        r = self.autodev("next", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        action = next(ln for ln in r.stdout.splitlines() if ln.startswith("ACTION: "))
+        self.assertTrue(action.startswith("ACTION: run the quality gate"), r.stdout)
+        self.assertNotIn("--explain", action, r.stdout)
+        self.assertTrue([ln for ln in r.stdout.splitlines()
+                         if ln.startswith("RULE: ") and "CI can't be watched" in ln], r.stdout)
+
+    def test_a_gate_that_only_scoped_its_test_check_owes_a_whole_run_too(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        self.newest_gate_run_is(ci_watched=True, scoped=["TEST.md"], skipped=[])
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("quality-gate", out["ACTION"], shown)
+        self.assertIn("CI can't be watched", out.get("RULE", ""), shown)
+        self.assertNotIn("QUESTION", out, shown)
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def unwatchable_after_ready(self, status, **fields):
+        """The PR marked ready, its newest quality gate with these CI fields,
+        then a CI watch after the mark that ended `status`: `next` asks for the
+        quality gate, run whole, and only then the main gate."""
+        self.ready()
+        self.newest_gate_run_is(ci_watched=True, **fields)
+        state = self.state()
+        state["phase6"]["ci"]["status"] = status
+        state["phase6"]["ci"]["seq"] = state["events"] + 1
+        self.write_state(state)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("quality-gate", out["ACTION"], shown)
+        self.assertIn(f"CI can't be watched ({status})", out.get("RULE", ""), shown)
+        self.assertNotIn("main gate", out.get("QUESTION", ""), shown)
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.no_comments()
+        self.assertIn("main gate", self.next(5)["QUESTION"])
+
+    def test_an_unavailable_watch_after_ready_and_a_scoped_gate_runs_the_gate_whole(self):
+        self.unwatchable_after_ready("unavailable", scoped=["TEST.md"], skipped=[])
+
+    def test_a_timed_out_watch_after_ready_and_a_gate_that_left_a_check_to_ci_runs_it_whole(
+            self):
+        self.unwatchable_after_ready("timeout", scoped=[], skipped=["TEST.md"])
 
 
 class HumanAndMainGateTest(NextCase):
@@ -11052,3 +11342,106 @@ class MutationDocsTest(RiskDocsCase):
         for name, text in self.texts().items():
             self.assertTrue(any("mutation" in s.lower() and any(w in s.lower() for w in self.HIGH)
                                 for s in self.sentences(text)), name)
+
+
+class CiFullRunDocsTest(unittest.TestCase):
+    """What the docs say about where the test suite runs in full."""
+
+    ROOT = SCRIPTS.parents[2]
+    PHRASE = "CI is the one full run of the test suite"
+
+    def read(self, rel):
+        return (self.ROOT / rel).read_text(encoding="utf-8")
+
+    def flat(self, text):
+        return " ".join(text.split())
+
+    def section(self, text, heading):
+        start = text.index(f"\n## {heading}\n")
+        end = text.find("\n## ", start + 1)
+        return text[start:end if end != -1 else len(text)]
+
+    def assert_says(self, text, said, where, present=True):
+        self.assertEqual(said in text, present,
+                         f"{where}: {'missing' if present else 'still holds'} {said!r}")
+
+    def test_the_docs_say_ci_is_the_one_full_run_of_the_test_suite(self):
+        readme = self.read("README.md")
+        for heading in ("How the build is verified", "Stack profiles"):
+            self.assert_says(self.flat(self.section(readme, heading)), self.PHRASE,
+                             f"README.md *{heading}*")
+        self.assert_says(self.flat(self.read("skills/auto-dev/references/build.md")),
+                         self.PHRASE, "references/build.md")
+        gates = self.section(readme, "Human gates & integrations")
+        bullets = [self.flat(b) for b in re.split(r"\n(?=- )", gates) if "CI" in b]
+        self.assertTrue(any("runs the whole test suite before the push" in b for b in bullets),
+                        "README.md *Human gates & integrations*: no CI bullet says it "
+                        "'runs the whole test suite before the push'")
+        scratch = self.section(readme, "The `.auto-dev/` scratch directory")
+        rows = [ln for ln in scratch.splitlines() if ln.startswith("| `tmp/`")]
+        self.assertEqual(len(rows), 1, "README.md: no single `tmp/` row in the scratch table")
+        self.assert_says(rows[0], "tmp/run/timings.json", "README.md's `tmp/` row")
+
+    def test_evals_expect_a_scoped_gate_with_ci_and_a_whole_gate_without(self):
+        evals = {e["id"]: e for e in json.loads(
+            self.read("skills/auto-dev/evals/evals.json"))["evals"]}
+        self.assertTrue([x for x in evals[1]["expectations"]
+                         if "quality gate" in x.lower() and "change's tests" in x],
+                        "eval 1 has no expectation that the quality gate ran the test check "
+                        "only on the change's tests")
+        self.assertTrue([x for x in evals[9]["expectations"]
+                         if "quality gate" in x.lower() and "every check whole" in x],
+                        "eval 9 has no expectation that the quality gate ran every check whole")
+
+    def test_stop_9_names_a_red_whole_re_run_after_ci_can_t_be_watched(self):
+        rows = [ln for ln in self.read("skills/auto-dev/references/tables.md").splitlines()
+                if ln.startswith("| 9 |")]
+        self.assertEqual(len(rows), 1, "references/tables.md: no single row for stop 9")
+        self.assert_says(rows[0], "run whole after CI can't be watched, is red",
+                         "references/tables.md stop 9")
+        self.assert_says(rows[0], "_I fixed it myself_ runs the gate again",
+                         "references/tables.md stop 9")
+
+    def test_profiles_md_says_the_coder_leaves_an_unscopable_test_check_to_ci(self):
+        text = self.flat(self.read("skills/auto-dev/references/profiles.md"))
+        self.assert_says(text, "a worker that wanted it scoped runs it whole",
+                         "references/profiles.md", present=False)
+        self.assert_says(text, "the coder leaves a test check with no scoped form to CI",
+                         "references/profiles.md")
+
+    SIGNED_OFF = ("A test check the user signed off failing at a red-gate stop counts as "
+                  "green for the rest of the run: it gets no such line")
+
+    def test_the_coder_gives_a_signed_off_test_check_no_run_line(self):
+        text = self.flat(self.read("agents/coder.md"))
+        self.assert_says(text, self.SIGNED_OFF, "agents/coder.md")
+        sentences = [x for x in re.split(r"(?<=\.)\s+", text)
+                     if x.startswith("In a correction, each test check the quality gate's "
+                                     "latest run found failing has a `run:` line")]
+        self.assertEqual(len(sentences), 1,
+                         "agents/coder.md: no single sentence giving a failing test check "
+                         "its run line in a correction")
+        self.assert_says(sentences[0], "unless the user signed it off at a red-gate stop",
+                         "agents/coder.md's correction run-line sentence")
+
+    def test_profiles_md_gives_a_signed_off_test_check_no_run_line(self):
+        self.assert_says(self.flat(self.read("skills/auto-dev/references/profiles.md")),
+                         self.SIGNED_OFF, "references/profiles.md")
+
+    def test_the_one_full_run_is_tied_to_a_gate_with_one_test_check(self):
+        for rel in ("skills/auto-dev/references/profiles.md", "agents/coder.md"):
+            sentences = [x for x in re.split(r"(?<=[.:;])\s+", self.flat(self.read(rel)))
+                         if "one full run" in x]
+            self.assertTrue(sentences, f"{rel}: says nothing of the one full run")
+            for sentence in sentences:
+                self.assertTrue("one test check" in sentence
+                                or "one `kind: test` check" in sentence,
+                                f"{rel}: {sentence!r} doesn't tie it to one test check")
+
+    def test_the_docs_no_longer_say_the_gate_runs_every_check_whole(self):
+        self.assert_says(self.flat(self.read("README.md")),
+                         "runs every check whole through `run gate <n>`", "README.md",
+                         present=False)
+        self.assert_says(self.flat(self.read("skills/auto-dev/references/profiles.md")).lower(),
+                         "the quality gate runs every check, the test check included",
+                         "references/profiles.md", present=False)

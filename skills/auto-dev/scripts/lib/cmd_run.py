@@ -34,7 +34,7 @@ wait
     after 180 s to the background, so a longer wait would be moved too). A
     run still going then prints `RUNNING: <command> is still running …` and
     an `output:` line, exit 4, and is left running: run `run wait` again. It
-    only reads: it never stops the run, so the run's own --timeout is what
+    only reads: it never stops the run, so the run's own timeout is what
     ends a hung check. Each `run gate|test` (never --show) keeps a record of
     itself, and its result once it ends, in
     <artifact-dir>/tmp/run/records/<k>.json; `wait` reads the newest.
@@ -63,6 +63,14 @@ worktree, so a default would find no run, or an old one.
     --files paths given with it, else the whole check runs. Paths given with
     --files are always checked, whichever form runs.
 
+--timeout <seconds>
+    Stops the command after that many seconds (exit 3). With no --timeout,
+    `run` stops it at a default: twice the newest whole run of the same
+    command that the quality gate or `verify prep` measured (saved in
+    <artifact-dir>/tmp/run/timings.json, keyed by the check's command), and
+    never less than 600 seconds (600 when none was measured). A check
+    expected to run longer is given its own --timeout.
+
 Each run prints its scope on the line after the token:
 `  scope: tests|files|whole`, with ` — <why>` when --tests fell back or the
 check has no scoped form. When `run test` (or a `run gate` given --files or
@@ -70,6 +78,14 @@ check has no scoped form. When `run test` (or a `run gate` given --files or
 `  warning:` follows: a whole run is for the quality gate only, then the
 filled-in scoped `run` lines to use instead and the profile's example test
 ID. The quality gate's own `run gate <n>`, with neither flag, never warns.
+Then `  timeout: <s>s — <why>` (the timeout it used: `--timeout`, the floor, or
+twice a measured whole run). A `run gate <n>` that fails or times out, whole or
+scoped, counts as an attempt at check <n>: it prints
+`  attempt: <k> of 3 failed for check <n>`, with ` — the third has failed: stop
+fixing it; it stays failing` once <k> is 3 or more. The count runs back over the
+`run gate <n>` runs since the newest file under <artifact-dir>/briefs/ was
+written (the current worker's spawn) and stops at one that passed; `run test`
+runs are never counted.
 
 --show prints `COMMAND: <the command>` and runs nothing (exit 0), so a caller
 that passes the command on uses the one `run` would run.
@@ -86,8 +102,9 @@ time taken, and the output's last --tail lines (default 40):
     FAILED: `<command>` exited <code> in <s>s
     TIMED_OUT: `<command>` ran past <s>s and was stopped
 With --json, `command`, `exit_code`, `seconds`, `output`, `lines`, `tail`,
-`scope` (`tests`, `files` or `whole`) and `warning` (the whole warning text,
-its lines joined by newlines, or null).
+`scope` (`tests`, `files` or `whole`), `warning` (the whole warning text,
+its lines joined by newlines, or null), `timeout` (the seconds it used) and
+`attempt` (the failed attempt's number, or null).
 
 Exit codes:
     0  PASSED, or --show printed the command
@@ -106,6 +123,7 @@ Exit codes:
 """
 
 import json
+import math
 import os
 import shlex
 import signal
@@ -133,6 +151,10 @@ TAIL = 40
 # Where --out may write, under the artifact dir: never state.json, PLAN.md or
 # MANIFEST.md.
 OUT_DIRS = ("evidence", "acceptance/base-run", "tmp")
+# The default timeout: twice the newest measured whole run, never less than this.
+TIMEOUT_FLOOR = 600
+TIMINGS = "timings.json"
+ATTEMPTS = 3  # failed runs of a check before the worker stops fixing it
 
 
 class Stopped(Exception):
@@ -152,7 +174,9 @@ def add_arguments(parser):
     parser.add_argument("--out", help="the file to save the output to (under --dir's "
                                       "evidence/, acceptance/base-run/ or tmp/)")
     parser.add_argument("--timeout", type=float, help="stop the command after this "
-                                                      "many seconds (exit 3)")
+                                                      "many seconds (exit 3; default: "
+                                                      "twice its measured whole run, at "
+                                                      f"least {TIMEOUT_FLOOR})")
     parser.add_argument("--show", action="store_true",
                         help="print the command it would run, and run nothing")
     parser.add_argument("--tail", type=int, default=None,
@@ -530,6 +554,88 @@ def execute(command, worktree, path, timeout):
     return code, round(time.monotonic() - start, 1)
 
 
+def timings_path(ad):
+    return ad.resolve() / "tmp" / "run" / TIMINGS
+
+
+def read_timings(ad):
+    """{command: {"seconds", "by", "at"}}: the measured whole runs; {} when
+    there are none or the file can't be read."""
+    try:
+        data = json.loads(timings_path(ad).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_timing(ad, command, seconds, by):
+    """Save how long a whole, finished run of `command` took, for the default
+    timeout; a failed write never changes the caller's result."""
+    path = timings_path(Path(ad))
+    data = read_timings(Path(ad))
+    data[command] = {"seconds": seconds, "by": by, "at": st.now()}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_record(path, data)
+    except OSError:
+        pass
+
+
+def default_timeout(ad, check):
+    """(seconds, why): twice the newest measured whole run of the check's
+    command, never less than TIMEOUT_FLOOR."""
+    entry = read_timings(ad).get(str(check.get("command") or ""))
+    try:
+        measured = float(entry["seconds"])
+        by = str(entry.get("by") or "a whole run")
+    except (TypeError, KeyError, ValueError):
+        return TIMEOUT_FLOOR, "the floor: no whole run of this check measured yet"
+    timeout = max(TIMEOUT_FLOOR, math.ceil(2 * measured))
+    if timeout > TIMEOUT_FLOOR:
+        return timeout, f"twice the {measured:g}s whole run {by} measured"
+    return TIMEOUT_FLOOR, f"the floor: twice the {measured:g}s whole run {by} measured is less"
+
+
+def spawn_start(ad):
+    """When the current worker was spawned: the newest mtime among the files
+    under briefs/ (a brief is written for each spawn), or None."""
+    try:
+        times = [p.stat().st_mtime for p in (ad.resolve() / "briefs").iterdir()
+                 if p.is_file()]
+    except OSError:
+        return None
+    return max(times) if times else None
+
+
+def failed_attempts(ad, n, record):
+    """How many `run gate <n>` runs in a row have failed, this one included:
+    back from the newest to one that passed or one started before the current
+    worker's spawn. `run test` runs neither count nor reset it."""
+    start = spawn_start(ad)
+    folder = records_dir(ad)
+    mine = record_number(record) if record is not None else None
+    try:
+        found = sorted((record_number(p), p) for p in folder.iterdir()
+                       if record_number(p) is not None)
+    except OSError:
+        found = []
+    count = 1
+    for k, path in reversed(found):
+        if mine is not None and k >= mine:
+            continue
+        rec = read_record(path)
+        if not rec or rec.get("what") != "gate" or rec.get("check") != n:
+            continue
+        if start is not None and float(rec.get("started") or 0) < start:
+            break
+        token = rec.get("token")
+        if token == "PASSED":
+            break
+        if token in ("FAILED", "TIMED_OUT"):
+            count += 1
+    return count
+
+
 def records_dir(ad):
     return ad.resolve() / "tmp" / "run" / "records"
 
@@ -616,7 +722,8 @@ def report(args, rec, tail):
         print(json.dumps({"result": token, "message": message, "command": rec["command"],
                           "exit_code": rec.get("exit_code"), "seconds": rec.get("seconds"),
                           "output": str(path), "lines": len(lines), "tail": shown,
-                          "scope": rec["scope"], "warning": warning},
+                          "scope": rec["scope"], "warning": warning,
+                          "timeout": rec.get("timeout"), "attempt": rec.get("attempt")},
                          indent=2, sort_keys=True))
         return rec["exit"]
     if hasattr(sys.stdout, "reconfigure"):
@@ -629,6 +736,14 @@ def report(args, rec, tail):
         print(f"  warning: {first}")
         for line in more:
             print(f"    {line}")
+    if rec.get("timeout") is not None:
+        why = rec.get("timeout_why")
+        print(f"  timeout: {rec['timeout']:g}s" + (f" — {why}" if why else ""))
+    if rec.get("attempt"):
+        k = rec["attempt"]
+        print(f"  attempt: {k} of {ATTEMPTS} failed for check {rec.get('check')}"
+              + (" — the third has failed: stop fixing it; it stays failing"
+                 if k >= ATTEMPTS else ""))
     print(f"  output: {path} ({len(lines)} lines)")
     if shown:
         which = "all" if len(shown) == len(lines) else f"the last {len(shown)}"
@@ -732,8 +847,14 @@ def main(args):
     path = output_file(ad, args.out, "test" if args.what == "test" else f"gate-{n}")
     warning = warning_text(Path(os.path.abspath(ad)), n, check, args.what, args.files,
                            args.tests, scope)
-    rec = {"pid": os.getpid(), "what": args.what, "command": command, "output": str(path),
-           "scope": scope, "why": why, "warning": warning, "tail": tail,
+    if args.timeout is not None:
+        timeout, timeout_why = args.timeout, "given with --timeout"
+    else:
+        timeout, timeout_why = default_timeout(ad, check)
+    rec = {"pid": os.getpid(), "what": args.what, "check": n, "command": command,
+           "output": str(path), "scope": scope, "why": why, "warning": warning,
+           "tail": tail, "timeout": timeout, "timeout_why": timeout_why,
+           "flagged": bool(args.files or args.tests), "attempt": None,
            "started": time.time()}
     try:
         record = claim_record(ad)
@@ -741,17 +862,19 @@ def main(args):
         record = None
     keep(record, rec)
     try:
-        code, seconds = execute(command, worktree, path, args.timeout)
+        code, seconds = execute(command, worktree, path, timeout)
     except BaseException as exc:
         keep(record, {**rec, "token": "ERROR", "exit": CANNOT_RUN,
                       "message": str(exc) or type(exc).__name__})
         raise
     if code is None:
         token, result = "TIMED_OUT", TIMED_OUT
-        message = f"`{command}` ran past {args.timeout:g}s and was stopped"
+        message = f"`{command}` ran past {timeout:g}s and was stopped"
     else:
         token, result = ("PASSED", OK) if code == 0 else ("FAILED", FAILED)
         message = f"`{command}` exited {code} in {seconds:g}s"
     rec.update(token=token, message=message, exit=result, exit_code=code, seconds=seconds)
+    if args.what == "gate" and token in ("FAILED", "TIMED_OUT"):
+        rec["attempt"] = failed_attempts(ad, n, record)
     keep(record, rec)
     return report(args, rec, tail)

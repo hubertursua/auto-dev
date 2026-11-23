@@ -486,6 +486,49 @@ class InitTest(RunCase):
         self.assertIn("| `run-tests <files>` | `run-tests <tests>` |\n", profile)
         self.assertNotIn("(e.g.", profile)
 
+    def quality_gate_paragraph(self):
+        r = self.init()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        profile = (self.dir / "profile.md").read_text()
+        return profile, profile.split("## Quality gate", 1)[1].split("\n| # |", 1)[0]
+
+    def test_profile_md_says_the_gate_runs_test_checks_on_the_change_s_tests_when_ci_is_watched(
+            self):
+        _, paragraph = self.quality_gate_paragraph()
+        self.assertTrue("only on the change's tests when CI is watched"
+                        in " ".join(paragraph.split()),
+                        "profile.md's Quality gate paragraph doesn't say the gate runs test "
+                        "checks only on the change's tests when CI is watched")
+
+    def test_profile_md_ties_the_one_full_run_to_a_gate_with_one_test_check(self):
+        _, paragraph = self.quality_gate_paragraph()
+        flat = " ".join(paragraph.split())
+        self.assertIn("only on the change's tests when CI is watched", flat)
+        self.assertIn("a gate's one test check only on the change's tests when CI is "
+                      "watched: then CI is the one full run of the test suite", flat)
+        self.assertIn("the gate has two or more test checks, the quality gate runs every "
+                      "check whole, test checks too", flat)
+        self.assertNotIn("(every check whole when it isn't, or when the gate has two or more "
+                         "test checks): CI is the one full run", flat)
+
+    def test_profile_md_names_the_coder_s_run_line_for_a_check_the_gate_found_failing(self):
+        _, paragraph = self.quality_gate_paragraph()
+        flat = " ".join(paragraph.split())
+        self.assertIn("except in a correction after a quality gate that found a test check "
+                      "failing: its brief then gives that check its run line", flat)
+
+    def test_profile_md_gives_a_test_check_the_user_signed_off_no_run_line(self):
+        _, paragraph = self.quality_gate_paragraph()
+        self.assertIn("a test check the user signed off failing at a red-gate stop gets no "
+                      "run line", " ".join(paragraph.split()))
+
+    def test_profile_md_no_longer_says_the_gate_runs_every_check_the_test_check_included(self):
+        profile, _ = self.quality_gate_paragraph()
+        self.assertFalse("the quality gate runs every check, the test check included"
+                         in " ".join(profile.lower().split()),
+                         "profile.md still says the quality gate runs every check, the test "
+                         "check included")
+
 
 class ResumeTest(RunCase):
     def resume(self, *extra):
@@ -3268,6 +3311,194 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(list(self.tmp.rglob("PWNED")), [])
 
 
+    def run_json(self, *args):
+        r = self.run_(*args, "--json")
+        try:
+            return r, json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"no JSON (exit {r.returncode}): {r.stdout}{r.stderr}")
+
+    def plant_timing(self, command, seconds):
+        """A whole run of `command` measured at `seconds` by the quality gate."""
+        path = self.ad / "tmp" / "run" / "timings.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({command: {"seconds": seconds, "by": "quality-gate"}}))
+
+    def test_a_run_with_no_timeout_stops_at_twice_the_measured_whole_run_or_600_seconds(self):
+        r, data = self.run_json("gate", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(data.get("timeout"), 600, data)
+        r = self.run_("gate", "1")
+        self.assertIn("  timeout: 600s — the floor: no whole run of this check measured yet",
+                      r.stdout.splitlines(), r.stdout)
+        self.plant_timing(self.gate[1]["command"], 400)
+        r, data = self.run_json("gate", "2")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(data.get("timeout"), 800, data)
+        r = self.run_("gate", "2")
+        self.assertIn("  timeout: 800s — twice the 400s whole run quality-gate measured",
+                      r.stdout.splitlines(), r.stdout)
+
+    def test_a_short_or_another_command_s_timing_gives_600_and_an_explicit_timeout_wins(self):
+        self.plant_timing(self.gate[1]["command"], 100)
+        _, data = self.run_json("gate", "2")
+        self.assertEqual(data.get("timeout"), 600, data)
+        self.plant_timing(self.gate[1]["command"] + " --changed", 400)
+        _, data = self.run_json("gate", "2")
+        self.assertEqual(data.get("timeout"), 600, data)
+        r, data = self.run_json("gate", "BUILD", "--timeout", "1")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(data["result"], "TIMED_OUT")
+        self.assertEqual(data.get("timeout"), 1, data)
+
+    def check_2_fails_until_told_to_pass(self):
+        """Check 2 (a test check with a `files` form) fails unless the worktree holds `pass`."""
+        py = shlex.quote(sys.executable)
+        cmd = f"{py} -c 'import os, sys; sys.exit(0 if os.path.exists(\"pass\") else 1)'"
+        gate = [self.gate[0], {"kind": "test", "command": cmd, "report": "TEST.md",
+                               "files": f"{cmd} <files>"}]
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": gate}}))
+        (self.wt / "tests").mkdir()
+        (self.wt / "tests" / "a.test.ts").write_text("x\n")
+
+    def attempts(self, r):
+        return [x for x in r.stdout.splitlines() if x.startswith("  attempt:")]
+
+    def failed_attempt(self, *args):
+        r = self.run_("gate", "2", *args)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        return self.attempts(r)
+
+    def passed_run(self, *args):
+        (self.wt / "pass").write_text("")
+        r, data = self.run_json("gate", "2", *args)
+        (self.wt / "pass").unlink()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("attempt", data)
+        self.assertIsNone(data["attempt"])
+        self.assertEqual(self.attempts(self.run_("wait")), [])
+
+    def test_run_gate_counts_a_check_s_failed_runs_and_says_when_the_third_failed(self):
+        self.check_2_fails_until_told_to_pass()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        self.assertEqual(self.failed_attempt("--files", "tests/a.test.ts"),
+                         ["  attempt: 2 of 3 failed for check 2"])
+        third = [("  attempt: 3 of 3 failed for check 2 — the third has failed: stop fixing "
+                  "it; it stays failing")]
+        self.assertEqual(self.failed_attempt(), third)
+        waited = self.run_("wait")
+        self.assertEqual(waited.returncode, 1, waited.stdout + waited.stderr)
+        self.assertEqual(self.attempts(waited), third)
+        _, data = self.run_json("wait")
+        self.assertEqual(data.get("attempt"), 3, data)
+
+    def test_a_passing_run_or_a_new_spawn_starts_the_attempt_count_again(self):
+        self.check_2_fails_until_told_to_pass()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        self.passed_run()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        self.passed_run("--files", "tests/a.test.ts")
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        self.assertEqual(self.failed_attempt(), ["  attempt: 2 of 3 failed for check 2"])
+        time.sleep(0.1)
+        (self.ad / "briefs").mkdir(exist_ok=True)
+        (self.ad / "briefs" / "coder-2.md").write_text("# Brief — coder #2\n")
+        time.sleep(0.1)
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+
+    def test_run_test_runs_are_never_counted_as_attempts(self):
+        self.check_2_fails_until_told_to_pass()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        r, data = self.run_json("test", "--files", "tests/a.test.ts")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("attempt", data)
+        self.assertIsNone(data["attempt"])
+        r = self.run_("test", "--files", "tests/a.test.ts")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.attempts(r), [])
+        self.assertEqual(self.failed_attempt(), ["  attempt: 2 of 3 failed for check 2"])
+
+    def test_the_timeout_line_says_why_and_run_wait_replays_it(self):
+        self.plant_timing(self.gate[0]["command"], 100)
+        r = self.run_("gate", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        line = "  timeout: 600s — the floor: twice the 100s whole run quality-gate measured is less"
+        self.assertIn(line, r.stdout.splitlines(), r.stdout)
+        self.assertIn(line, self.run_("wait").stdout.splitlines())
+        r = self.run_("gate", "1", "--timeout", "50")
+        self.assertIn("  timeout: 50s — given with --timeout", r.stdout.splitlines(), r.stdout)
+        # the lines come before the output line, after the scope line
+        out = r.stdout.splitlines()
+        self.assertLess(out.index("  timeout: 50s — given with --timeout"),
+                        next(i for i, x in enumerate(out) if x.startswith("  output: ")))
+
+    def test_a_scoped_run_s_default_timeout_is_from_the_check_s_whole_run(self):
+        self.plant_timing(self.gate[2]["command"], 500)
+        _, data = self.run_json("test", "--files", "src/c.test.ts")
+        self.assertEqual(data.get("timeout"), 1000, data)
+
+    def check_2_sleeps_or_fails(self):
+        """Check 2 (a test check with `files` and `tests` forms) sleeps 30 s while
+        the worktree holds `slow`, else fails."""
+        py = shlex.quote(sys.executable)
+        cmd = (f"{py} -c 'import os, sys, time; "
+               f"time.sleep(30 if os.path.exists(\"slow\") else 0); sys.exit(1)'")
+        gate = [self.gate[0], {"kind": "test", "command": cmd, "report": "TEST.md",
+                               "files": f"{cmd} <files>", "tests": f"{cmd} <tests>"}]
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": gate}}))
+        (self.wt / "tests").mkdir()
+        (self.wt / "tests" / "a.test.ts").write_text("x\n")
+
+    def timed_out(self, json_=False):
+        (self.wt / "slow").write_text("")
+        try:
+            if json_:
+                r, data = self.run_json("gate", "2", "--timeout", "1")
+            else:
+                r, data = self.run_("gate", "2", "--timeout", "1"), None
+        finally:
+            (self.wt / "slow").unlink()
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        return r, data
+
+    def test_a_run_gate_stopped_at_its_timeout_counts_as_a_failed_attempt(self):
+        self.check_2_sleeps_or_fails()
+        _, data = self.timed_out(json_=True)
+        self.assertEqual(data["result"], "TIMED_OUT", data)
+        self.assertEqual(data.get("attempt"), 1, data)
+        r, _ = self.timed_out()
+        self.assertEqual(self.attempts(r), ["  attempt: 2 of 3 failed for check 2"])
+        _, data = self.run_json("wait")
+        self.assertEqual(data.get("attempt"), 2, data)
+
+    def test_an_earlier_timed_out_run_adds_to_the_next_failure_s_count(self):
+        self.check_2_sleeps_or_fails()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        self.timed_out()
+        self.assertEqual(self.failed_attempt(), [
+            ("  attempt: 3 of 3 failed for check 2 — the third has failed: stop fixing "
+             "it; it stays failing")])
+
+    def test_a_failing_run_gate_with_test_ids_counts_as_an_attempt(self):
+        self.check_2_sleeps_or_fails()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        self.assertEqual(self.failed_attempt("--tests", "tests/a.test.ts::due"),
+                         ["  attempt: 2 of 3 failed for check 2"])
+
+    def test_attempts_are_counted_per_check(self):
+        self.check_2_fails_until_told_to_pass()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        py = shlex.quote(sys.executable)
+        state = json.loads((self.ad / "state.json").read_text())
+        state["settings"]["gate"][0]["command"] = f"{py} -c 'raise SystemExit(1)'"
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.run_("gate", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.attempts(r), ["  attempt: 1 of 3 failed for check 1"])
+        self.assertEqual(self.failed_attempt(), ["  attempt: 2 of 3 failed for check 2"])
+
 class RunWaitTest(unittest.TestCase):
     """`autodev.py run wait`: waiting on a `run gate|test` that went to the background."""
 
@@ -3972,6 +4203,27 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertEqual(data["result"], "PREPARED")
         self.assertIn("warning", data)
         self.assertIsNone(data["warning"])
+
+    def saved_timings(self):
+        path = self.ad / "tmp" / "run" / "timings.json"
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def test_prep_saves_how_long_a_whole_acceptance_run_took(self):
+        state = json.loads((self.ad / "state.json").read_text())
+        del state["settings"]["gate"][0]["files"]
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        command = state["settings"]["gate"][0]["command"]
+        entry = self.saved_timings().get(command)
+        self.assertIsNotNone(entry, self.saved_timings())
+        self.assertEqual(entry["by"], "verify prep")
+
+    def test_prep_saves_no_time_for_a_scoped_acceptance_run(self):
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse([c for c, e in self.saved_timings().items()
+                          if e.get("by") == "verify prep"], self.saved_timings())
 
 
 # The fake test command for MutationRunTest: fails when `limit < 5` is gone
@@ -5437,6 +5689,453 @@ class QualityGateTest(RunCase):
         r = self.autodev("quality-gate", "--dir", self.dir)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("no quality gate", r.stderr)
+
+
+    def lint_check(self):
+        return {"kind": "lint", "command": "echo lint", "report": "LINT.md"}
+
+    def unit_check(self):
+        return {"kind": "test", "command": "echo all", "report": "TEST.md",
+                "files": "echo some <files>"}
+    CHANGE_MANIFEST = (
+        "# Acceptance checks — the change\n\n"
+        "| # | Condition | Check (path :: test name) | Covers | Level | Kind | Base run |\n"
+        "|---|-----------|---------------------------|--------|-------|------|----------|\n"
+        "| 1 | it works | `tests/a.test.ts` :: \"it works\" | Example | unit | "
+        "fail-to-pass | failed: missing |\n\n"
+        "## Not automatable\nNone.\n\n## Assumptions\n- none\n")
+
+    def git_wt(self, *args):
+        return self.sh("git", "-C", str(self.worktree), *args)
+
+    def write_wt(self, rel, text):
+        path = self.worktree / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def set_ci(self, ci, status=None):
+        """The run's CI provider, and the status its last CI watch ended in (None: no watch)."""
+        state = self.state()
+        state["settings"]["ci"] = ci
+        state.setdefault("phase6", {}).pop("ci", None)
+        if status:
+            state["phase6"]["ci"] = {"status": status}
+        self.write_state(state)
+
+    def the_change(self):
+        """Since its cut the branch added tests/a.test.ts (an acceptance check file),
+        changed src/app.ts and deleted src/gone.test.ts; src/b.test.ts is new and
+        untracked, and src/c.test.ts is committed and unchanged."""
+        for rel, text in (("src/app.ts", "export const app = 1;\n"),
+                          ("src/c.test.ts", "c\n"), ("src/gone.test.ts", "gone\n")):
+            self.write_wt(rel, text)
+        self.git_wt("add", "src/app.ts", "src/c.test.ts", "src/gone.test.ts")
+        self.git_wt("commit", "-q", "-m", "the code before the change")
+        self.git_wt("update-ref", "refs/remotes/origin/main", "HEAD")  # the cut
+        self.write_wt("tests/a.test.ts", "a\n")
+        self.write_wt("src/app.ts", "export const app = 2;\n")
+        self.git_wt("rm", "-q", "src/gone.test.ts")
+        self.git_wt("add", "tests/a.test.ts", "src/app.ts")
+        self.git_wt("commit", "-q", "-m", "the change")
+        self.write_wt("src/b.test.ts", "b\n")
+        (self.dir / "acceptance").mkdir(exist_ok=True)
+        (self.dir / "acceptance" / "MANIFEST.md").write_text(self.CHANGE_MANIFEST)
+
+    def gate(self, *extra):
+        return self.autodev("quality-gate", "--dir", self.dir, *extra)
+
+    def line_of(self, report, command, suffix=""):
+        return f"  pass: {self.dir / 'lint' / report} — `{command}`{suffix}"
+
+    SCOPED = " (the change's tests; CI runs the whole check)"
+
+    def test_with_ci_watched_the_test_check_runs_only_on_the_change_s_test_files(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("GREEN"), r.stdout)
+        lines = r.stdout.splitlines()
+        self.assertIn(self.line_of("LINT.md", "echo lint"), lines, r.stdout)
+        self.assertIn(self.line_of("TEST.md", "echo some src/b.test.ts tests/a.test.ts",
+                                   self.SCOPED), lines, r.stdout)
+        report = (self.dir / "lint" / "TEST.md").read_text()
+        self.assertTrue(report.startswith("# TEST — pass"), report)
+        self.assertIn("- **Scope:** the change's tests (2 files); CI runs the whole check",
+                      report)
+        self.assertIn("some src/b.test.ts tests/a.test.ts", report)
+
+    def test_a_deleted_test_file_is_not_passed_and_a_failing_scoped_run_is_red(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("gone.test.ts", r.stdout + r.stderr)
+        self.assertNotIn("does not exist", r.stdout + r.stderr)
+        self.set_gate(self.lint_check(), {"kind": "test", "command": "true", "report": "TEST.md",
+                                  "files": "false <files>"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("RED"), r.stdout)
+        report = (self.dir / "lint" / "TEST.md").read_text()
+        self.assertTrue(report.startswith("# TEST — fail"), report)
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["TEST.md"])
+
+    def test_with_ci_watched_a_test_check_with_no_scoped_form_is_left_to_ci(self):
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), {"kind": "test", "command": "false", "report": "TEST.md"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"GREEN: every check run passed on tree {self.tree()}; "
+                                   "1 left to CI", r.stdout)
+        self.assertIn(f"  skipped: {self.dir / 'lint' / 'TEST.md'} — `false` "
+                      "(no scoped form; CI runs it)", lines, r.stdout)
+        report = (self.dir / "lint" / "TEST.md").read_text()
+        self.assertTrue(report.startswith("# TEST — skipped"), report)
+        self.assertIn("- **Scope:** not run: no scoped form; CI runs it", report)
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["result"], run["failing"]), ("GREEN", []))
+
+    def test_with_ci_watched_and_no_test_file_changed_the_test_check_is_left_to_ci(self):
+        self.set_ci("github-actions")
+        self.set_gate({"kind": "lint", "command": "false", "report": "LINT.md"},
+                      self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("RED"), r.stdout)
+        skipped = [x for x in r.stdout.splitlines()
+                   if x.startswith(f"  skipped: {self.dir / 'lint' / 'TEST.md'} — ")]
+        self.assertEqual(len(skipped), 1, r.stdout)
+        self.assertTrue(skipped[0].endswith("(no test file changed; CI runs it)"), skipped)
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["LINT.md"])
+
+    def test_with_two_test_checks_every_test_check_runs_whole_even_with_ci_watched(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        e2e = {"kind": "test", "command": "echo e2e all", "report": "E2E.md",
+               "files": "false <files>"}
+        self.set_gate(self.lint_check(), self.unit_check(), e2e)
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"GREEN: every check passed on tree {self.tree()}", r.stdout)
+        self.assertIn(self.line_of("TEST.md", "echo all"), lines, r.stdout)
+        self.assertIn(self.line_of("E2E.md", "echo e2e all"), lines, r.stdout)
+        self.assertNotIn("skipped:", r.stdout)
+        self.assertNotIn("left to CI", r.stdout)
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["result"], run["failing"], run.get("scoped", []),
+                          run.get("skipped", [])), ("GREEN", [], [], []))
+        # A second test check with no scoped form runs whole too, and its failure is red.
+        self.set_gate(self.lint_check(), self.unit_check(),
+                      {"kind": "test", "command": "false", "report": "E2E.md"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("RED"), r.stdout)
+        self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(), r.stdout)
+        self.assertNotIn("skipped:", r.stdout)
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["E2E.md"])
+
+    def test_with_ci_not_watched_every_check_runs_whole(self):
+        self.the_change()
+        self.set_ci("none")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"GREEN: every check passed on tree {self.tree()}")
+        self.assertIn(self.line_of("TEST.md", "echo all"), lines, r.stdout)
+        self.assertIn("- **Scope:** whole", (self.dir / "lint" / "TEST.md").read_text())
+
+    def test_unwatchable_ci_or_a_cut_that_can_t_be_found_runs_the_test_check_whole(self):
+        self.the_change()
+        self.set_gate(self.lint_check(), self.unit_check())
+        for ci, status in (("github-actions", "unavailable"), ("github-actions", "timeout"),
+                           ("gitlab", None)):
+            self.set_ci(ci, status)
+            r = self.gate()
+            self.assertEqual(r.returncode, 0, (ci, status, r.stdout, r.stderr))
+            self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(),
+                          (ci, status, r.stdout))
+        self.set_ci("github-actions")
+        self.git_wt("update-ref", "-d", "refs/remotes/origin/main")
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(), r.stdout)
+
+    def manifest_naming(self, *paths):
+        """MANIFEST.md with one acceptance check in each of `paths`."""
+        rows = "".join(f"| {i} | it works {i} | `{p}` :: \"it works {i}\" | Example | e2e | "
+                       "fail-to-pass | failed: missing |\n" for i, p in enumerate(paths, 1))
+        head, rest = self.CHANGE_MANIFEST.split("| 1 | it works |", 1)
+        (self.dir / "acceptance" / "MANIFEST.md").write_text(
+            head + rows + rest.split("\n", 1)[1])
+
+    def scoped_line(self, r):
+        lines = [x for x in r.stdout.splitlines()
+                 if x.startswith(f"  pass: {self.dir / 'lint' / 'TEST.md'} — `echo some ")]
+        self.assertEqual(len(lines), 1, r.stdout + r.stderr)
+        return lines[0]
+
+    def test_an_acceptance_check_file_no_test_pattern_matches_is_in_the_scoped_run(self):
+        self.the_change()
+        self.write_wt("e2e/due.cy.ts", "due\n")
+        self.git_wt("add", "e2e/due.cy.ts")
+        self.git_wt("commit", "-q", "-m", "an end-to-end check")
+        self.manifest_naming("tests/a.test.ts", "e2e/due.cy.ts")
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(" e2e/due.cy.ts ", self.scoped_line(r))
+
+    def test_an_uncommitted_edit_and_an_unchanged_check_file_are_in_the_scoped_run(self):
+        self.write_wt("cypress/e2e/due.cy.ts", "due\n")
+        self.git_wt("add", "cypress/e2e/due.cy.ts")
+        self.git_wt("commit", "-q", "-m", "a check from before the change")
+        self.the_change()  # the cut is after cypress/e2e/due.cy.ts was committed
+        self.write_wt("src/c.test.ts", "c, edited\n")  # tracked, edited, not committed
+        self.manifest_naming("tests/a.test.ts", "cypress/e2e/due.cy.ts")
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        line = self.scoped_line(r)
+        self.assertIn(" src/c.test.ts ", line)
+        self.assertIn(" cypress/e2e/due.cy.ts ", line)
+
+    def test_a_file_name_that_is_not_utf_8_does_not_stop_the_scoped_gate(self):
+        self.the_change()
+        name = os.fsencode(str(self.worktree / "fixtures")) + b"/caf\xe9.csv"
+        try:
+            os.makedirs(self.worktree / "fixtures", exist_ok=True)
+            with open(name, "wb") as f:
+                f.write(b"x\n")
+        except (OSError, ValueError):
+            self.skipTest("the file system refuses a name that isn't UTF-8")
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for report in ("LINT.md", "TEST.md"):
+            self.assertTrue((self.dir / "lint" / report).is_file(), report)
+        self.assertIn("- **Scope:** the change's tests (",
+                      (self.dir / "lint" / "TEST.md").read_text())
+        self.assertEqual(self.state()["gate_runs"][-1]["tree"], self.tree())
+
+    def write_non_utf_8_test_file(self):
+        """tests/caf\\xe9.test.ts, a test file whose name isn't UTF-8; skips the
+        test where the file system refuses the name."""
+        name = os.fsencode(str(self.worktree / "tests")) + b"/caf\xe9.test.ts"
+        try:
+            os.makedirs(self.worktree / "tests", exist_ok=True)
+            with open(name, "wb") as f:
+                f.write(b"x\n")
+        except (OSError, ValueError):
+            self.skipTest("the file system refuses a name that isn't UTF-8")
+
+    def assert_every_check_ran_whole(self, r):
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"GREEN: every check passed on tree {self.tree()}",
+                         r.stdout)
+        self.assertIn(self.line_of("LINT.md", "echo lint"), lines, r.stdout)
+        self.assertIn(self.line_of("TEST.md", "echo all"), lines, r.stdout)
+        self.assertIn("- **Scope:** whole", (self.dir / "lint" / "TEST.md").read_text())
+
+    def test_an_untracked_test_file_whose_name_is_not_utf_8_runs_every_check_whole(self):
+        self.the_change()
+        self.write_non_utf_8_test_file()
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        self.assert_every_check_ran_whole(self.gate())
+
+    def test_a_committed_test_file_whose_name_is_not_utf_8_runs_every_check_whole(self):
+        self.the_change()
+        self.write_non_utf_8_test_file()
+        self.git_wt("add", "tests")
+        self.git_wt("commit", "-q", "-m", "a test file whose name isn't UTF-8")
+        self.assertEqual(self.git_wt("ls-files", "--others", "--exclude-standard",
+                                     "tests").strip(), "")  # it comes through the diff
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        self.assert_every_check_ran_whole(self.gate())
+
+    def summary(self):
+        r = self.lib("gate-summary", "--dir", self.dir, "pr", "--json")
+        return r, (json.loads(r.stdout)["summary"] if r.returncode == 0 else [])
+
+    def test_the_gate_summary_names_checks_run_on_the_change_s_tests_and_left_to_ci(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        unscoped = {"kind": "test", "command": "echo all", "report": "TEST.md"}
+        checks = {"kind": "test", "command": "true", "report": "CHECKS.md"}
+        for gate, line in (
+                ((self.lint_check(), self.unit_check()),
+                 ("Quality gate: LINT.md pass, TEST.md pass (the change's tests; CI runs "
+                  "the whole check)")),
+                ((self.lint_check(), unscoped),
+                 "Quality gate: LINT.md pass, TEST.md skipped (CI runs it)"),
+                ((self.lint_check(), self.unit_check(), checks),
+                 "Quality gate: LINT.md pass, TEST.md pass, CHECKS.md pass")):
+            self.set_gate(*gate)
+            r = self.gate()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            r, summary = self.summary()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn(line, summary)
+
+    def test_a_failing_report_still_refuses_the_summary_and_a_whole_run_reads_as_before(self):
+        self.the_change()
+        self.set_ci("none")
+        self.set_gate(self.lint_check(), self.unit_check())
+        self.assertEqual(self.gate().returncode, 0)
+        r, summary = self.summary()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Quality gate: LINT.md pass, TEST.md pass", summary)
+        self.set_gate({"kind": "lint", "command": "false", "report": "LINT.md"},
+                      self.unit_check())
+        self.assertEqual(self.gate().returncode, 1)
+        r, _ = self.summary()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("quality gate not green", r.stdout + r.stderr)
+
+    def timings(self):
+        path = self.dir / "tmp" / "run" / "timings.json"
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def test_the_quality_gate_saves_how_long_a_whole_check_took(self):
+        py = shlex.quote(sys.executable)
+        slow = f"{py} -c 'import time; time.sleep(1.2)'"
+        self.set_ci("none")
+        self.set_gate({"kind": "test", "command": slow, "report": "TEST.md"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        entry = self.timings().get(slow)
+        self.assertIsNotNone(entry, self.timings())
+        self.assertGreaterEqual(entry["seconds"], 1)
+        self.assertEqual(entry["by"], "quality-gate")
+
+    def test_a_scoped_skipped_or_stopped_check_saves_no_time(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        # The gate's one test check, run on the change's tests, saves nothing.
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for command in ("echo all", "echo some src/b.test.ts tests/a.test.ts"):
+            self.assertNotIn(command, self.timings())
+        # The gate's one test check, left to CI, saves nothing.
+        self.set_gate(self.lint_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("skipped:", r.stdout)
+        self.assertNotIn("true", self.timings())
+        # A check run whole beside the gate's one test check, stopped at its
+        # timeout, saves nothing.
+        py = shlex.quote(sys.executable)
+        sleeper = f"{py} -c 'import time; time.sleep(30)'"
+        self.set_gate({"kind": "lint", "command": sleeper, "report": "SLOW.md"},
+                      self.unit_check())
+        r = self.gate("--timeout", "1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["SLOW.md"], r.stdout)
+        self.assertIn(f"`{sleeper}`", (self.dir / "lint" / "SLOW.md").read_text())
+        self.assertEqual([c for c in self.timings() if c.startswith(sleeper)], [])
+        # Two test checks both run whole, and each saves its time.
+        self.set_gate(self.lint_check(), self.unit_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(), r.stdout)
+        self.assertIn(self.line_of("CHECKS.md", "true"), r.stdout.splitlines(), r.stdout)
+        for command in ("echo all", "true"):
+            self.assertEqual(self.timings()[command]["by"], "quality-gate", self.timings())
+        self.assertNotIn("echo some src/b.test.ts tests/a.test.ts", self.timings())
+
+    def test_a_lone_test_check_run_scoped_or_left_to_ci_saves_no_time(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        self.assertEqual(self.gate().returncode, 0)
+        self.assertIn("echo lint", self.timings())
+        for command in ("echo all", "echo some src/b.test.ts tests/a.test.ts"):
+            self.assertNotIn(command, self.timings())
+        self.set_gate(self.lint_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        self.assertEqual(self.gate().returncode, 0)
+        self.assertNotIn("true", self.timings())
+        # Two test checks run whole, so each whole run is measured.
+        self.set_gate(self.lint_check(), self.unit_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        self.assertEqual(self.gate().returncode, 0)
+        for command in ("echo all", "true"):
+            self.assertEqual(self.timings()[command]["by"], "quality-gate")
+
+    def test_the_gate_run_records_what_it_scoped_and_left_to_ci(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate("--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual([c["scope"] for c in data["checks"]], ["whole", "files"])
+        self.assertEqual([c["status"] for c in data["checks"]], ["pass", "pass"])
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["scoped"], run["skipped"], run["ci_watched"]),
+                         (["TEST.md"], [], True))
+        self.assertIn("TEST.md scoped to the change", self.state()["notes"][-1]["text"])
+        self.set_gate(self.lint_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        r = self.gate("--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual([c["scope"] for c in data["checks"]], ["whole", "skipped"])
+        self.assertEqual([c["status"] for c in data["checks"]], ["pass", "skipped"])
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["scoped"], run["skipped"], run["ci_watched"]),
+                         ([], ["CHECKS.md"], True))
+        self.assertIn("CHECKS.md left to CI", self.state()["notes"][-1]["text"])
+        self.assertIn("- **Runs:** 0", (self.dir / "lint" / "CHECKS.md").read_text())
+        self.set_ci("none")
+        self.gate()
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["scoped"], run["skipped"], run["ci_watched"]), ([], [], False))
+
+    def test_a_check_with_only_a_test_id_form_is_left_to_ci(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate({"kind": "test", "command": "false", "report": "TEST.md",
+                       "tests": "false <tests>"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("(no scoped form; CI runs it)", r.stdout)
+
+    def test_a_non_test_check_with_a_files_form_still_runs_whole(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate({"kind": "lint", "command": "echo lint", "report": "LINT.md",
+                       "files": "echo lint-some <files>"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.line_of("LINT.md", "echo lint"), r.stdout.splitlines(), r.stdout)
+
+    def test_two_test_checks_run_whole_even_when_no_test_file_changed(self):
+        self.set_ci("github-actions")
+        e2e = {"kind": "test", "command": "false", "report": "E2E.md",
+               "files": "false <files>"}
+        self.set_gate(self.lint_check(), self.unit_check(), e2e)
+        r = self.gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(), r.stdout)
+        self.assertIn(f"  fail: {self.dir / 'lint' / 'E2E.md'} — `false`",
+                      r.stdout.splitlines(), r.stdout)
+        self.assertNotIn("skipped:", r.stdout)
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["E2E.md"])
 
 
 class SetupAnswerTest(RunCase):

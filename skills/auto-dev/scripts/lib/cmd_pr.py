@@ -265,10 +265,12 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
     # What generate copies word for word outside a region, as it shows it: a
     # checkbox's title (PLAN.md's own words, kept outside so ticking it leaves
-    # the region whole) and each gate command, as clean() left it in the text.
+    # the region whole) and each gate command (a scoped check's as its report
+    # holds it, on the change's test files), as clean() left it in the text.
     # The lint skips each one.
     copied = {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} | \
-        {f"`{g['command']}`" for g in state["settings"].get("gate", [])}
+        {f"`{g['command']}`" for g in state["settings"].get("gate", [])} | \
+        {f"`{ran}`" for ran in scoped_commands(ad, state)}
     state["phase6"]["verbatim"] = sorted(
         {s for s in (clean(x, wt) for x in copied) if s.strip("*`") and s in text})
     # The headings pr-write.md is written with: splice takes no others.
@@ -987,13 +989,36 @@ def test_strength(ev, state):
     return out
 
 
+def scoped_commands(ad, state):
+    """The command each gate check run on the change's tests ran, as its lint
+    report holds it (quality_gate shows it in place of the profile's)."""
+    out = []
+    for check in state["settings"].get("gate", []):
+        path = ad / "lint" / check.get("report", "")
+        if not path.is_file():
+            continue
+        found = art.lint_report(path)
+        if found["status"] != "skipped" and found["command"] and \
+                found["scope"].startswith(art.SCOPED_PREFIX):
+            out.append(found["command"])
+    return out
+
+
 def quality_gate(body, ad, state):
     for check in state["settings"].get("gate", []):
         path = ad / "lint" / check.get("report", "")
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
-        first = text.splitlines()[0] if text else ""
-        status = "passed" if first.rstrip().endswith("pass") else "failed"
-        body.text(f"- `{check['command']}`: {status}")
+        found = art.lint_report(path)
+        if found["status"] == "skipped":
+            body.text(f"- `{check['command']}`: not run before the push; CI runs it")
+            continue
+        status = "passed" if found["status"] == "pass" else "failed"
+        ran = check["command"]
+        if found["scope"].startswith(art.SCOPED_PREFIX) and found["command"]:
+            ran = found["command"]  # its scoped form, on the change's tests
+            body.text(f"- `{ran}`: {status} (the change's tests; CI runs the whole check)")
+        else:
+            body.text(f"- `{ran}`: {status}")
         start = body.quote()
         tail = art.find_section(text, "Output tail") or ""
         output = [ln for ln in tail.splitlines() if not ln.startswith("```")
@@ -1010,7 +1035,7 @@ def quality_gate(body, ad, state):
             output.append(f"({len(scratch)} line(s) about git-ignored pipeline files "
                           "left out)")
         if output:
-            body.block(check["command"], [("Output:", output)])
+            body.block(ran, [("Output:", output)])
         body.unquote(start)
 
 

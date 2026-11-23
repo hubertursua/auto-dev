@@ -64,7 +64,8 @@ The gate summaries (post-plan, pr, ready, main)
     preconditions, then shows the summary and asks the AskUserQuestion it
     prints.
     ready (the ready-for-review gate, on the draft PR once its reviews have
-    settled): every report is fresh, one passing lint report per gate command,
+    settled): every report is fresh, one passing lint report per gate command
+    (or skipped, for a test check the quality gate left to CI),
     no submodule holds uncommitted edits (`git submodule foreach` lists them),
     no Unjustified integrity finding is open; then the draft PR and its CI, the
     acceptance block and the two reviews, and one triage question per
@@ -608,12 +609,19 @@ def pr_summary(state, ad, args, reviewed=True):
     wt = state["worktree"]
     fresh_or_fail(wt, ad, "results are stale; re-run them first, never ask this gate "
                   "on them:", *(() if reviewed else ("--phase", "5")))
-    missing = []
+    missing, gate_entries = [], []
     for check in state["settings"].get("gate", []):
-        report = ad / "lint" / check.get("report", "")
-        first = report.read_text(encoding="utf-8").splitlines()[0] if report.exists() else ""
-        if not first.rstrip().endswith("pass"):
-            missing.append(check.get("report", ""))
+        name = check.get("report", "")
+        found = art.lint_report(ad / "lint" / name)
+        if found["status"] not in ("pass", "skipped"):
+            missing.append(name)
+            gate_entries.append(f"{name} failing, signed off by the user")
+        elif found["status"] == "skipped":
+            gate_entries.append(f"{name} skipped (CI runs it)")
+        elif found["scope"].startswith(art.SCOPED_PREFIX):
+            gate_entries.append(f"{name} pass (the change's tests; CI runs the whole check)")
+        else:
+            gate_entries.append(f"{name} pass")
     if missing and not set(missing) <= overrides.signed_reports(state):
         raise Fail(f"quality gate not green ({', '.join(missing)} missing or failing): "
                    "that is Phase 5's stop-and-report, not this gate", FAILED,
@@ -636,10 +644,7 @@ def pr_summary(state, ad, args, reviewed=True):
              f"Files changed: {len(files)}" + (f" ({', '.join(files[:8])}"
                                                f"{', …' if len(files) > 8 else ''})"
                                                if files else ""),
-             "Quality gate: " + ", ".join(
-                 f"{c.get('report', '')} " + ("failing, signed off by the user"
-                                              if c.get("report", "") in missing else "pass")
-                 for c in state["settings"].get("gate", []))]
+             "Quality gate: " + ", ".join(gate_entries)]
     if reviewed:
         lines += acceptance_block(ad)
     questions = []
