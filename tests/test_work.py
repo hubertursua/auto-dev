@@ -540,14 +540,26 @@ class BriefTest(WorkCase):
         for n in (1, 2, 3):
             self.assertRegex(gate, re.escape(f" run gate {n} --dir {ad}") + "`", gate)
 
+    def gate_found_failing(self, *reports, aside=False):
+        """Record a quality-gate run whose `failing` lists `reports` (none: green),
+        as `quality-gate` records it; `aside` as a retry sets it aside."""
+        state = self.state()
+        runs = state.setdefault("gate_runs", [])
+        runs.append({"seq": len(runs) + 1, "tree": "0" * 40,
+                     "result": "RED" if reports else "GREEN", "failing": list(reports),
+                     "gate": "x", "at": "2024-01-01T00:00:00Z",
+                     **({"aside": True} if aside else {})})
+        self.write_state(state)
+
     def correction_gate(self, corrections_file):
         """The gate list of a coder correction's brief given `corrections_file`."""
         gate, _ = self.brief_of("coder", "--mode", "correction",
                                 "--set", f"corrections_file={corrections_file}")
         return gate
 
-    def test_a_coder_correction_gets_the_run_line_of_the_failing_test_check_it_names(self):
+    def test_a_coder_correction_gets_the_run_line_of_each_test_check_the_gate_found_failing(self):
         self.three_check_gate()
+        self.gate_found_failing("E2E.md")
         ad = shlex.quote(str(self.dir))
         gate = self.correction_gate(
             f"the failing quality-gate checks: {self.dir}/lint/E2E.md")
@@ -558,19 +570,23 @@ class BriefTest(WorkCase):
         for m in re.finditer(re.escape(f" run gate 2 --dir {ad}"), gate):
             self.assertRegex(gate[m.end():], r"^ --(files|tests) ", gate)
 
-    def test_a_correction_s_named_test_check_runs_scoped_when_it_can(self):
+    def test_only_the_gate_s_failing_checks_get_a_line_scoped_when_they_can(self):
         ad = shlex.quote(str(self.dir))
-        # A named check with a `files` form gets only its scoped line.
+        # A failing check with a `files` form gets only its scoped line.
         self.three_check_gate({"kind": "test", "command": "npm run e2e", "report": "E2E.md",
                                "files": "npx playwright test <files>"})
+        self.gate_found_failing("E2E.md")
         gate = self.correction_gate(
             f"the failing quality-gate checks: {self.dir}/lint/E2E.md")
         self.assertIn(f" run gate 3 --dir {ad} --files <test file> …", gate)
         for m in re.finditer(re.escape(f" run gate 3 --dir {ad}"), gate):
             self.assertRegex(gate[m.end():], r"^ --files ", gate)
-        # A CI-red triage names the gate's lone unscopable test check by its command.
+        # Red in CI while the gate's latest run is green: the build brief's list,
+        # whatever the triage quotes, so the lone unscopable check gets no line.
         lint = {"kind": "lint", "command": "npx eslint .", "report": "LINT.md"}
         self.set_gate(lint, {"kind": "test", "command": "npm test", "report": "TEST.md"})
+        self.gate_found_failing()
+        build, _ = self.brief_of("coder", "--mode", "build")
         triage = self.write("triage/ci-1.md", (
             "# Required changes\n"
             "1. Parse the due date in the owner's time zone\n"
@@ -578,16 +594,59 @@ class BriefTest(WorkCase):
             "   Now: `npm test` fails: expected 2024-01-02, received 2024-01-01\n"
             "   Test: keep the failing test; add one for a UTC+13 owner\n"))
         gate = self.correction_gate(triage)
-        self.assertRegex(gate, re.escape(f" run gate 2 --dir {ad}") + "`", gate)
-        # A correction that names no test check gets the build brief's list.
-        build, _ = self.brief_of("coder", "--mode", "build")
+        self.assertNotIn("run gate 2", gate)
+        second = self.entry(gate, 2)
+        self.assertIn("left to CI", second)
+        self.assertIn("don't run it", second)
+        self.assertEqual(gate, build)
+        # A reviewer's corrections that quote the check get the build brief's list too.
         review = self.write("review/pass-1/corrections.md", (
             "# Required changes\n"
             "1. Refuse an empty title\n"
             "   Where: `src/todo.ts:30` — createTodo()\n"
             "   Now: an empty title is saved\n"
-            "   Test: a test that an empty title is refused\n"))
+            "   Test: a test that an empty title is refused, then `npm test`, "
+            f"`run gate 2` and {self.dir}/lint/TEST.md\n"))
         self.assertEqual(self.correction_gate(review), build)
+
+    def test_a_failing_tests_only_check_gets_its_whole_and_test_id_lines(self):
+        ad = shlex.quote(str(self.dir))
+        lint = {"kind": "lint", "command": "npx eslint .", "report": "LINT.md"}
+        self.set_gate(lint, {"kind": "test", "command": "npm test", "report": "TEST.md",
+                             "tests": "npx vitest run <tests>"})
+        build, _ = self.brief_of("coder", "--mode", "build")
+        # A run a retry set aside is not the gate's latest result.
+        self.gate_found_failing("TEST.md", aside=True)
+        self.assertEqual(self.correction_gate(f"fix {self.dir}/lint/TEST.md"), build)
+        # The gate's result counts, not what the corrections say.
+        self.gate_found_failing("TEST.md")
+        second = self.entry(self.correction_gate("fix what the review found"), 2)
+        self.assertRegex(second, re.escape(f" run gate 2 --dir {ad}") + "`", second)
+        self.assertIn(f" run gate 2 --dir {ad} --tests <test id> …", second)
+        self.assertNotIn("don't run it", second)
+        # A build brief never reads it.
+        self.assertEqual(self.brief_of("coder", "--mode", "build")[0], build)
+
+    def test_beside_another_test_check_an_unscopable_one_is_the_quality_gate_s_to_run(self):
+        self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md"},
+                      {"kind": "test", "command": "npm run e2e", "report": "E2E.md"})
+        gate, coder = self.brief_of("coder", "--mode", "build")
+        self.assertNotIn("run gate", gate)
+        for text in (coder, self.entry(gate, 1), self.entry(gate, 2)):
+            self.assertIn("the quality gate runs it whole", text)
+            self.assertIn("don't run it", text)
+            self.assertNotIn("left to CI", text)
+            self.assertNotIn("autodev.py", text)
+        self.assertIn("name it in one line above your result block", self.entry(gate, 1))
+        self.assertIn("doesn't use", self.entry(gate, 2))
+        # The scoped check's head says who runs it whole: CI only with one test check.
+        self.three_check_gate()
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assertIn("never whole — the quality gate runs it whole", self.entry(gate, 2))
+        self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md",
+                       "files": "npx vitest run <files>"})
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assertIn("never whole — CI runs it whole", self.entry(gate, 1))
 
     def test_the_coder_s_test_runs_leave_an_unscopable_test_check_to_ci(self):
         self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md"})
