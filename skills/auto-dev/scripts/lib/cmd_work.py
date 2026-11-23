@@ -386,7 +386,7 @@ def issues_text(issues):
 def auto_values(worker, n, state, ad, mode):
     """Every AUTO slot's value for this run (some depend on the worker). In a
     coder correction, each test check the quality gate's latest run lists as
-    failing gets its run line in the gate list."""
+    failing (and the user didn't sign off) gets its run line in the gate list."""
     s = state["settings"]
     found = cmd_run.test_check(s.get("gate", []))
     test = str(found[1].get("command") or "") if found else ""
@@ -444,11 +444,14 @@ def whole_runner(gate):
 
 def failing_test_checks(gate, state):
     """The numbers of the `kind: test` checks the quality gate's latest run (the
-    newest one no retry set aside, as `next` reads it) lists as failing. Only
-    the gate's own result counts: no correction text is read, so a check red in
-    CI or in the verifier's or a reviewer's corrections gets no extra line."""
+    newest one no retry set aside, as `next` reads it) lists as failing, less
+    the reports the user signed off (counted green for the rest of the run).
+    Only the gate's own result counts: no correction text is read, so a check
+    red in CI or in the verifier's or a reviewer's corrections gets no extra
+    line."""
     runs = [g for g in state.get("gate_runs") or [] if not g.get("aside")]
     failing = set(runs[-1].get("failing") or []) if runs else set()
+    failing -= overrides.signed_reports(state)
     return {i for i, c in enumerate(gate, 1)
             if c.get("kind") == "test" and c.get("report") in failing}
 
@@ -528,9 +531,12 @@ def test_runs(check, ad, worker=None, gate=()):
     lines = [f"- `{line}`{BASH}" + (f" ({note})" if note else "") for line, note in runs]
     if not cmd_run.has_form(check, "tests"):
         lines.append("- no test-ID form: scope by file")
-    lines.append("A whole run of the test check is for the quality gate only (CI is the "
-                 "one full run of the test suite when it is watched); never run `run test` "
-                 "with neither flag to test your change.")
+    # Who runs it whole depends on the gate alone, so every worker gets the same text.
+    why = ("with two or more test checks it runs each one whole"
+           if whole_runner(gate or [check])[0] == "the quality gate" else
+           "CI is the one full run of the test suite when it is watched")
+    lines.append(f"A whole run of the test check is for the quality gate only ({why}); "
+                 "never run `run test` with neither flag to test your change.")
     return "\n".join(lines)
 
 

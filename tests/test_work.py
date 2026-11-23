@@ -663,6 +663,145 @@ class BriefTest(WorkCase):
         gate, _ = self.brief_of("coder", "--mode", "build")
         self.assertIn("never whole — CI runs it whole", self.entry(gate, 1))
 
+    LINT = (("kind", "lint"), ("command", "npx eslint ."), ("report", "LINT.md"))
+
+    def assert_only_scoped(self, gate, n, flags=("files",)):
+        """Check `n` has a `--files` line, and every `run gate <n>` line is scoped
+        with one of `flags`."""
+        ad = shlex.quote(str(self.dir))
+        self.assertIn(f" run gate {n} --dir {ad} --files <test file> …", gate)
+        for m in re.finditer(re.escape(f" run gate {n} --dir {ad}"), gate):
+            self.assertRegex(gate[m.end():], rf"^ --({'|'.join(flags)}) ", gate)
+
+    def assert_unused(self, gate, n):
+        self.assertNotIn(f"run gate {n}", gate)
+        text = self.entry(gate, n)
+        for said in ("a test check `run test` doesn't use", "the quality gate runs it whole",
+                     "don't run it"):
+            self.assertIn(said, text)
+
+    def test_the_coder_runs_the_test_check_with_a_files_form_wherever_it_is(self):
+        files = {"kind": "test", "command": "npm test", "report": "TEST.md",
+                 "files": "npx vitest run <files>"}
+        e2e = {"kind": "test", "command": "npm run e2e", "report": "E2E.md"}
+        # (a) a test check with no form first, the one with a `files` form third
+        self.set_gate(dict(self.LINT), e2e, files)
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assert_only_scoped(gate, 3)
+        self.assert_unused(gate, 2)
+        # (b) the first test check has only a test-ID form: still not the one used
+        self.set_gate(dict(self.LINT), {**e2e, "tests": "npx vitest run <tests>"}, files)
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assert_only_scoped(gate, 3)
+        self.assert_unused(gate, 2)
+        # (c) two test checks with a `files` form: only the first is used
+        self.set_gate(dict(self.LINT), files, {"kind": "test", "command": "npx playwright test",
+                                         "report": "E2E.md",
+                                         "files": "npx playwright test <files>"})
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assert_only_scoped(gate, 2)
+        self.assert_unused(gate, 3)
+
+    def test_the_test_runs_footer_says_who_runs_the_test_check_whole(self):
+        self.three_check_gate()
+        _, coder = self.brief_of("coder", "--mode", "build")
+        self.assertNotIn("CI is the one full run", coder)
+        self.assertIn("A whole run of the test check is for the quality gate only "
+                      "(with two or more test checks it runs each one whole)", coder)
+        self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md",
+                       "files": "npx vitest run <files>"})
+        _, coder = self.brief_of("coder", "--mode", "build")
+        self.assertIn("CI is the one full run of the test suite", coder)
+
+    def sign_off(self, *reports):
+        """The user signed off the quality gate failing on `reports` (stop 9)."""
+        state = self.state()
+        state.setdefault("overrides", []).append({
+            "k": len(state["overrides"]) + 1, "choice": "signoff", "text": "keep it",
+            "stop": {"kind": "red-gate", "number": 9, "signoff": {"reports": list(reports)}},
+            "seq": 1, "at": "2024-01-01T00:00:00Z"})
+        self.write_state(state)
+
+    def test_a_check_the_user_signed_off_gets_no_line_in_a_correction(self):
+        ad = shlex.quote(str(self.dir))
+        self.three_check_gate()
+        build, _ = self.brief_of("coder", "--mode", "build")
+        self.gate_found_failing("E2E.md")
+        self.sign_off("E2E.md")
+        gate = self.correction_gate("fix what the review found")
+        self.assertEqual(gate, build)
+        self.assert_unused(gate, 3)
+        # Only the signed-off check loses its line; the other failing one keeps it.
+        self.set_gate(dict(self.LINT), {"kind": "test", "command": "npm test", "report": "TEST.md"},
+                      {"kind": "test", "command": "npm run e2e", "report": "E2E.md"})
+        self.gate_found_failing("TEST.md", "E2E.md")
+        gate = self.correction_gate("fix what the review found")
+        second = self.entry(gate, 2)
+        self.assertIn("found failing", second)
+        self.assertRegex(second, re.escape(f" run gate 2 --dir {ad}") + "`", second)
+        self.assertNotIn("run gate 3", gate)
+
+    def whole_line(self, n):
+        return re.escape(f" run gate {n} --dir {shlex.quote(str(self.dir))}") + "`"
+
+    def test_each_failing_test_check_gets_the_line_its_forms_allow(self):
+        unit = {"kind": "test", "command": "npm test", "report": "TEST.md",
+                "files": "npx vitest run <files>"}
+        e2e = {"kind": "test", "command": "npx playwright test", "report": "E2E.md"}
+        counted = []
+        # (a) the failing check `run test` uses, with both forms: its scoped lines only
+        self.set_gate(dict(self.LINT), {**unit, "tests": "npx vitest run <tests>"}, e2e)
+        self.gate_found_failing("TEST.md")
+        gate = self.correction_gate("fix the gate")
+        second = self.entry(gate, 2)
+        self.assertNotIn("found failing", second)
+        self.assertIn("--tests <test id> …", second)
+        self.assert_only_scoped(second, 2, ("files", "tests"))
+        # (b) a lone test check with no form: the found-failing head and its whole line
+        self.set_gate(dict(self.LINT), {"kind": "test", "command": "npm test", "report": "TEST.md"})
+        self.gate_found_failing("TEST.md")
+        gate = self.correction_gate("fix the gate")
+        second = self.entry(gate, 2)
+        self.assertIn("found failing", second)
+        self.assertEqual(len(re.findall(r"run gate 2 ", second)), 1, second)
+        self.assertRegex(second, self.whole_line(2), second)
+        counted.append(gate)
+        # (c) a failing other check with only a test-ID form: its whole line
+        self.set_gate(dict(self.LINT), unit, {**e2e, "tests": "npx playwright test <tests>"})
+        self.gate_found_failing("E2E.md")
+        gate = self.correction_gate("fix the gate")
+        third = self.entry(gate, 3)
+        self.assertRegex(third, self.whole_line(3), third)
+        self.assertNotIn("--tests", third)
+        counted.append(gate)
+        # (d) a failing other check with both forms: its `--files` line only
+        self.set_gate(dict(self.LINT), unit, {**e2e, "files": "npx playwright test <files>",
+                                        "tests": "npx playwright test <tests>"})
+        self.gate_found_failing("E2E.md")
+        gate = self.correction_gate("fix the gate")
+        third = self.entry(gate, 3)
+        self.assertNotIn("--tests", third)
+        self.assertNotRegex(third, self.whole_line(3))
+        self.assert_only_scoped(third, 3)
+        counted.append(gate)
+        # (e) both failing: the scoped check keeps its lines, the other gets its whole one
+        self.three_check_gate()
+        self.gate_found_failing("TEST.md", "E2E.md")
+        gate = self.correction_gate("fix the gate")
+        self.assert_only_scoped(self.entry(gate, 2), 2)
+        self.assertRegex(self.entry(gate, 3), self.whole_line(3))
+        counted.append(gate)
+        # (f) a green run after the red one: the build brief's list
+        self.three_check_gate()
+        build, _ = self.brief_of("coder", "--mode", "build")
+        self.gate_found_failing("E2E.md")
+        self.gate_found_failing()
+        self.assertEqual(self.correction_gate("fix the gate"), build)
+        # (g) every run line set the Bash call's timeout
+        for gate in counted:
+            self.assertGreater(self.assert_run_lines_set_the_bash_timeout(gate, "coder"), 0,
+                               gate)
+
     def test_the_coder_s_test_runs_leave_an_unscopable_test_check_to_ci(self):
         self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md"})
         _, coder = self.brief_of("coder", "--mode", "build")

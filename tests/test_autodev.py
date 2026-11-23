@@ -500,6 +500,28 @@ class InitTest(RunCase):
                         "profile.md's Quality gate paragraph doesn't say the gate runs test "
                         "checks only on the change's tests when CI is watched")
 
+    def test_profile_md_ties_the_one_full_run_to_a_gate_with_one_test_check(self):
+        _, paragraph = self.quality_gate_paragraph()
+        flat = " ".join(paragraph.split())
+        self.assertIn("only on the change's tests when CI is watched", flat)
+        self.assertIn("a gate's one test check only on the change's tests when CI is "
+                      "watched: then CI is the one full run of the test suite", flat)
+        self.assertIn("the gate has two or more test checks, the quality gate runs every "
+                      "check whole, test checks too", flat)
+        self.assertNotIn("(every check whole when it isn't, or when the gate has two or more "
+                         "test checks): CI is the one full run", flat)
+
+    def test_profile_md_names_the_coder_s_run_line_for_a_check_the_gate_found_failing(self):
+        _, paragraph = self.quality_gate_paragraph()
+        flat = " ".join(paragraph.split())
+        self.assertIn("except in a correction after a quality gate that found a test check "
+                      "failing: its brief then gives that check its run line", flat)
+
+    def test_profile_md_gives_a_test_check_the_user_signed_off_no_run_line(self):
+        _, paragraph = self.quality_gate_paragraph()
+        self.assertIn("a test check the user signed off failing at a red-gate stop gets no "
+                      "run line", " ".join(paragraph.split()))
+
     def test_profile_md_no_longer_says_the_gate_runs_every_check_the_test_check_included(self):
         profile, _ = self.quality_gate_paragraph()
         self.assertFalse("the quality gate runs every check, the test check included"
@@ -3364,6 +3386,55 @@ class RunCommandTest(unittest.TestCase):
         _, data = self.run_json("test", "--files", "src/c.test.ts")
         self.assertEqual(data.get("timeout"), 1000, data)
 
+    def check_2_sleeps_or_fails(self):
+        """Check 2 (a test check with `files` and `tests` forms) sleeps 30 s while
+        the worktree holds `slow`, else fails."""
+        py = shlex.quote(sys.executable)
+        cmd = (f"{py} -c 'import os, sys, time; "
+               f"time.sleep(30 if os.path.exists(\"slow\") else 0); sys.exit(1)'")
+        gate = [self.gate[0], {"kind": "test", "command": cmd, "report": "TEST.md",
+                               "files": f"{cmd} <files>", "tests": f"{cmd} <tests>"}]
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": gate}}))
+        (self.wt / "tests").mkdir()
+        (self.wt / "tests" / "a.test.ts").write_text("x\n")
+
+    def timed_out(self, json_=False):
+        (self.wt / "slow").write_text("")
+        try:
+            if json_:
+                r, data = self.run_json("gate", "2", "--timeout", "1")
+            else:
+                r, data = self.run_("gate", "2", "--timeout", "1"), None
+        finally:
+            (self.wt / "slow").unlink()
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        return r, data
+
+    def test_a_run_gate_stopped_at_its_timeout_counts_as_a_failed_attempt(self):
+        self.check_2_sleeps_or_fails()
+        _, data = self.timed_out(json_=True)
+        self.assertEqual(data["result"], "TIMED_OUT", data)
+        self.assertEqual(data.get("attempt"), 1, data)
+        r, _ = self.timed_out()
+        self.assertEqual(self.attempts(r), ["  attempt: 2 of 3 failed for check 2"])
+        _, data = self.run_json("wait")
+        self.assertEqual(data.get("attempt"), 2, data)
+
+    def test_an_earlier_timed_out_run_adds_to_the_next_failure_s_count(self):
+        self.check_2_sleeps_or_fails()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        self.timed_out()
+        self.assertEqual(self.failed_attempt(), [
+            ("  attempt: 3 of 3 failed for check 2 — the third has failed: stop fixing "
+             "it; it stays failing")])
+
+    def test_a_failing_run_gate_with_test_ids_counts_as_an_attempt(self):
+        self.check_2_sleeps_or_fails()
+        self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
+        self.assertEqual(self.failed_attempt("--tests", "tests/a.test.ts::due"),
+                         ["  attempt: 2 of 3 failed for check 2"])
+
     def test_attempts_are_counted_per_check(self):
         self.check_2_fails_until_told_to_pass()
         self.assertEqual(self.failed_attempt(), ["  attempt: 1 of 3 failed for check 2"])
@@ -5742,6 +5813,104 @@ class QualityGateTest(RunCase):
         r = self.gate()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(), r.stdout)
+
+    def manifest_naming(self, *paths):
+        """MANIFEST.md with one acceptance check in each of `paths`."""
+        rows = "".join(f"| {i} | it works {i} | `{p}` :: \"it works {i}\" | Example | e2e | "
+                       "fail-to-pass | failed: missing |\n" for i, p in enumerate(paths, 1))
+        head, rest = self.CHANGE_MANIFEST.split("| 1 | it works |", 1)
+        (self.dir / "acceptance" / "MANIFEST.md").write_text(
+            head + rows + rest.split("\n", 1)[1])
+
+    def scoped_line(self, r):
+        lines = [x for x in r.stdout.splitlines()
+                 if x.startswith(f"  pass: {self.dir / 'lint' / 'TEST.md'} — `echo some ")]
+        self.assertEqual(len(lines), 1, r.stdout + r.stderr)
+        return lines[0]
+
+    def test_an_acceptance_check_file_no_test_pattern_matches_is_in_the_scoped_run(self):
+        self.the_change()
+        self.write_wt("e2e/due.cy.ts", "due\n")
+        self.git_wt("add", "e2e/due.cy.ts")
+        self.git_wt("commit", "-q", "-m", "an end-to-end check")
+        self.manifest_naming("tests/a.test.ts", "e2e/due.cy.ts")
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(" e2e/due.cy.ts ", self.scoped_line(r))
+
+    def test_an_uncommitted_edit_and_an_unchanged_check_file_are_in_the_scoped_run(self):
+        self.write_wt("cypress/e2e/due.cy.ts", "due\n")
+        self.git_wt("add", "cypress/e2e/due.cy.ts")
+        self.git_wt("commit", "-q", "-m", "a check from before the change")
+        self.the_change()  # the cut is after cypress/e2e/due.cy.ts was committed
+        self.write_wt("src/c.test.ts", "c, edited\n")  # tracked, edited, not committed
+        self.manifest_naming("tests/a.test.ts", "cypress/e2e/due.cy.ts")
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        line = self.scoped_line(r)
+        self.assertIn(" src/c.test.ts ", line)
+        self.assertIn(" cypress/e2e/due.cy.ts ", line)
+
+    def test_a_file_name_that_is_not_utf_8_does_not_stop_the_scoped_gate(self):
+        self.the_change()
+        name = os.fsencode(str(self.worktree / "fixtures")) + b"/caf\xe9.csv"
+        try:
+            os.makedirs(self.worktree / "fixtures", exist_ok=True)
+            with open(name, "wb") as f:
+                f.write(b"x\n")
+        except (OSError, ValueError):
+            self.skipTest("the file system refuses a name that isn't UTF-8")
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for report in ("LINT.md", "TEST.md"):
+            self.assertTrue((self.dir / "lint" / report).is_file(), report)
+        self.assertIn("- **Scope:** the change's tests (",
+                      (self.dir / "lint" / "TEST.md").read_text())
+        self.assertEqual(self.state()["gate_runs"][-1]["tree"], self.tree())
+
+    def write_non_utf_8_test_file(self):
+        """tests/caf\\xe9.test.ts, a test file whose name isn't UTF-8; skips the
+        test where the file system refuses the name."""
+        name = os.fsencode(str(self.worktree / "tests")) + b"/caf\xe9.test.ts"
+        try:
+            os.makedirs(self.worktree / "tests", exist_ok=True)
+            with open(name, "wb") as f:
+                f.write(b"x\n")
+        except (OSError, ValueError):
+            self.skipTest("the file system refuses a name that isn't UTF-8")
+
+    def assert_every_check_ran_whole(self, r):
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"GREEN: every check passed on tree {self.tree()}",
+                         r.stdout)
+        self.assertIn(self.line_of("LINT.md", "echo lint"), lines, r.stdout)
+        self.assertIn(self.line_of("TEST.md", "echo all"), lines, r.stdout)
+        self.assertIn("- **Scope:** whole", (self.dir / "lint" / "TEST.md").read_text())
+
+    def test_an_untracked_test_file_whose_name_is_not_utf_8_runs_every_check_whole(self):
+        self.the_change()
+        self.write_non_utf_8_test_file()
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        self.assert_every_check_ran_whole(self.gate())
+
+    def test_a_committed_test_file_whose_name_is_not_utf_8_runs_every_check_whole(self):
+        self.the_change()
+        self.write_non_utf_8_test_file()
+        self.git_wt("add", "tests")
+        self.git_wt("commit", "-q", "-m", "a test file whose name isn't UTF-8")
+        self.assertEqual(self.git_wt("ls-files", "--others", "--exclude-standard",
+                                     "tests").strip(), "")  # it comes through the diff
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        self.assert_every_check_ran_whole(self.gate())
 
     def summary(self):
         r = self.lib("gate-summary", "--dir", self.dir, "pr", "--json")

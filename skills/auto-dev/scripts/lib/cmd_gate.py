@@ -16,17 +16,18 @@ the command, pass, fail or skipped, its scope, the last 20 lines of its output
 and the `Tree:` line of the code it checked. Every check runs, even after one
 fails. Each check's whole output is saved under <artifact-dir>/tmp/run/.
 
-CI is the one full run of the test suite when it is watched: the run's CI
-provider is neither `none` nor `gitlab` (which `ci-watch` can't read) and its
-last CI watch didn't end `unavailable` or `timeout`. Then, when the gate has
-one `kind: test` check, each non-test check runs whole and that test check,
-when it has a `files` form, runs only on the change's test files: the test
+CI is the one full run of the test suite when it is watched and the gate has
+one `kind: test` check. CI is watched when the run's CI provider is neither
+`none` nor `gitlab` (which `ci-watch` can't read) and its last CI watch didn't
+end `unavailable` or `timeout`. Then, when the gate has one `kind: test`
+check, each non-test check runs whole and that test check, when it has a
+`files` form, runs only on the change's test files: the test
 files the branch added or changed since its cut, committed or not, that still
 exist, plus the acceptance check files MANIFEST.md names. That test check with
 no `files` form, or when the change has no test file, is not run: its report
 says `skipped` and CI runs it. When the gate has two or more `kind: test`
-checks, when CI isn't watched, or when the cut can't be found, every check
-runs whole.
+checks, when CI isn't watched, when the cut can't be found, or when a test
+file's name isn't UTF-8, every check runs whole.
 
 The time each whole run that finished took is saved in
 <artifact-dir>/tmp/run/timings.json, keyed by its command: `autodev.py run`
@@ -103,18 +104,29 @@ def ci_watched(state):
 def change_test_files(ad, state, worktree):
     """The change's test files, sorted: the test files the branch added or
     changed since its cut (committed or not) that still exist, and the
-    acceptance check files; None when the cut can't be found."""
+    acceptance check files; None when the cut can't be found or a test file's
+    name can't be read as UTF-8 (the check then runs whole)."""
     from .cmd_work import check_files, cut_commit  # cmd_work imports cmd_review
     wt = str(worktree)
     try:
         cut = cut_commit(wt, state["repo"]["base"])
-        names = git(wt, "diff", "--name-only", "--no-renames", "-z", cut).split("\0")
-        names += git(wt, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
-    except (Fail, CommandError, KeyError):
+        # surrogateescape: a name that isn't UTF-8 (another file's) must not
+        # stop the gate; it round-trips to the file system as it was.
+        names = git(wt, "diff", "--name-only", "--no-renames", "-z", cut,
+                    errors="surrogateescape").split("\0")
+        names += git(wt, "ls-files", "--others", "--exclude-standard", "-z",
+                     errors="surrogateescape").split("\0")
+    except (Fail, CommandError, KeyError, UnicodeError):
         return None
     found = {p for p in names if p and is_test_file(p) and not p.startswith(".auto-dev/")}
     found |= set(check_files(ad))
-    return sorted(p for p in found if (Path(worktree) / p).is_file())
+    found = sorted(p for p in found if (Path(worktree) / p).is_file())
+    try:  # the scoped command and its report are UTF-8 text
+        for p in found:
+            p.encode("utf-8")
+    except UnicodeError:
+        return None
+    return found
 
 
 def plan_checks(ad, state, worktree, gate):

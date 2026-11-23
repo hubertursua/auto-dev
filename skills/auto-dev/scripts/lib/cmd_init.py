@@ -623,13 +623,16 @@ def setup_and_gate_lines(settings):
     lines += [f"{i}. `{cmd}`" for i, cmd in enumerate(settings["setup"], 1)] or ["none"]
     lines += ["", "## Quality gate — run in order, verbatim (the Definition of Done)",
               ("The quality gate runs each non-test check whole with `autodev.py run "
-               "gate <n> --dir <artifact dir>`, and the gate's one test check only on the "
-               "change's tests when CI is watched (every check whole when it isn't, or "
-               "when the gate has two or more test checks): CI is the one full run of the "
-               "test suite. The coder runs only the test check `run test` uses, and only "
-               "scoped. To "
-               "run only some tests, use `autodev.py run test --dir <artifact dir>` with "
-               "`--files <path> …` (its scoped form) or `--tests <id> …` (its test-ID "
+               "gate <n> --dir <artifact dir>`, and a gate's one test check only on the "
+               "change's tests when CI is watched: then CI is the one full run of the test "
+               "suite. When CI isn't watched, or the gate has two or more test checks, the "
+               "quality gate runs every check whole, test checks too. The coder runs only "
+               "the test check `run test` uses, and only scoped, except in a correction "
+               "after a quality gate that found a test check failing: its brief then gives "
+               "that check its run line, scoped when it has a scoped form, else whole; a "
+               "test check the user signed off failing at a red-gate stop gets no run "
+               "line. To run only some tests, use `autodev.py run test --dir <artifact dir>` "
+               "with `--files <path> …` (its scoped form) or `--tests <id> …` (its test-ID "
                "form; one ID when the form holds `<test>`)."), "",
               "| # | kind | command | report | scoped form | test-ID form |",
               "|---|------|---------|--------|-------------|--------------|"]

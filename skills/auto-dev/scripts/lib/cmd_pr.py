@@ -265,10 +265,12 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     state.setdefault("phase6", {})["quoted"] = sorted(quoted_digests(text))
     # What generate copies word for word outside a region, as it shows it: a
     # checkbox's title (PLAN.md's own words, kept outside so ticking it leaves
-    # the region whole) and each gate command, as clean() left it in the text.
+    # the region whole) and each gate command (a scoped check's as its report
+    # holds it, on the change's test files), as clean() left it in the text.
     # The lint skips each one.
     copied = {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} | \
-        {f"`{g['command']}`" for g in state["settings"].get("gate", [])}
+        {f"`{g['command']}`" for g in state["settings"].get("gate", [])} | \
+        {f"`{ran}`" for ran in scoped_commands(ad, state)}
     state["phase6"]["verbatim"] = sorted(
         {s for s in (clean(x, wt) for x in copied) if s.strip("*`") and s in text})
     # The headings pr-write.md is written with: splice takes no others.
@@ -984,6 +986,21 @@ def test_strength(ev, state):
             kind = f"not caught: {reason}"
         out.append(f"- `{row.get('Location', '').strip('` ')}`, "
                    f"{row.get('Change', '')}: {kind}")
+    return out
+
+
+def scoped_commands(ad, state):
+    """The command each gate check run on the change's tests ran, as its lint
+    report holds it (quality_gate shows it in place of the profile's)."""
+    out = []
+    for check in state["settings"].get("gate", []):
+        path = ad / "lint" / check.get("report", "")
+        if not path.is_file():
+            continue
+        found = art.lint_report(path)
+        if found["status"] != "skipped" and found["command"] and \
+                found["scope"].startswith(art.SCOPED_PREFIX):
+            out.append(found["command"])
     return out
 
 

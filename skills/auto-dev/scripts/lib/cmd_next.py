@@ -193,6 +193,7 @@ step that stopped, spending one of them.
 
 import copy
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -847,9 +848,10 @@ def show(result, args):
     result.pop(TALLY, None)
     result.pop(UNSAVED, None)
     result.pop(RUN_DIR, None)
-    if not result.pop(SHOW_RULE, False) and not args.explain:
+    show_rule = result.pop(SHOW_RULE, False)
+    if not show_rule and not args.explain:
         result.pop("RULE", None)
-    elif result.get("ACTION"):
+    if args.explain and result.get("ACTION"):
         result["ACTION"] = ("(--explain: nothing was done; run `next` to act) "
                             + result["ACTION"])
     if args.json:
@@ -1122,6 +1124,12 @@ def pending_briefs(c):
             b["resent"] = b.get("resent", 0) + 1  # a spawn of its own (metrics.json)
             b["issued_at"], b["issued_seq"] = st.now(), c.seq()
             cmd_work.fresh_tree(c.state, b)  # what changed since is not this spawn's
+            # A new spawn of the same brief: its mtime is when this spawn
+            # started (`run gate`'s attempt count starts again from there).
+            try:
+                os.utime(c.ad / "briefs" / f"{b['worker']}-{b['n']}.md")
+            except OSError:
+                pass
         c.dirty = True
     agents = [f"auto-dev:{b['worker']}" for b in open_]
     paths = [c.ad / "briefs" / f"{b['worker']}-{b['n']}.md" for b in open_]
@@ -1840,8 +1848,10 @@ def gate_step(c, start):
                      f"{reports}.")], "the quality gate is red after its correction",
                     retry={"gate": True},
                     signoff={"reports": failing}, kind="red-gate", number=9)
+    # A report the user signed off counts as green for the rest of the run.
+    to_fix = ", ".join(f"{c.ad}/lint/{r}" for r in failing if r not in signed)
     return spawn(c, "coder", "correction", {
-        "corrections_file": f"the failing quality-gate checks: {reports} (each report's "
+        "corrections_file": f"the failing quality-gate checks: {to_fix} (each report's "
                             f"output tail says what fails; the whole output is under "
                             f"{c.ad}/tmp/run/)"},
         rule="the quality gate is red: the coder makes it green (no round; red again "
