@@ -889,8 +889,10 @@ yourself, or, where it is safe, a sign-off (above). Only the step that stopped
 runs again, not the run. A push to the PR branch from elsewhere stops the run
 until you bring those commits into the worktree, where they are checked again;
 one pushed from the worktree is checked again with no stop. A correction the
-run checked that you commit (and push) yourself is recorded as the verified
-commit, not asked for again. The budget used up stays until you add rounds.
+run checked that you commit (and push) yourself once its review pass is done
+is recorded as the verified commit, not asked for again; one you commit while
+that pass is still out is reviewed again. The budget used up stays until you
+add rounds.
 
 ## Repository layout
 

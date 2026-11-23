@@ -85,8 +85,10 @@ that round on the correction for what is open.
 A correction the review pass checked in the working tree and the user then
 committed (and pushed) by hand leaves `commit` nothing to commit: when HEAD
 holds exactly the checked code (a clean tree, the acceptance checks intact,
-check-fresh.py passing on HEAD), `next` records HEAD as the verified commit
-itself and goes on to the push.
+check-fresh.py passing on HEAD) and was committed after the review pass
+settled, `next` records HEAD as the verified commit itself and goes on to the
+push. A commit made while the pass was out is one the pass never read: `next`
+re-checks everything since the verified commit in a new pass instead.
 
 Output lines (only the ones that apply):
     ACTION:   what to do, in one line
@@ -187,8 +189,10 @@ writes). Spawned three times with no usable result, it stops; a brief that
 stop ended is no longer waited for, so the stop is asked again. A worker whose
 agent file caps its turns (`maxTurns`: the coder, the acceptance tester) and
 that ended with no result file is instead re-issued once as a new brief whose
-previous_issues tells it to keep its earlier edits and finish; ending with no
-result file again, since the last resume or lifting retry, stops (stop 7). A stop on a
+previous_issues keeps the issues its last brief carried and tells it to keep
+its earlier edits and finish (a coder's also gets the deviations and blocked
+lists its earlier spawn wrote); ending with no result file again, since the
+last resume or lifting retry, stops (stop 7). A stop on a
 worker (blocked, failed twice, never returned) is lifted by `resume`: the
 next session spawns that worker again. A stop on a result (a red quality gate, an impossible spec)
 comes back until the user overrides it. Every stop but the budget's, a gate's
@@ -206,6 +210,7 @@ import copy
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -962,10 +967,23 @@ def decide_step(c):
         except Preview:
             would = {"code": NEXT_ACTION}
         if would["code"] == NEXT_ACTION:
+            if probe is not c:
+                keep_pass_ends(c, probe)
             return checkpoint(c)
         if c.readonly:
             return would
     return phases(c)
+
+
+def keep_pass_ends(c, probe):
+    """Copy the end HEAD the checkpoint's probe stamped on a settled review
+    pass (pass_ended) onto the run's own pass: this `next` found it settled,
+    so a commit made before the next session's `next` reads as made after
+    the pass, not while it was out."""
+    for mine, seen in zip(c.p6.get("passes") or [], probe.p6.get("passes") or []):
+        if "end_head" in seen and "end_head" not in mine:
+            mine["end_head"] = seen["end_head"]
+            c.quiet = True  # saved, not an event of its own (as pass_ended)
 
 
 def phases(c):
@@ -1084,9 +1102,15 @@ def capped_reissue(c, b, cap, tries):
     """Open brief `b` of a worker capped at `cap` turns, which ended with no
     result file: (the new brief that sends it out once more, told to keep its
     edits and finish (a stand-in under --explain), None), or, when `b` already
-    was that re-spawn since the last resume or lifting retry, (b, the stop)."""
+    was that re-spawn since the last resume or lifting retry, (b, the stop).
+
+    A re-spawn issued at the lift's own seq counts as after it (as in_flight
+    has it): a fixer's FIXED lifts the stop in the same `next` that sends the
+    re-spawn out. A coder's re-spawn gets the deviations and blocked lists its
+    earlier spawn wrote (carry_lists), and keeps the issues the replaced brief
+    carried (cmd_work.write_brief)."""
     worker = b["worker"]
-    if b.get("turn_retry") and issued(b)[1] > c.resumed():
+    if b.get("turn_retry") and issued(b)[1] >= c.resumed():
         if not c.readonly and b.get("stopped_seq", 0) <= issued(b)[1]:
             # The stop ends this spawn: it is not waited for, so the stop is
             # asked again (after talk, leave, or a fixer's proposal).
@@ -1102,13 +1126,36 @@ def capped_reissue(c, b, cap, tries):
                        "file", retry={"lift": True}, number=7)
     if c.readonly:  # --explain writes no brief
         return {"worker": worker, "n": c.peek(worker)}, None
+    note = cmd_work.NO_RESULT_RETRY
+    if worker == "coder":
+        note += carry_lists(c, b["n"], cmd_work.next_number(c.ad / "briefs", worker))
     cmd_work.write_brief(c.state, c.ad, worker, b.get("mode"), dict(b.get("sets", {})),
-                         retry=b["n"], note=cmd_work.NO_RESULT_RETRY)
+                         retry=b["n"], note=note)
     new = c.state["briefs"][-1]  # write_brief marked b retried_as it
     new["turn_retry"] = True
     new["emitted"] = tries
     c.dirty = True
     return new, None
+
+
+def carry_lists(c, old, n):
+    """Copy coder #`old`'s deviations and blocked lists, the ones it wrote, to
+    coder #`n`'s (its deviations_file and blocked_file), so `record`'s count
+    check, the gate summaries' deviations and the planner's blocked spawn read
+    them from the coder that returns; the note's words for them, or ""."""
+    copied = []
+    for sub, slot in (("deviations", "deviations_file"), ("blocked", "blocked_file")):
+        src = c.ad / sub / f"coder-{old}.md"
+        dst = c.ad / sub / f"coder-{n}.md"
+        if src.is_file() and not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            copied.append(f"your {slot} holds the lines that spawn wrote to {src.name}")
+    if not copied:
+        return ""
+    words = "; ".join(copied)
+    return (f" {words[0].upper()}{words[1:]}: keep those lines, and update them for "
+            "what you finish or stop.")
 
 
 def pending_briefs(c):
@@ -2160,6 +2207,7 @@ def phase6(c):
         review = review_step(c, p6["passes"][-1])
         if review is not None:
             return review
+        pass_ended(c, p6["passes"][-1])
     head = publish_step(c)
     if head is not None:
         return head
@@ -2382,8 +2430,11 @@ def start_pass(c, scope, files, rule, since=None):
     if scope == "first":
         files = first_pass_files(c)
     effort = plan_effort(c)
+    # HEAD as the pass starts: committed_by_hand compares the HEAD it ends at
+    # with it, so only a commit made while the pass was out reads as one.
     p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq(),
-         "effort": effort, "lane": "high" if high else "standard"}
+         "effort": effort, "lane": "high" if high else "standard",
+         "start_head": git(c.wt, "rev-parse", "HEAD").strip()}
     if since:
         p["since"] = since
     c.p6["passes"].append(p)
@@ -2485,9 +2536,10 @@ def review_step(c, p):
     if p.get("lane") == "standard":
         return solo_step(c, p, vjobs, vrec)
     if vjobs:  # the panel waits for the verifier (mutation plants code in the tree)
-        return spawn_many(c, vjobs, "the verifier goes first on a high-risk run: it gets "
-                          "one re-spawn" if c.recs("verifier", after=p["seq"], ok=False)
-                          else "the verifier goes first on a high-risk run")
+        return out_again(c, p, spawn_many(
+            c, vjobs, "the verifier goes first on a high-risk run: it gets one re-spawn"
+            if c.recs("verifier", after=p["seq"], ok=False)
+            else "the verifier goes first on a high-risk run"))
     reviews = c.recs("code-reviewer", after=p["seq"], mode="review", ok=False)
     respawn, usable = [], []
     for slot in SLOTS:
@@ -2507,15 +2559,16 @@ def review_step(c, p):
         # written anything: its leads reach a later run (unreviewed_leads).
         leads = last.get("leads") if secs else "none"
         first = not secs and not reviews
-        return spawn_security(c, jobs, leads or "none",
-                              "the verifier is done: the panel and the security reviewer "
-                              "review the same tree" if first else
-                              "a worker of the pass failed: it gets one re-spawn"
-                              if secs or jobs else
-                              "the security review covers the whole change",
-                              focus=last.get("focus") or focus_text(p))
+        return out_again(c, p, spawn_security(
+            c, jobs, leads or "none",
+            "the verifier is done: the panel and the security reviewer review the same "
+            "tree" if first else
+            "a worker of the pass failed: it gets one re-spawn" if secs or jobs else
+            "the security review covers the whole change",
+            focus=last.get("focus") or focus_text(p)))
     if jobs:
-        return spawn_many(c, jobs, "a code reviewer failed: it gets one re-spawn")
+        return out_again(c, p, spawn_many(c, jobs,
+                                          "a code reviewer failed: it gets one re-spawn"))
     sec = secs[-1]
     data = sec["data"]
     verify = _int(data.get("must_fix")) or _int(data.get("pre_existing"))
@@ -2533,17 +2586,19 @@ def review_step(c, p):
             "reviewers": ", ".join(usable), "scope": scope_text(p), "tree": p["tree"]})]
         if verify and verified is None:
             jobs.append(("review-judge", "security-verify", {}))
-        return spawn_many(c, jobs, "the panel and the security review are done: the "
-                          "judge consolidates the panel's reports" +
-                          (", and in parallel verifies every High or Medium security "
-                           "finding" if len(jobs) > 1 else ""))
+        return out_again(c, p, spawn_many(
+            c, jobs, "the panel and the security review are done: the judge "
+            "consolidates the panel's reports" +
+            (", and in parallel verifies every High or Medium security finding"
+             if len(jobs) > 1 else "")))
     if judge["next"] == "REVOTE":
         result = revotes(c, p, judge)
         if result is not None:
             return result
     if verify and verified is None:
-        return spawn(c, "review-judge", "security-verify",
-                     rule="the judge verifies every High or Medium security finding")
+        return out_again(c, p, spawn(
+            c, "review-judge", "security-verify",
+            rule="the judge verifies every High or Medium security finding"))
     # With no round left before the ready-for-review gate, open findings go to
     # that gate. After it, that covers only the passes the user marked the PR
     # ready with: once they add rounds, a later pass's findings get their
@@ -2551,6 +2606,7 @@ def review_step(c, p):
     spent_out = spent_before(c, p)
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(verify) and bool(confirmed_security(c))
+    pass_ended(c, p)  # every worker of the pass has returned: before any stop
     spec = spec_stop(c, [vrec, judge] + c.recs(SECURITY, after=p["seq"]),
                      f"in review pass {p['n']}", review_pass=p["n"])
     if spec is not None:
@@ -2562,8 +2618,9 @@ def review_step(c, p):
     # run: a lead nobody checked is not something the gate can name.
     leads = unreviewed_leads(c, p)
     if leads:
-        return spawn_security(c, [], leads, "the panel passed the security review leads "
-                              "it had not seen: it checks them", focus=LEADS_FOCUS)
+        return out_again(c, p, spawn_security(
+            c, [], leads, "the panel passed the security review leads it had not seen: "
+            "it checks them", focus=LEADS_FOCUS))
     return None
 
 
@@ -2627,10 +2684,11 @@ def solo_step(c, p, vjobs, vrec):
             return twice
         rjobs = [("reviewer", None, solo_sets(c, p))]
     if vjobs or rjobs:
-        return spawn_many(c, vjobs + rjobs, "a worker of the pass failed: it gets one "
-                          "re-spawn")
+        return out_again(c, p, spawn_many(c, vjobs + rjobs, "a worker of the pass "
+                                          "failed: it gets one re-spawn"))
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(confirmed_security(c))
+    pass_ended(c, p)  # every worker of the pass has returned: before any stop
     spec = spec_stop(c, [vrec, rec], f"in review pass {p['n']}")
     if spec is not None:
         return spec
@@ -2832,7 +2890,8 @@ def revotes(c, p, judge):
                              for r in rows)
         jobs.append(("code-reviewer", "re-vote", {"reviewer": slot, "findings": findings}))
     if jobs:
-        return spawn_many(c, jobs, "lone findings go to the other reviewers for a re-vote")
+        return out_again(c, p, spawn_many(c, jobs, "lone findings go to the other "
+                                          "reviewers for a re-vote"))
     if gave_up:
         return stop([("The code-review re-vote can't finish: re-voter "
                      f"{'; '.join(gave_up)}. The lone findings stay pending in "
@@ -2841,6 +2900,9 @@ def revotes(c, p, judge):
                     "a re-voter gave no usable vote twice", retry={"lift": True},
                     no_signoff="a lone finding's vote is still open", number=None)
     if pending:  # with no plan (under two usable reports) each stays advisory
+        # Every re-voter has returned: stamped before the preview, so a
+        # checkpoint's probe stamps it too (keep_pass_ends).
+        pass_ended(c, p)
         c.would("apply the re-votes to CODE_REVIEW.md", "every re-voter has voted")
         cmd_review.apply_vote_files(c.ad / "CODE_REVIEW.md", text, pass_dir, pending,
                                     votes_expected=bool(plan))
@@ -2936,23 +2998,90 @@ def scope_text(p):
 
 # ---------------------------------------------------------------- Phase 6: shipping
 
-def committed_by_hand(c, sha):
-    """HEAD's id when a correction after verified commit `sha` was committed
-    outside the pipeline and HEAD already holds the code every result checked:
-    the tree is clean, HEAD is neither `sha` nor a commit under re-check, the
-    committed acceptance checks are intact (the guard `commit` applies) and
-    check-fresh.py passes on HEAD. It is recorded as the verified commit, as
-    `commit` would, since `commit` would find nothing to commit. Else None."""
+def pass_ended(c, p):
+    """Stamp HEAD on pass p the first time `next` finds every worker of it
+    returned (saved, not an event of its own): committed_by_hand reads whether
+    the pass's workers read the correction against the verified commit, with
+    HEAD still there. review_step stamps it before any step that can preview
+    or stop (the re-votes' apply, a spec-problem stop), so a checkpoint's
+    probe stamps it too and a commit made during a stop reads as made after
+    the pass."""
+    if "end_head" not in p:
+        p["end_head"] = git(c.wt, "rev-parse", "HEAD").strip()
+        c.quiet = True
+
+
+def out_again(c, p, result):
+    """`result`, a spawn of a worker of pass p, with the pass's end stamp
+    dropped (a retry set a result aside, or a step after the stamp sends a
+    worker out): a commit made while that worker is out is still re-checked."""
+    if p.pop("end_head", None) is not None:
+        c.dirty = True
+    return result
+
+
+def pass_start(p, sha):
+    """The HEAD pass p started at (start_pass stamps it): the verified commit
+    `sha` for an after-commit pass, the commit under re-check for an outside
+    one. A pass from before the stamp: `sha` for an after-commit pass, and for
+    an outside one its end HEAD (no commit made during it can be told)."""
+    if p.get("start_head"):
+        return p["start_head"]
+    return p.get("end_head") if p.get("since") else sha
+
+
+def correction_pass(c, fix):
+    """The review pass of correction `fix` (the last one after the commit), or
+    None when it has none yet (a fix at a stop before the first pass)."""
+    passes = c.p6.get("passes") or []
+    return passes[-1] if passes and passes[-1]["seq"] >= fix["seq"] else None
+
+
+def moved_in_pass(c, sha, head):
+    """The step for HEAD `head`, past verified commit `sha` and holding the
+    checked code, when it was committed while the correction's review pass
+    was out (before `next` found the pass settled): that pass read the working
+    tree against HEAD, so it saw none of what the commit holds. As for commits
+    past the verified commit in open_correction, HEAD is recorded as under
+    re-check (`commit` verifies it later) and a pass checks everything since
+    `sha`, never recording HEAD as reviewed, and never asking `commit` to
+    commit nothing."""
+    c.would("record HEAD as under re-check and start a review pass on everything since "
+            "the verified commit", "HEAD moved past the verified commit while the "
+            "correction's review pass was out: the pass read none of the commits")
+    c.p6["unverified_commit"] = head
+    c.dirty = True
+    cmd_checks.git_add_intent(c.wt)
+    files = [f for f in git(c.wt, "diff", "--name-only", sha).splitlines()
+             if f and not f.startswith(".auto-dev/")]
+    return start_pass(c, "outside", files, "the correction was committed outside the "
+                      "pipeline while its review pass was out, so the pass read none of "
+                      "it: the pass checks everything since the verified commit", since=sha)
+
+
+def committed_by_hand(c, sha, fix):
+    """(HEAD's id, None) when correction `fix` after verified commit `sha` was
+    committed outside the pipeline and HEAD already holds the code every
+    result checked: the tree is clean, HEAD is neither `sha` nor a commit under
+    re-check, the committed acceptance checks are intact (the guard `commit`
+    applies) and check-fresh.py passes on HEAD. It is recorded as the verified
+    commit, as `commit` would, since `commit` would find nothing to commit.
+    When the correction's review pass settled with HEAD no longer where the
+    pass started (pass_start: the commit was made while the pass was out),
+    (None, moved_in_pass's step) instead. Else (None, None)."""
     add, remove = changed_paths(c.wt)
     if add or remove:
-        return None
+        return None, None
     head = git(c.wt, "rev-parse", "HEAD").strip()
     if head in (sha, c.p6.get("unverified_commit")):
-        return None
+        return None, None
     if cmd_ship.changed_checks(c.state):
-        return None
+        return None, None
     if check_fresh(c, "--ref", head, *cmd_ship.fresh_phase(c.state)):
-        return None
+        return None, None
+    p = correction_pass(c, fix)
+    if p is not None and p.get("end_head") != pass_start(p, sha):
+        return None, (moved_in_pass(c, sha, head) if past_by(c, sha) else None)
     c.would(f"record HEAD {head[:12]} as the verified commit: it already holds the "
             "checked code", "a correction was committed outside the pipeline")
     cmd_ship.record_verified(c.state, head)
@@ -2960,7 +3089,7 @@ def committed_by_hand(c, sha):
                 "(committed outside the pipeline): recorded as the verified commit; "
                 "nothing to commit")
     c.dirty = True
-    return head
+    return head, None
 
 
 def publish_step(c):
@@ -2975,7 +3104,9 @@ def publish_step(c):
         mark_committed(c, "the correction after the commit changed nothing")
         needs_commit = False
     if needs_commit and sha:
-        head = committed_by_hand(c, sha)
+        head, moved = committed_by_hand(c, sha, last_fix)
+        if moved is not None:
+            return moved
         if head:  # the push, the description and CI go on with that commit
             sha, needs_commit = head, False
     if needs_commit:

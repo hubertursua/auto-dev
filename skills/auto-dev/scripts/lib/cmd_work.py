@@ -491,6 +491,10 @@ NO_RESULT_RETRY = ("Your last spawn for this job ended without writing its resul
                    "them against your instructions, finish what is left, and write your "
                    "result file. This is your one re-spawn for that: ending without a "
                    "result file again stops the run.")
+# After the issues the replaced brief carried (a refusal's, BLOCKED_ONCE): they
+# still stand, and one that says to undo an edit wins over "keep those edits".
+NO_RESULT_AFTER = ("Fix each issue above too: where one says to undo an edit, undo it, "
+                   "and keep the rest.")
 
 
 def saved_issues(state, worker, retry):
@@ -546,10 +550,11 @@ def write_brief(state, where, worker, mode, given, retry=None, note=None):
     `where` is the artifact dir, or with no run (state None: the profiler, a
     lookup before init) the folder to write into. `retry` re-spawns job
     <worker>-<retry>, which record refused: its saved issues fill
-    previous_issues. With `note` (and `retry`), previous_issues is the note
-    instead, and `record` need not have refused the job: `next` re-spawns a
-    worker that ended with no result file this way. Returns (path, the slot
-    values)."""
+    previous_issues. With `note` (and `retry`), `record` need not have refused
+    the job: previous_issues is the issues the brief of job <worker>-<retry>
+    carried (its `carried` text: a refusal's issues, BLOCKED_ONCE), when it
+    carried any, followed by the note; `next` re-spawns a worker that ended
+    with no result file this way. Returns (path, the slot values)."""
     if worker not in briefs.RESULTS:
         raise Fail(f"unknown worker {worker!r}; one of {', '.join(sorted(briefs.RESULTS))}",
                    CANNOT_RUN, "ERROR")
@@ -560,7 +565,7 @@ def write_brief(state, where, worker, mode, given, retry=None, note=None):
     if not worker_modes and mode:
         raise Fail(f"{worker} has no modes", FAILED, "REFUSED")
     if state is None:
-        ad, directory, previous = None, where, None
+        ad, directory, previous, carried = None, where, None, None
         n = next_number(directory, worker)
         auto = {"skill_dir": str(SKILL_DIR),
                 "result_file": str(where / f"{worker}-{n}.json"),
@@ -574,9 +579,16 @@ def write_brief(state, where, worker, mode, given, retry=None, note=None):
         directory = ad / "briefs"
         n = next_number(directory, worker)
         auto = auto_values(worker, n, state, ad, mode)
-        previous = note if note is not None else saved_issues(state, worker, retry)
-        if previous is None and blocked_last(state, worker, mode):
-            previous = BLOCKED_ONCE
+        if note is not None:
+            # The replaced brief's issues still stand: the note goes after them.
+            replaced = next((b for b in state.get("briefs") or []
+                             if b["worker"] == worker and b["n"] == retry), {})
+            carried = replaced.get("carried")
+            previous = f"{carried}\n{note} {NO_RESULT_AFTER}" if carried else note
+        else:
+            carried = previous = saved_issues(state, worker, retry)
+            if previous is None and blocked_last(state, worker, mode):
+                carried = previous = BLOCKED_ONCE
     needed = briefs.slots(worker, mode)
     values, missing = {}, []
     for slot in sorted(needed):
@@ -614,6 +626,9 @@ def write_brief(state, where, worker, mode, given, retry=None, note=None):
     if state is not None:
         entry = {"worker": worker, "n": n, "mode": mode, "sets": given, "at": st.now(),
                  "retry": retry, "seq": st.seq(state)}
+        if carried and briefs.max_turns(worker):
+            # A capped re-spawn of this brief carries them on (`note`).
+            entry["carried"] = carried
         watch_spec(state, ad, worker, retry, entry)
         if retry is None and worker == "coder":
             # A check line broken already is not this worker's doing.
