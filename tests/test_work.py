@@ -540,6 +540,55 @@ class BriefTest(WorkCase):
         for n in (1, 2, 3):
             self.assertRegex(gate, re.escape(f" run gate {n} --dir {ad}") + "`", gate)
 
+    def correction_gate(self, corrections_file):
+        """The gate list of a coder correction's brief given `corrections_file`."""
+        gate, _ = self.brief_of("coder", "--mode", "correction",
+                                "--set", f"corrections_file={corrections_file}")
+        return gate
+
+    def test_a_coder_correction_gets_the_run_line_of_the_failing_test_check_it_names(self):
+        self.three_check_gate()
+        ad = shlex.quote(str(self.dir))
+        gate = self.correction_gate(
+            f"the failing quality-gate checks: {self.dir}/lint/E2E.md")
+        self.assertRegex(gate, re.escape(f" run gate 3 --dir {ad}") + "`", gate)
+        self.assertNotIn("don't run it", self.entry(gate, 3))
+        self.assertRegex(gate, re.escape(f" run gate 1 --dir {ad}") + "`", gate)
+        self.assertIn(f" run gate 2 --dir {ad} --files <test file> …", gate)
+        for m in re.finditer(re.escape(f" run gate 2 --dir {ad}"), gate):
+            self.assertRegex(gate[m.end():], r"^ --(files|tests) ", gate)
+
+    def test_a_correction_s_named_test_check_runs_scoped_when_it_can(self):
+        ad = shlex.quote(str(self.dir))
+        # A named check with a `files` form gets only its scoped line.
+        self.three_check_gate({"kind": "test", "command": "npm run e2e", "report": "E2E.md",
+                               "files": "npx playwright test <files>"})
+        gate = self.correction_gate(
+            f"the failing quality-gate checks: {self.dir}/lint/E2E.md")
+        self.assertIn(f" run gate 3 --dir {ad} --files <test file> …", gate)
+        for m in re.finditer(re.escape(f" run gate 3 --dir {ad}"), gate):
+            self.assertRegex(gate[m.end():], r"^ --files ", gate)
+        # A CI-red triage names the gate's lone unscopable test check by its command.
+        lint = {"kind": "lint", "command": "npx eslint .", "report": "LINT.md"}
+        self.set_gate(lint, {"kind": "test", "command": "npm test", "report": "TEST.md"})
+        triage = self.write("triage/ci-1.md", (
+            "# Required changes\n"
+            "1. Parse the due date in the owner's time zone\n"
+            "   Where: `src/due.ts:12` — parseDue()\n"
+            "   Now: `npm test` fails: expected 2024-01-02, received 2024-01-01\n"
+            "   Test: keep the failing test; add one for a UTC+13 owner\n"))
+        gate = self.correction_gate(triage)
+        self.assertRegex(gate, re.escape(f" run gate 2 --dir {ad}") + "`", gate)
+        # A correction that names no test check gets the build brief's list.
+        build, _ = self.brief_of("coder", "--mode", "build")
+        review = self.write("review/pass-1/corrections.md", (
+            "# Required changes\n"
+            "1. Refuse an empty title\n"
+            "   Where: `src/todo.ts:30` — createTodo()\n"
+            "   Now: an empty title is saved\n"
+            "   Test: a test that an empty title is refused\n"))
+        self.assertEqual(self.correction_gate(review), build)
+
     def test_the_coder_s_test_runs_leave_an_unscopable_test_check_to_ci(self):
         self.set_gate({"kind": "test", "command": "npm test", "report": "TEST.md"})
         _, coder = self.brief_of("coder", "--mode", "build")
