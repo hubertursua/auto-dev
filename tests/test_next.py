@@ -450,6 +450,52 @@ class NextCase(RunCase):
             brief["issued_at"] = when.isoformat()
         self.write_state(state)
 
+    def previous_issues(self, worker, n):
+        """The previous_issues line of `worker` #`n`'s brief file, with the
+        indented lines that continue it, joined into one."""
+        lines = (self.dir / "briefs" / f"{worker}-{n}.md").read_text().splitlines()
+        start = next((i for i, ln in enumerate(lines) if ln.startswith("previous_issues:")),
+                     None)
+        self.assertIsNotNone(start, f"{worker}-{n}.md has no previous_issues line")
+        slot = [lines[start].split(":", 1)[1]]
+        for line in lines[start + 1:]:
+            if not line[:1].isspace():
+                break
+            slot.append(line)
+        return " ".join(part.strip() for part in slot).strip()
+
+    def assert_sent_once_more_to_finish(self, worker, out):
+        """`out` spawns `worker` #2, a new brief with #1's mode and sets, whose
+        previous_issues tells it to keep the earlier spawn's edits and finish."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertEqual(out.get("AGENT"), [f"auto-dev:{worker}"], shown)
+        self.assertEqual(self.spawned(out), [(worker, 2)], shown)
+        self.assertTrue((self.dir / "briefs" / f"{worker}-2.md").is_file(), self.brief_files())
+        self.assertEqual(self.mode(worker, 2), self.mode(worker, 1))
+        self.assertEqual(self.sets(worker, 2), self.sets(worker, 1))
+        note = self.previous_issues(worker, 2).lower()
+        self.assertNotEqual(note, "none")
+        self.assertRegex(note, r"without writing (?:its|your|the|a) result file")
+        self.assertRegex(note, r"\bkeep\b[^.]*\bedits\b")
+        self.assertIn("finish", note)
+        self.assertRegex(note, r"\bwrite (?:its|your|the) result file")
+
+    def assert_stopped_after_two_misses(self, worker, label, cap, out):
+        """`out` is the stop for `worker`, sent out twice and twice ending with
+        no result file: a REPORT naming it, the misses and its turn cap, a
+        QUESTION, and no third brief."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 4, shown)
+        report = " ".join(out.get("REPORT", []))
+        self.assertRegex(report, label, shown)
+        self.assertRegex(report, r"without writing (?:its|your|the|a) result file", shown)
+        self.assertIn("twice", report, shown)
+        self.assertIn("turns", report, shown)
+        self.assertIn(str(cap), report, shown)
+        self.assertTrue(out.get("QUESTION"), shown)
+        self.assertFalse((self.dir / "briefs" / f"{worker}-3.md").exists(), self.brief_files())
+
 
 OVERSIZED_PLAN = PLAN.split("## Size check")[0] + (
     "## Size check\nOVERSIZED: three deliverables.\n"
@@ -1168,6 +1214,29 @@ class PlanTest(NextCase):
         self.assertIn("auto-dev:planner", out["ACTION"])
         self.assertIn("run_in_background: false", out["ACTION"])
 
+    def test_an_acceptance_tester_ending_with_no_result_file_is_sent_once_more_then_stops(
+            self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        self.assertEqual(jobs, [("acceptance-tester", 1)])
+        check = self.worktree / "src" / "due.acceptance.test.ts"
+        check.parent.mkdir(parents=True, exist_ok=True)
+        check.write_text("test: a todo keeps its due date\n")  # tester #1's edit
+        self.assert_sent_once_more_to_finish("acceptance-tester", self.next_reissue())
+        self.assertEqual(check.read_text(), "test: a todo keeps its due date\n")
+        self.assert_stopped_after_two_misses("acceptance-tester", r"acceptance[ -]tester",
+                                             120, self.next_reissue())
+
+    def test_a_worker_with_no_turn_cap_is_sent_the_same_brief_three_times_then_stops(self):
+        self.expect("planner")
+        for _ in range(2):
+            self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertTrue(out.get("QUESTION"), json.dumps(out, indent=2))
+        self.assertEqual(self.brief_files(), ["planner-1.md"])
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 7, stops)
+
 
 class BuildTest(NextCase):
     def test_the_run_goes_straight_through_in_one_session(self):
@@ -1461,6 +1530,267 @@ class BuildTest(NextCase):
         self.assertNotIn("stopped", self.state()["budget"])
         r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout)
+
+    def coder_ended_with_no_result_file(self):
+        """The build's coder #1 edits due.ts and returns with no result file."""
+        self.plan_session()
+        _, jobs = self.expect("coder")
+        self.assertEqual(jobs, [("coder", 1)])
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        self.assertFalse((self.dir / "returns" / "coder-1.json").exists())
+
+    def test_a_coder_ending_with_no_result_file_is_sent_once_more_to_keep_its_edits(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assertEqual((self.worktree / "due.ts").read_text(), "export const due = 1;\n")
+
+    def test_a_coder_ending_with_no_result_file_twice_stops_naming_its_turn_cap(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+
+    def test_explain_previews_the_capped_re_spawn_and_writes_no_brief(self):
+        self.coder_ended_with_no_result_file()
+        before, briefs = (self.dir / "state.json").read_text(), self.brief_files()
+        r = self.autodev("next", "--explain", "--reissue", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("coder-2.md", r.stdout)
+        self.assertNotIn("coder-2.md", briefs)
+        self.assertEqual(self.brief_files(), briefs)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+
+    def test_the_capped_stop_is_asked_again_and_a_retry_sends_one_more_noted_brief(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+        out = self.next(4)  # not waited for: the stop is asked again
+        self.assertIn("twice", " ".join(out.get("REPORT", [])))
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 7, stops)
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertEqual(self.spawned(out), [("coder", 3)], json.dumps(out, indent=2))
+        self.assertEqual(self.sets("coder", 3), self.sets("coder", 1))
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+
+    def capped_stop(self):
+        """Coder #1 and its noted re-spawn #2 both end with no result file: stop 7."""
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+
+    def assert_stops_again_on_the_miss_of(self, n):
+        """Coder #n, sent out once more after the stop was lifted, ends with no
+        result file too: `next --reissue` stops (7) and writes no later brief."""
+        out = self.next_reissue(4)
+        shown = json.dumps(out, indent=2)
+        report = " ".join(out.get("REPORT", []))
+        self.assertIn(f"coder #{n}", report, shown)
+        self.assertIn("twice", report, shown)
+        self.assertFalse((self.dir / "briefs" / f"coder-{n + 1}.md").exists(),
+                         self.brief_files())
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 7, stops)
+
+    def test_the_re_spawn_after_a_lifting_retry_stops_again_on_its_own_miss(self):
+        self.capped_stop()
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.spawned(self.next(0)), [("coder", 3)])
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+        self.assert_stops_again_on_the_miss_of(3)
+
+    def test_the_re_spawn_after_a_resume_stops_again_on_its_own_miss(self):
+        self.capped_stop()
+        self.resume()
+        out = self.next(0)
+        self.assertEqual(self.spawned(out), [("coder", 3)], json.dumps(out, indent=2))
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+        self.assert_stops_again_on_the_miss_of(3)
+
+    def test_explain_on_the_second_miss_previews_the_stop_and_stamps_nothing(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        metrics = self.dir / "metrics.json"
+        before, files = (self.dir / "state.json").read_text(), self.brief_files()
+        counted = metrics.read_text() if metrics.exists() else None
+        r = self.autodev("next", "--explain", "--reissue", "--dir", self.dir)
+        self.assertIn("twice", r.stdout, r.stdout + r.stderr)
+        self.assertIn("150", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+        self.assertEqual(self.brief_files(), files)
+        self.assertNotIn("stopped_seq", self.brief("coder", 2))
+        self.assertEqual(metrics.read_text() if metrics.exists() else None, counted)
+
+    def coder_refused(self):
+        """Coder #1 weakens a committed check line and returns: `record` refuses
+        it (MISMATCH), and `next` spawns coder #2, its refused retry."""
+        self.plan_session()
+        _, jobs = self.expect("coder")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("weakened\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        out = self.next(0, refused_ok=True)
+        self.assertIn("coder-1: refused (MISMATCH)", out["RECORDED"])
+        self.assertEqual(self.spawned(out), [("coder", 2)], json.dumps(out, indent=2))
+        return out
+
+    REFUSED = "`record` refused your last return for this job"
+    ISSUE = "src/due.acceptance.test.ts at line(s) 1"
+
+    def test_a_refused_capped_worker_gets_the_refusal_s_issues_not_the_no_result_note(self):
+        self.coder_refused()
+        issues = self.previous_issues("coder", 2)
+        self.assertIn(self.REFUSED, issues)
+        self.assertIn(self.ISSUE, issues)
+        self.assertNotIn("keep those edits", issues)
+        self.assertNotIn("ended without writing its result file", issues)
+        self.assertFalse(self.brief("coder", 2).get("turn_retry"))
+        (self.dir / "returns" / "coder-2.json").write_text("{not json")  # refused again
+        out = self.next_reissue(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("coder-2: refused (MALFORMED)", out["RECORDED"], shown)
+        self.assertEqual(self.spawned(out), [("coder", 3)], shown)
+        self.assertNotIn("REPORT", out, shown)  # no capped worker's twice-missing stop
+        issues = self.previous_issues("coder", 3)
+        self.assertNotIn("keep those edits", issues)
+        self.assertFalse(self.brief("coder", 3).get("turn_retry"))
+
+    def brief(self, worker, n):
+        return next(b for b in self.state()["briefs"] if (b["worker"], b["n"]) == (worker, n))
+
+    def test_a_refused_retry_that_ends_with_no_result_file_keeps_its_issues_with_the_note(
+            self):
+        self.coder_refused()  # coder #2 then ends with no result file
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("coder", 3)])
+        issues = self.previous_issues("coder", 3)
+        self.assertIn(self.REFUSED, issues)
+        self.assertIn(self.ISSUE, issues)
+        self.assertIn("keep those edits", issues)
+        self.assertIn("undo", issues)  # an issue that says to undo an edit wins
+        self.assertLess(issues.index(self.ISSUE), issues.index("keep those edits"))
+
+    def test_a_blocked_once_brief_that_ends_with_no_result_file_keeps_that_text_with_the_note(
+            self):
+        self.plan_session()
+        _, jobs = self.expect("coder")
+        self.answer(*jobs[0], "", status="blocked")
+        _, jobs = self.expect("coder")  # once: spawned again, told why
+        self.assertEqual(jobs, [("coder", 2)])
+        told = "Your last spawn for this job returned `blocked`"
+        self.assertIn(told, self.previous_issues("coder", 2))
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("coder", 3)])
+        issues = self.previous_issues("coder", 3)
+        self.assertIn(told, issues)
+        self.assertIn("keep those edits", issues)
+
+    def test_a_capped_coder_s_re_spawn_keeps_the_deviations_and_steps_it_stopped(self):
+        self.coder_ended_with_no_result_file()
+        deviation = "- step 1: built the sort in place: the helper the plan names is gone"
+        stopped = "- step 2: the store has no date type"
+        (self.dir / "deviations").mkdir(exist_ok=True)
+        (self.dir / "deviations" / "coder-1.md").write_text(deviation + "\n")
+        (self.dir / "blocked").mkdir(exist_ok=True)
+        (self.dir / "blocked" / "coder-1.md").write_text(stopped + "\n")
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assertEqual((self.dir / "deviations" / "coder-2.md").read_text(), deviation + "\n")
+        self.assertEqual((self.dir / "blocked" / "coder-2.md").read_text(), stopped + "\n")
+        issues = self.previous_issues("coder", 2)
+        self.assertIn("deviations_file", issues)
+        self.assertIn("blocked_file", issues)
+        self.answer("coder", 2, "BLOCKED", blocked="1", deviations="1", test_changes="none")
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("coder-2: ok BLOCKED", out["RECORDED"], shown)
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["planner"], shown)
+        self.assertIn(f"{self.dir}/blocked/coder-2.md", self.sets(*jobs[0])["blocked"])
+        sys.path.insert(0, str(SCRIPTS))
+        lines = import_module("lib.cmd_review").deviation_lines(self.state(), self.dir)
+        self.assertIn(f"  {deviation}", lines)
+
+    def test_a_refused_issue_outlasts_two_misses_and_the_lifted_stop(self):
+        self.coder_refused()  # coder #2, the refused retry, ends with no result file
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("coder", 3)])
+        self.assert_stops_again_on_the_miss_of(3)  # #3, the capped re-spawn, too
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertEqual(self.spawned(out), [("coder", 4)], json.dumps(out, indent=2))
+        issues = self.previous_issues("coder", 4)
+        self.assertIn(self.REFUSED, issues)
+        self.assertIn(self.ISSUE, issues)
+        self.assertIn("keep those edits", issues)
+        self.assertLess(issues.index(self.ISSUE), issues.index("keep those edits"))
+
+    def test_a_refused_acceptance_tester_s_capped_re_spawn_keeps_the_refusal_with_the_note(
+            self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        self.assertEqual(jobs, [("acceptance-tester", 1)])
+        (self.dir / "returns" / "acceptance-tester-1.json").write_text("{not json")
+        out = self.next(0, refused_ok=True)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("acceptance-tester-1: refused (MALFORMED)", out["RECORDED"], shown)
+        self.assertEqual(self.spawned(out), [("acceptance-tester", 2)], shown)
+        refusal = self.previous_issues("acceptance-tester", 2)
+        self.assertIn(self.REFUSED, refusal)
+        # Tester #2 ends with no result file: its capped re-spawn keeps the refusal.
+        out = self.next_reissue(0)
+        self.assertEqual(self.spawned(out), [("acceptance-tester", 3)],
+                         json.dumps(out, indent=2))
+        issues = self.previous_issues("acceptance-tester", 3)
+        self.assertIn(refusal, issues)
+        self.assertIn("keep those edits", issues)
+        self.assertLess(issues.index(refusal), issues.index("keep those edits"))
+
+    def test_a_blocked_acceptance_tester_s_capped_re_spawn_keeps_that_text_with_the_note(
+            self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        self.answer(*jobs[0], "", status="blocked")
+        _, jobs = self.expect("acceptance-tester")  # once: spawned again, told why
+        self.assertEqual(jobs, [("acceptance-tester", 2)])
+        told = "Your last spawn for this job returned `blocked`"
+        self.assertIn(told, self.previous_issues("acceptance-tester", 2))
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("acceptance-tester", 3)])
+        issues = self.previous_issues("acceptance-tester", 3)
+        self.assertIn(told, issues)
+        self.assertIn("keep those edits", issues)
+        self.assertLess(issues.index(told), issues.index("keep those edits"))
+
+    def test_after_a_lifted_stop_the_coder_gets_the_lists_of_the_spawn_it_replaces(self):
+        self.coder_ended_with_no_result_file()
+        deviation = "- step 1: built the sort in place: the helper the plan names is gone"
+        stopped = "- step 2: the store has no date type"
+        for sub, line in (("deviations", deviation), ("blocked", stopped)):
+            (self.dir / sub).mkdir(exist_ok=True)
+            (self.dir / sub / "coder-1.md").write_text(line + "\n")
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        # Coder #2 updates both lists, then ends with no result file too.
+        (self.dir / "deviations" / "coder-2.md").write_text(
+            deviation + "\n- step 3: kept the old cache: the plan's one is not built yet\n")
+        (self.dir / "blocked" / "coder-2.md").write_text(
+            stopped + "\n- step 4: the export needs a format the plan does not name\n")
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.spawned(self.next(0)), [("coder", 3)])
+        for sub in ("deviations", "blocked"):
+            self.assertEqual((self.dir / sub / "coder-3.md").read_text(),
+                             (self.dir / sub / "coder-2.md").read_text(), sub)
+        self.assertIn("coder-2.md", self.previous_issues("coder", 3))
+
+    def test_a_capped_re_spawn_with_no_lists_to_carry_writes_none(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assertFalse((self.dir / "deviations" / "coder-2.md").exists())
+        self.assertFalse((self.dir / "blocked" / "coder-2.md").exists())
+        self.assertNotIn("deviations_file", self.previous_issues("coder", 2))
 
 
 class ShipTest(NextCase):
@@ -2793,6 +3123,654 @@ class ShipTest(NextCase):
         self.assertIn("line 1200 ok", sent)
         self.assertNotIn("line 1190 ok", sent)
 
+    READY_ANSWERS = ("Mark ready for review", "Hold (keep it a draft)", "Stop")
+    ADD_A_ROUND = "Add a round and fix it"
+
+    def gate_labels(self, out):
+        """The answers the gate's first question in `out` offers, in order."""
+        questions = json.loads(out["QUESTION"])["questions"]
+        return [option["label"] for option in questions[0]["options"]]
+
+    def budget_line(self, out):
+        budget = out.get("BUDGET") or ""
+        return budget if isinstance(budget, str) else " ".join(budget)
+
+    def ready_gate_with_a_finding_left_open(self):
+        """A budget of 4 rounds, all spent, and review pass 1 leaving must-fix
+        C1 open: `next` asks the ready-for-review gate. Returns its output."""
+        self.draft_pr()
+        state = self.state()
+        state["budget"].update(total=4, remaining=0)
+        self.write_state(state)
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
+            "missing due date\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        self.refresh_body()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        return out
+
+    def test_a_ready_gate_with_a_finding_left_open_for_want_of_a_round_offers_one_more(self):
+        out = self.ready_gate_with_a_finding_left_open()
+        self.assertEqual(self.gate_labels(out), [*self.READY_ANSWERS, self.ADD_A_ROUND])
+        lines = [ln.split(" → ", 1)[1] for ln in out["AFTER"]
+                 if ln.startswith(f'"{self.ADD_A_ROUND}"')]
+        self.assertEqual(len(lines), 1, out["AFTER"])
+        self.assertIn("budget raise --by 1", lines[0])
+        r = subprocess.run(lines[0], shell=True, capture_output=True, text=True,
+                           env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, lines[0] + "\n" + r.stdout + r.stderr)
+        self.assertIn("RAISED: 1 of 5 left", r.stdout)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spent `pass-1` (review correction); 0 of 5 left",
+                      self.budget_line(out), shown)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:coder"], shown)
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["coder"], shown)
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/review/pass-1/corrections.md")
+        self.assertNotIn("QUESTION", out, shown)
+        self.assertNotIn("REPORT", out, shown)
+
+    def test_a_ready_gate_with_nothing_left_open_offers_the_three_answers_and_no_raise(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertEqual(self.gate_labels(out), list(self.READY_ANSWERS))
+        self.assertFalse([ln for ln in out["AFTER"] if "budget raise" in ln], out["AFTER"])
+        budget = self.state()["budget"]
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not stopped on the budget", r.stdout + r.stderr)
+        self.assertEqual(self.state()["budget"], budget)
+
+    def test_once_the_pr_is_marked_ready_a_round_can_not_be_added_for_what_is_open(self):
+        out = self.ready_gate_with_a_finding_left_open()
+        self.after(out, "Mark ready for review")
+        self.refresh_body()
+        out = self.next(0)
+        self.assertIn("gh pr ready 12", out["ACTION"])
+        self.after(out)
+        self.assertIn("pr-ready", self.state()["marks"])
+        budget = self.state()["budget"]
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not stopped on the budget", r.stdout + r.stderr)
+        self.assertEqual(self.state()["budget"], budget)
+
+    def correction_checked_in_the_working_tree(self):
+        """Pass 1 leaves must-fix C1 open; the coder's correction stays in the
+        working tree, review pass 2 checks it there, and `next` asks for
+        `commit`. Returns the verified commit before the correction."""
+        self.draft_pr()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.review_text = CLEAN_REVIEW
+        self.panel()
+        self.assertEqual(self.state()["phase6"]["review_pass"], 2)
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        return self.state()["phase6"]["verified_sha"]
+
+    def commit_and_push_by_hand(self, message):
+        """The user commits the working tree and pushes it, outside the run."""
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", message, cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        return self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+
+    def test_a_checked_correction_committed_and_pushed_by_hand_is_recorded_as_verified(
+            self):
+        earlier = self.correction_checked_in_the_working_tree()
+        logged = set((self.dir / "WORK_LOG.md").read_text().splitlines())
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertNotIn("commit: run", out["ACTION"], shown)
+        self.assertIn("push", out["ACTION"], shown)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        added = "\n".join(ln for ln in (self.dir / "WORK_LOG.md").read_text().splitlines()
+                          if ln not in logged)
+        self.assertIn(head[:7], added)
+        self.assertIn("verified commit", added.lower())
+        self.after(out)
+        self.refresh_body()  # asks to publish the description, not for `commit`
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+
+    def test_a_hand_commit_carrying_an_unchecked_edit_is_not_recorded_as_verified(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        (self.worktree / "due.ts").write_text("export const due = 3;\n")  # no check ran on it
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], earlier)
+        self.assertIn("commit: run", out["ACTION"], shown)
+        self.assertFalse([ln for ln in out.get("AFTER", []) if "git push" in ln], shown)
+
+
+class HandCommitTest(NextCase):
+    """A correction review pass 2 checked in the working tree, then committed
+    by hand: when `next` records HEAD as the verified commit, and when it asks
+    for `commit` or re-checks instead. A class of its own, beside ShipTest's
+    hand-commit checks, so run-tests.py runs it in a process of its own rather
+    than making ShipTest, the slowest class, slower."""
+
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    published = ShipTest.published
+    correction_checked_in_the_working_tree = ShipTest.correction_checked_in_the_working_tree
+    commit_and_push_by_hand = ShipTest.commit_and_push_by_hand
+
+    def correction_made(self, before_gate=None):
+        """Pass 1 leaves must-fix C1 open and the coder corrects it in the working
+        tree; `before_gate` runs after `next` records the coder and before the
+        quality gate. Returns the verified commit before the correction."""
+        self.draft_pr()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        if before_gate is None:
+            self.quality_gate()
+        else:
+            out = self.next(0)
+            self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+            before_gate()
+            r = self.autodev("quality-gate", "--dir", self.dir)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return self.state()["phase6"]["verified_sha"]
+
+    def commit_by_hand(self, *extra):
+        """The user commits the working tree outside the run, and pushes nothing."""
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "commit", "-q", *extra, cwd=self.worktree)
+        return self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+
+    def assert_asks_for_commit(self, out, earlier):
+        shown = json.dumps(out, indent=2)
+        self.assertIn("commit: run", out["ACTION"], shown)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], earlier)
+        self.assertFalse([ln for ln in out.get("AFTER", []) if "git push" in ln], shown)
+
+    def test_a_hand_commit_with_a_tracked_file_deleted_on_top_is_not_recorded(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        self.commit_and_push_by_hand("fix: guard sort")
+        (self.worktree / "due.ts").unlink()  # tracked, deleted, not committed
+        self.assert_asks_for_commit(self.next(0), earlier)
+
+    def test_a_hand_commit_with_an_uncommitted_edit_on_top_is_not_recorded(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        self.commit_and_push_by_hand("fix: guard sort")
+        (self.worktree / "sort.ts").write_text("export const sort = 2;\n")  # not committed
+        self.assert_asks_for_commit(self.next(0), earlier)
+
+    def test_a_hand_commit_that_changes_a_committed_check_line_is_not_recorded(self):
+        def weaken():  # the reports are stamped with it: only the check guard is left
+            (self.worktree / "src" / "due.acceptance.test.ts").write_text("weakened\n")
+        earlier = self.correction_made(before_gate=weaken)
+        self.review_text = CLEAN_REVIEW
+        self.panel()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        self.assert_asks_for_commit(self.next(0), earlier)
+
+    def test_a_checked_hand_commit_not_pushed_yet_is_recorded_and_then_pushed(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        head = self.commit_by_hand("-m", "fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        self.assertIn("push -u origin HEAD", out["ACTION"], shown)
+        self.assertTrue([ln for ln in out["AFTER"] if f"mark pushed --value {head}" in ln],
+                        shown)
+
+    def test_a_recorded_hand_commit_is_committed_at_once_not_at_the_next_next(self):
+        self.correction_checked_in_the_working_tree()
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        out = self.next(0)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], head)
+        self.assertGreaterEqual(phase6["commit_seq"], phase6["passes"][-1]["seq"])
+        logged = set((self.dir / "WORK_LOG.md").read_text().splitlines())
+        self.after(out)  # mark pushed
+        self.next(0)
+        added = [ln for ln in (self.dir / "WORK_LOG.md").read_text().splitlines()
+                 if ln not in logged]
+        self.assertFalse([ln for ln in added if "stands" in ln], added)
+
+    def test_a_checked_correction_amended_into_the_pushed_commit_stops_as_rewritten(self):
+        self.correction_checked_in_the_working_tree()
+        head = self.commit_by_hand("--amend", "--no-edit")
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        self.assertIn("rewritten", " ".join(out.get("REPORT", [])), shown)
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 16, stops)
+
+    def test_explain_on_a_checked_hand_commit_previews_recording_it_and_saves_nothing(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        state, log = ((self.dir / name).read_text() for name in ("state.json", "WORK_LOG.md"))
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"record HEAD {head[:12]} as the verified commit", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), state)
+        self.assertEqual((self.dir / "WORK_LOG.md").read_text(), log)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], earlier)
+
+    def committed_while_the_pass_is_out(self, before_gate=None, scope="after-commit"):
+        """Pass 2 (`scope`) starts on the uncommitted correction; before its
+        workers read it the user commits and pushes the working tree by hand,
+        and the pass's workers then return clean, the judge last (answered, not
+        recorded). `before_gate` is correction_made's. Returns (the verified
+        commit, the hand commit, the judge's job)."""
+        earlier = self.correction_made(before_gate=before_gate)
+        out = self.next(0)  # pass 2 on the uncommitted correction: the verifier first
+        shown = json.dumps(out, indent=2)
+        (vjob,) = self.spawned(out)
+        self.assertEqual(vjob[0], "verifier", shown)
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], scope)
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before the pass reads it
+        self.verifier_answer(vjob)
+        out = self.next(0)
+        jobs = self.spawned(out)
+        sec = [j for j in jobs if j[0].startswith("security-reviewer")]
+        panel = [j for j in jobs if j[0] == "code-reviewer"]
+        self.assertEqual((len(sec), len(panel)), (1, 3), json.dumps(out, indent=2))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.answer(*sec[0], "CLEAN", must_fix="0", pre_existing="0")
+        for w, n in panel:
+            (self.dir / "review" / "pass-2" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        _, (judge,) = self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
+        return earlier, head, judge
+
+    def test_a_correction_committed_while_its_review_pass_is_out_is_re_checked(self):
+        earlier, head, _ = self.committed_while_the_pass_is_out()
+        out = self.next(0)  # the pass settled clean, on a diff that held nothing
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], earlier)
+        self.assertEqual(phase6.get("unverified_commit"), head)
+        self.assertNotIn("commit: run", out.get("ACTION", ""), shown)
+        last = phase6["passes"][-1]
+        self.assertEqual((last["n"], last.get("since")), (3, earlier), shown)
+        self.assertIn("sort.ts", last["files"])
+        self.assertEqual([w for w, _ in self.spawned(out)], ["verifier"], shown)
+
+    def drop_start_head(self):
+        """The last pass as a `next` from before start_pass stamped its HEAD saved it."""
+        state = self.state()
+        state["phase6"]["passes"][-1].pop("start_head", None)
+        self.write_state(state)
+
+    def assert_re_checks_since(self, out, earlier, head):
+        """`out` records `head` as under re-check, not verified, and starts pass 3
+        on everything since verified commit `earlier`."""
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], earlier, shown)
+        self.assertEqual(phase6.get("unverified_commit"), head, shown)
+        last = phase6["passes"][-1]
+        self.assertEqual((last["n"], last["scope"], last.get("since")),
+                         (3, "outside", earlier), shown)
+        self.assertEqual([w for w, _ in self.spawned(out)], ["verifier"], shown)
+
+    def assert_recorded_without_a_new_pass(self, out, earlier, head):
+        """`out` records hand commit `head` as the verified commit (not `earlier`)
+        and starts no review pass 3."""
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertNotEqual(head, earlier)
+        self.assertEqual(phase6["verified_sha"], head, shown)
+        self.assertNotIn("commit: run", out.get("ACTION", ""), shown)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2), shown)
+        self.assertFalse((self.dir / "review" / "pass-3").exists())
+
+    def test_a_correction_committed_while_an_outside_pass_is_out_is_re_checked(self):
+        # The outside pass starts at the merge M, not at the verified commit V:
+        # only its start stamp tells that the hand commit came while it was out.
+        earlier, head, _ = self.committed_while_the_pass_is_out(
+            before_gate=self.merge_base_by_hand, scope="outside")
+        self.assertNotEqual(self.state()["phase6"]["passes"][-1].get("start_head"),
+                            earlier)
+        out = self.next(0)  # the pass settled clean, on a diff without the correction
+        self.assert_re_checks_since(out, earlier, head)
+
+    def test_an_older_after_commit_pass_settled_before_a_hand_commit_records_it(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["end_head"], earlier)
+        self.drop_start_head()  # as a `next` from 5.0.0 saved it
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assert_recorded_without_a_new_pass(self.next(0), earlier, head)
+
+    def test_an_older_after_commit_pass_out_during_a_hand_commit_re_checks_it(self):
+        earlier, head, _ = self.committed_while_the_pass_is_out()
+        self.drop_start_head()  # as a `next` from 5.0.0 saved it
+        out = self.next(0)  # records the judge: the pass ends at the hand commit
+        self.assertEqual(self.state()["phase6"]["passes"][1]["end_head"], head)
+        self.assert_re_checks_since(out, earlier, head)
+
+    def test_an_older_outside_pass_settled_before_a_hand_commit_records_it(self):
+        earlier = self.correction_made(before_gate=self.merge_base_by_hand)
+        merged = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        self.review_text = CLEAN_REVIEW
+        self.panel()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        last = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((last["scope"], last.get("since"), last["end_head"]),
+                         ("outside", earlier, merged))
+        self.drop_start_head()  # as a `next` from 5.0.0 saved it
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assert_recorded_without_a_new_pass(self.next(0), earlier, head)
+
+    def test_explain_on_a_correction_committed_while_its_pass_is_out_previews_the_re_check(
+            self):
+        _, _, judge = self.committed_while_the_pass_is_out()
+        r = self.autodev("record", *map(str, judge), "--dir", self.dir)  # as `next` would
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        files = [(self.dir / name).read_text() for name in ("state.json", "WORK_LOG.md")]
+        index = [self.sh("git", *args, cwd=self.worktree)
+                 for args in (("diff", "--cached"), ("status", "--porcelain"))]
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("record HEAD as under re-check and start a review pass on everything "
+                      "since the verified commit", r.stdout)
+        self.assertEqual([(self.dir / name).read_text()
+                          for name in ("state.json", "WORK_LOG.md")], files)
+        self.assertEqual([self.sh("git", *args, cwd=self.worktree)
+                          for args in (("diff", "--cached"), ("status", "--porcelain"))],
+                         index)
+        phase6 = self.state()["phase6"]
+        self.assertNotIn("unverified_commit", phase6)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2))
+        self.assertFalse((self.dir / "review" / "pass-3").exists())
+
+    def merge_base_by_hand(self):
+        """base.ts lands on main, from another clone; the user merges main into
+        the worktree by hand, the correction uncommitted, and pushes nothing."""
+        base = self.tmp / "base-clone"
+        self.sh("git", "clone", "-q", "-b", "main", str(self.tmp / "origin.git"), str(base))
+        (base / "base.ts").write_text("export const base = 1;\n")
+        self.sh("git", "add", "base.ts", cwd=base)
+        self.sh("git", "commit", "-q", "-m", "add base.ts", cwd=base)
+        self.sh("git", "push", "-q", "origin", "main", cwd=base)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+        self.sh("git", "merge", "-q", "--no-edit", "origin/main", cwd=self.worktree)
+
+    def test_a_correction_checked_by_an_outside_pass_then_committed_by_hand_is_verified(
+            self):
+        earlier = self.correction_made(before_gate=self.merge_base_by_hand)
+        merged = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        self.assertNotEqual(merged, earlier)
+        self.review_text = CLEAN_REVIEW
+        self.panel()  # pass 2 reads the working tree against the verified commit
+        phase6 = self.state()["phase6"]
+        last = phase6["passes"][-1]
+        self.assertEqual((last["n"], last["scope"], last.get("since")),
+                         (2, "outside", earlier), json.dumps(last, indent=2))
+        self.assertIn("base.ts", last["files"])
+        self.assertEqual(phase6.get("unverified_commit"), merged)
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], head, shown)
+        self.assertNotIn("commit: run", out["ACTION"], shown)
+        self.assertIn("push", out["ACTION"], shown)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2), shown)
+        self.assertFalse(self.spawned(out), shown)
+
+    def test_a_hand_commit_after_a_pass_that_settled_at_a_checkpoint_is_verified(self):
+        earlier = self.correction_made()
+        self.review_text = CLEAN_REVIEW
+        self.panel()  # pass 2's judge answers: the next `next` records it
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # due in the `next` that records it
+        self.write_state(state)
+        out = self.next(6)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("checkpoint", out["ACTION"], shown)
+        self.assertTrue([ln for ln in out["RECORDED"] if ln.startswith("review-judge")],
+                        shown)
+        self.after(out)  # the handoff; the session ends
+        head = self.commit_and_push_by_hand("fix: guard sort")  # between sessions
+        self.resume()
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1000
+        self.write_state(state)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], head, shown)
+        self.assertNotEqual(head, earlier)
+        self.assertNotIn("commit: run", out["ACTION"], shown)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2), shown)
+        self.assertFalse((self.dir / "review" / "pass-3").exists())
+
+    def test_a_hand_commit_after_re_votes_recorded_at_a_checkpoint_is_verified(self):
+        earlier = self.correction_made()
+        _, jobs = self.reviewers()  # pass 2, on the uncommitted correction
+        for w, n in jobs:
+            (self.dir / "review" / "pass-2" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("x"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        lone = CODE_REVIEW.replace("1 open", "0 open").replace(
+            "| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | 3/3 | High "
+            "| open |\n", "")  # lone findings only, nothing must-fix
+        (self.dir / "CODE_REVIEW.md").write_text(lone.format(tree=self.tree()))
+        self.expect("review-judge", "REVOTE", must_fix_open="0", revote="2")
+        _, jobs = self.expect("code-reviewer")  # the re-votes
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            rows = "".join(f"| {fid} | disagree | not reachable |\n" for fid in ("C4", "C6")
+                           if fid in self.sets(w, n)["findings"])
+            (self.dir / "review" / "pass-2" / f"VOTES-{slot}.md").write_text(
+                "| Finding | Vote | Reason |\n|---|---|---|\n" + rows)
+            self.answer(w, n, "VOTED", findings="1", leads="0")
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # due in the `next` that records them
+        self.write_state(state)
+        out = self.next(6)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("checkpoint", out["ACTION"], shown)
+        self.assertTrue([ln for ln in out["RECORDED"] if ln.startswith("code-reviewer")],
+                        shown)
+        self.assertEqual(self.state()["phase6"]["passes"][-1].get("end_head"), earlier)
+        self.after(out)  # the handoff; the session ends
+        head = self.commit_and_push_by_hand("fix: guard sort")  # between sessions
+        self.resume()
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1000
+        self.write_state(state)
+        out = self.next(0)  # applies the re-votes: nothing is left open
+        self.assert_recorded_without_a_new_pass(out, earlier, head)
+        self.assertIn("lone finding; re-vote", (self.dir / "CODE_REVIEW.md").read_text())
+
+    def test_a_hand_commit_during_a_judge_s_spec_problem_stop_signed_off_is_verified(self):
+        earlier = self.correction_made()
+        _, jobs = self.reviewers()  # pass 2, on the uncommitted correction
+        for w, n in jobs:
+            (self.dir / "review" / "pass-2" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        _, (judge,) = self.expect("review-judge")
+        (self.dir / "spec-problems").mkdir(exist_ok=True)
+        (self.dir / "spec-problems" / f"review-judge-{judge[1]}.md").write_text(
+            "- condition 1: the panel shows the order is backwards\n")
+        self.answer(*judge, "CLEAN", must_fix_open="0", revote="0", spec_problems="1")
+        out = self.next(4)
+        self.assertIn("in review pass 2", " ".join(out["REPORT"]))
+        head = self.commit_and_push_by_hand("fix: guard sort")  # during the stop
+        self.sign_off(out)
+        self.assert_recorded_without_a_new_pass(self.next(0), earlier, head)
+
+    # A step of a high-risk pass that sends a worker out after `next` stamped
+    # the pass's end HEAD drops the stamp: a commit made while that worker is
+    # out is re-checked, never recorded. One test per place review_step (or
+    # the re-votes) sends a worker out again.
+
+    def write_spec_problem(self, worker, n, text):
+        path = self.dir / "spec-problems" / f"{worker}-{n}.md"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text)
+
+    def panel_returns(self, jobs, review=CLEAN_REVIEW, findings="none"):
+        """Pass 2's code reviewers return with `findings` and the judge's
+        CODE_REVIEW.md is `review`."""
+        for w, n in jobs:
+            (self.dir / "review" / "pass-2" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report(findings))
+            self.answer(w, n, "REVIEWED", findings="0" if findings == "none" else "1",
+                        leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(review.format(tree=self.tree()))
+
+    def retried_at_the_stamped_stop(self, earlier, out):
+        """At pass 2's spec-problem stop `out`, stamped at the verified commit,
+        the user retries."""
+        self.assertIn("in review pass 2", " ".join(out["REPORT"]))
+        self.assertEqual(self.state()["phase6"]["passes"][-1].get("end_head"), earlier)
+        r = self.autodev("override", "retry", "--text", "I changed PLAN.md", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_hand_commit_while_a_high_risk_retried_verifier_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        out = self.next(0)  # pass 2, on the uncommitted correction: the verifier first
+        (ver,) = self.spawned(out)
+        self.assertEqual(ver[0], "verifier", json.dumps(out, indent=2))
+        self.write_spec_problem(*ver, "- missing: a todo with no due date must sort last\n")
+        self.spec_eval()
+        self.answer(*ver, "ALL_MET", tree="x", corrections="0", spec_problems="1")
+        jobs = self.spawned(self.next(0))
+        sec = [j for j in jobs if j[0].startswith("security-reviewer")]
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.answer(*sec[0], "CLEAN", must_fix="0", pre_existing="0")
+        self.panel_returns([j for j in jobs if j[0] == "code-reviewer"])
+        self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
+        self.retried_at_the_stamped_stop(earlier, self.next(4))
+        _, (again,) = self.expect("verifier")  # the pass's verifier, out again
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before it reads it
+        self.verifier_answer(again)
+        self.assert_re_checks_since(self.next(0), earlier, head)
+
+    def test_a_hand_commit_while_a_retried_security_reviewer_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        _, panel = self.reviewers(problems="- missing: the due date must be the owner's to "
+                                           "set\n")
+        self.panel_returns(panel)
+        self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
+        self.retried_at_the_stamped_stop(earlier, self.next(4))
+        _, (sec,) = self.expect("security-reviewer-sensitive")  # out again
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before it reads it
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.answer(*sec, "CLEAN", must_fix="0", pre_existing="0")
+        self.assert_re_checks_since(self.next(0), earlier, head)
+
+    def test_a_hand_commit_while_a_retried_judge_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        _, panel = self.reviewers()  # pass 2, on the uncommitted correction
+        self.panel_returns(panel)
+        _, (judge,) = self.expect("review-judge")
+        self.write_spec_problem(*judge, "- condition 1: the panel shows the order is "
+                                        "backwards\n")
+        self.answer(*judge, "CLEAN", must_fix_open="0", revote="0", spec_problems="1")
+        self.retried_at_the_stamped_stop(earlier, self.next(4))
+        _, (again,) = self.expect("review-judge")  # it consolidates the pass again
+        self.assertEqual(self.mode(*again), "consolidate")
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before it reads it
+        self.answer(*again, "CLEAN", must_fix_open="0", revote="0")
+        self.assert_re_checks_since(self.next(0), earlier, head)
+
+    def test_a_hand_commit_while_a_leads_security_run_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
+                "the security review")
+        _, panel = self.reviewers()  # pass 2, on the uncommitted correction
+        self.panel_returns(panel, CLEAN_REVIEW.replace("## Security leads\nnone",
+                                                       f"## Security leads\n{lead}"))
+        self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
+        # The `next` that finds the pass returned stamps its end, then sends
+        # the leads out.
+        _, (sec,) = self.expect("security-reviewer-sensitive")
+        self.assertEqual(self.sets(*sec)["leads"], lead)
+        head = self.commit_and_push_by_hand("fix: guard sort")  # while it is out
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.answer(*sec, "CLEAN", must_fix="0", pre_existing="0")
+        self.assert_re_checks_since(self.next(0), earlier, head)
+
+    def test_a_hand_commit_while_a_re_spawned_security_verify_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        # A pre-existing finding: the judge verifies it beside its consolidate.
+        pending = SECURITY_REVIEW.replace("| Medium | confirmed |", "| Medium | pending |")
+        _, panel = self.reviewers(security=(pending, "CLEAN", "0", "1"))
+        lone = CODE_REVIEW.replace("1 open", "0 open").replace(
+            "| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | 3/3 | High "
+            "| open |\n", "")  # lone findings only, nothing must-fix
+        self.panel_returns(panel, lone, findings="x")
+        _, jobs = self.expect("review-judge")
+        verify = next(j for j in jobs if self.mode(*j) == "security-verify")
+        consolidate = next(j for j in jobs if j != verify)
+        self.answer(*verify, "", status="blocked")
+        self.answer(*consolidate, "REVOTE", must_fix_open="0", revote="2")
+        _, jobs = self.expect("code-reviewer")  # the re-votes
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            rows = "".join(f"| {fid} | disagree | not reachable |\n" for fid in ("C4", "C6")
+                           if fid in self.sets(w, n)["findings"])
+            (self.dir / "review" / "pass-2" / f"VOTES-{slot}.md").write_text(
+                "| Finding | Vote | Reason |\n|---|---|---|\n" + rows)
+            self.answer(w, n, "VOTED", findings="1", leads="0")
+        # The `next` that applies the re-votes stamps the pass's end, then
+        # sends the security-verify judge out again.
+        _, (again,) = self.expect("review-judge")
+        self.assertEqual(self.mode(*again), "security-verify")
+        self.assertIn("lone finding; re-vote", (self.dir / "CODE_REVIEW.md").read_text())
+        head = self.commit_and_push_by_hand("fix: guard sort")  # while it is out
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "security-corrections.md").write_text(
+            "# Required changes\nNone.\n")
+        self.answer(*again, "VERIFIED", must_fix_open="0", revote="0")
+        self.assert_re_checks_since(self.next(0), earlier, head)
 
 # A standard-risk plan: no Security/Compliance criteria, so no S1 check.
 STANDARD_PLAN = (PLAN.replace("Risk: high — only the owner may set a due date",
@@ -2825,6 +3803,7 @@ class LeanTest(NextCase):
     refresh_body = ShipTest.refresh_body
     published = ShipTest.published
     mark_ready = ShipTest.mark_ready
+    commit_and_push_by_hand = ShipTest.commit_and_push_by_hand
     plan_text = STANDARD_PLAN
 
     def setUp(self):
@@ -3089,6 +4068,54 @@ class LeanTest(NextCase):
         self.assertGreater(again[0][1], ver[1])
         # The user may have changed PLAN.md: the verifier judges every condition again.
         self.assertEqual(self.sets(*again[0])["mode"], "first pass")
+
+    def correction_pass_stopped_on_a_spec_problem(self):
+        """Pass 1 leaves C1 open; the coder's correction stays in the working
+        tree, and pass 2's verifier and reviewer return, the verifier finding a
+        criterion missing: `next` stops. Returns (the verified commit, the
+        stop)."""
+        self.draft_pr()
+        self.solo(verifier="CORRECT", finding=True)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        ver, _ = self.solo(verifier=None)  # pass 2, on the uncommitted correction
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], "after-commit")
+        self.spec_eval()
+        self.spec_problem(*ver, "- missing: a todo with no due date must sort last\n")
+        self.answer(*ver, "ALL_MET", tree="x", corrections="0", spec_problems="1")
+        out = self.next(4)
+        self.assertIn("in review pass 2", " ".join(out["REPORT"]))
+        return self.state()["phase6"]["verified_sha"], out
+
+    def test_a_hand_commit_during_a_spec_problem_stop_signed_off_is_verified(self):
+        earlier, out = self.correction_pass_stopped_on_a_spec_problem()
+        head = self.commit_and_push_by_hand("fix: guard sort")  # during the stop
+        self.sign_off(out)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertNotEqual(head, earlier)
+        self.assertEqual(phase6["verified_sha"], head, shown)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2), shown)
+
+    def test_a_hand_commit_while_a_retried_verifier_is_out_is_re_checked(self):
+        earlier, _ = self.correction_pass_stopped_on_a_spec_problem()
+        r = self.autodev("override", "retry", "--text", "I added it to PLAN.md",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, (again,) = self.expect("verifier")  # the pass's verifier, out again
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before it reads it
+        self.verifier_answer(again)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], earlier, shown)
+        self.assertEqual(phase6.get("unverified_commit"), head, shown)
+        last = phase6["passes"][-1]
+        self.assertEqual((last["n"], last["scope"], last.get("since")),
+                         (3, "outside", earlier), shown)
 
     def test_a_fix_to_the_spec_holds_a_brief_still_out_to_the_new_spec(self):
         self.draft_pr()
@@ -6760,6 +7787,28 @@ class OverrideTest(OverrideCase):
         self.quality_gate()  # the gate runs again, no worker
         self.enter_stage("ship")
         self.assertEqual(self.state()["budget"]["remaining"], 4)  # the gate's correction is free
+
+    def test_a_capped_re_spawn_sent_by_the_next_that_settles_a_fix_stops_on_its_miss(self):
+        BuildTest.coder_ended_with_no_result_file(self)
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        out = self.next_reissue(4)
+        self.assertIn("twice", " ".join(out["REPORT"]))
+        n = self.fix(out, "give the coder more room")[1]
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "sorted.ts").write_text("export const stable = true;\n")
+        self.report(n, changed="- `src/sorted.ts` — the stable sort the user asked for")
+        self.answer("fixer", n, "FIXED", fix_report=str(self.dir / "override" /
+                                                        f"fixer-{n}.md"), changed="1")
+        out = self.next(0)  # settles the fix, and sends coder #2's job out once more
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.spawned(out), [("coder", 3)], shown)
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+        out = self.next_reissue(4)  # coder #3 ends with no result file too
+        shown = json.dumps(out, indent=2)
+        report = " ".join(out.get("REPORT", []))
+        self.assertIn("coder #3", report, shown)
+        self.assertIn("twice", report, shown)
+        self.assertFalse((self.dir / "briefs" / "coder-4.md").exists(), shown)
 
     def test_a_typed_instruction_spawns_the_fixer_and_the_gate_runs_again(self):
         out, _ = self.red_gate()

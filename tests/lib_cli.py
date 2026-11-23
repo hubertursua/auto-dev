@@ -65,7 +65,7 @@ def gate_summary(args):
     except art.ArtifactError as exc:
         raise Fail(str(exc), FAILED, "MALFORMED") from None
     questions = [cmd_review.question("Gate", f"{args.gate} gate: how do you want to proceed?",
-                                     cmd_review.GATE_OPTIONS[args.gate])] + extra
+                                     cmd_review.gate_options(state, args.gate))] + extra
     if args.json:
         print(json.dumps({"result": "SUMMARY", "summary": lines, "questions": questions},
                          indent=2))

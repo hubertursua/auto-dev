@@ -31,7 +31,9 @@ are yours, besides steps 3–9 below:
 - **The ready-for-review gate (exit 5).** With pre-existing security findings
   it asks one more question per finding (_What each gate option does_ in
   `references/tables.md`): run the `mark triage-<ID>` line for each answer.
-  Then `gh pr ready`, as printed.
+  Then `gh pr ready`, as printed. When a pass left findings open for want of
+  a round, it also offers `Add a round and fix it`: for that answer run its
+  `AFTER` line (it adds the round), then `next`, which starts the correction.
 
 ## 3. Commit
 
