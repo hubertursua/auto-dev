@@ -4730,7 +4730,17 @@ class CiTest(NextCase):
         self.unwatchable_after_a_gate_that_left_a_check_to_ci()
         out = self.next(0)
         shown = json.dumps(out, indent=2)
-        self.assertIn("quality-gate", out.get("ACTION", ""), shown)
+        action = out.get("ACTION", "")
+        # The ACTION is the gate's run itself: its first command is `quality-gate`,
+        # and it doesn't say nothing was done or send the orchestrator to `next` instead.
+        first = re.search(r"`([^`]*)`", action)
+        self.assertIsNotNone(first, shown)
+        words = shlex.split(first.group(1))
+        self.assertTrue(any(w.endswith("autodev.py") for w in words), shown)
+        self.assertIn("quality-gate", words, shown)
+        self.assertIn("--dir", words, shown)
+        self.assertNotIn("nothing was done", action, shown)
+        self.assertNotIn("--explain", action, shown)
         self.assertNotIn("QUESTION", out, shown)
         self.assertIn("CI can't be watched", out.get("RULE", ""), shown)
         self.assertIn("the quality gate runs every check whole", out.get("RULE", ""), shown)

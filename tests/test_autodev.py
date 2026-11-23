@@ -5814,13 +5814,16 @@ class QualityGateTest(RunCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("skipped:", r.stdout)
         self.assertNotIn("true", self.timings())
-        # The gate's one test check, stopped at its timeout, saves nothing.
+        # A check run whole beside the gate's one test check, stopped at its
+        # timeout, saves nothing.
         py = shlex.quote(sys.executable)
         sleeper = f"{py} -c 'import time; time.sleep(30)'"
-        self.set_gate(self.lint_check(), {"kind": "test", "command": sleeper,
-                                          "report": "TEST.md", "files": f"{sleeper} <files>"})
+        self.set_gate({"kind": "lint", "command": sleeper, "report": "SLOW.md"},
+                      self.unit_check())
         r = self.gate("--timeout", "1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["SLOW.md"], r.stdout)
+        self.assertIn(f"`{sleeper}`", (self.dir / "lint" / "SLOW.md").read_text())
         self.assertEqual([c for c in self.timings() if c.startswith(sleeper)], [])
         # Two test checks both run whole, and each saves its time.
         self.set_gate(self.lint_check(), self.unit_check(),
