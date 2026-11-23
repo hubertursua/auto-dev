@@ -1573,7 +1573,7 @@ class BuildTest(NextCase):
 
     def test_a_resent_brief_starts_the_gate_attempt_count_again(self):
         self.plan_session()
-        _, jobs = self.expect("coder")  # spawned, and never returns
+        self.expect("coder")  # spawned, and never returns
         state = self.state()
         state["settings"]["gate"][0]["command"] = "false"
         self.write_state(state)
