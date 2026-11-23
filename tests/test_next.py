@@ -1165,6 +1165,15 @@ class PlanTest(NextCase):
         self.assert_waits_for(self.next(0), "planner #1")
         self.assertEqual(self.brief_files(), before)
 
+    def test_a_brief_sent_again_as_is_starts_its_spawn_time_again(self):
+        # `run gate` counts a check's failed attempts from the brief's mtime;
+        # the same brief sent out again is a new spawn, so its count starts over.
+        self.expect("planner")
+        brief = self.dir / "briefs" / "planner-1.md"
+        os.utime(brief, (1_000_000, 1_000_000))
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        self.assertGreater(brief.stat().st_mtime, time.time() - 60)
+
     def test_a_retry_at_the_three_spawn_stop_sends_the_brief_again(self):
         self.stopped_after_three_spawns()
         r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
@@ -1571,7 +1580,7 @@ class BuildTest(NextCase):
         self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
         self.assertNotIn("RULE", out)  # only the re-run CI that can't be watched asks shows it
 
-    def test_a_resent_brief_starts_the_gate_attempt_count_again(self):
+    def test_a_reissued_coder_starts_the_gate_attempt_count_again(self):
         self.plan_session()
         self.expect("coder")  # spawned, and never returns
         state = self.state()
@@ -1586,7 +1595,7 @@ class BuildTest(NextCase):
         self.assertEqual(failing_run(), ["  attempt: 1 of 3 failed for check 1"])
         self.assertEqual(failing_run(), ["  attempt: 2 of 3 failed for check 1"])
         time.sleep(0.05)
-        # sent out again (as #2: it returned with no result file, todo 30)
+        # sent out again as a new brief, #2, since it returned with no result file
         self.assertEqual(self.spawned(self.next(0, reissue=True)), [("coder", 2)])
         time.sleep(0.05)
         self.assertEqual(failing_run(), ["  attempt: 1 of 3 failed for check 1"])
