@@ -466,8 +466,8 @@ def gate_lines(gate, ad, worker, failing=None):
     for one with no scoped form) and every other test check with no line, since
     CI (one test check) or the quality gate (two or more) runs them whole. In a
     correction, a test check in `failing` (one the quality gate's latest run
-    lists as failing) gets its `--files` line when it has a `files` form, else
-    its whole line."""
+    lists as failing, minus any the user signed off) gets its `--files` line
+    when it has a `files` form, else its whole line."""
     found = cmd_run.test_check(gate)
     chosen = found[0] if found else None
     who, whole = whole_runner(gate)

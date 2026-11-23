@@ -64,7 +64,8 @@ The gate summaries (post-plan, pr, ready, main)
     preconditions, then shows the summary and asks the AskUserQuestion it
     prints.
     ready (the ready-for-review gate, on the draft PR once its reviews have
-    settled): every report is fresh, one passing lint report per gate command,
+    settled): every report is fresh, one passing lint report per gate command
+    (or skipped, for a test check the quality gate left to CI),
     no submodule holds uncommitted edits (`git submodule foreach` lists them),
     no Unjustified integrity finding is open; then the draft PR and its CI, the
     acceptance block and the two reviews, and one triage question per

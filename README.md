@@ -188,8 +188,9 @@ weakening them. Verification is built around that:
   that a correction after a quality gate that found a test check failing
   gives it that check's line: scoped when the check has a `files` form, else
   whole, unless the user signed that check off at a red-gate stop, which counts
-  it green for the rest of the run; a check red only in CI or in a reviewer's or the verifier's
-  corrections gets no extra line, and the push lets CI confirm the fix); then
+  it green for the rest of the run; a check red only in CI or in a
+  reviewer's or the verifier's corrections gets no extra line, and the push
+  lets CI confirm the fix); then
   `autodev.py quality-gate` runs the gate again, as a script with no worker,
   and writes its reports. When CI is watched and the gate has one test check,
   it runs each non-test check whole and that test check only on the change's
