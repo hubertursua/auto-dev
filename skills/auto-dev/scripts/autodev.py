@@ -38,8 +38,8 @@ Subcommands:
     mutants   pick which mutants a verifier re-check runs again; record a finished pass
     run       run one of the profile's gate or test commands in the worktree, or
               wait for one
-    quality-gate       run the quality gate (test checks scoped to the change when
-                       CI is watched) and write its lint reports
+    quality-gate       run the quality gate (a lone test check scoped to the change
+                       when CI is watched) and write its lint reports
     verify    the verifier's routine steps: prep a pass, then compare the tree
     next      print the pipeline's one next action (the orchestrator's loop); with
               --repo, before the run exists, Phase 1's setup

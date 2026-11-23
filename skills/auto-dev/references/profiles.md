@@ -96,16 +96,25 @@ Fields:
   expand a file named `$(…)`, and both `validate-config.py` and `run` refuse a
   quoted one. Workers run a check through `autodev.py run gate
   <n>`, which runs `command` in the worktree, or `files` with `--files <path>
-  …`. The quality gate runs each non-test check whole this way, and each test
-  check only on the change's tests when CI is watched (its `files` form, on the
-  test files the branch changed and the acceptance check files; every check
-  whole when CI isn't watched), and the coder runs test checks only scoped: CI
-  is the one full run of the test suite.
+  …`. The quality gate runs each non-test check whole this way. When CI is
+  watched and the gate has one `kind: test` check, it runs that check only on
+  the change's tests (its `files` form, on the test files the branch changed
+  and the acceptance check files), and leaves it to CI, naming it in its
+  summary, when it has no `files` form or the change has no test file. When the
+  gate has two or more test checks, or CI isn't watched, it runs every check
+  whole. The coder runs only the test check `run test` uses (below), and only
+  scoped: CI is the one full run of the test suite. The one exception is a
+  coder correction after a quality gate that found a test check failing: the
+  coder's brief then gives each test check the gate's latest run lists as
+  failing its line, scoped when it has a `files` form, else whole. A test
+  check red only in CI or in the verifier's or a reviewer's corrections gets
+  no line beyond the scoped ones the coder already has; with no scoped form it
+  runs nothing, and the push lets CI confirm the fix.
   `run test` runs the test check scoped, with `--files` or `--tests` (below);
   run with neither it runs whole and warns. When the gate has several test checks,
   `run test`, the verifier's acceptance run and its mutation run use the first
-  one with a `files` form (else the first test check), so give that form to
-  the check that runs the test files. The test check's `files` form must name
+  one with a `files` form (else the first test check), so give that form to the
+  check that runs the test files. The test check's `files` form must name
   every test it runs and its result, since a base run and the verifier's
   acceptance run read the names. Without a `files` form a check only runs whole: a
   worker that wanted it scoped runs it whole and reads the lines about its

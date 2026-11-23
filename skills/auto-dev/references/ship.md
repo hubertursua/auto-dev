@@ -19,9 +19,9 @@ each worker to spawn, each command to run and each gate to ask. The steps that
 are yours, besides steps 3–9 below:
 
 - **The quality gate**, when a correction runs, or when a CI watch can't see
-  CI (it timed out or found no checks) after a gate that ran a test check only
-  on the change's tests: `autodev.py quality-gate`, as printed, with the Bash
-  tool's timeout at 600000 ms. Whatever it exits, run its `AFTER` line.
+  CI (it timed out or found no checks) after a gate that ran its test check
+  only on the change's tests or left it to CI: `autodev.py quality-gate`, as
+  printed, with the Bash tool's timeout at 600000 ms. Whatever it exits, run its `AFTER` line.
 - **`ci-watch`.** Whatever it exits, run its `AFTER` line (`next`). Never
   report CI as green when it never ran. On `CONFLICT` (exit 4: the PR conflicts
   with its base, so no check runs), tell the user the PR conflicts with its

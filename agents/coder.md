@@ -67,8 +67,16 @@ Each runs the profile's test check in the worktree, scoped when the check
 has a scoped form, and saves its output; `--tests` runs only the named tests,
 and `run` says which form ran on its `scope:` line. Never run a test check
 whole: CI runs the whole suite ({{test_command}}), and is the one full run of
-it. A test check with no scoped form is left to CI: don't run it, and name it
-in one line above the result block.
+it. Run your tests only through these lines, the test check `run test` uses,
+and run no other test check. A test check with no scoped form is left to CI
+(or, beside another test check, to the quality gate's whole run): don't run
+it, and name it in one line above the result block. The one exception is a
+correction after a quality gate that found a test check failing: the gate
+list below then gives that check a `run:` line, and that line wins over the
+rules above. A test check red only in CI or in the verifier's or a
+reviewer's corrections gets no such line: run its tests only through the
+scoped lines you already have; with none, run nothing, and the push lets CI
+confirm the fix.
 Never type the test command yourself: a permission check refuses `cd
 <worktree> && …` and every rewritten form. Scope hints: {{test_notes}}. Do NOT
 commit and do NOT open a PR — just leave the working tree with the change
@@ -81,11 +89,16 @@ ORDER, with the `run:` command listed under it:
 That command runs the profile's command exactly as written, in the worktree,
 saves its whole output under {{artifact_dir}}/tmp/run/, and prints the exit
 code and the output's last lines. Never type a profile command yourself. Run
-each non-test check IN FULL, never scoped or sampled, and each test check only
-scoped, on the tests you wrote or changed and the tests of the modules you
-touched, with the `run:` lines listed under it; a test check with no scoped
-form has no `run:` line: it is left to CI, so name it in one line above the
-result block. Once the Bash tool moves a run to the background it is waited
+each non-test check IN FULL, never scoped or sampled, and the test check `run
+test` uses only scoped, on the tests you wrote or changed and the tests of the
+modules you touched, with the `run:` lines listed under it. In a correction,
+each test check the quality gate's latest run found failing has a `run:` line
+under it (its `--files` line when it has a `files` form, else its whole
+line): run that check only with that line, to see your fix pass. A test check with
+no `run:` line (one with no scoped form, or another test check) you don't run:
+it is left to CI, or to the quality gate's whole run when the gate has two or
+more test checks, as its entry says; name it in one line above the result
+block. Once the Bash tool moves a run to the background it is waited
 for with `run wait`, as the rule at the top says. Fix what it reports in your
 code; a check's final run must come after your last edit. `run gate` counts
 each failing run of a check since you were spawned, scoped or whole, and

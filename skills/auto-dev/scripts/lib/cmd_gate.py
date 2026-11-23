@@ -1,6 +1,6 @@
 """autodev.py quality-gate — run the profile's quality gate in the run's
-worktree (its test checks only on the change's tests when CI is watched) and
-write its reports.
+worktree (a lone test check only on the change's tests when CI is watched)
+and write its reports.
 
 Usage:
     autodev.py quality-gate --dir <artifact-dir> [--timeout <seconds>] [--json]
@@ -18,13 +18,15 @@ fails. Each check's whole output is saved under <artifact-dir>/tmp/run/.
 
 CI is the one full run of the test suite when it is watched: the run's CI
 provider is neither `none` nor `gitlab` (which `ci-watch` can't read) and its
-last CI watch didn't end `unavailable` or `timeout`. Then each non-test check
-runs whole, and each `kind: test` check that has a `files` form runs only on
-the change's test files: the test files the branch added or changed since its
-cut, committed or not, that still exist, plus the acceptance check files
-MANIFEST.md names. A `kind: test` check with no `files` form, or one when the
-change has no test file, is not run: its report says `skipped` and CI runs it.
-When CI isn't watched, or the cut can't be found, every check runs whole.
+last CI watch didn't end `unavailable` or `timeout`. Then, when the gate has
+one `kind: test` check, each non-test check runs whole and that test check,
+when it has a `files` form, runs only on the change's test files: the test
+files the branch added or changed since its cut, committed or not, that still
+exist, plus the acceptance check files MANIFEST.md names. That test check with
+no `files` form, or when the change has no test file, is not run: its report
+says `skipped` and CI runs it. When the gate has two or more `kind: test`
+checks, when CI isn't watched, or when the cut can't be found, every check
+runs whole.
 
 The time each whole run that finished took is saved in
 <artifact-dir>/tmp/run/timings.json, keyed by its command: `autodev.py run`
@@ -118,11 +120,18 @@ def change_test_files(ad, state, worktree):
 def plan_checks(ad, state, worktree, gate):
     """[(mode, detail)] per check, decided once before the runs: ("whole", None),
     ("files", [paths]) or ("skip", why)."""
-    watched = ci_watched(state)
-    files = change_test_files(ad, state, worktree) if watched else None
+    whole = [("whole", None)] * len(gate)
+    # The change's test files can't be handed to one test check of several: a
+    # file another check owns may be one it can't run. So only a gate with one
+    # test check is scoped; with two or more, every check runs whole.
+    if not ci_watched(state) or sum(c.get("kind") == "test" for c in gate) != 1:
+        return whole
+    files = change_test_files(ad, state, worktree)
+    if files is None:
+        return whole
     plan = []
     for check in gate:
-        if not watched or files is None or check.get("kind") != "test":
+        if check.get("kind") != "test":
             plan.append(("whole", None))
         elif not cmd_run.has_form(check, "files"):
             plan.append(("skip", "no scoped form"))

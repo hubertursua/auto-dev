@@ -5833,21 +5833,49 @@ class QualityGateTest(RunCase):
             self.assertEqual(self.timings()[command]["by"], "quality-gate", self.timings())
         self.assertNotIn("echo some src/b.test.ts tests/a.test.ts", self.timings())
 
+    def test_a_lone_test_check_run_scoped_or_left_to_ci_saves_no_time(self):
+        self.the_change()
+        self.set_ci("github-actions")
+        self.set_gate(self.lint_check(), self.unit_check())
+        self.assertEqual(self.gate().returncode, 0)
+        self.assertIn("echo lint", self.timings())
+        for command in ("echo all", "echo some src/b.test.ts tests/a.test.ts"):
+            self.assertNotIn(command, self.timings())
+        self.set_gate(self.lint_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        self.assertEqual(self.gate().returncode, 0)
+        self.assertNotIn("true", self.timings())
+        # Two test checks run whole, so each whole run is measured.
+        self.set_gate(self.lint_check(), self.unit_check(),
+                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
+        self.assertEqual(self.gate().returncode, 0)
+        for command in ("echo all", "true"):
+            self.assertEqual(self.timings()[command]["by"], "quality-gate")
+
     def test_the_gate_run_records_what_it_scoped_and_left_to_ci(self):
         self.the_change()
         self.set_ci("github-actions")
-        self.set_gate(self.lint_check(), self.unit_check(),
+        self.set_gate(self.lint_check(), self.unit_check())
+        r = self.gate("--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual([c["scope"] for c in data["checks"]], ["whole", "files"])
+        self.assertEqual([c["status"] for c in data["checks"]], ["pass", "pass"])
+        run = self.state()["gate_runs"][-1]
+        self.assertEqual((run["scoped"], run["skipped"], run["ci_watched"]),
+                         (["TEST.md"], [], True))
+        self.assertIn("TEST.md scoped to the change", self.state()["notes"][-1]["text"])
+        self.set_gate(self.lint_check(),
                       {"kind": "test", "command": "true", "report": "CHECKS.md"})
         r = self.gate("--json")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         data = json.loads(r.stdout)
-        self.assertEqual([c["scope"] for c in data["checks"]], ["whole", "files", "skipped"])
-        self.assertEqual([c["status"] for c in data["checks"]], ["pass", "pass", "skipped"])
+        self.assertEqual([c["scope"] for c in data["checks"]], ["whole", "skipped"])
+        self.assertEqual([c["status"] for c in data["checks"]], ["pass", "skipped"])
         run = self.state()["gate_runs"][-1]
         self.assertEqual((run["scoped"], run["skipped"], run["ci_watched"]),
-                         (["TEST.md"], ["CHECKS.md"], True))
-        self.assertIn("TEST.md scoped to the change, CHECKS.md left to CI",
-                      self.state()["notes"][-1]["text"])
+                         ([], ["CHECKS.md"], True))
+        self.assertIn("CHECKS.md left to CI", self.state()["notes"][-1]["text"])
         self.assertIn("- **Runs:** 0", (self.dir / "lint" / "CHECKS.md").read_text())
         self.set_ci("none")
         self.gate()
@@ -5871,6 +5899,20 @@ class QualityGateTest(RunCase):
         r = self.gate()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(self.line_of("LINT.md", "echo lint"), r.stdout.splitlines(), r.stdout)
+
+    def test_two_test_checks_run_whole_even_when_no_test_file_changed(self):
+        self.set_ci("github-actions")
+        e2e = {"kind": "test", "command": "false", "report": "E2E.md",
+               "files": "false <files>"}
+        self.set_gate(self.lint_check(), self.unit_check(), e2e)
+        r = self.gate()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(self.line_of("TEST.md", "echo all"), r.stdout.splitlines(), r.stdout)
+        self.assertIn(f"  fail: {self.dir / 'lint' / 'E2E.md'} — `false`",
+                      r.stdout.splitlines(), r.stdout)
+        self.assertNotIn("skipped:", r.stdout)
+        self.assertEqual(self.state()["gate_runs"][-1]["failing"], ["E2E.md"])
+
 
 class SetupAnswerTest(RunCase):
     """`autodev.py setup-answer`: the profile question's answers, before a run exists."""

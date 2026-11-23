@@ -182,14 +182,20 @@ weakening them. Verification is built around that:
   worker was out, or while setup ran
   (`skills/auto-dev/scripts/lib/tree_guard.py`).
 - **The quality gate, confirmed before the push.** The coder runs the
-  profile's quality gate to green itself, each non-test check in full and each
-  test check only scoped, on the tests it wrote or touched (one with no scoped
-  form it leaves to CI); then `autodev.py quality-gate` runs the gate again, as
-  a script with no worker, and writes its reports. When CI is watched, it runs
-  each non-test check whole and each test check only on the change's tests
-  (the test files the branch changed and the acceptance check files), and
-  leaves a test check it can't scope to CI: CI is the one full run of the test
-  suite. When CI isn't watched it runs every check whole. A red gate goes back
+  profile's quality gate to green itself, each non-test check in full, and its
+  tests only through the test check `run test` uses, only scoped, on the tests
+  it wrote or touched (it runs no other test check, and none whole, except
+  that a correction after a quality gate that found a test check failing
+  gives it that check's line: scoped when the check has a `files` form, else
+  whole; a check red only in CI or in a reviewer's or the verifier's
+  corrections gets no extra line, and the push lets CI confirm the fix); then
+  `autodev.py quality-gate` runs the gate again, as a script with no worker,
+  and writes its reports. When CI is watched and the gate has one test check,
+  it runs each non-test check whole and that test check only on the change's
+  tests (the test files the branch changed and the acceptance check files), or
+  leaves it to CI when it has no scoped form or the change has no test file:
+  CI is the one full run of the test suite. When the gate has two or more test
+  checks, or CI isn't watched, it runs every check whole. A red gate goes back
   to the coder once (no round); red again, the run stops and asks you.
 - **An independent verifier that runs things.** Once the build is pushed as a
   draft PR, a fresh verifier, spawned with the review while CI runs,
@@ -565,10 +571,14 @@ test IDs or `<test>` for one, plus a `tests_example`), so it can run only the
 tests it names with `--tests`; the profiler looks for both. With no test-ID
 form, `--tests` falls back to the file-scoped form on the `--files` given with
 it, else to the whole check, and `run` prints which it used. The quality gate
-runs each non-test check whole through `run gate <n>`, and each test check
-only on the change's tests when CI is watched (its `files` form; every check
-whole when CI isn't watched); the coder runs test checks only scoped. CI is
-the one full run of the test suite. A `run test` that runs the test check
+runs each non-test check whole through `run gate <n>`. When CI is watched
+and the gate has one test check, it runs that check only on the change's tests
+(its `files` form), or leaves it to CI when it can't; with two or more test
+checks, or when CI isn't watched, it runs every check whole. The coder runs
+only the test check `run test` uses, and only scoped; a correction after a
+quality gate that found a test check failing also gives it that check's line
+(scoped when it has a `files` form, else whole), and nothing else does. When
+the gate scopes the test check, CI is the one full run of the test suite. A `run test` that runs the test check
 whole when it could have been scoped prints a warning with the ready-to-copy
 scoped lines, which the coder's, fixer's and acceptance tester's briefs also
 carry. `run` stops a check at its own timeout: twice the check's whole run as
@@ -723,7 +733,7 @@ library, except where they read YAML:
 
 | Script | What it does |
 | ------ | ------------ |
-| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action (from Phase 1's setup, with `--repo`, on; `autodev.py setup-answer` records the answer to the profile question or the gate-check question). `autodev.py quality-gate` runs the profile's quality gate before the push (test checks only on the change's tests when CI is watched). `autodev.py --help` lists every subcommand |
+| `autodev.py` | the one entry point: keeps the run's state in `.auto-dev/state.json`, and `autodev.py next` prints the orchestrator's next action (from Phase 1's setup, with `--repo`, on; `autodev.py setup-answer` records the answer to the profile question or the gate-check question). `autodev.py quality-gate` runs the profile's quality gate before the push (a lone test check only on the change's tests when CI is watched). `autodev.py --help` lists every subcommand |
 | `validate-config.py` | checks `.auto-dev.yml`, or a saved profile with `--profile` (setup runs it) |
 | `profile-path.py` | prints the saved profile's path for a repo and whether it exists (setup runs it) |
 | `exclude-artifacts.py` | makes `.auto-dev/` ignore itself and checks it with git |

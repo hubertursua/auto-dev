@@ -1873,9 +1873,10 @@ def ask_gate(c, tree, rule=GATE_RULE, show_rule=False):
         asked[tree] = asked.get(tree, 0) + 1
         c.dirty = True
     return action(f"run the quality gate: `{c.cmd('quality-gate')}`. It runs every "
-                  "non-test check whole, and each test check only on the change's tests "
-                  "when CI is watched (every check whole when it isn't), and writes "
-                  "their reports. Run it with the Bash tool's timeout at 600000 ms; if "
+                  "non-test check whole, and the gate's one test check only on the "
+                  "change's tests when CI is watched (every check whole when it isn't, "
+                  "or when the gate has two or more test checks), and writes their "
+                  "reports. Run it with the Bash tool's timeout at 600000 ms; if "
                   "the gate can take longer than that, run it in the background and "
                   "wait for it to finish. Then run AFTER whatever it exits", rule,
                   AFTER=[c.cmd("next")], **({SHOW_RULE: True} if show_rule else {}))

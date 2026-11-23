@@ -384,11 +384,15 @@ def issues_text(issues):
 
 
 def auto_values(worker, n, state, ad, mode):
-    """Every AUTO slot's value for this run (some depend on the worker)."""
+    """Every AUTO slot's value for this run (some depend on the worker). In a
+    coder correction, each test check the quality gate's latest run lists as
+    failing gets its run line in the gate list."""
     s = state["settings"]
     found = cmd_run.test_check(s.get("gate", []))
     test = str(found[1].get("command") or "") if found else ""
-    gate = gate_lines(s.get("gate", []), ad, worker)
+    failing = (failing_test_checks(s.get("gate", []), state)
+               if worker == "coder" and mode == "correction" else None)
+    gate = gate_lines(s.get("gate", []), ad, worker, failing)
     phase6 = state.get("phase6", {})
     values = {
         "worktree": state["worktree"], "artifact_dir": str(ad), "skill_dir": str(SKILL_DIR),
@@ -405,7 +409,8 @@ def auto_values(worker, n, state, ad, mode):
                          "0 (off)" if state.get("high_risk") else
                          "0 (off: a standard-risk run)"),
         "gate_commands": gate or "none",
-        "test_runs": test_runs(found[1], ad, worker) if found else "none",
+        "test_runs": (test_runs(found[1], ad, worker, s.get("gate", [])) if found
+                      else "none"),
         "result_file": str(ad / "returns" / f"{worker}-{n}.json"),
         "pr": str(phase6.get("pr") or "none"),
         "pass": str(phase6.get("review_pass") or 1),
@@ -426,14 +431,44 @@ def auto_values(worker, n, state, ad, mode):
 # a check short (a call still running at 180 s moves to the background, where
 # `run wait` waits for it; `run` ends a hung check at its own timeout).
 BASH = " with that Bash call's timeout set to 300000 ms"
-# The coder's line for a test check with no scoped form: CI runs it whole.
-LEFT_TO_CI = "left to CI; don't run it, and name it in one line above your result block"
 
 
-def gate_lines(gate, ad, worker):
+def whole_runner(gate):
+    """Who runs the gate's test checks whole, for the coder's brief: CI when the
+    gate has one `kind: test` check (the quality gate scopes it to the change),
+    the quality gate when it has two or more (it runs them all whole)."""
+    several = sum(c.get("kind") == "test" for c in gate) > 1
+    return (("the quality gate", "the quality gate runs it whole") if several
+            else ("CI", "left to CI"))
+
+
+def failing_test_checks(gate, state):
+    """The numbers of the `kind: test` checks the quality gate's latest run (the
+    newest one no retry set aside, as `next` reads it) lists as failing. Only
+    the gate's own result counts: no correction text is read, so a check red in
+    CI or in the verifier's or a reviewer's corrections gets no extra line."""
+    runs = [g for g in state.get("gate_runs") or [] if not g.get("aside")]
+    failing = set(runs[-1].get("failing") or []) if runs else set()
+    return {i for i, c in enumerate(gate, 1)
+            if c.get("kind") == "test" and c.get("report") in failing}
+
+
+FAILING_HEAD = ("(a test check the quality gate's latest run found failing: run it only "
+                "with the line below, to check your fix)")
+
+
+def gate_lines(gate, ad, worker, failing=None):
     """The gate_commands slot: each check with the `run:` line that runs it
-    whole; the coder's test checks only scoped (no line, left to CI, for one
-    with no scoped form): CI is the one full run of the test suite."""
+    whole; for the coder, the test check `run test` uses only scoped (no line
+    for one with no scoped form) and every other test check with no line, since
+    CI (one test check) or the quality gate (two or more) runs them whole. In a
+    correction, a test check in `failing` (one the quality gate's latest run
+    lists as failing) gets its `--files` line when it has a `files` form, else
+    its whole line."""
+    found = cmd_run.test_check(gate)
+    chosen = found[0] if found else None
+    who, whole = whole_runner(gate)
+    failing = failing or set()
     entries = []
     for i, c in enumerate(gate, 1):
         invocation = f"run gate {i}"
@@ -441,28 +476,50 @@ def gate_lines(gate, ad, worker):
             entries.append(f"{i}. `{c['command']}`\n"
                            f"   run: `{cmd_run.run_line(ad, invocation)}`{BASH}")
             continue
+        if i in failing and not cmd_run.has_form(c, "files"):
+            # No file form: its whole line, and (for the check `run test`
+            # uses) its test-ID line too.
+            lines = [cmd_run.run_line(ad, invocation)]
+            if i == chosen:
+                lines += [line for line, _ in cmd_run.scoped_runs(ad, c, invocation,
+                                                                    ("tests",))]
+            entries.append("\n".join([f"{i}. `{c['command']}` {FAILING_HEAD}"]
+                                     + [f"   run: `{line}`{BASH}" for line in lines]))
+            continue
+        if i in failing and i != chosen:
+            line = cmd_run.scoped_runs(ad, c, invocation, ("files",))[0][0]
+            entries.append(f"{i}. `{c['command']}` {FAILING_HEAD}\n"
+                           f"   run: `{line}`{BASH}")
+            continue
+        if i != chosen:
+            entries.append(f"{i}. `{c['command']}` (a test check `run test` doesn't use: "
+                           f"{whole}; don't run it)")
+            continue
         runs = cmd_run.scoped_runs(ad, c, invocation)
         if not runs:
             entries.append(f"{i}. `{c['command']}` (a test check with no scoped form: "
-                           f"{LEFT_TO_CI})")
+                           f"{whole}; don't run it, and name it in one line above your "
+                           "result block)")
             continue
         head = (f"{i}. `{c['command']}` (a test check: run it only scoped, on your "
-                "tests; never whole — CI runs it whole)")
+                f"tests; never whole — {who} runs it whole)")
         entries.append("\n".join(
             [head] + [f"   run: `{line}`{BASH}" + (f" ({note})" if note else "")
                       for line, note in runs]))
     return "\n".join(entries)
 
 
-def test_runs(check, ad, worker=None):
+def test_runs(check, ad, worker=None, gate=()):
     """The test_runs slot: the run's scoped test commands, filled in and ready to
     copy, and that a whole run of the test check is for the quality gate only;
     for a check with no scoped form, the one line that runs it whole (the
-    coder's: no line, since CI runs it)."""
+    coder's: no line, since CI or the quality gate runs it, as `gate` says)."""
     runs = cmd_run.scoped_runs(ad, check)
     if not runs and worker == "coder":
+        who = whole_runner(gate or [check])[0]
+        whole = "that is left to CI" if who == "CI" else "the quality gate runs it whole"
         return (f"No line: the test check (`{check.get('command', '')}`) has no scoped "
-                "form, so it runs only whole, and that is left to CI: don't run it, and "
+                f"form, so it runs only whole, and {whole}: don't run it, and "
                 "name it in one line above your result block.")
     if not runs:
         return (f"- `{cmd_run.run_line(ad)}`{BASH}\n"

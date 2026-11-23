@@ -90,9 +90,10 @@ The user's instruction:
      {{test_notes}}):
      {{test_runs}}
      They run the profile's test check, scoped when it has a scoped form;
-     the quality gate runs it only on the change's tests when CI is watched,
-     else whole ({{test_command}}). Run the quality
-     gate's commands on what you changed when the stop was about them:
+     the quality gate runs it only on the change's tests when CI is watched
+     and it is the gate's one test check, else whole ({{test_command}}). Run
+     the quality gate's commands on what you changed when the stop was about
+     them:
      {{gate_commands}}
      Never type the test command yourself.
    - **PLAN.md** (`{{artifact_dir}}/PLAN.md`), when the instruction says to
