@@ -187,7 +187,8 @@ weakening them. Verification is built around that:
   it wrote or touched (it runs no other test check, and none whole, except
   that a correction after a quality gate that found a test check failing
   gives it that check's line: scoped when the check has a `files` form, else
-  whole; a check red only in CI or in a reviewer's or the verifier's
+  whole, unless the user signed that check off at a red-gate stop, which counts
+  it green for the rest of the run; a check red only in CI or in a reviewer's or the verifier's
   corrections gets no extra line, and the push lets CI confirm the fix); then
   `autodev.py quality-gate` runs the gate again, as a script with no worker,
   and writes its reports. When CI is watched and the gate has one test check,
@@ -581,7 +582,8 @@ and the gate has one test check, it runs that check only on the change's tests
 checks, or when CI isn't watched, it runs every check whole. The coder runs
 only the test check `run test` uses, and only scoped; a correction after a
 quality gate that found a test check failing also gives it that check's line
-(scoped when it has a `files` form, else whole), and nothing else does. When
+(scoped when it has a `files` form, else whole) unless the user signed it
+off, and nothing else does. When
 the gate scopes the test check, CI is the one full run of the test suite. A `run test` that runs the test check
 whole when it could have been scoped prints a warning with the ready-to-copy
 scoped lines, which the coder's, fixer's and acceptance tester's briefs also
