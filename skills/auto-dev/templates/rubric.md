@@ -81,9 +81,10 @@ value the plan says must be refused, not one of them per finding. Only cases a
 real caller can reach count (the trigger path rule, below), and the list holds
 the separate cases, not their combinations. The judge merges tests findings
 about the same changed behavior into one, and its `Test:` and
-`Required change:` lines ask for a test of every case on the list, so one
-correction closes the gap. A tests finding is `fixed` only when every case it
-lists has a test.
+`Required change:` lines ask for the whole class in one correction: they
+describe the kind of case with at most three examples, as
+`templates/corrections.md` says, not the list case by case. A tests finding
+is `fixed` only when every case it lists has a test.
 
 A finding that breaks a binding rule (the repo's CLAUDE.md or AGENTS.md,
 CONTRIBUTING and coding-guideline docs, and the security directives
