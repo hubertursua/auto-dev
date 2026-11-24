@@ -37,7 +37,10 @@ wait
     only reads: it never stops the run, so the run's own timeout is what
     ends a hung check. Each `run gate|test` (never --show) keeps a record of
     itself, and its result once it ends, in
-    <artifact-dir>/tmp/run/records/<k>.json; `wait` reads the newest.
+    <artifact-dir>/tmp/run/records/<k>.json; `wait` reads the newest. It
+    reads only the run's own output: a record whose output file, its links
+    followed, is outside <artifact-dir>/tmp/run/ is exit 2, so a run given an
+    --out elsewhere can't be waited on.
 --dir is required: it names the run, and a worker's shell isn't in the
 worktree, so a default would find no run, or an old one.
 --files <path> ...
@@ -116,8 +119,9 @@ Exit codes:
        again with fullwidth lookalikes mapped to ASCII, more than one ID
        for a `<test>` form, a quoted `<files>`, `<tests>` or `<test>`, a form
        holding the other form's placeholder, --out outside the artifact dir;
-       wait: no run was started, the run ended without a result, an argument
-       only gate or test takes, --wait outside 1 to 170) — `ERROR: …`
+       wait: no run was started, the run ended without a result, its output
+       outside <artifact-dir>/tmp/run/, an argument only gate or test takes,
+       --wait outside 1 to 170) — `ERROR: …`
     3  TIMED_OUT: the command and everything it started were stopped
     4  RUNNING: wait only: the run is still going; run `run wait` again
 """
@@ -129,6 +133,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from pathlib import Path
@@ -671,12 +676,16 @@ def claim_record(ad):
 
 
 def write_record(path, rec):
-    """Write the record whole (a reader never sees half of it). Windows refuses
-    the replace while `run wait` has the record open, so a refused one is tried
-    again; when every try fails, the temporary file is removed."""
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(rec), encoding="utf-8")
+    """Write the record whole (a reader never sees half of it), through a new
+    temporary file `mkstemp` makes, so a link planted where it writes is never
+    followed. Windows refuses the replace while `run wait` has the record open,
+    so a refused one is tried again; when every try fails, the temporary file
+    is removed."""
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    tmp = Path(name)
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(json.dumps(rec))
         for attempt in range(REPLACE_TRIES):
             try:
                 os.replace(tmp, path)
@@ -773,11 +782,26 @@ def check_wait_arguments(args):
                    "ERROR")
 
 
-def finished(args, rec):
+def own_output(ad, path, rec):
+    """The run's output file, its links followed, when it is under
+    <ad>/tmp/run/ (where `run` saves its own); else `run wait` reads nothing."""
+    folder = (ad / "tmp" / "run").resolve()
+    output = rec.get("output")
+    if isinstance(output, str) and output:
+        resolved = Path(output).resolve()
+        if resolved.is_relative_to(folder) and resolved != folder:
+            return resolved
+    raise Fail(f"the run record {path} names the output {output!r}, which is not under "
+               f"{folder}{os.sep}: `run wait` reads only a run's own output", CANNOT_RUN,
+               "ERROR")
+
+
+def finished(args, ad, path, rec):
     """A run's recorded result, printed as `run` printed it."""
     if rec["token"] == "ERROR":
         raise Fail(f"{rec.get('message')} (its output: {rec.get('output')})", CANNOT_RUN,
                    "ERROR")
+    own_output(ad, path, rec)
     return report(args, rec, rec.get("tail", TAIL) if args.tail is None else args.tail)
 
 
@@ -793,12 +817,12 @@ def wait(args, ad):
     while True:
         rec = read_record(path) or rec
         if rec and rec.get("token"):
-            return finished(args, rec)
+            return finished(args, ad, path, rec)
         if rec and not cmd_init.runner_alive(rec.get("pid")):
             time.sleep(0.2)  # it may have written its result as it ended
             again = read_record(path)
             if again and again.get("token"):
-                return finished(args, again)
+                return finished(args, ad, path, again)
             raise Fail(f"the run of `{rec.get('command')}` ended without a result (its "
                        f"output: {rec.get('output')})", CANNOT_RUN, "ERROR")
         left = deadline - time.monotonic()
@@ -807,9 +831,9 @@ def wait(args, ad):
         time.sleep(min(0.5, left))
     if rec is None:
         raise Fail(f"the run record {path} can't be read", CANNOT_RUN, "ERROR")
-    output = Path(rec["output"])
+    resolved, output = own_output(ad, path, rec), Path(rec["output"])
     try:
-        count = len(output.read_text(encoding="utf-8", errors="replace").splitlines())
+        count = len(resolved.read_text(encoding="utf-8", errors="replace").splitlines())
     except OSError:
         count = 0
     seconds = round(time.time() - rec.get("started", time.time()), 1)

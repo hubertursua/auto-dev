@@ -3800,6 +3800,63 @@ class RunWaitTest(unittest.TestCase):
         self.assertIn("ERROR: --tail must be 0 or more", r.stderr)
         self.assertNotIn("PASSED", r.stdout)
 
+    def plant(self, output, **fields):
+        """A record of a finished run whose output is `output`, as one planted
+        in tmp/run/records/ would be; a secret file outside the artifact dir."""
+        secret = self.tmp / "secret.txt"
+        secret.write_text("SECRET-LINE\n")
+        records = self.ad / "tmp" / "run" / "records"
+        records.mkdir(parents=True, exist_ok=True)
+        rec = {"pid": os.getpid(), "what": "gate", "check": 1, "command": "true",
+               "output": str(output), "scope": "whole", "why": "", "warning": None,
+               "tail": 40, "timeout": 600, "timeout_why": "the floor", "attempt": None,
+               "started": time.time(), **fields}
+        (records / "1.json").write_text(json.dumps(rec))
+        return secret
+
+    def refused(self, r, as_json=False):
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        said = json.loads(r.stdout)["message"] if as_json else r.stderr
+        if as_json:
+            self.assertEqual(json.loads(r.stdout)["result"], "ERROR", r.stdout)
+        else:
+            self.assertTrue(r.stderr.startswith("ERROR:"), r.stderr)
+        self.assertIn(str((self.ad / "tmp" / "run").resolve()), said)
+        self.assertNotIn("SECRET-LINE", r.stdout + r.stderr)
+        self.assertNotIn("PASSED", r.stdout + r.stderr)
+
+    def test_wait_refuses_a_finished_run_whose_output_is_outside_tmp_run(self):
+        self.checks(self.quick(0))
+        self.plant(self.tmp / "secret.txt", token="PASSED", exit=0, exit_code=0,
+                   seconds=0.1, message="`true` exited 0 in 0.1s")
+        self.refused(self.cli("wait"))
+        self.refused(self.cli("wait", "--json"), as_json=True)
+
+    def test_wait_refuses_an_output_linked_out_of_tmp_run(self):
+        self.checks(self.quick(0))
+        link = self.ad / "tmp" / "run" / "gate-1-1.txt"
+        secret = self.plant(link, token="PASSED", exit=0, exit_code=0, seconds=0.1,
+                            message="`true` exited 0 in 0.1s")
+        try:
+            link.symlink_to(secret)
+        except OSError as exc:
+            self.skipTest(f"can't make a symlink here: {exc}")
+        self.refused(self.cli("wait"))
+
+    def test_wait_refuses_a_running_record_whose_output_is_outside_tmp_run(self):
+        self.checks(self.quick(0))
+        self.plant(self.tmp / "secret.txt")  # no token, and its pid is alive
+        r = self.cli("wait", "--wait", "1")
+        self.refused(r)
+        self.assertNotIn("RUNNING", r.stdout)
+
+    def test_wait_reads_a_run_saved_under_tmp_run(self):
+        self.checks(self.quick(0))
+        self.assertEqual(self.cli("gate", "1").returncode, 0)
+        r = self.cli("wait")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PASSED:"), r.stdout)
+
 
 class WriteRecordTest(unittest.TestCase):
     """`cmd_run.write_record`: a replace Windows refuses while `run wait` reads."""
@@ -3844,6 +3901,22 @@ class WriteRecordTest(unittest.TestCase):
         self.assertEqual(len(calls), self.cmd_run.REPLACE_TRIES)
         self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["1.json"])
         self.assertNotIn("token", json.loads(self.path.read_text()))
+
+    def test_a_link_planted_where_it_writes_is_not_followed(self):
+        victim = self.tmp / "victim.txt"
+        victim.write_text("keep me\n")
+        # The name the record's temporary file once had, made ahead of it.
+        planted = self.tmp / f"1.json.{os.getpid()}.tmp"
+        try:
+            planted.symlink_to(victim)
+        except OSError as exc:
+            self.skipTest(f"can't make a symlink here: {exc}")
+        self.cmd_run.write_record(self.path, {"pid": 1, "token": "PASSED"})
+        self.assertEqual(victim.read_text(), "keep me\n")
+        self.assertEqual(json.loads(self.path.read_text())["token"], "PASSED")
+        self.assertFalse(self.path.is_symlink())
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()),
+                         sorted(["1.json", planted.name, "victim.txt"]))
 
 
 VERIFY_SPEC = """\
