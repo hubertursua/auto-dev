@@ -887,6 +887,46 @@ class BriefTest(WorkCase):
                 old = re.search(r"base branch is `?\{\{base\}\}", self.agent_flat(worker))
                 self.assertIsNone(old, f"{worker} still says {old and old.group(0)!r}")
 
+    CUT_DIFF_FILE = r"\{\{artifact_dir\}\}/tmp/[\w.-]*\w"
+
+    def whole_security_review_step(self, worker):
+        """From the agent file's '/security-review skill' to its step 2."""
+        flat = self.agent_flat(worker)
+        start = flat.index("/security-review skill")
+        return flat[start:flat.index("Then go further yourself", start)]
+
+    def test_each_security_review_step_hands_the_skill_the_spilled_cut_diff(self):
+        for worker in self.SECURITY_REVIEWING:
+            with self.subTest(worker=worker):
+                step = self.whole_security_review_step(worker)
+                self.assertIn("git -C {{worktree}} diff {{cut}}", step)
+                files = set(re.findall(self.CUT_DIFF_FILE, step))
+                self.assertEqual(len(files), 1, f"one cut-diff file in tmp/: {files}")
+                self.assertIn("whole change to review", step)
+                self.assertRegex(step, r"set aside the diff and (the )?log it computes itself")
+                self.assertIn("origin/HEAD", step)
+                self.assertIn("only against the cut diff", step)
+                self.assertIn("not this change's", step)
+                self.assertEqual(re.findall(r"(?<!origin/)\{\{base\}\}", step), [], step)
+
+    def test_each_reviewer_brief_fills_the_cut_diff_file_s_path_under_tmp(self):
+        for worker, sets in (("security-reviewer", {"leads": "none"}),
+                             ("security-reviewer-sensitive", {"leads": "none"}),
+                             ("reviewer", {"scope": "first", "tree": "0" * 40})):
+            with self.subTest(worker=worker):
+                named = re.search(self.CUT_DIFF_FILE, self.whole_security_review_step(worker))
+                self.assertIsNotNone(named, f"{worker} names no cut-diff file in tmp/")
+                n = self.job(worker, **sets)
+                values = self.brief_values(self.dir / "briefs" / f"{worker}-{n}.md")
+                path = named.group(0)
+                for slot in re.findall(r"\{\{(\w+)\}\}", path):
+                    self.assertNotIn(values.get(slot, "none"), ("", "none"), slot)
+                    path = path.replace("{{" + slot + "}}", values[slot])
+                tmp = Path(values["artifact_dir"]) / "tmp"
+                self.assertTrue(Path(path).is_absolute(), path)
+                self.assertEqual(Path(path).parent, tmp)
+                self.assertTrue(tmp.is_dir(), tmp)
+
 
 class VerifierBriefCase(WorkCase):
     """The verifier's brief and instructions on a standard- or high-risk run."""
