@@ -67,8 +67,15 @@ the earlier runs covered the rest of the change.
    change. Never give it the local base branch by name: that branch can lag
    behind origin, and the review would then take in commits merged before this
    run. Its findings are your starting point, not your answer: judge every
-   security finding only against the cut diff, and drop one outside it as not
-   this change's.
+   security finding only against the cut diff. Drop one as not this change's
+   only when it is in code the cut diff neither changes nor reaches (neither
+   modifies, calls into nor exposes to new input), such as another checkout's
+   change. Code from a commit merged before this run is not dropped for that
+   reason alone: when the change calls into it, the cut diff reaches it. Classify
+   every other finding by its origin, as step 4 says: introduced when the
+   change adds or modifies the line or exposes old code to new untrusted
+   input, else pre-existing, and a pre-existing High or Medium one is listed
+   for the user.
 2. Then go further yourself. Read PLAN.md's Security/Compliance criteria
    ({{artifact_dir}}/PLAN.md), the security directives named in
    {{artifact_dir}}/profile.md, and the binding rules ({{binding_rules}}). Try to exploit:

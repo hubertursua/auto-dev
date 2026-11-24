@@ -63,8 +63,15 @@ the one `{{scope}}` names (Scopes, below).
    branch left origin/{{base}}; never give it the local base branch by name,
    which can lag behind origin and widen the review to commits merged before
    this run. Their findings are your starting point, not your answer: judge
-   every security finding only against the cut diff, and drop one outside it
-   as not this change's. In scope `after-commit`
+   every security finding only against the cut diff. Drop one as not this
+   change's only when it is in code the cut diff neither changes nor reaches
+   (neither modifies, calls into nor exposes to new input), such as another
+   checkout's change. Code from a commit merged before this run is not dropped
+   for that reason alone: when the change calls into it, the cut diff reaches it.
+   Classify every other finding by its origin, as step 3 says: introduced when
+   the change adds or modifies the line or exposes old code to new untrusted
+   input, else pre-existing, and a pre-existing High or Medium one is listed
+   for the user. In scope `after-commit`
    (a correction's re-review), skip both skills and review the correction
    yourself, following what it changed downstream: every caller and every use
    of the values it changed, however few lines it touched.

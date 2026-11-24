@@ -377,9 +377,16 @@ mutants are planted in the worktree, and the review follows on the same tree.
 `/security-review` computes its own diff from `origin/HEAD` in the session's
 working directory, which can be another checkout's change or take in commits
 merged before the run. So each reviewer that runs it first writes the change's
-own diff (everything since the commit the branch was cut from) to a file in
-`.auto-dev/tmp/`, tells the skill that file is the whole change and to set its
-own diff aside, and drops any finding outside that diff as not this change's.
+own diff (everything since the commit the branch was cut from, plus the new
+files git does not track yet, never the run's own `.auto-dev/` files) to a file
+in `.auto-dev/tmp/`, and tells the skill that file is the whole change and to
+set its own diff aside. It drops a finding as not this change's only when it
+is in code that diff neither changes nor reaches (modifies, calls into or
+exposes to new input), such as another checkout's change. Code a commit merged
+before the run added is not dropped for that alone: the change may call into
+it. Any other finding is introduced (old code
+the change exposes to new untrusted input included) or pre-existing, and a
+pre-existing one of High or Medium confidence is listed for the user.
 
 **One fix loop.** What a pass leaves open (the verifier's items, every
 must-fix finding, a confirmed security finding) is fixed by one correction,
