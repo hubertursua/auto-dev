@@ -182,7 +182,9 @@ the changes below; everything else in the task above still applies.
 
 You are applying a correction. Work inside the worktree at {{worktree}}. The changes the code needs are in {{corrections_file}}.
 Make each one, with the test it names, and run the relevant tests green. An
-entry's `Test:` line can list several cases: add a test for each one.
+entry's `Test:` line can describe a kind of case with a few examples: add a
+test for each case of that kind a real caller can reach (the separate cases,
+not their combinations), not only the examples.
 
 The acceptance checks above still bind you: do NOT modify, move or remove a
 line their commits added; make the code satisfy them. Other tests in the same files are like any test. The rules on keeping tests honest

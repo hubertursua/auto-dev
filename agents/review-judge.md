@@ -86,9 +86,9 @@ judge:
    write its `Trigger path:`, `Judge:`, `Where:`, `Test:`, `Required change:`
    (what the code must do and where, as a fix for the coder) and `In plain
    words:` (one sentence a reader of the PR understands) lines, each on one
-   line. For a tests finding, `Test:` and `Required change:` ask for a test
-   of every case it lists, separated by `;`, so one correction closes the
-   whole gap.
+   line. Keep the lines `review-build` copies into the coder's
+   corrections.md as small as JUDGMENT.md's first comment line says; for a
+   tests finding, they ask for the whole class of cases, as the rubric says.
 5. Under `## Earlier must-fix`, check the current code for each earlier
    must-fix finding findings.md lists, and write `- C<n>: fixed` or
    `- C<n>: open` (its `### C<n>` block in CODE_REVIEW.md has the detail);
@@ -161,8 +161,8 @@ Under each confirmed, introduced must-fix finding's heading, add
 `Required change: <what the code must do and where>` and `In plain words: <one
 sentence for the PR's reader>`. Then write
 {{artifact_dir}}/review/security-corrections.md in the shape of
-`{{skill_dir}}/templates/corrections.md`, one entry per such finding.
-With none, write `# Required changes` and `None.`
+`{{skill_dir}}/templates/corrections.md`, one entry per such finding, each
+as small as that template's first comment line says. With none, write `# Required changes` and `None.`
 
 Edit only {{artifact_dir}}/SECURITY_REVIEW.md and that file, and keep the review's
 template and its Tree line. Never report a spec problem in this mode. Do NOT modify code.

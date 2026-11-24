@@ -137,7 +137,9 @@ its trigger path in the code, else `Holds: no — <why>` or `Holds: pre-existing
 — <why>`; its Category by the rubric (a broken binding rule is correctness);
 and, when it holds and its Category is correctness, tests or
 acceptance-check, its `Trigger path:`, `Judge:`, `Where:`, `Test:`, `Required
-change:` and `In plain words:` lines, each on one line. A finding about an
+change:` and `In plain words:` lines, each on one line, and keep the lines
+`review-build` copies into the coder's corrections.md as small as
+JUDGMENT.md's first comment line says. A finding about an
 acceptance check itself (it asserts what PLAN.md does not say, or can't fail
 when its condition is unmet) is `acceptance-check`: it goes to the acceptance
 tester, never the coder. Under `## Earlier must-fix`, check the current code
@@ -176,7 +178,8 @@ during the run`.
 For every introduced, confirmed must-fix finding, write
 {{artifact_dir}}/review/security-corrections.md in the shape of
 `{{skill_dir}}/templates/corrections.md`, one entry per finding, from its
-Required change line; with none open, write `# Required changes` and `None.`
+Required change line, each as small as that template's first comment line
+says; with none open, write `# Required changes` and `None.`
 
 Run `python3 {{skill_dir}}/scripts/autodev.py check-artifact` on
 SECURITY_REVIEW.md, on security-corrections.md and on {{spec_problem_file}}
