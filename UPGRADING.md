@@ -109,7 +109,91 @@ can resume on the new one. Newest first. The current version is in
   end; a command with `<args>` run with none has it removed. The coder, fixer
   and acceptance tester are told they can. A profile needs no change; add
   `<args>` only to a command whose arguments must go before its end.
-- A run in flight resumes on 5.1.
+- **A profile's `files` form may not quote `<files>` or put `$` before it.**
+  Both are now refused by `validate-config.py` and at run time, the same as
+  for the new `tests` form below. Unquote the placeholder in a saved profile
+  or `.auto-dev.yml`; a run in flight with such a form gets exit 2 on scoped
+  runs until it is fixed.
+- **Workers run targeted tests by test ID.** A gate check may carry a `tests`
+  form (`<tests>` for a list of IDs, `<test>` for exactly one) and a
+  `tests_example`. `run test|gate --tests <id> …` runs it, falls back to the
+  `files` form and then the whole check, and prints a `scope:` line; `run
+  test` prints a `warning:` when a worker runs the test check whole (`--json`
+  adds `scope` and `warning`). Test IDs are data only: quoted, and refused
+  when empty, starting with `-` or holding a control character. The coder,
+  fixer and acceptance tester briefs print the filled-in scoped lines.
+- **Local test runs are scoped to the change.** The coder runs non-test checks
+  whole but tests only through `run test`, scoped to the change's tests. It
+  runs a suite whole only in a correction after the quality gate found that
+  test check failing, when the check has no `files` form. With CI watched and
+  exactly one test check, the pre-push quality gate runs it only on the
+  change's test files and the acceptance checks; with more test checks, or CI
+  not watched, every check runs whole. A check signed off at a red-gate stop
+  counts as green. `run` now defaults `--timeout` to twice the last measured
+  whole run (at least 600 seconds) instead of running unbounded, and `run
+  gate` says when a check's third attempt failed.
+- **Workers wait on a run instead of polling.** `autodev.py run wait` blocks
+  up to 170 seconds on the last backgrounded `run test` or `run gate` and
+  replays its output (`RUNNING`, exit 4, while it is still going). It reads
+  only output under the run's `tmp/run/` or a path `run --out` may write; a
+  record pointing elsewhere, or a `tmp/` that links out of the artifact dir,
+  is refused. `mutants run` and `mutants wait` wait 170 seconds by default
+  (was 270), and every agent file says a command must stay under 3 minutes
+  (was 5). The coder no longer writes its own mutants or reverts code to
+  prove a test.
+- **`next` recovers instead of dead-ending.** When the budget is spent and a
+  must-fix is still open, the ready-for-review gate offers a fourth answer
+  that adds a round to fix it. A correction committed outside the pipeline is
+  re-checked and recorded instead of looping on `commit`. The coder and the
+  acceptance tester stop at 150 and 120 turns (`maxTurns`); a spawn that
+  returns with no result file is sent again once, told to keep its edits, and
+  a second miss stops the run. `state.json` only gains optional keys.
+- **`next` takes a commit pushed from outside the run.** Before a CI watch, a
+  push or the ready gate, `next` fetches the PR branch. A head pushed from the
+  run's worktree (a base merged in by hand, say) is re-checked and CI is
+  watched on it; a head pushed from anywhere else stops the run. `ci-watch`
+  prints `CONFLICT` (exit 4) when the PR conflicts with its base and no check
+  has reported, and `phase6.ci.status` can read `conflict`. A rebase, amend or
+  reset that isn't pushed gets its own stop, which asks for a force-push with
+  a lease pinned to the run's pushed commit (`phase6.verified_shas` is new; a
+  run in flight gets the old stop on such a rewrite until it verifies again).
+- **The risk re-check measures against `origin/<base>`.** The re-check and the
+  adoption of a lost tests commit use the fetched `origin/<base>`, not the
+  local base branch, so a lagging local branch no longer counts other
+  people's commits as the build's. A run past the re-check keeps its tier.
+- **The security review is handed the change.** `/security-review` computes
+  its own diff from `origin/HEAD` in the session's working directory, whatever
+  it is told. The three reviewers that run it now write the change's own diff
+  (everything since the run's cut commit, new files included) to a file in
+  `.auto-dev/tmp/`, tell the skill that file is the whole change, and drop a
+  finding only when it is in code that diff neither changes nor reaches.
+- **Reviewers check each finding before reporting it.** The rubric's _Before
+  you report a finding_ section, which every reviewer and the judge read,
+  has each finding checked against the code first. `R<k>.md` findings may
+  carry a `Checked:` line; a report without it still parses. On a high-risk
+  run each of the three code reviewers also leads with its own lens: R1
+  correctness and edge cases, R2 tests and overfitting, R3 callers and
+  compatibility (a `Lens:` line in `R.md`). A lens orders the work, not what
+  gets reported.
+- **The verifier runs a probe on every tier.** On every risk tier the verifier
+  runs one probe of its own per condition that has acceptance checks, with an
+  input the checks don't use; mutation stays high-risk only. Verifier briefs
+  no longer have a `probes:` line.
+- **Correction entries stay small.** `templates/corrections.md` holds the rule
+  every writer of required changes points to: one entry per problem, `Where:`
+  names a file and symbol rather than line numbers, several cases are
+  described as a kind with at most three examples, and an entry comes to
+  about 800 characters (a guide, not a limit).
+- **A long PR description is cut, not refused.** Over 60,000 characters, `pr
+  publish` trims the longest quoted output blocks to their last 10 lines and
+  moves their full output to the PR's output comment; it refuses only when the
+  hand-written text alone is too long. `merge-pr` now passes the description's
+  `## Summary` section as the squash body, never the whole description.
+- **New models and effort.** The coder runs at `medium` effort and the
+  acceptance tester on Sonnet. A run in flight uses them from its next spawn.
+- **Fixed:** the tree check no longer skips a worker's out-of-bounds change
+  when setup ends in the same second as the brief is written.
+- A run in flight resumes on 5.1, apart from the `files` form above.
 
 ## Upgrading from 4.27
 
