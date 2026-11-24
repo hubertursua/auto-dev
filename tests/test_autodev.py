@@ -3841,6 +3841,59 @@ class RunWaitTest(unittest.TestCase):
         self.refused(r)
         self.assertNotIn("schema", r.stdout + r.stderr)
 
+    def test_wait_refuses_an_output_that_climbs_out_with_dotdot(self):
+        self.checks(self.quick(0))
+        self.plant(f"{self.ad}/tmp/../state.json", token="PASSED", exit=0, exit_code=0,
+                   seconds=0.1, message="`true` exited 0 in 0.1s")
+        r = self.cli("wait")
+        self.refused(r)
+        self.assertNotIn("schema", r.stdout + r.stderr)
+
+    def test_a_tmp_linked_out_of_the_artifact_dir_is_refused_by_run_and_wait(self):
+        self.checks(self.quick(0))
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        try:
+            (self.ad / "tmp").symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"can't make a symlink here: {exc}")
+        r = self.cli("gate", "1")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertTrue(r.stderr.startswith("ERROR:"), r.stderr)
+        self.assertIn(f"resolves to {outside / 'run'}", r.stderr)
+        self.assertNotIn("PASSED", r.stdout + r.stderr)
+        self.assertEqual(list(outside.iterdir()), [])  # refused before writing there
+        # A record left in the linked tmp/ (as an earlier run would have) is
+        # refused too, and the error says where its output really is.
+        (outside / "run" / "records").mkdir(parents=True)
+        (outside / "run" / "gate-1-1.txt").write_text("done\n")
+        self.plant(self.ad / "tmp" / "run" / "gate-1-1.txt", token="PASSED", exit=0,
+                   exit_code=0, seconds=0.1, message="`true` exited 0 in 0.1s")
+        r = self.cli("wait")
+        self.refused(r)
+        self.assertIn(f"resolves to {outside / 'run' / 'gate-1-1.txt'}", r.stderr)
+
+    def test_wait_works_on_an_artifact_dir_reached_through_a_link(self):
+        # The temp dir as given, not resolved (on macOS, /var is a link), and
+        # the run reached through a link of its own.
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        real = base / "real"
+        (real / "app" / ".auto-dev").mkdir(parents=True)
+        try:
+            (base / "link").symlink_to(real, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"can't make a symlink here: {exc}")
+        self.ad = base / "link" / "app" / ".auto-dev"
+        self.wt = base / "link" / "app"
+        self.checks(self.quick(0))
+        done = self.cli("gate", "1")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        r = self.cli("wait")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PASSED:"), r.stdout)
+        self.assertEqual(r.stdout, done.stdout)
+
     def test_wait_refuses_an_output_linked_out_of_the_artifact_dir(self):
         self.checks(self.quick(0))
         link = self.ad / "tmp" / "run" / "gate-1-1.txt"
@@ -3937,6 +3990,52 @@ class WriteRecordTest(unittest.TestCase):
         self.assertFalse(self.path.is_symlink())
         self.assertEqual(sorted(p.name for p in self.tmp.iterdir()),
                          sorted(["1.json", planted.name, "victim.txt"]))
+
+
+class WaitReadTest(unittest.TestCase):
+    """`run wait` reads the file it checked, never a link swapped in after."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_run
+        self.cmd_run = cmd_run
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.ad = self.tmp / ".auto-dev"
+        (self.ad / "tmp" / "run" / "records").mkdir(parents=True)
+        self.output = self.ad / "tmp" / "run" / "gate-1-1.txt"
+        self.output.write_text("done\n")
+        self.secret = self.tmp / "secret.txt"
+        self.secret.write_text("SECRET-LINE\n")
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "needs O_NOFOLLOW")
+    def test_an_output_swapped_for_a_link_after_the_check_is_not_read(self):
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        real = self.cmd_run.own_output
+
+        def check_then_swap(ad, path, rec):
+            checked = real(ad, path, rec)
+            self.output.unlink()
+            self.output.symlink_to(self.secret)
+            return checked
+        rec = {"pid": 1, "what": "gate", "check": 1, "command": "true",
+               "output": str(self.output), "scope": "whole", "why": "", "warning": None,
+               "tail": 40, "timeout": 600, "timeout_why": "the floor", "attempt": None,
+               "token": "PASSED", "exit": 0, "exit_code": 0, "seconds": 0.1,
+               "message": "`true` exited 0 in 0.1s"}
+        args = argparse.Namespace(json=False, tail=None)
+        out = io.StringIO()
+        with mock.patch.object(self.cmd_run, "own_output", check_then_swap), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(self.cmd_run.Fail) as caught:
+                self.cmd_run.finished(args, self.ad, self.ad / "tmp" / "run" / "records"
+                                      / "1.json", rec)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("can't be read", str(caught.exception))
+        self.assertNotIn("SECRET-LINE", out.getvalue() + str(caught.exception))
 
 
 VERIFY_SPEC = """\
