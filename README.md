@@ -374,6 +374,20 @@ mutants are planted in the worktree, and the review follows on the same tree.
      finding. When `PLAN.md` has security criteria (a change on a sensitive
      path), a reviewer that weights those paths hardest does it.
 
+`/security-review` computes its own diff from `origin/HEAD` in the session's
+working directory, which can be another checkout's change or take in commits
+merged before the run. So each reviewer that runs it first writes the change's
+own diff (everything since the commit the branch was cut from, new files
+included, since each review pass first marks them intent-to-add) to a file
+in `.auto-dev/tmp/`, and tells the skill that file is the whole change and to
+set its own diff aside. It drops a finding as not this change's only when it
+is in code that diff neither changes nor reaches (modifies, calls into or
+exposes to new input), such as another checkout's change. Code a commit merged
+before the run added is not dropped for that alone: the change may call into
+it. Any other finding is introduced (old code
+the change exposes to new untrusted input included) or pre-existing, and a
+pre-existing one of High or Medium confidence is listed for the user.
+
 **One fix loop.** What a pass leaves open (the verifier's items, every
 must-fix finding, a confirmed security finding) is fixed by one correction,
 for one round of the iteration budget. With CI configured, CI settles on the
@@ -851,7 +865,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `setup.log`, `setup.json` | `autodev.py init` | the setup commands' output and result |
 | `profile-origin.json`, `profile.yml`, `profile-retry.yml` | Phase 1 (`next`) | where the run's profile came from (the saved file and the checks left out of this run or kept at the gate-check question, a draft kept for this run only in `profile.yml`, or `.auto-dev.yml`), so a failed setup is retried from it; `profile-retry.yml` is the profile a retry re-read |
 | `briefs/`, `returns/` | `autodev.py`, each worker | each worker's brief, and the result it returned |
-| `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output; `tmp/run/records/` holds each `run`'s record and result, which `run wait` reads; `tmp/run/timings.json` holds how long each check's whole run took, measured by the quality gate and `verify prep`, for `run`'s default timeout |
+| `tmp/` | workers; `autodev.py run` (`tmp/run/`) | long command output, and the change's diff the reviewers hand `/security-review` (`security-review-cut.diff`); `tmp/run/records/` holds each `run`'s record and result, which `run wait` reads; `tmp/run/timings.json` holds how long each check's whole run took, measured by the quality gate and `verify prep`, for `run`'s default timeout |
 | `HANDOFF.md` | a checkpoint, or the user asking to stop | the brief for the next session |
 | `metrics.json` | `autodev.py next`, each time it completes or stops the run | the run's numbers for tuning auto-dev: spawns per worker, rounds spent, left and added, stops by their number, refused results, review findings kept and dropped, events and the build's diff size. Counts only, no code or task text. `next` writes the same file to `~/.config/auto-dev/metrics/<repo>/<branch>.json` (or `$AUTO_DEV_METRICS_DIR`, or `$XDG_CONFIG_HOME/auto-dev/metrics`), so it outlives the worktree |
 | `PLAN.md` | Phase 2 | the plan: the conditions (the testable contract), size check, risk tier and build steps |
