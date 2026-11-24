@@ -102,37 +102,49 @@ can resume on the new one. Newest first. The current version is in
   session ended at a checkpoint, `auto-dev continue` stops once at #23; `auto-dev
   continue` again, or _I fixed it myself_, lifts the stop and watches the
   pushed commit.
+- **Workers run targeted tests by test ID.** A gate check may carry a `tests`
+  form (`<tests>` for a list of IDs, `<test>` for exactly one) and a
+  `tests_example`. `run test|gate --tests <id> …` runs it; a check with no
+  `tests` form runs its `files` form on the `--files` paths given with it,
+  else the whole check. `run` prints a `scope:` line, and `run test` prints a
+  `warning:` when a worker runs the test check whole (`--json` adds `scope`
+  and `warning`). Test IDs are data only: quoted, and refused when empty,
+  starting with `-` or holding a control character (on Windows also `"`, `%`,
+  `!`, a trailing `\` and their fullwidth lookalikes, in `--files` paths too).
+  The coder, fixer and acceptance tester briefs print the filled-in scoped
+  lines.
 - **Workers can pass arguments to the profile's commands.** `autodev.py run
   gate|test … -- <arg> …` adds the words after `--` to the command, or to its
   `files` or `tests` form, each quoted as one argument: a test-name filter, a
   `<path>:<line>` target. They go where the command has `<args>`, else at its
   end; a command with `<args>` run with none has it removed. The coder, fixer
   and acceptance tester are told they can. A profile needs no change; add
-  `<args>` only to a command whose arguments must go before its end.
-- **A profile's `files` form may not quote `<files>` or put `$` before it.**
-  Both are now refused by `validate-config.py` and at run time, the same as
-  for the new `tests` form below. Unquote the placeholder in a saved profile
-  or `.auto-dev.yml`; a run in flight with such a form gets exit 2 on scoped
-  runs until it is fixed.
-- **Workers run targeted tests by test ID.** A gate check may carry a `tests`
-  form (`<tests>` for a list of IDs, `<test>` for exactly one) and a
-  `tests_example`. `run test|gate --tests <id> …` runs it, falls back to the
-  `files` form and then the whole check, and prints a `scope:` line; `run
-  test` prints a `warning:` when a worker runs the test check whole (`--json`
-  adds `scope` and `warning`). Test IDs are data only: quoted, and refused
-  when empty, starting with `-` or holding a control character. The coder,
-  fixer and acceptance tester briefs print the filled-in scoped lines.
+  `<args>` only to a command whose arguments must go before its end, and write
+  it unquoted.
+- **A quoted placeholder is refused.** A gate check whose `files` form puts
+  `<files>` inside quotes or `$` before it, whose `tests` form does the same
+  to `<tests>` or `<test>`, or whose command or either form does it to
+  `<args>`, is now refused by `validate-config.py` and at run time (exit 2),
+  because the shell would expand what the quoting produces. Unquote the placeholder in the saved
+  profile or `.auto-dev.yml`. A run in flight keeps the gate it copied into
+  `state.json` when it started, so editing the profile doesn't reach it: with
+  such a form its scoped runs, `verify prep` and (with CI watched) the
+  quality gate exit 2. Finish such a run before upgrading, or start it again
+  after fixing the profile.
 - **Local test runs are scoped to the change.** The coder runs non-test checks
   whole but tests only through `run test`, scoped to the change's tests. It
   runs a suite whole only in a correction after the quality gate found that
   test check failing, when the check has no `files` form. With CI watched and
   exactly one test check, the pre-push quality gate runs it only on the
   change's test files and the acceptance checks; with more test checks, or CI
-  not watched, every check runs whole. A check signed off at a red-gate stop
-  counts as green. `run` now defaults `--timeout` to twice the last measured
+  not watched, every check runs whole. A test check with no `files` form, or
+  with no changed test file, isn't run before the push at all: the PR body
+  says CI runs it, and if the first CI watch can't see CI, the gate runs again
+  with every check whole. A check signed off at a red-gate stop counts as
+  green. `run` now defaults `--timeout` to twice the last measured
   whole run (at least 600 seconds) instead of running unbounded, and `run
   gate` says when a check's third attempt failed.
-- **Workers wait on a run instead of polling.** `autodev.py run wait` blocks
+- **Workers wait on a backgrounded run with `run wait`.** `autodev.py run wait` blocks
   up to 170 seconds on the last backgrounded `run test` or `run gate` and
   replays its output (`RUNNING`, exit 4, while it is still going). It reads
   only output under the run's `tmp/run/` or a path `run --out` may write; a
@@ -186,14 +198,16 @@ can resume on the new one. Newest first. The current version is in
   about 800 characters (a guide, not a limit).
 - **A long PR description is cut, not refused.** Over 60,000 characters, `pr
   publish` trims the longest quoted output blocks to their last 10 lines and
-  moves their full output to the PR's output comment; it refuses only when the
-  hand-written text alone is too long. `merge-pr` now passes the description's
+  moves their full output to the PR's output comment, then moves whole blocks
+  if that isn't enough; it refuses only when the hand-written text alone is
+  too long. `merge-pr` now passes the description's
   `## Summary` section as the squash body, never the whole description.
 - **New models and effort.** The coder runs at `medium` effort and the
   acceptance tester on Sonnet. A run in flight uses them from its next spawn.
 - **Fixed:** the tree check no longer skips a worker's out-of-bounds change
   when setup ends in the same second as the brief is written.
-- A run in flight resumes on 5.1, apart from the `files` form above.
+- A run in flight resumes on 5.1, except one whose gate quotes a placeholder
+  (above).
 
 ## Upgrading from 4.27
 
