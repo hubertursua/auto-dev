@@ -902,11 +902,18 @@ class BriefTest(WorkCase):
                 self.assertIn("git -C {{worktree}} diff {{cut}}", step)
                 files = set(re.findall(self.CUT_DIFF_FILE, step))
                 self.assertEqual(len(files), 1, f"one cut-diff file in tmp/: {files}")
+                self.assertIn("new files git does not track yet", step)
+                self.assertRegex(step, r"never anything under `?(\.auto-dev/|\{\{artifact_dir\}\})")
                 self.assertIn("whole change to review", step)
                 self.assertRegex(step, r"set aside the diff and (the )?log it computes itself")
                 self.assertIn("origin/HEAD", step)
                 self.assertIn("only against the cut diff", step)
                 self.assertIn("not this change's", step)
+                self.assertIn("neither changes nor reaches", step)
+                self.assertIn("every other finding by its origin", step)
+                self.assertIn("listed for the user", step)
+                self.assertIn("not dropped for that reason alone", step)
+                self.assertNotIn("drop one outside it", step.lower())
                 self.assertEqual(re.findall(r"(?<!origin/)\{\{base\}\}", step), [], step)
 
     def test_each_reviewer_brief_fills_the_cut_diff_file_s_path_under_tmp(self):
