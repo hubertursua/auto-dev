@@ -902,8 +902,6 @@ class BriefTest(WorkCase):
                 self.assertIn("git -C {{worktree}} diff {{cut}}", step)
                 files = set(re.findall(self.CUT_DIFF_FILE, step))
                 self.assertEqual(len(files), 1, f"one cut-diff file in tmp/: {files}")
-                self.assertIn("new files git does not track yet", step)
-                self.assertRegex(step, r"never anything under `?(\.auto-dev/|\{\{artifact_dir\}\})")
                 self.assertIn("whole change to review", step)
                 self.assertRegex(step, r"set aside the diff and (the )?log it computes itself")
                 self.assertIn("origin/HEAD", step)
@@ -933,6 +931,108 @@ class BriefTest(WorkCase):
                 self.assertTrue(Path(path).is_absolute(), path)
                 self.assertEqual(Path(path).parent, tmp)
                 self.assertTrue(tmp.is_dir(), tmp)
+
+    # The cut-diff command, whole: no second revision or `..` after {{cut}}, so
+    # uncommitted work is in the file, and one path under the artifact dir's tmp/.
+    CUT_DIFF_COMMAND = (r"`git -C \{\{worktree\}\} diff \{\{cut\}\} "
+                        r"--output=(\{\{artifact_dir\}\}/tmp/[\w.-]*\w)`")
+
+    def cut_diff_command(self, step):
+        """The step's one `git -C {{worktree}} diff {{cut}}…` command, backticks included."""
+        commands = re.findall(r"`git -C \{\{worktree\}\} diff [^`]*\{\{cut\}\}[^`]*`", step)
+        self.assertEqual(len(commands), 1, commands)
+        return commands[0]
+
+    def fill(self, template, values):
+        """The backticked command's words with every {{slot}} filled from the brief."""
+        words = []
+        for word in shlex.split(template.strip("`")):
+            for slot in re.findall(r"\{\{(\w+)\}\}", word):
+                word = word.replace("{{" + slot + "}}", values[slot])
+            words.append(word)
+        return words
+
+    def test_each_security_review_step_writes_the_whole_change_where_the_skill_reads_it(self):
+        for worker in self.SECURITY_REVIEWING:
+            with self.subTest(worker=worker):
+                step = self.whole_security_review_step(worker)
+                command = self.cut_diff_command(step)
+                exact = re.fullmatch(self.CUT_DIFF_COMMAND, command)
+                self.assertIsNotNone(exact, f"{worker}: {command}")
+                path = exact.group(1)
+                tell = f"Tell the skill that this file, {path}, is the whole change to review"
+                self.assertIn(tell, step)
+                self.assertIsNone(re.search(r"(?i)\b(not|never)\s+tell the skill", step), step)
+                write_at = step.index("first write this change's diff")
+                self.assertLess(write_at, step.index(command))
+                self.assertLess(step.index(command), step.index(tell))
+                self.assertNotIn("after the skill runs", step)
+
+    def test_each_security_review_step_tells_the_skill_the_change_starts_at_the_cut(self):
+        since = ("Tell it the change is everything since commit {{cut}}, "
+                 "where the branch left origin/{{base}}")
+        aside = "and to set aside the diff and log it computes itself"
+        for worker in self.SECURITY_REVIEWING:
+            with self.subTest(worker=worker):
+                step = self.whole_security_review_step(worker)
+                self.assertIn(since, step)
+                self.assertIsNone(re.search(r"(?i)\b(not|never)\s+" + re.escape(since), step))
+                self.assertIn(aside, step)
+                self.assertIsNone(re.search(r"(?i)\b(not|never) to set aside", step), step)
+                self.assertRegex(step, r"(?i)never give it the local base branch by name")
+                for m in re.finditer(r"(?i)give it the local base branch", step):
+                    self.assertRegex(step[:m.start()], r"(?i)\bnever $", step[m.start() - 40:])
+
+    def test_each_security_review_step_drops_only_findings_the_cut_diff_never_reaches(self):
+        for worker in self.SECURITY_REVIEWING:
+            with self.subTest(worker=worker):
+                step = self.whole_security_review_step(worker)
+                self.assertIn("judge every security finding only against the cut diff", step)
+                self.assertIn("Drop one as not this change's only when it is in code the cut "
+                              "diff neither changes nor reaches", step)
+                self.assertIn("Classify every other finding by its origin", step)
+                self.assertIn("introduced when the change adds or modifies the line or exposes "
+                              "old code to new untrusted input, else pre-existing", step)
+                self.assertIn("a pre-existing High or Medium one is listed for the user", step)
+                self.assertNotIn("drop one outside it", step.lower())
+                self.assertNotIn("keep one outside it", step.lower())
+
+    def test_no_drop_example_names_a_commit_merged_before_the_run_as_unreached(self):
+        for worker in self.SECURITY_REVIEWING:
+            with self.subTest(worker=worker):
+                step = self.whole_security_review_step(worker)
+                start = step.index("Drop one as not this change's")
+                drop = step[start:step.index(". ", start)]
+                self.assertIn("calls into", drop)
+                self.assertIn("another checkout's change", drop)
+                self.assertNotIn("merged before", drop)
+                self.assertIn("Code from a commit merged before this run is not dropped for "
+                              "that reason alone: when the change calls into it, the cut diff "
+                              "reaches it", step)
+
+    def test_the_filled_cut_diff_command_writes_committed_and_uncommitted_work(self):
+        wt = str(self.worktree)
+        cut = self.sh("git", "-C", wt, "merge-base", "origin/main", "HEAD").strip()
+        (self.worktree / "committed.txt").write_text("one\n")
+        self.sh("git", "-C", wt, "add", "committed.txt")
+        self.sh("git", "-C", wt, "commit", "-q", "-m", "committed")
+        (self.worktree / "committed.txt").write_text("one\nuncommitted\n")
+        for worker, sets in (("security-reviewer", {"leads": "none"}),
+                             ("security-reviewer-sensitive", {"leads": "none"}),
+                             ("reviewer", {"scope": "first", "tree": "0" * 40})):
+            with self.subTest(worker=worker):
+                n = self.job(worker, **sets)
+                values = self.brief_values(self.dir / "briefs" / f"{worker}-{n}.md")
+                self.assertEqual(values["cut"], cut)
+                step = self.whole_security_review_step(worker)
+                argv = self.fill(self.cut_diff_command(step), values)
+                out = Path(argv[-1].split("=", 1)[1])
+                out.unlink(missing_ok=True)
+                self.sh(*argv)
+                written = out.read_text()
+                self.assertEqual(written, self.sh("git", "-C", wt, "diff", cut))
+                self.assertIn("+one", written)
+                self.assertIn("+uncommitted", written)
 
 
 class VerifierBriefCase(WorkCase):
