@@ -592,7 +592,11 @@ changed or wrote, and a test-ID form (`tests`, with `<tests>` for a list of
 test IDs or `<test>` for one, plus a `tests_example`), so it can run only the
 tests it names with `--tests`; the profiler looks for both. With no test-ID
 form, `--tests` falls back to the file-scoped form on the `--files` given with
-it, else to the whole check, and `run` prints which it used. The quality gate
+it, else to the whole check, and `run` prints which it used. A worker can also
+pass the command its own arguments after `--` (`autodev.py run test --files
+<path> -- <arg> …`), such as a test-name filter or a `<path>:<line>` target.
+Each is quoted as one argument (never shell syntax) and goes where the command
+has `<args>`, else at its end. The quality gate
 runs each non-test check whole through `run gate <n>`. When CI is watched
 and the gate has one test check, it runs that check only on the change's tests
 (its `files` form), or leaves it to CI when it can't; with two or more test

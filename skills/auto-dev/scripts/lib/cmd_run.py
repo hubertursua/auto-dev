@@ -5,10 +5,10 @@ background.
 Usage:
     autodev.py run gate <n | REPORT> --dir <artifact-dir> [--files <path> ...]
                         [--tests <id> ...] [--out <file>] [--timeout <seconds>]
-                        [--tail <lines>] [--show] [--json]
+                        [--tail <lines>] [--show] [--json] [-- <arg> ...]
     autodev.py run test --dir <artifact-dir> [--files <path> ...]
                         [--tests <id> ...] [--out <file>] [--timeout <seconds>]
-                        [--tail <lines>] [--show] [--json]
+                        [--tail <lines>] [--show] [--json] [-- <arg> ...]
     autodev.py run wait --dir <artifact-dir> [--wait <seconds>] [--tail <lines>]
                         [--json]
 
@@ -16,7 +16,8 @@ A worker's shell doesn't start in the worktree, and a permission check refuses
 `cd <worktree> && <command>` and rewritten forms of it. This runs the command
 the profile lists, exactly as written, with the worktree as its directory, so
 a worker never composes one. It runs only the profile's commands (the `gate`
-checks confirmed in Phase 1, from state.json), never a command it is given.
+checks confirmed in Phase 1, from state.json), never a command it is given;
+a caller adds only arguments (after `--`), each passed as one quoted word.
 
 gate <n | REPORT>
     Runs the quality-gate check numbered <n> (1 is the first, as profile.md's
@@ -70,6 +71,14 @@ worktree, so a default would find no run, or an old one.
     before. When the check has no `tests` form, the `files` form runs on the
     --files paths given with it, else the whole check runs. Paths given with
     --files are always checked, whichever form runs.
+-- <arg> ...
+    Everything after `--` is extra arguments for the command (or the `files`
+    or `tests` form that runs), such as a test-name filter or a `<path>:<line>`
+    target: each is quoted, so it is one argument and never shell syntax. They
+    go where the command has `<args>`, else at its end. A command with
+    `<args>` run with none has the placeholder removed. On Windows an argument
+    that ends in a backslash or holds `"`, `%` or `!` is exit 2, as a test ID
+    is. `run wait` takes none.
 
 --timeout <seconds>
     Stops the command after that many seconds (exit 3). With no --timeout,
@@ -119,9 +128,10 @@ Exit codes:
     1  FAILED: the command exited non-zero
     2  could not run (no state, no such check, no `files` form, a path outside
        the worktree or missing, a test ID that is empty, starts with `-` or
-       holds a control character, on Windows also a test ID that ends in a
-       backslash or a test ID or path that holds `"`, `%` or `!`, each checked
-       again with fullwidth lookalikes mapped to ASCII, more than one ID
+       holds a control character, on Windows also a test ID or an argument
+       after `--` that ends in a backslash, or a test ID, argument or path that
+       holds `"`, `%` or `!`, each checked again with fullwidth lookalikes
+       mapped to ASCII, more than one ID
        for a `<test>` form, a quoted `<files>`, `<tests>` or `<test>`, a form
        holding the other form's placeholder, --out outside the artifact dir
        or tmp/ linked out of it; wait: no run was started, the run ended
@@ -135,6 +145,7 @@ Exit codes:
 import json
 import math
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -157,6 +168,7 @@ REPLACE_TRIES, REPLACE_DELAY = 10, 0.1
 PLACEHOLDER = "<files>"
 TESTS_PLACEHOLDER = "<tests>"  # a list of test IDs
 TEST_PLACEHOLDER = "<test>"  # exactly one test ID
+ARGS_PLACEHOLDER = "<args>"  # the caller's arguments after `--`
 SCRIPT = Path(__file__).resolve().parents[1] / "autodev.py"
 TAIL = 40
 # Where --out may write, under the artifact dir: never state.json, PLAN.md or
@@ -280,31 +292,55 @@ def windows_forms(text):
     return (text,) if folded == text else (text, folded)
 
 
-def quote(paths):
-    if os.name == "nt":  # cmd.exe: double quotes, and no name it would expand
-        for p in paths:
-            for form in windows_forms(p):
+def quote(words):
+    if os.name == "nt":  # cmd.exe: double quotes, and no word it would expand
+        for w in words:
+            for form in windows_forms(w):
                 if '"' in form or "%" in form:
                     why = "`\"` would end the quotes around it, and `%` expand a variable"
                 elif "!" in form:
                     why = ("cmd.exe's delayed expansion would replace `!…!` with a "
                            "variable's value, inside the quotes too")
+                elif form.endswith("\\"):
+                    why = "a trailing backslash would escape the quote around it"
                 else:
                     continue
-                lookalike = " (as a fullwidth lookalike)" if form != p else ""
-                raise Fail(f"{p}: a name or test ID with `\"`, `%` or `!`{lookalike} "
-                           f"can't be passed safely on Windows: {why}", CANNOT_RUN,
-                           "ERROR")
-        return " ".join(f'"{p}"' for p in paths)
-    return " ".join(shlex.quote(p) for p in paths)
+                lookalike = " (as a fullwidth lookalike)" if form != w else ""
+                raise Fail(f"{w}: a name, test ID or argument with `\"`, `%` or `!`, or "
+                           f"ending in `\\`{lookalike}, can't be passed safely on "
+                           f"Windows: {why}", CANNOT_RUN, "ERROR")
+        return " ".join(f'"{w}"' for w in words)
+    return " ".join(shlex.quote(w) for w in words)
 
 
-def command_for(n, check, worktree, files):
+def fill(command, values):
+    """The command with each placeholder in `values` replaced in one pass, so
+    a value that contains a placeholder is never filled in again. A
+    placeholder with an empty value goes, with the space before it."""
+    def sub(m):
+        value = values[m.group(2)]
+        return m.group(1) + value if value else ""
+    pattern = "|".join(re.escape(k) for k in values)
+    return re.sub(rf"( ?)({pattern})", sub, command)
+
+
+def with_args(command, extra, filled=None):
+    """The command with the caller's extra arguments, quoted, where it has
+    ARGS_PLACEHOLDER, else at its end; `filled` gives other placeholders'
+    values (<files>), replaced in the same pass."""
+    words = quote(extra) if extra else ""
+    values = {**(filled or {}), ARGS_PLACEHOLDER: words}
+    if words and ARGS_PLACEHOLDER not in command:
+        return f"{fill(command, values)} {words}"
+    return fill(command, values)
+
+
+def command_for(n, check, worktree, files, extra=()):
     if files is None:
         command = str(check.get("command") or "")
         if not command:
             raise Fail(f"gate check {n} has no command", CANNOT_RUN, "ERROR")
-        return command
+        return with_args(command, extra)
     form = str(check.get("files") or "")
     if PLACEHOLDER not in form:
         raise Fail(f"gate check {n} (`{check.get('command', '')}`) has no scoped form: "
@@ -312,7 +348,7 @@ def command_for(n, check, worktree, files):
                    f"it can only run whole (drop --files)", CANNOT_RUN, "ERROR")
     unfilled(n, form, "files", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER))
     refuse_quoted(n, form, "files", (PLACEHOLDER,), "path")
-    return form.replace(PLACEHOLDER, quote(relative_paths(worktree, files)))
+    return with_args(form, extra, {PLACEHOLDER: quote(relative_paths(worktree, files))})
 
 
 def refuse_quoted(n, form, key, placeholders, what):
@@ -414,11 +450,12 @@ def has_form(check, key):
     return TESTS_PLACEHOLDER in form or TEST_PLACEHOLDER in form
 
 
-def resolve(n, check, worktree, files, tests):
+def resolve(n, check, worktree, files, tests, extra=()):
     """(command, scope, why): the command --files and --tests choose, `tests`,
-    `files` or `whole`, and why it fell back ('' when it didn't)."""
+    `files` or `whole`, with the caller's `extra` arguments (after `--`) in it,
+    and why it fell back ('' when it didn't)."""
     if tests is None:
-        command = command_for(n, check, worktree, files)
+        command = command_for(n, check, worktree, files, extra)
         if files:
             return command, "files", ""
         bare = not (has_form(check, "files") or has_form(check, "tests"))
@@ -430,19 +467,20 @@ def resolve(n, check, worktree, files, tests):
     unfilled(n, form, "tests", (PLACEHOLDER,))
     refuse_quoted(n, form, "tests", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER), "test ID")
     if TESTS_PLACEHOLDER in form:
-        return form.replace(TESTS_PLACEHOLDER, quote(tests)), "tests", ""
+        return with_args(form, extra, {TESTS_PLACEHOLDER: quote(tests)}), "tests", ""
     if TEST_PLACEHOLDER in form:
         if len(tests) > 1:
             raise Fail(f"gate check {n}'s test-ID form (`{form}`) takes one test ID "
                        f"({TEST_PLACEHOLDER}), and {len(tests)} were given: run it once "
                        "per ID, or give one pattern the runner matches", CANNOT_RUN,
                        "ERROR")
-        return form.replace(TEST_PLACEHOLDER, quote(tests)), "tests", ""
+        return with_args(form, extra, {TEST_PLACEHOLDER: quote(tests)}), "tests", ""
     if files and has_form(check, "files"):
-        return command_for(n, check, worktree, files), "files", "the check has no tests form"
+        return (command_for(n, check, worktree, files, extra), "files",
+                "the check has no tests form")
     why = ("the check has no tests form and no --files was given"
            if has_form(check, "files") else "the check has no scoped form")
-    return command_for(n, check, worktree, None), "whole", why
+    return command_for(n, check, worktree, None, extra), "whole", why
 
 
 def run_line(ad, invocation="run test"):
@@ -606,8 +644,9 @@ def save_timing(ad, command, seconds, by):
 
 def default_timeout(ad, check):
     """(seconds, why): twice the newest measured whole run of the check's
-    command, never less than TIMEOUT_FLOOR."""
-    entry = read_timings(ad).get(str(check.get("command") or ""))
+    command, never less than TIMEOUT_FLOOR. A run is saved under the command
+    as it ran whole, with no <args>, so that is the key."""
+    entry = read_timings(ad).get(with_args(str(check.get("command") or ""), ()))
     try:
         measured = float(entry["seconds"])
         by = str(entry.get("by") or "a whole run")
@@ -798,7 +837,9 @@ def check_wait_arguments(args):
         given = [name for name, value in (("a check name", args.check),
                                           ("--files", args.files), ("--tests", args.tests),
                                           ("--out", args.out), ("--timeout", args.timeout),
-                                          ("--show", args.show or None))
+                                          ("--show", args.show or None),
+                                          ("arguments after `--`",
+                                           getattr(args, "extra", None) or None))
                  if value is not None]
         if given:
             raise Fail(f"`run wait` takes only --dir, --wait, --tail and --json, not "
@@ -901,7 +942,8 @@ def main(args):
         raise Fail("--tail must be 0 or more and --timeout more than 0", CANNOT_RUN,
                    "ERROR")
     n, check = pick(state["settings"].get("gate", []), args.what, args.check)
-    command, scope, why = resolve(n, check, worktree, args.files, args.tests)
+    command, scope, why = resolve(n, check, worktree, args.files, args.tests,
+                                  getattr(args, "extra", ()))
     if args.show:
         emit(args.json, "COMMAND", command)
         return OK

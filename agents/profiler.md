@@ -96,6 +96,12 @@ Find, from the repo itself:
    Give each form only its own placeholder: no `<files>` in `tests`, no
    `<tests>` or `<test>` in `files`. A
    runner that can only run whole files gets neither key.
+   Workers can add arguments (a test-name filter, a `<path>:<line>` target)
+   after `--`, which `run` appends to the command, or to the `files` or
+   `tests` form that runs. When the runner only takes them in one place (a
+   script wrapper that needs `--` before its own arguments, say), put
+   `<args>` there in `command` and each form; with no arguments it is
+   removed.
 4. Test scope: databases or services the suite needs, how to start them, the
    monorepo or workspace layout, slow tiers. This goes in test_notes.
 5. Gitignored files the suite needs that a fresh worktree won't have (`.env`,

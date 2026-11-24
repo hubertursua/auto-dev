@@ -66,7 +66,9 @@ one of these lines, copied as written with your test files or test IDs filled in
 {{test_runs}}
 Each runs the profile's test check in the worktree, scoped when the check
 has a scoped form, and saves its output; `--tests` runs only the named tests,
-and `run` says which form ran on its `scope:` line. Never run a test check
+and `run` says which form ran on its `scope:` line. To narrow a run further,
+add the runner's own arguments after `--` at the end of its command (a test-name
+filter, a `<path>:<line>` target): `… --files <test file> -- <arg> …`. Never run a test check
 whole: when the gate has one test check, CI runs the whole suite
 ({{test_command}}) and is the one full run of it; with two or more, the
 quality gate runs each one whole. Run your tests only through these lines, the test check `run test` uses,

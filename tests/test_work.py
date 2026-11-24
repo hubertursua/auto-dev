@@ -541,6 +541,32 @@ class BriefTest(WorkCase):
         for n in (1, 2, 3):
             self.assertRegex(gate, re.escape(f" run gate {n} --dir {ad}") + "`", gate)
 
+    def test_briefs_show_each_command_as_the_gate_runs_it_without_args(self):
+        # A command's <args> is where `run … -- <arg>` puts a worker's
+        # arguments; the gate runs it with none, so no brief shows it.
+        lint = {"kind": "lint", "command": "npx eslint <args> .", "report": "LINT.md"}
+        unscoped = {"kind": "test", "command": "npm test -- <args>", "report": "TEST.md"}
+        self.three_check_gate({"kind": "test", "command": "npm run e2e -- <args>",
+                               "report": "E2E.md"})
+        state = self.state()
+        state["settings"]["gate"][0] = lint
+        state["settings"]["gate"][1]["command"] = "npm test -- <args>"
+        self.write_state(state)
+        for worker, args in (("coder", ("--mode", "build")), ("fixer", self.FIXER_SETS)):
+            gate, runs = self.brief_of(worker, *args)
+            self.assertNotIn("<args>", gate + runs, worker)
+            self.assertIn("`npx eslint .`", gate, worker)
+            self.assertIn("`npm test --`", gate, worker)
+            self.assertIn("`npm run e2e --`", gate, worker)
+        self.set_gate(lint, unscoped)
+        r = self.cmd("brief", "coder", "--mode", "build")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        path = Path(r.stdout.split("BRIEF:")[1].split()[0])
+        self.assertEqual(self.brief_values(path)["test_command"], "npm test --")
+        runs = self.slot_text(path, "test_runs")
+        self.assertIn("`npm test --`", runs)
+        self.assertNotIn("<args>", runs + self.slot_text(path, "gate_commands"))
+
     def gate_found_failing(self, *reports, aside=False):
         """Record a quality-gate run whose `failing` lists `reports` (none: green),
         as `quality-gate` records it; `aside` as a retry sets it aside."""

@@ -151,6 +151,13 @@ Fields:
   the check whole when it has a scoped form prints a `warning:` with the
   filled-in scoped `run` lines and the example ID; the quality gate's own
   `run gate <n>` never warns. Workers' briefs carry the same scoped lines.
+
+  Words after `--` (`run test --files <path> -- <arg> …`) are extra
+  arguments, such as a test-name filter or a `<path>:<line>` target: each is
+  quoted as one argument and added where the command (or the `files` or
+  `tests` form that runs) has `<args>`, else at its end; with none, `<args>`
+  is removed. Put `<args>` in a command whose arguments must go somewhere
+  other than its end (example in TypeScript: `npm test -- <args>`).
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
   before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.
@@ -245,9 +252,11 @@ Guidance to show (adapt the paths):
 >
 > - The `autodev.py` rule also covers `autodev.py run`, which workers use to
 >   run this profile's gate and test commands in the worktree. It runs only
->   the commands in the profile you confirmed, never one a worker writes. It
->   covers setup too (`next --repo`), which finds, checks and saves the
->   profile.
+>   the commands in the profile you confirmed, never one a worker writes. A
+>   worker can add arguments after `--`, each quoted as one argument: no
+>   shell syntax, though the command's own options (a config file, a setup
+>   script) still reach its tool. It covers setup too (`next --repo`), which
+>   finds, checks and saves the profile.
 > - One rule per script, so any can be left out. The `autodev.py` rule also
 >   covers the test-integrity audit and mutation testing: `autodev.py verify
 >   prep` runs `check-tests.py`, and `autodev.py mutants run` runs `mutate.py`,

@@ -2703,8 +2703,9 @@ class RunCommandTest(unittest.TestCase):
             {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
 
     def run_(self, *args):
-        return subprocess.run([sys.executable, str(AUTODEV), "run", *args, "--dir",
-                               str(self.ad)], capture_output=True, text=True,
+        cut = args.index("--") if "--" in args else len(args)  # --dir goes before `--`
+        return subprocess.run([sys.executable, str(AUTODEV), "run", *args[:cut], "--dir",
+                               str(self.ad), *args[cut:]], capture_output=True, text=True,
                               cwd=self.cwd, check=False)
 
     def output_of(self, r):
@@ -2901,6 +2902,66 @@ class RunCommandTest(unittest.TestCase):
         r = self.run_("gate", "BUILD")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(self.gone(pidfile))
+
+    def test_args_after_dashes_are_appended_quoted(self):
+        r = self.run_("test", "--files", "src/c.test.ts", "--", "--grep", "a b",
+                      "$(touch PWNED)", "src/c.test.ts:3")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['some', 'src/c.test.ts', '--verbose', '--grep', 'a b', "
+                      "'$(touch PWNED)', 'src/c.test.ts:3']", r.stdout)
+        self.assertFalse((self.wt / "PWNED").exists())
+        # Without --files, after the whole command; an option after `--` is
+        # the command's, not run's own.
+        r = self.run_("gate", "1", "--", "--out", "x", "--show")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['lint', '--out', 'x', '--show']", r.stdout)
+
+    def test_args_go_where_the_command_has_the_placeholder(self):
+        self.gate[2]["command"] = self.gate[2]["command"].replace(" all", " all <args> end")
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        r = self.run_("test", "--", "-k", "x")
+        self.assertIn("['all', '-k', 'x', 'end']", r.stdout)
+        r = self.run_("test")  # with none, the placeholder goes
+        self.assertIn("['all', 'end']", r.stdout)
+        r = self.run_("test", "--show")
+        self.assertNotIn("<args>", r.stdout)
+        # A path that names a placeholder is never filled in again.
+        (self.wt / "src" / "<args>.ts").write_text("z\n")
+        self.gate[2]["files"] = self.gate[2]["files"].replace("<files>", "<files> <args>")
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        r = self.run_("test", "--files", "src/<args>.ts", "--", "-k", "x")
+        self.assertIn("['some', 'src/<args>.ts', '-k', 'x', '--verbose']", r.stdout)
+
+    def test_args_go_into_the_test_id_form_too(self):
+        # `--tests` picks the test-ID form; the words after `--` go into it,
+        # at <args> or at its end, as they do for the other forms.
+        self.set_test_check(tests="<runner> pick <tests> --verbose")
+        r = self.run_("test", "--tests", "a b", "--", "--bail", "c d")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("['pick', 'a b', '--verbose', '--bail', 'c d']", r.stdout)
+        self.assertIn("  scope: tests", r.stdout.splitlines())
+        self.set_test_check(tests="<runner> pick <args> <test> --verbose")
+        r = self.run_("gate", "3", "--tests", "a b", "--", "--bail")
+        self.assertIn("['pick', '--bail', 'a b', '--verbose']", r.stdout)
+        r = self.run_("gate", "3", "--tests", "a b")  # with none, <args> goes
+        self.assertIn("['pick', 'a b', '--verbose']", r.stdout)
+        # A test ID that names <args> is never filled in again.
+        r = self.run_("gate", "3", "--tests", "<args>", "--", "-x")
+        self.assertIn("['pick', '-x', '<args>', '--verbose']", r.stdout)
+
+    def test_a_command_with_args_keeps_its_measured_timeout(self):
+        # The quality gate saves a whole run under the command it ran, with
+        # <args> removed; the default timeout reads it under that name.
+        self.gate[1]["command"] += " <args>"
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        self.plant_timing(self.gate[1]["command"][:-len(" <args>")], 400)
+        r, data = self.run_json("gate", "2")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(data.get("timeout"), 800, data)
+        self.assertNotIn("<args>", data.get("command"))
 
     def test_without_state_it_could_not_run(self):
         (self.ad / "state.json").unlink()
@@ -3799,6 +3860,13 @@ class RunWaitTest(unittest.TestCase):
             self.assertTrue([x for x in r.stderr.splitlines() if x.startswith("ERROR:")],
                             (extra, r.stderr))
             self.assertNotIn("PASSED", r.stdout, extra)
+        # Arguments after `--` are for a command `wait` doesn't run.
+        r = subprocess.run([sys.executable, str(AUTODEV), "run", "wait", "--dir",
+                            str(self.ad), "--", "-k", "x"], capture_output=True,
+                           text=True, cwd=self.cwd, check=False, timeout=200)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("arguments after `--`", r.stderr)
+        self.assertNotIn("PASSED", r.stdout)
 
     def test_wait_shows_the_runs_own_tail(self):
         py = shlex.quote(sys.executable)

@@ -66,7 +66,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import artifacts as art
-from . import overrides
+from . import cmd_run, overrides
 from . import state as st
 from .cmd_ship import (  # shared with the ship steps
     ARTIFACTS,
@@ -269,7 +269,8 @@ def generate(state, ad, sha, reviewed=True, ready=True):
     # holds it, on the change's test files), as clean() left it in the text.
     # The lint skips each one.
     copied = {f"**{t}**" for c in conditions for t in (c["text"], c["edge"]) if t} | \
-        {f"`{g['command']}`" for g in state["settings"].get("gate", [])} | \
+        {f"`{cmd_run.with_args(g['command'], ())}`"
+         for g in state["settings"].get("gate", [])} | \
         {f"`{ran}`" for ran in scoped_commands(ad, state)}
     state["phase6"]["verbatim"] = sorted(
         {s for s in (clean(x, wt) for x in copied) if s.strip("*`") and s in text})
@@ -1009,11 +1010,13 @@ def quality_gate(body, ad, state):
         path = ad / "lint" / check.get("report", "")
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         found = art.lint_report(path)
+        # As the gate ran it: a command's <args> is for `run … -- <arg>`.
+        command = cmd_run.with_args(check["command"], ())
         if found["status"] == "skipped":
-            body.text(f"- `{check['command']}`: not run before the push; CI runs it")
+            body.text(f"- `{command}`: not run before the push; CI runs it")
             continue
         status = "passed" if found["status"] == "pass" else "failed"
-        ran = check["command"]
+        ran = command
         if found["scope"].startswith(art.SCOPED_PREFIX) and found["command"]:
             ran = found["command"]  # its scoped form, on the change's tests
             body.text(f"- `{ran}`: {status} (the change's tests; CI runs the whole check)")

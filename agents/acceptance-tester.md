@@ -144,7 +144,9 @@ For every PLAN.md condition, Security/Compliance criteria included:
    {{test_runs}}
    Each runs the profile's test check in the worktree, scoped when the check
    has a scoped form, saves the output under {{artifact_dir}}/tmp/run/ and
-   prints the command as run, its `scope:` and the output's tail. Never type
+   prints the command as run, its `scope:` and the output's tail. To narrow a
+   run further, add the runner's own arguments after `--` at the end of its
+   command (`… -- <arg> …`), such as a test-name filter. Never type
    a profile command yourself: a permission check refuses `cd <worktree> && …`
    and every rewritten form.
    When the check has no scoped form, the one line above runs it whole: keep

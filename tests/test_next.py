@@ -4698,6 +4698,26 @@ class PublishTest(NextCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("names a .auto-dev/ path", r.stdout)
 
+    def test_the_gate_command_is_shown_without_its_args_placeholder(self):
+        # A profile command can say where `run … -- <arg>` puts a worker's
+        # arguments; the body shows the command the gate ran, with none.
+        sha = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        state = self.state()
+        state["phase6"]["verified_sha"] = sha
+        state["settings"]["gate"][0]["command"] = "true -- <args>"
+        self.write_state(state)
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(
+            tree=self.tree()))
+        self.spec_eval()
+        self.lint_tail = "1 passed"
+        self.lint()
+        r = self.lib("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        gate = (self.dir / "pr-body.md").read_text().split("## Quality gate")[1]
+        self.assertIn("`true --`: passed", gate)
+        self.assertNotIn("<args>", gate)
+
     def test_what_workers_wrote_is_quoted_so_the_body_passes_its_own_lint(self):
         # A proxy cell naming .auto-dev/, a review's confidence reason and an
         # open finding naming an ID, the verifier's plain words and a person's
@@ -4986,11 +5006,14 @@ class PublishTest(NextCase):
 
     def gate_check(self, name):
         """A check for the PR-body gates: `lint`, `unit` (`echo all` with a `files`
-        form), `unscoped` (`echo all` with none) or `checks` (`true`, with none)."""
+        form), `unscoped` (`echo all` with none), `unscoped_args` (`unscoped` with
+        `<args>`) or `checks` (`true`, with none)."""
         return {"lint": {"kind": "lint", "command": "echo lint", "report": "LINT.md"},
                 "unit": {"kind": "test", "command": "echo all", "report": "TEST.md",
                          "files": "echo some <files>"},
                 "unscoped": {"kind": "test", "command": "echo all", "report": "TEST.md"},
+                "unscoped_args": {"kind": "test", "command": "echo all <args>",
+                                  "report": "TEST.md"},
                 "checks": {"kind": "test", "command": "true", "report": "CHECKS.md"}}[name]
 
     def gate_on_the_change(self, ci, gate):
@@ -5033,6 +5056,12 @@ class PublishTest(NextCase):
             if len(gate) == 3:  # two test checks: both run whole, nothing left to CI
                 self.assertNotIn("not run before the push", text)
                 self.assertNotIn("the change's tests; CI runs the whole check", text)
+
+    def test_a_check_left_to_ci_is_named_without_its_args_placeholder(self):
+        text = self.gate_on_the_change("github-actions", ("lint", "unscoped_args"))
+        section = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+        self.assertIn("- `echo all`: not run before the push; CI runs it", section)
+        self.assertNotIn("<args>", section)
 
     def test_a_scoped_command_naming_a_pipeline_term_passes_the_body_lint(self):
         (self.worktree / "tests").mkdir(exist_ok=True)

@@ -389,7 +389,8 @@ def auto_values(worker, n, state, ad, mode):
     failing (and the user didn't sign off) gets its run line in the gate list."""
     s = state["settings"]
     found = cmd_run.test_check(s.get("gate", []))
-    test = str(found[1].get("command") or "") if found else ""
+    # As the gate runs it: a command's <args> is for `run … -- <arg>`.
+    test = cmd_run.with_args(str(found[1].get("command") or ""), ()) if found else ""
     failing = (failing_test_checks(s.get("gate", []), state)
                if worker == "coder" and mode == "correction" else None)
     gate = gate_lines(s.get("gate", []), ad, worker, failing)
@@ -475,8 +476,9 @@ def gate_lines(gate, ad, worker, failing=None):
     entries = []
     for i, c in enumerate(gate, 1):
         invocation = f"run gate {i}"
+        shown = cmd_run.with_args(str(c.get("command") or ""), ())  # as the gate runs it
         if worker != "coder" or c.get("kind") != "test":
-            entries.append(f"{i}. `{c['command']}`\n"
+            entries.append(f"{i}. `{shown}`\n"
                            f"   run: `{cmd_run.run_line(ad, invocation)}`{BASH}")
             continue
         if i in failing and not cmd_run.has_form(c, "files"):
@@ -486,25 +488,25 @@ def gate_lines(gate, ad, worker, failing=None):
             if i == chosen:
                 lines += [line for line, _ in cmd_run.scoped_runs(ad, c, invocation,
                                                                     ("tests",))]
-            entries.append("\n".join([f"{i}. `{c['command']}` {FAILING_HEAD}"]
+            entries.append("\n".join([f"{i}. `{shown}` {FAILING_HEAD}"]
                                      + [f"   run: `{line}`{BASH}" for line in lines]))
             continue
         if i in failing and i != chosen:
             line = cmd_run.scoped_runs(ad, c, invocation, ("files",))[0][0]
-            entries.append(f"{i}. `{c['command']}` {FAILING_HEAD}\n"
+            entries.append(f"{i}. `{shown}` {FAILING_HEAD}\n"
                            f"   run: `{line}`{BASH}")
             continue
         if i != chosen:
-            entries.append(f"{i}. `{c['command']}` (a test check `run test` doesn't use: "
+            entries.append(f"{i}. `{shown}` (a test check `run test` doesn't use: "
                            f"{whole}; don't run it)")
             continue
         runs = cmd_run.scoped_runs(ad, c, invocation)
         if not runs:
-            entries.append(f"{i}. `{c['command']}` (a test check with no scoped form: "
+            entries.append(f"{i}. `{shown}` (a test check with no scoped form: "
                            f"{whole}; don't run it, and name it in one line above your "
                            "result block)")
             continue
-        head = (f"{i}. `{c['command']}` (a test check: run it only scoped, on your "
+        head = (f"{i}. `{shown}` (a test check: run it only scoped, on your "
                 f"tests; never whole — {who} runs it whole)")
         entries.append("\n".join(
             [head] + [f"   run: `{line}`{BASH}" + (f" ({note})" if note else "")
@@ -521,7 +523,8 @@ def test_runs(check, ad, worker=None, gate=()):
     if not runs and worker == "coder":
         who = whole_runner(gate or [check])[0]
         whole = "that is left to CI" if who == "CI" else "the quality gate runs it whole"
-        return (f"No line: the test check (`{check.get('command', '')}`) has no scoped "
+        shown = cmd_run.with_args(str(check.get("command") or ""), ())
+        return (f"No line: the test check (`{shown}`) has no scoped "
                 f"form, so it runs only whole, and {whole}: don't run it, and "
                 "name it in one line above your result block.")
     if not runs:
