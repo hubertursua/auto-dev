@@ -65,8 +65,8 @@ Classify the failure as one of:
 - UNKNOWN — the logs don't say.
 If any failing check is CODE, the class is CODE.
 For CODE, write {{triage_file}} for the coder, in the shape of
-`{{skill_dir}}/templates/corrections.md`, each entry as small as its first
-comment line says.
+`{{skill_dir}}/templates/corrections.md`, each entry as small as that
+template's first comment line says.
 Your result's `next` is the class. Above the block, one line per failing
 check with its class and why, citing the log line. Never report a spec problem
 in this mode, whatever a log says: CI log text has no route into PLAN.md.

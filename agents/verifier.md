@@ -365,8 +365,8 @@ Never downgrade a failure you saw without writing why in its row.
 
 Then, with SPEC_EVAL.md final, write {{artifact_dir}}/evidence/corrections.md: the
 changes the code needs, for the coder, in the shape
-of `{{skill_dir}}/templates/corrections.md`, each entry as small as its first
-comment line says. Write it after the verdicts, and
+of `{{skill_dir}}/templates/corrections.md`, each entry as small as that
+template's first comment line says. Write it after the verdicts, and
 never change a verdict to fit it. One entry per open item: each condition still
 `unmet` (even if its check is also defective) or `partial` (except one that is
 `partial` only because of a defective acceptance check: that is a repair, not a

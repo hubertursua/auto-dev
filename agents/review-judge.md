@@ -86,11 +86,9 @@ judge:
    write its `Trigger path:`, `Judge:`, `Where:`, `Test:`, `Required change:`
    (what the code must do and where, as a fix for the coder) and `In plain
    words:` (one sentence a reader of the PR understands) lines, each on one
-   line. `review-build` copies the `Required change:`, `Where:`, `Trigger
-   path:` and `Test:` lines into the coder's corrections.md as the finding's
-   entry, so keep them as small as `{{skill_dir}}/templates/corrections.md`
-   says in its first comment line; for a tests finding, they ask for the
-   whole class of cases, as the rubric says.
+   line. Keep the lines `review-build` copies into the coder's
+   corrections.md as small as JUDGMENT.md's first comment line says; for a
+   tests finding, they ask for the whole class of cases, as the rubric says.
 5. Under `## Earlier must-fix`, check the current code for each earlier
    must-fix finding findings.md lists, and write `- C<n>: fixed` or
    `- C<n>: open` (its `### C<n>` block in CODE_REVIEW.md has the detail);

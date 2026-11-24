@@ -82,9 +82,9 @@ real caller can reach count (the trigger path rule, below), and the list holds
 the separate cases, not their combinations. The judge merges tests findings
 about the same changed behavior into one, and its `Test:` and
 `Required change:` lines ask for the whole class in one correction: they
-describe the kind of case with at most three examples, as
-`templates/corrections.md` says, not the list case by case. A tests finding
-is `fixed` only when every case it lists has a test.
+describe the kind of case, as `templates/corrections.md` says, not the list
+case by case. A tests finding is `fixed` only when every reachable case of
+the kind its `Test:` line describes has a test.
 
 A finding that breaks a binding rule (the repo's CLAUDE.md or AGENTS.md,
 CONTRIBUTING and coding-guideline docs, and the security directives
@@ -105,7 +105,9 @@ fix nothing.
 **Evidence: a trigger path.** A must-fix finding names a specific input or
 sequence, starting from a real caller or entry point (`file:line`), that leads
 to the failure. For a test finding, it names the changed behavior (`file:line`)
-and each input no test exercises. "This could fail" with no path is **noise**.
+and the kind of input no test exercises; the list of those inputs goes in
+the `Judge:` line, which the coder's entry leaves out. "This could fail" with
+no path is **noise**.
 The judge confirms each path by reading the code itself. A path the judge cannot
 confirm makes the finding noise, however many reviewers raised it.
 
