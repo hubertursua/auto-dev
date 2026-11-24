@@ -38,9 +38,9 @@ wait
     ends a hung check. Each `run gate|test` (never --show) keeps a record of
     itself, and its result once it ends, in
     <artifact-dir>/tmp/run/records/<k>.json; `wait` reads the newest. It
-    reads only the run's own output: a record whose output file, its links
-    followed, is outside <artifact-dir>/tmp/run/ is exit 2, so a run given an
-    --out elsewhere can't be waited on.
+    reads only where `run` may save its output: a record whose output file,
+    its links followed, is not under the artifact dir's evidence/,
+    acceptance/base-run/ or tmp/ (where --out may write) is exit 2.
 --dir is required: it names the run, and a worker's shell isn't in the
 worktree, so a default would find no run, or an old one.
 --files <path> ...
@@ -120,7 +120,7 @@ Exit codes:
        for a `<test>` form, a quoted `<files>`, `<tests>` or `<test>`, a form
        holding the other form's placeholder, --out outside the artifact dir;
        wait: no run was started, the run ended without a result, its output
-       outside <artifact-dir>/tmp/run/, an argument only gate or test takes,
+       not where --out may write, an argument only gate or test takes,
        --wait outside 1 to 170) — `ERROR: …`
     3  TIMED_OUT: the command and everything it started were stopped
     4  RUNNING: wait only: the run is still going; run `run wait` again
@@ -479,6 +479,16 @@ def warning_text(ad, n, check, what, files, tests, scope):
                                for line, note in runs])
 
 
+def may_save(root, path):
+    """Whether `path` (resolved) is a file under one of OUT_DIRS of the
+    resolved artifact dir `root`: where `run` may save its output."""
+    return any(path.is_relative_to(root / d) and path != root / d for d in OUT_DIRS)
+
+
+def out_dirs(root):
+    return ", ".join(f"{root}/{d}/" for d in OUT_DIRS)
+
+
 def output_file(ad, out, label):
     """The file to save to: --out (under one of OUT_DIRS), else the next free
     tmp/run/<label>-<k>.txt."""
@@ -486,10 +496,8 @@ def output_file(ad, out, label):
     if out:
         path = Path(out)
         path = (path if path.is_absolute() else Path.cwd() / path).resolve()
-        if not any(path.is_relative_to(root / d) and path != root / d
-                   for d in OUT_DIRS):
-            raise Fail(f"--out {out} is not under {', '.join(f'{root}/{d}/' for d in OUT_DIRS)}",
-                       CANNOT_RUN, "ERROR")
+        if not may_save(root, path):
+            raise Fail(f"--out {out} is not under {out_dirs(root)}", CANNOT_RUN, "ERROR")
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
     folder = root / "tmp" / "run"
@@ -783,17 +791,17 @@ def check_wait_arguments(args):
 
 
 def own_output(ad, path, rec):
-    """The run's output file, its links followed, when it is under
-    <ad>/tmp/run/ (where `run` saves its own); else `run wait` reads nothing."""
-    folder = (ad / "tmp" / "run").resolve()
+    """The run's output file, its links followed, when it is where `run` may
+    save one (`may_save`, as --out is checked); else `run wait` reads nothing."""
+    root = ad.resolve()
     output = rec.get("output")
     if isinstance(output, str) and output:
         resolved = Path(output).resolve()
-        if resolved.is_relative_to(folder) and resolved != folder:
+        if may_save(root, resolved):
             return resolved
     raise Fail(f"the run record {path} names the output {output!r}, which is not under "
-               f"{folder}{os.sep}: `run wait` reads only a run's own output", CANNOT_RUN,
-               "ERROR")
+               f"{out_dirs(root)}: `run wait` reads only where `run` may save its output",
+               CANNOT_RUN, "ERROR")
 
 
 def finished(args, ad, path, rec):

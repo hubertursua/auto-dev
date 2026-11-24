@@ -3821,18 +3821,27 @@ class RunWaitTest(unittest.TestCase):
             self.assertEqual(json.loads(r.stdout)["result"], "ERROR", r.stdout)
         else:
             self.assertTrue(r.stderr.startswith("ERROR:"), r.stderr)
-        self.assertIn(str((self.ad / "tmp" / "run").resolve()), said)
+        for folder in ("evidence", "acceptance/base-run", "tmp"):
+            self.assertIn(f"{self.ad.resolve()}/{folder}/", said)
         self.assertNotIn("SECRET-LINE", r.stdout + r.stderr)
         self.assertNotIn("PASSED", r.stdout + r.stderr)
 
-    def test_wait_refuses_a_finished_run_whose_output_is_outside_tmp_run(self):
+    def test_wait_refuses_a_finished_run_whose_output_is_outside_the_artifact_dir(self):
         self.checks(self.quick(0))
         self.plant(self.tmp / "secret.txt", token="PASSED", exit=0, exit_code=0,
                    seconds=0.1, message="`true` exited 0 in 0.1s")
         self.refused(self.cli("wait"))
         self.refused(self.cli("wait", "--json"), as_json=True)
 
-    def test_wait_refuses_an_output_linked_out_of_tmp_run(self):
+    def test_wait_refuses_an_output_where_out_may_not_write(self):
+        self.checks(self.quick(0))
+        self.plant(self.ad / "state.json", token="PASSED", exit=0, exit_code=0,
+                   seconds=0.1, message="`true` exited 0 in 0.1s")
+        r = self.cli("wait")
+        self.refused(r)
+        self.assertNotIn("schema", r.stdout + r.stderr)
+
+    def test_wait_refuses_an_output_linked_out_of_the_artifact_dir(self):
         self.checks(self.quick(0))
         link = self.ad / "tmp" / "run" / "gate-1-1.txt"
         secret = self.plant(link, token="PASSED", exit=0, exit_code=0, seconds=0.1,
@@ -3843,7 +3852,7 @@ class RunWaitTest(unittest.TestCase):
             self.skipTest(f"can't make a symlink here: {exc}")
         self.refused(self.cli("wait"))
 
-    def test_wait_refuses_a_running_record_whose_output_is_outside_tmp_run(self):
+    def test_wait_refuses_a_running_record_whose_output_is_outside_the_artifact_dir(self):
         self.checks(self.quick(0))
         self.plant(self.tmp / "secret.txt")  # no token, and its pid is alive
         r = self.cli("wait", "--wait", "1")
@@ -3856,6 +3865,17 @@ class RunWaitTest(unittest.TestCase):
         r = self.cli("wait")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("PASSED:"), r.stdout)
+
+    def test_wait_reads_a_run_given_out_under_evidence(self):
+        self.checks(self.quick(0))
+        out = self.ad / "evidence" / "C1.txt"
+        done = self.cli("gate", "1", "--out", str(out))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        r = self.cli("wait")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("PASSED:"), r.stdout)
+        self.assertEqual(r.stdout, done.stdout)
+        self.assertIn(str(out), self.output_line(r.stdout))
 
 
 class WriteRecordTest(unittest.TestCase):
