@@ -2314,6 +2314,12 @@ class ShipTest(NextCase):
         self.assertIn(f"merge-pr --pr 12 --sha {sha}", out["ACTION"])
         r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # the squash commit's body is the published description's Summary only
+        calls = [json.loads(ln)["args"]
+                 for ln in (self.tmp / "gh.log").read_text().splitlines()]
+        merge = next(c for c in calls if c[:2] == ["pr", "merge"])
+        self.assertEqual(merge[merge.index("--body") + 1], "Todos can carry a due date.")
+        self.assertIn("## Acceptance conditions", self.published())
         out = self.next(0)
         self.assertIn("mark main-ci", out["AFTER"][0])
         self.assertIn("gh pr view 12 --json mergeCommit", out["ACTION"])  # names the PR

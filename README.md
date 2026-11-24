@@ -472,9 +472,11 @@ each option does is in `skills/auto-dev/references/tables.md`.
 - **The merge** goes only through `gh pr merge`, respecting branch protection
   and never with `--admin`: `--squash` by default, `--merge` if the repo
   disallows squash, `--rebase` only when it is the one method allowed. It is
-  locked to the checked commit with `--match-head-commit`. If someone pushed to
-  the PR branch, the run stops before it watches CI, pushes or asks a gate, and
-  tells you how to bring those commits in to be checked; a commit you pushed
+  locked to the checked commit with `--match-head-commit`. The squash commit's
+  body is the description's Summary section only, never the whole
+  description. If someone pushed to the PR branch, the run stops before it
+  watches CI, pushes or asks a gate, and tells you how to bring those commits
+  in to be checked; a commit you pushed
   from the run's worktree (a base merged in by hand, say) is checked again with
   no stop. If you rebase or amend the branch in the worktree and don't push it,
   the run stops before its push and asks you to force-push it yourself: auto-dev

@@ -981,6 +981,34 @@ class StateCommandsTest(RunCase):
         self.assertEqual(self.cmd("budget", "raise", "--by", "1").returncode, 1)
 
 
+# A PR description and the squash body merge-pr builds from it.
+MERGE_SUMMARY = ("Adds due dates to todos, so a list can be sorted by them.\n\n"
+                 "### Details\nThe date is optional.\n\n"
+                 "Upgrade note: a run in flight resumes; nothing changes for it.")
+MERGE_DESCRIPTION = """<!-- the repo's template -->
+Intro before any heading.
+
+## Summary
+
+Adds due dates to todos, so a list can be sorted by them.
+https://claude.ai/code/session_01ABCdef
+
+### Details
+The date is optional.
+
+Upgrade note: a run in flight resumes; nothing changes for it.
+
+## Acceptance conditions
+Checked at commit abc123: every result below was produced on this code.
+- [x] **A todo can have a due date**
+
+## Review
+No findings.
+
+Generated with [Claude Code](https://claude.com/claude-code)
+"""
+
+
 GOOD_BODY = """## Summary
 Adds due dates.
 
@@ -1467,11 +1495,14 @@ class ShipTest(RunCase):
         self.assertIn("invalid choice", r.stderr)
 
     # merge-pr
-    def merge(self, merge_response, state="MERGED", view=None, repo=None):
+    def merge(self, merge_response, state="MERGED", view=None, repo=None,
+              description=None):
         self.script_gh([
             {"args": ["repo", "view"], **(repo or {"stdout": json.dumps(
                 {"squashMergeAllowed": True, "mergeCommitAllowed": True,
                  "rebaseMergeAllowed": False})})},
+            {"args": ["pr", "view", "7", "--json", "body"],
+             **(description or {"stdout": json.dumps({"body": MERGE_DESCRIPTION})})},
             {"args": ["pr", "merge"], **merge_response},
             {"args": ["pr", "view"], **(view or {"stdout": json.dumps({"state": state})})},
         ])
@@ -1486,8 +1517,65 @@ class ShipTest(RunCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         call = next(c for c in self.gh_calls() if c[:2] == ["pr", "merge"])
         self.assertEqual(call, ["pr", "merge", "7", "--squash", "--match-head-commit",
-                                "abc123"])
+                                "abc123", "--body", MERGE_SUMMARY])
         self.assertFalse(any("--admin" in call for call in self.gh_calls()))
+
+    def merge_body(self, **kwargs):
+        r = self.merge({"stdout": "merged"}, **kwargs)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        call = next(c for c in self.gh_calls() if c[:2] == ["pr", "merge"])
+        (self.tmp / "gh.log").unlink()
+        return call[call.index("--body") + 1] if "--body" in call else None
+
+    def test_merge_pr_squashes_with_the_summary_only(self):
+        # the Summary up to the next `## `, its Upgrade note kept, the session
+        # link's line dropped, and nothing from the sections after it
+        self.assertEqual(self.merge_body(), MERGE_SUMMARY)
+        # a description edited on GitHub comes back with CRLF line endings
+        crlf = {"stdout": json.dumps({"body": MERGE_DESCRIPTION.replace("\n", "\r\n")})}
+        self.assertEqual(self.merge_body(description=crlf), MERGE_SUMMARY)
+        # Summary is the last section: it runs to the end
+        last = {"stdout": json.dumps({"body": "Intro\n\n## Summary\n\nOnly this.\n"})}
+        self.assertEqual(self.merge_body(description=last), "Only this.")
+        # a merge commit, where the repo disallows squash, gets the same body
+        merge_only = {"stdout": json.dumps({"squashMergeAllowed": False,
+                                            "mergeCommitAllowed": True})}
+        self.assertEqual(self.merge_body(repo=merge_only), MERGE_SUMMARY)
+
+    def test_merge_pr_without_a_summary_has_an_empty_body(self):
+        for body in ("## Testing\n\nRan everything.\n\n## Review\n\nFine.\n",
+                     "Just prose, no headings.", "",
+                     "## Summary\n\nhttps://claude.ai/code/session_abc\n\n## Testing\nx"):
+            with self.subTest(body=body[:20]):
+                self.assertEqual(self.merge_body(
+                    description={"stdout": json.dumps({"body": body})}), "")
+
+    def test_merge_pr_rebase_passes_no_body(self):
+        rebase_only = {"stdout": json.dumps({"squashMergeAllowed": False,
+                                             "mergeCommitAllowed": False,
+                                             "rebaseMergeAllowed": True})}
+        r = self.merge({"stdout": "merged"}, repo=rebase_only)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        call = next(c for c in self.gh_calls() if c[:2] == ["pr", "merge"])
+        self.assertEqual(call, ["pr", "merge", "7", "--rebase", "--match-head-commit",
+                                "abc123"])
+        self.assertFalse(any(c[:5] == ["pr", "view", "7", "--json", "body"]
+                             for c in self.gh_calls()))
+
+    def test_merge_pr_with_an_unreadable_description_does_not_merge(self):
+        for response in ({"stderr": "HTTP 502: Bad Gateway", "exit": 1},
+                         {"stderr": "GraphQL: Could not resolve to a PullRequest",
+                          "exit": 1},
+                         {"stdout": "not json"},
+                         {"stdout": json.dumps({"body": None})},
+                         {"stdout": json.dumps({"state": "OPEN"})},
+                         {"stdout": "[]"}):
+            with self.subTest(response=response):
+                r = self.merge({"stdout": "merged"}, description=response)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertFalse(any(c[:2] == ["pr", "merge"] for c in self.gh_calls()))
+                self.assertNotIn("merge_attempt", self.state()["phase6"])
+                (self.tmp / "gh.log").unlink()
 
     def test_merge_pr_outcomes(self):
         r = self.merge({"stderr": "Head branch was modified. Review and try again.",
