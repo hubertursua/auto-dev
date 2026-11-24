@@ -107,6 +107,7 @@ SYMBOL_LOOKUP = {"definition": str, "references": str}
 SYMBOL_PLACEHOLDER = "<symbol>"
 FILES_PLACEHOLDER = "<files>"
 TESTS_PLACEHOLDERS = ("<tests>", "<test>")
+ARGS_PLACEHOLDER = "<args>"  # where `autodev.py run` puts the words after `--`
 
 errors: list[str] = []
 warnings: list[str] = []
@@ -208,6 +209,13 @@ def check_gate(gate, profile=False):
             elif key == "tests_example" and isinstance(val, str) and "tests" not in check:
                 errors.append(f"{where}.tests_example: an example test ID needs a "
                               f"`tests` form on the same check")
+            if (key in ("command", "files", "tests") and isinstance(val, str)
+                    and quoted_placeholder(val, (ARGS_PLACEHOLDER,))):
+                errors.append(f"{where}.{key}: write {ARGS_PLACEHOLDER} unquoted, as a "
+                              f"word of its own, with no `$` before it: `autodev.py "
+                              f"run` quotes each argument after `--` itself, so quotes "
+                              f"around it would let the shell expand an argument "
+                              f"`$(…)`")
         kind = check.get("kind")
         if isinstance(kind, str):
             kinds.add(kind)

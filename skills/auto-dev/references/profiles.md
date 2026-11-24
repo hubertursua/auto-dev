@@ -157,7 +157,12 @@ Fields:
   quoted as one argument and added where the command (or the `files` or
   `tests` form that runs) has `<args>`, else at its end; with none, `<args>`
   is removed. Put `<args>` in a command whose arguments must go somewhere
-  other than its end (example in TypeScript: `npm test -- <args>`).
+  other than its end (example in TypeScript: `npm test -- <args>`). Write
+  `<args>` unquoted, as a word of its own, with no `$` before it, as for
+  `<files>`: `run` quotes each argument itself, so the profile's own quotes
+  would let the shell expand an argument `$(…)`, and both
+  `validate-config.py` and `run` refuse a quoted one, in `command` and in
+  each form.
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
   before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.

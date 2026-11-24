@@ -3460,6 +3460,54 @@ class RunCommandTest(unittest.TestCase):
         self.assertEqual(list(self.tmp.rglob("PWNED")), [])
 
 
+    @unittest.skipIf(os.name == "nt", "a POSIX shell's quoting")
+    def test_a_quoted_args_placeholder_is_refused_and_nothing_runs(self):
+        # `run` quotes each argument after `--` itself: inside the profile's
+        # own quotes, or after a `$`, the shell would expand what it holds.
+        evil = "$(touch PWNED)"
+        py = shlex.quote(sys.executable)
+        echo = f"{py} -c 'import os, sys; print(os.getcwd()); print(sys.argv[1:])'"
+        for command in (f'{echo} all "<args>"', f"{echo} all '<args>'",
+                        f"{echo} all $<args>", f'{echo} all "-k <args>"'):
+            self.gate[2] = {"kind": "test", "command": command, "report": "TEST.md"}
+            (self.ad / "state.json").write_text(json.dumps(
+                {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+            # The whole check, through `run test` and `run gate <n>`, with
+            # arguments and without (the quality gate's own run).
+            for args in (("test", "--", evil), ("gate", "3", "--", evil), ("gate", "3"),
+                         ("test", "--tests", "x", "--", evil)):
+                r = self.run_(*args)
+                self.assertEqual(r.returncode, 2, (command, args, r.stdout, r.stderr))
+                self.assertIn("ERROR:", r.stdout + r.stderr, (command, args))
+                self.assertIn("`command`", r.stdout + r.stderr, (command, args))
+                self.assertIn("<args> unquoted", r.stdout + r.stderr, (command, args))
+                self.assertEqual(self.run_outputs(), [], (command, args))
+        for key, form, args in (
+                ("files", '<runner> some <files> "<args>"', ("--files", "src/c.test.ts")),
+                ("files", "<runner> some <files> $<args>", ("--files", "src/c.test.ts")),
+                ("files", '<runner> some <files> "<args>"',
+                 ("--tests", "x", "--files", "src/c.test.ts")),
+                ("tests", "<runner> pick <tests> '<args>'", ("--tests", "x")),
+                ("tests", '<runner> pick <test> "--grep=<args>"', ("--tests", "x"))):
+            self.set_test_check(**{key: form})
+            r = self.run_("test", *args, "--", evil)
+            self.assertEqual(r.returncode, 2, (form, args, r.stdout, r.stderr))
+            self.assertIn("ERROR:", r.stdout + r.stderr, (form, args))
+            self.assertIn(f"`{key}` form", r.stdout + r.stderr, (form, args))
+            self.assertIn("<args> unquoted", r.stdout + r.stderr, (form, args))
+            self.assertEqual(self.run_outputs(), [], (form, args))
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+        # Unquoted, the same argument is one word, and nothing it names runs.
+        self.gate[2] = {"kind": "test", "command": f"{echo} all <args> end",
+                        "report": "TEST.md"}
+        (self.ad / "state.json").write_text(json.dumps(
+            {"schema": 5, "worktree": str(self.wt), "settings": {"gate": self.gate}}))
+        r = self.run_("test", "--", evil)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"['all', '{evil}', 'end']", r.stdout)
+        self.assertEqual(list(self.tmp.rglob("PWNED")), [])
+
+
     def run_json(self, *args):
         r = self.run_(*args, "--json")
         try:

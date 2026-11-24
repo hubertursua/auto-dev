@@ -76,7 +76,10 @@ worktree, so a default would find no run, or an old one.
     or `tests` form that runs), such as a test-name filter or a `<path>:<line>`
     target: each is quoted, so it is one argument and never shell syntax. They
     go where the command has `<args>`, else at its end. A command with
-    `<args>` run with none has the placeholder removed. On Windows an argument
+    `<args>` run with none has the placeholder removed. A `command` or form
+    whose `<args>` is quoted, or has a quote, backtick or backslash beside it
+    or a `$` before it, is exit 2, whether or not arguments are given, since
+    the shell would expand what an argument holds. On Windows an argument
     that ends in a backslash or holds `"`, `%` or `!` is exit 2, as a test ID
     is. `run wait` takes none.
 
@@ -132,7 +135,8 @@ Exit codes:
        after `--` that ends in a backslash, or a test ID, argument or path that
        holds `"`, `%` or `!`, each checked again with fullwidth lookalikes
        mapped to ASCII, more than one ID
-       for a `<test>` form, a quoted `<files>`, `<tests>` or `<test>`, a form
+       for a `<test>` form, a quoted `<files>`, `<tests>`, `<test>` or
+       `<args>` (in `command` too), a form
        holding the other form's placeholder, --out outside the artifact dir
        or tmp/ linked out of it; wait: no run was started, the run ended
        without a result, its output not where --out may write or swapped for
@@ -340,6 +344,7 @@ def command_for(n, check, worktree, files, extra=()):
         command = str(check.get("command") or "")
         if not command:
             raise Fail(f"gate check {n} has no command", CANNOT_RUN, "ERROR")
+        refuse_quoted(n, command, "command", (ARGS_PLACEHOLDER,), "argument")
         return with_args(command, extra)
     form = str(check.get("files") or "")
     if PLACEHOLDER not in form:
@@ -348,16 +353,19 @@ def command_for(n, check, worktree, files, extra=()):
                    f"it can only run whole (drop --files)", CANNOT_RUN, "ERROR")
     unfilled(n, form, "files", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER))
     refuse_quoted(n, form, "files", (PLACEHOLDER,), "path")
+    refuse_quoted(n, form, "files", (ARGS_PLACEHOLDER,), "argument")
     return with_args(form, extra, {PLACEHOLDER: quote(relative_paths(worktree, files))})
 
 
 def refuse_quoted(n, form, key, placeholders, what):
-    """Refuse a form that quotes its placeholder: `run` quotes each value
-    itself, so the form's own quotes would reach the runner, or let the shell
-    expand what the value holds (a file named `$(…)`)."""
+    """Refuse a form (or the whole `command`) that quotes its placeholder:
+    `run` quotes each value itself, so the form's own quotes would reach the
+    runner, or let the shell expand what the value holds (a file named `$(…)`,
+    an argument `$(…)`)."""
     bad = quoted_placeholder(form, placeholders)
     if bad:
-        raise Fail(f"gate check {n}'s `{key}` form (`{form}`) has {bad} inside quotes "
+        name = "`command`" if key == "command" else f"`{key}` form"
+        raise Fail(f"gate check {n}'s {name} (`{form}`) has {bad} inside quotes "
                    f"or next to a quote or backslash: `run` quotes each {what} itself, "
                    f"so write {bad} unquoted, as a word of its own, in the profile",
                    CANNOT_RUN, "ERROR")
@@ -466,6 +474,7 @@ def resolve(n, check, worktree, files, tests, extra=()):
     form = str(check.get("tests") or "")
     unfilled(n, form, "tests", (PLACEHOLDER,))
     refuse_quoted(n, form, "tests", (TESTS_PLACEHOLDER, TEST_PLACEHOLDER), "test ID")
+    refuse_quoted(n, form, "tests", (ARGS_PLACEHOLDER,), "argument")
     if TESTS_PLACEHOLDER in form:
         return with_args(form, extra, {TESTS_PLACEHOLDER: quote(tests)}), "tests", ""
     if TEST_PLACEHOLDER in form:

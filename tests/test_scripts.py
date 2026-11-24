@@ -1004,6 +1004,39 @@ class ValidateConfigTest(unittest.TestCase):
             self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
 
 
+    def test_an_args_placeholder_must_be_unquoted_in_the_command_and_each_form(self):
+        # `run` quotes each argument after `--` itself: inside the profile's
+        # own quotes, or after a `$`, the shell would expand an argument
+        # `$(…)`. Each form as written in the YAML string; the comment shows
+        # the command it holds.
+        def profile(key, form):
+            rest = {"command": "npm test", "files": "npx jest <files>",
+                    "tests": "npx jest -t <test>"}
+            rest[key] = form
+            fields = ", ".join(f'{k}: "{v}"' for k, v in rest.items())
+            return ('stack: typescript\nsetup: ["npm ci"]\ngate:\n'
+                    f'  - {{ kind: test, report: "TEST.md", {fields} }}\n')
+        for key, form in (("command", 'npm test -- \\"<args>\\"'),  # npm test -- "<args>"
+                          ("command", "npm test -- '<args>'"),
+                          ("command", "npm test -- $<args>"),
+                          ("files", 'npx jest <files> \\"<args>\\"'),
+                          ("files", "npx jest <files> `<args>`"),
+                          ("tests", "npx jest -t <test> '<args>'"),
+                          ("tests", "npx jest -t <test> $<args>")):
+            for r in (self.validate_profile(profile(key, form)),
+                      self.validate(profile(key, form).split("\n", 2)[2])):
+                self.assertEqual(r.returncode, 1, (form, r.stdout, r.stderr))
+                line = next((x for x in r.stderr.splitlines()
+                             if f"gate[0].{key}: write <args> unquoted" in x), "")
+                self.assertTrue(line.startswith("ERROR"), (form, r.stderr))
+        # Unquoted, as a word of its own, it is fine in each.
+        for key, form in (("command", "npm test -- <args>"),
+                          ("files", "npx jest <files> <args>"),
+                          ("tests", "npx jest <args> -t <test>")):
+            r = self.validate_profile(profile(key, form))
+            self.assertEqual(r.returncode, 0, (form, r.stdout, r.stderr))
+
+
 class ProfilePathTest(GitRepoCase):
     def setUp(self):
         super().setUp()
