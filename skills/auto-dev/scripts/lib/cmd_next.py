@@ -209,7 +209,6 @@ step that stopped, spending one of them.
 
 import copy
 import json
-import os
 import re
 import shlex
 import shutil
@@ -1227,13 +1226,9 @@ def pending_briefs(c):
             b["emitted"] = tries
             b["resent"] = b.get("resent", 0) + 1  # a spawn of its own (metrics.json)
             b["issued_at"], b["issued_seq"] = st.now(), c.seq()
-            cmd_work.fresh_tree(c.state, b)  # what changed since is not this spawn's
-            # A new spawn of the same brief: its mtime is when this spawn
-            # started (`run gate`'s attempt count starts again from there).
-            try:
-                os.utime(c.ad / "briefs" / f"{b['worker']}-{b['n']}.md")
-            except OSError:
-                pass
+            # What changed since is not this spawn's; it also re-dates the
+            # brief file, the start of this spawn (`run gate`'s attempt count).
+            cmd_work.fresh_tree(c.state, b)
         c.dirty = True
     agents = [f"auto-dev:{b['worker']}" for b in open_]
     paths = [c.ad / "briefs" / f"{b['worker']}-{b['n']}.md" for b in open_]
