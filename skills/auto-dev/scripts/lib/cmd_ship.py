@@ -64,9 +64,15 @@ ci-watch [--pr N] [--sha COMMIT] [--max-wait SECONDS] [--interval SECONDS]
 merge-pr --pr N --sha <checked commit>
     `gh pr merge` with the repo's allowed method (squash first), locked with
     --match-head-commit, never --admin; then confirms the PR state is MERGED.
+    A squash or merge commit's body is the description's `## Summary` section
+    (read with `gh pr view N --json body`), up to the next `## ` heading,
+    trimmed, without any line holding a claude.ai session link: never the
+    whole description. With no Summary section the body is empty (the subject
+    is the PR title either way). A rebase merge passes no body.
     Exit: 0 merged; 1 the head moved (re-check the code and ask the main gate
     again); 2 could not run: gh missing, signed out, offline or too old, the
-    repo's merge methods unreadable, or the merge succeeded but the PR's state
+    repo's merge methods or the PR's description unreadable (nothing merged),
+    or the merge succeeded but the PR's state
     could not be read (it says so, and records the merge as `unknown`, so
     `next` never offers it again); 3 queued or auto-merge
     enabled, not merged (report and stop; don't move Jira); 4 refused (report
@@ -163,6 +169,9 @@ GH_BROKEN_RE = re.compile(
     re.IGNORECASE | re.MULTILINE)
 HEAD_MOVED_RE = re.compile(r"head (branch )?(was modified|has moved)|not the expected head|"
                            r"expected head (sha|oid)", re.IGNORECASE)
+# The squash commit's body: the description's Summary, up to the next `## `.
+SUMMARY_RE = re.compile(r"^## Summary[ \t]*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+SESSION_LINK_RE = re.compile(r"claude\.ai/code/session", re.IGNORECASE)
 # A stored CI status that ends a watch: watching the same commit again starts anew.
 FINAL_CI = ("green", "red", "unavailable", "timeout", "conflict")
 GH_MIN_WAIT, GH_MAX_WAIT = 10, 60  # seconds one gh call may take during a watch
@@ -558,12 +567,43 @@ def merge_method(cwd):
                "to the repo", CANNOT_RUN, "ERROR")
 
 
+def squash_body(description):
+    """The merge commit's body: `description`'s `## Summary` section, up to the
+    next `## ` heading, trimmed, with each line holding a claude.ai session link
+    dropped. Empty when there is no Summary: never the whole description."""
+    found = SUMMARY_RE.search(description.replace("\r\n", "\n"))
+    if not found:
+        return ""
+    lines = [line for line in found.group(1).splitlines()
+             if not SESSION_LINK_RE.search(line)]
+    return "\n".join(lines).strip()
+
+
+def pr_description(cwd, pr):
+    code, out, err = gh_json(cwd, "pr", "view", str(pr), "--json", "body")
+    text = (out + err).strip()
+    if code != 0:
+        gh_cannot_run(code, text, "gh pr view")
+    try:  # gh always answers `body` when asked: a reply without it is unreadable
+        body = json.loads(out)["body"] if code == 0 else None
+    except (ValueError, KeyError, TypeError):
+        body = None
+    if not isinstance(body, str):
+        raise Fail(f"could not read PR #{pr}'s description with `gh pr view` (exit "
+                   f"{code}), so the squash message can't be built; nothing was "
+                   f"merged: {text[-500:]}", CANNOT_RUN, "ERROR")
+    return body
+
+
 def merge_pr(args):
     state = load(args)
     wt = state["worktree"]
     method = merge_method(wt)
+    body = []
+    if method != "--rebase":  # a rebase merge writes no commit message
+        body = ["--body", squash_body(pr_description(wt, args.pr))]
     code, out, err = gh_json(wt, "pr", "merge", str(args.pr), method,
-                             "--match-head-commit", args.sha)
+                             "--match-head-commit", args.sha, *body)
     text = (out + err).strip()
     if code != 0:
         gh_cannot_run(code, text, "gh pr merge")  # could not run: not an attempt
