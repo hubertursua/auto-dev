@@ -53,11 +53,13 @@ the one `{{scope}}` names (Scopes, below).
    a space. Never run it with no path: it then reviews the branch against its
    upstream, which is empty once the branch is pushed. When the list is
    `none`, skip the skill. Then run the /security-review skill, telling it the
-   base branch is {{base}}. Their findings are your starting point, not your
-   answer. In scope `after-commit` (a correction's re-review), skip both
-   skills and review the correction yourself, following what it changed
-   downstream: every caller and every use of the values it changed, however
-   few lines it touched.
+   change is everything since commit {{cut}}, where the branch left
+   origin/{{base}}; never give it the local base branch by name, which can lag
+   behind origin and widen the review to commits merged before this run. Their
+   findings are your starting point, not your answer. In scope `after-commit`
+   (a correction's re-review), skip both skills and review the correction
+   yourself, following what it changed downstream: every caller and every use
+   of the values it changed, however few lines it touched.
 2. Then go further yourself. Read each changed file in full, not only its
    hunks, its tests, {{artifact_dir}}/PLAN.md, the acceptance checks
    {{artifact_dir}}/acceptance/MANIFEST.md names, the security directives

@@ -102,6 +102,13 @@ can resume on the new one. Newest first. The current version is in
   session ended at a checkpoint, `auto-dev continue` stops once at #23; `auto-dev
   continue` again, or _I fixed it myself_, lifts the stop and watches the
   pushed commit.
+- **The security review starts at the cut.** The reviewer and both security
+  reviewers told `/security-review` the base branch by its bare name, so when
+  the main checkout's local base branch lagged behind origin, the review took
+  in every commit merged since. They now tell it that the change is everything
+  since the commit the branch was cut from (the brief's `cut`, where it left
+  `origin/<base>`). A 5.0 run in flight resumes on it: a reviewer spawned after
+  the upgrade reads the new instructions.
 
 ## Upgrading from 4.27
 

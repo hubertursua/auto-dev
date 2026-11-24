@@ -55,9 +55,12 @@ to a check can open a path anywhere), and carry every earlier row forward
 (step 5). Write the focused scope line, and `coverage: full` when
 the earlier runs covered the rest of the change.
 
-1. Run the /security-review skill with the Skill tool. Tell it the base branch
-   is {{base}}, and that uncommitted changes are part of the change. Its findings
-   are your starting point, not your answer.
+1. Run the /security-review skill with the Skill tool. Tell it the change is
+   everything since commit {{cut}}, where the branch left origin/{{base}}, and
+   that uncommitted changes are part of the change. Never give it the local base
+   branch by name: that branch can lag behind origin, and the review would then
+   take in commits merged before this run. Its findings are your starting point,
+   not your answer.
 2. Then go further yourself. Read PLAN.md's Security/Compliance criteria
    ({{artifact_dir}}/PLAN.md), the security directives named in
    {{artifact_dir}}/profile.md, and the binding rules ({{binding_rules}}). Try to exploit:
