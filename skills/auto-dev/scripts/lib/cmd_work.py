@@ -777,7 +777,15 @@ def digest(path):
 def fresh_tree(state, issued):
     """A brief `next` sends out again (no result came back) is held to the tree
     and PLAN.md as they are now: what changed while no worker was out is not
-    this spawn's."""
+    this spawn's. The brief file is re-dated first: its mtime is when this
+    spawn started (`run gate`'s attempt count starts again from there), and
+    `setup_running` measures setup against it, so it must be no later than
+    the new snapshot."""
+    try:
+        os.utime(Path(state["artifact_dir"]) / "briefs"
+                 / f"{issued['worker']}-{issued['n']}.md")
+    except OSError:
+        pass
     if issued.get("tree"):
         issued["tree"] = tree_guard.snapshot(state["worktree"], state["artifact_dir"])
     if issued.get("spec"):
@@ -1572,17 +1580,30 @@ def writer_out(state, issued):
 
 def setup_running(state, ad, issued):
     """Whether init's setup commands were still running when `issued` was
-    briefed: they write setup.json when they end."""
+    briefed: they write setup.json when they end.
+
+    The brief file's mtime is when it was briefed (`fresh_tree` re-dates it
+    when the brief goes out again): file time against file time, to the
+    nanosecond, since the entry's `at` keeps whole seconds only and setup
+    ending earlier in that second would read as still running. A tie counts
+    as running. With no brief file, fall back to `at`: setup within its
+    second may have ended after the brief, so only setup from an earlier
+    second counts as ended. With `at` unreadable too, it counts as running."""
     if not (state.get("init") or {}).get("setup_pid"):
         return False
     done = ad / "setup.json"
     if not done.is_file():
         return True
     try:
+        brief = ad / "briefs" / f"{issued['worker']}-{issued['n']}.md"
+        return done.stat().st_mtime_ns >= brief.stat().st_mtime_ns
+    except (KeyError, OSError):
+        pass  # no brief file: the entry's whole-second time stands in
+    try:
         briefed = datetime.fromisoformat(issued["at"]).timestamp()
     except (KeyError, TypeError, ValueError):
         return True
-    return done.stat().st_mtime > briefed
+    return done.stat().st_mtime >= briefed
 
 
 def record_ok(state, ad, worker, n, data):
