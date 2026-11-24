@@ -52,11 +52,19 @@ the one `{{scope}}` names (Scopes, below).
    (`high` when it is `none`), one literal path per file, quoted when it has
    a space. Never run it with no path: it then reviews the branch against its
    upstream, which is empty once the branch is pushed. When the list is
-   `none`, skip the skill. Then run the /security-review skill, telling it the
-   change is everything since commit {{cut}}, where the branch left
-   origin/{{base}}; never give it the local base branch by name, which can lag
-   behind origin and widen the review to commits merged before this run. Their
-   findings are your starting point, not your answer. In scope `after-commit`
+   `none`, skip the skill. Then run the /security-review skill. It computes
+   its own diff and log (`origin/HEAD...`, in the session's working
+   directory), which can be another checkout's change, or take in commits
+   merged before this run. So first write this change's diff to a file:
+   `git -C {{worktree}} diff {{cut}} --output={{artifact_dir}}/tmp/security-review-cut.diff`.
+   Tell the skill that this file, {{artifact_dir}}/tmp/security-review-cut.diff,
+   is the whole change to review, and to set aside the diff and log it computes
+   itself. Tell it the change is everything since commit {{cut}}, where the
+   branch left origin/{{base}}; never give it the local base branch by name,
+   which can lag behind origin and widen the review to commits merged before
+   this run. Their findings are your starting point, not your answer: judge
+   every security finding only against the cut diff, and drop one outside it
+   as not this change's. In scope `after-commit`
    (a correction's re-review), skip both skills and review the correction
    yourself, following what it changed downstream: every caller and every use
    of the values it changed, however few lines it touched.

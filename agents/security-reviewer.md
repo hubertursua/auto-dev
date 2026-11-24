@@ -55,12 +55,20 @@ to a check can open a path anywhere), and carry every earlier row forward
 (step 5). Write the focused scope line, and `coverage: full` when
 the earlier runs covered the rest of the change.
 
-1. Run the /security-review skill with the Skill tool. Tell it the change is
-   everything since commit {{cut}}, where the branch left origin/{{base}}, and
-   that uncommitted changes are part of the change. Never give it the local base
-   branch by name: that branch can lag behind origin, and the review would then
-   take in commits merged before this run. Its findings are your starting point,
-   not your answer.
+1. Run the /security-review skill with the Skill tool. It computes its own
+   diff and log (`origin/HEAD...`, in the session's working directory), which
+   can be another checkout's change, or take in commits merged before this run.
+   So first write this change's diff to a file:
+   `git -C {{worktree}} diff {{cut}} --output={{artifact_dir}}/tmp/security-review-cut.diff`.
+   Tell the skill that this file, {{artifact_dir}}/tmp/security-review-cut.diff,
+   is the whole change to review, and to set aside the diff and log it computes
+   itself. Tell it the change is everything since commit {{cut}}, where the
+   branch left origin/{{base}}, and that uncommitted changes are part of the
+   change. Never give it the local base branch by name: that branch can lag
+   behind origin, and the review would then take in commits merged before this
+   run. Its findings are your starting point, not your answer: judge every
+   security finding only against the cut diff, and drop one outside it as not
+   this change's.
 2. Then go further yourself. Read PLAN.md's Security/Compliance criteria
    ({{artifact_dir}}/PLAN.md), the security directives named in
    {{artifact_dir}}/profile.md, and the binding rules ({{binding_rules}}). Try to exploit:
