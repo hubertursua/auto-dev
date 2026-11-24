@@ -37,7 +37,15 @@ wait
     only reads: it never stops the run, so the run's own timeout is what
     ends a hung check. Each `run gate|test` (never --show) keeps a record of
     itself, and its result once it ends, in
-    <artifact-dir>/tmp/run/records/<k>.json; `wait` reads the newest.
+    <artifact-dir>/tmp/run/records/<k>.json; `wait` reads the newest. It
+    reads only where `run` may save its output: a record whose output file,
+    its links followed, is not under the artifact dir's evidence/,
+    acceptance/base-run/ or tmp/ (where --out may write) is exit 2. Those
+    folders are taken as named, never resolved, so one that is itself a link
+    out of the artifact dir is refused (by `run gate|test` before it runs, and
+    by `wait`). The file checked is the file read, opened without following a
+    link, so swapping it for a link after the check is refused too; swapping
+    one of its parent folders for a link in that moment is not covered.
 --dir is required: it names the run, and a worker's shell isn't in the
 worktree, so a default would find no run, or an old one.
 --files <path> ...
@@ -115,9 +123,11 @@ Exit codes:
        backslash or a test ID or path that holds `"`, `%` or `!`, each checked
        again with fullwidth lookalikes mapped to ASCII, more than one ID
        for a `<test>` form, a quoted `<files>`, `<tests>` or `<test>`, a form
-       holding the other form's placeholder, --out outside the artifact dir;
-       wait: no run was started, the run ended without a result, an argument
-       only gate or test takes, --wait outside 1 to 170) — `ERROR: …`
+       holding the other form's placeholder, --out outside the artifact dir
+       or tmp/ linked out of it; wait: no run was started, the run ended
+       without a result, its output not where --out may write or swapped for
+       a link, an argument only gate or test takes, --wait outside 1 to 170)
+       — `ERROR: …`
     3  TIMED_OUT: the command and everything it started were stopped
     4  RUNNING: wait only: the run is still going; run `run wait` again
 """
@@ -129,6 +139,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from pathlib import Path
@@ -474,6 +485,16 @@ def warning_text(ad, n, check, what, files, tests, scope):
                                for line, note in runs])
 
 
+def may_save(root, path):
+    """Whether `path` (resolved) is a file under one of OUT_DIRS of the
+    resolved artifact dir `root`: where `run` may save its output."""
+    return any(path.is_relative_to(root / d) and path != root / d for d in OUT_DIRS)
+
+
+def out_dirs(root):
+    return ", ".join(f"{root}/{d}/" for d in OUT_DIRS)
+
+
 def output_file(ad, out, label):
     """The file to save to: --out (under one of OUT_DIRS), else the next free
     tmp/run/<label>-<k>.txt."""
@@ -481,13 +502,15 @@ def output_file(ad, out, label):
     if out:
         path = Path(out)
         path = (path if path.is_absolute() else Path.cwd() / path).resolve()
-        if not any(path.is_relative_to(root / d) and path != root / d
-                   for d in OUT_DIRS):
-            raise Fail(f"--out {out} is not under {', '.join(f'{root}/{d}/' for d in OUT_DIRS)}",
-                       CANNOT_RUN, "ERROR")
+        if not may_save(root, path):
+            raise Fail(f"--out {out} is not under {out_dirs(root)}", CANNOT_RUN, "ERROR")
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
     folder = root / "tmp" / "run"
+    if not may_save(root, folder.resolve() / f"{label}-1.txt"):  # a linked tmp/
+        raise Fail(f"{folder} resolves to {folder.resolve()}, not under "
+                   f"{out_dirs(root)}: `run` saves its output only there", CANNOT_RUN,
+                   "ERROR")
     folder.mkdir(parents=True, exist_ok=True)
     k = 1
     while True:
@@ -671,12 +694,16 @@ def claim_record(ad):
 
 
 def write_record(path, rec):
-    """Write the record whole (a reader never sees half of it). Windows refuses
-    the replace while `run wait` has the record open, so a refused one is tried
-    again; when every try fails, the temporary file is removed."""
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(rec), encoding="utf-8")
+    """Write the record whole (a reader never sees half of it), through a new
+    temporary file `mkstemp` makes, so a link planted where it writes is never
+    followed. Windows refuses the replace while `run wait` has the record open,
+    so a refused one is tried again; when every try fails, the temporary file
+    is removed."""
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    tmp = Path(name)
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(json.dumps(rec))
         for attempt in range(REPLACE_TRIES):
             try:
                 os.replace(tmp, path)
@@ -712,10 +739,23 @@ def keep(path, rec):
         pass
 
 
-def report(args, rec, tail):
-    """Print a finished run's result from its record, as `run` does; its exit code."""
+def read_output(path):
+    """The text of the output file at `path`, opened without following a link
+    at it (where the system can tell)."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(path, flags), encoding="utf-8", errors="replace") as text:
+        return text.read()
+
+
+def report(args, rec, tail, source=None):
+    """Print a finished run's result from its record, as `run` does; its exit code.
+    It reads `source` (`run wait`'s checked file) when given, else the record's
+    output; it always shows the record's output."""
     path = Path(rec["output"])
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if source is None:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    else:
+        lines = read_output(source).splitlines()
     shown = lines[-tail:] if tail else []
     token, message, warning = rec["token"], rec["message"], rec.get("warning")
     if args.json:
@@ -773,12 +813,33 @@ def check_wait_arguments(args):
                    "ERROR")
 
 
-def finished(args, rec):
+def own_output(ad, path, rec):
+    """The run's output file, its links followed, when it is where `run` may
+    save one (`may_save`, as --out is checked); else `run wait` reads nothing."""
+    root = ad.resolve()
+    output = rec.get("output")
+    if not isinstance(output, str) or not output:
+        raise Fail(f"the run record {path} names no output file", CANNOT_RUN, "ERROR")
+    resolved = Path(output).resolve()
+    if may_save(root, resolved):
+        return resolved
+    raise Fail(f"the run record {path} names the output {output!r}, which resolves to "
+               f"{resolved}, not under {out_dirs(root)}: `run wait` reads only where "
+               "`run` may save its output", CANNOT_RUN, "ERROR")
+
+
+def finished(args, ad, path, rec):
     """A run's recorded result, printed as `run` printed it."""
     if rec["token"] == "ERROR":
         raise Fail(f"{rec.get('message')} (its output: {rec.get('output')})", CANNOT_RUN,
                    "ERROR")
-    return report(args, rec, rec.get("tail", TAIL) if args.tail is None else args.tail)
+    source = own_output(ad, path, rec)
+    tail = rec.get("tail", TAIL) if args.tail is None else args.tail
+    try:
+        return report(args, rec, tail, source)
+    except OSError as exc:
+        raise Fail(f"the run's output {rec['output']} can't be read: {exc}", CANNOT_RUN,
+                   "ERROR") from exc
 
 
 def wait(args, ad):
@@ -793,12 +854,12 @@ def wait(args, ad):
     while True:
         rec = read_record(path) or rec
         if rec and rec.get("token"):
-            return finished(args, rec)
+            return finished(args, ad, path, rec)
         if rec and not cmd_init.runner_alive(rec.get("pid")):
             time.sleep(0.2)  # it may have written its result as it ended
             again = read_record(path)
             if again and again.get("token"):
-                return finished(args, again)
+                return finished(args, ad, path, again)
             raise Fail(f"the run of `{rec.get('command')}` ended without a result (its "
                        f"output: {rec.get('output')})", CANNOT_RUN, "ERROR")
         left = deadline - time.monotonic()
@@ -807,9 +868,9 @@ def wait(args, ad):
         time.sleep(min(0.5, left))
     if rec is None:
         raise Fail(f"the run record {path} can't be read", CANNOT_RUN, "ERROR")
-    output = Path(rec["output"])
+    resolved, output = own_output(ad, path, rec), Path(rec["output"])
     try:
-        count = len(output.read_text(encoding="utf-8", errors="replace").splitlines())
+        count = len(read_output(resolved).splitlines())
     except OSError:
         count = 0
     seconds = round(time.time() - rec.get("started", time.time()), 1)
