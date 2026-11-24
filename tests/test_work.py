@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1824,6 +1825,114 @@ class TreeGuardTest(WorkCase):
         (self.worktree / "app.ts").write_text("// written by setup\n")
         self.answered(n)
         self.assertEqual(self.record(n).returncode, 0)
+
+    def briefed_around_setup(self, setup_ns, brief_ns):
+        """Brief a plan critic in a run whose setup commands ran in the
+        background and wrote setup.json, then date setup.json and the brief
+        file `setup_ns` and `brief_ns` nanoseconds after the whole second the
+        brief's state entry records."""
+        state = self.state()
+        state["init"]["setup_pid"] = 4242
+        self.write_state(state)
+        setup = self.write("setup.json", json.dumps(
+            {"status": "done", "failed_command": None, "exit_code": 0}))
+        n = self.reviewer()
+        issued = next(b for b in self.state()["briefs"]
+                      if b["worker"] == "plan-critic" and b["n"] == n)
+        second = int(datetime.fromisoformat(issued["at"]).timestamp()) * 10**9
+        brief = self.dir / "briefs" / f"plan-critic-{n}.md"
+        self.assertTrue(brief.is_file(), brief)
+        os.utime(setup, ns=(second + setup_ns,) * 2)
+        os.utime(brief, ns=(second + brief_ns,) * 2)
+        return n
+
+    def test_a_change_is_refused_when_setup_ended_earlier_in_the_briefs_second(self):
+        before = (self.worktree / "app.ts").read_text()
+        n = self.briefed_around_setup(300_000_000, 600_000_000)
+        (self.worktree / "app.ts").write_text("// the critic's\n")
+        self.answered(n)
+        r = self.record(n)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(f"plan-critic-{n} changed 1 repo file(s)", r.stdout)
+        self.assertIn("app.ts", r.stdout)
+        self.assertEqual((self.worktree / "app.ts").read_text(), before)
+
+    def test_with_the_brief_file_gone_setup_from_an_earlier_second_is_still_checked(self):
+        before = (self.worktree / "app.ts").read_text()
+        n = self.briefed_around_setup(-5 * 10**9, 600_000_000)
+        (self.dir / "briefs" / f"plan-critic-{n}.md").unlink()
+        (self.worktree / "app.ts").write_text("// the critic's\n")
+        self.answered(n)
+        r = self.record(n)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(f"plan-critic-{n} changed 1 repo file(s)", r.stdout)
+        self.assertIn("app.ts", r.stdout)
+        self.assertEqual((self.worktree / "app.ts").read_text(), before)
+
+    def test_with_the_brief_file_gone_setup_in_the_recorded_second_skips_the_check(self):
+        n = self.briefed_around_setup(300_000_000, 600_000_000)
+        (self.dir / "briefs" / f"plan-critic-{n}.md").unlink()
+        (self.worktree / "app.ts").write_text("// the critic's\n")
+        self.answered(n)
+        r = self.record(n)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.worktree / "app.ts").read_text(), "// the critic's\n")
+
+    def test_setup_that_ended_after_the_brief_in_its_second_is_not_blamed(self):
+        n = self.briefed_around_setup(900_000_000, 600_000_000)
+        (self.worktree / "app.ts").write_text("// written by setup\n")
+        self.answered(n)
+        r = self.record(n)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.worktree / "app.ts").read_text(), "// written by setup\n")
+        self.assertFalse((self.dir / "tree" / f"plan-critic-{n}").exists())
+
+    def test_setup_and_brief_with_the_same_file_time_skip_the_check(self):
+        n = self.briefed_around_setup(0, 0)  # a filesystem with whole-second times
+        (self.worktree / "app.ts").write_text("// written by setup\n")
+        self.answered(n)
+        r = self.record(n)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.worktree / "app.ts").read_text(), "// written by setup\n")
+
+    def test_a_re_sent_brief_is_dated_now_before_its_tree_is_snapshotted_again(self):
+        n = self.reviewer()
+        brief = self.dir / "briefs" / f"plan-critic-{n}.md"
+        old = brief.stat().st_mtime - 3600  # sent out an hour ago
+        os.utime(brief, (old, old))
+        (self.worktree / "app.ts").write_text("// the user's, before the re-send\n")
+        state = self.state()
+        issued = next(b for b in state["briefs"]
+                      if b["worker"] == "plan-critic" and b["n"] == n)
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_work
+        snapshot = cmd_work.tree_guard.snapshot
+        dated = []
+
+        def watched(*args, **kwargs):
+            dated.append(brief.stat().st_mtime)
+            return snapshot(*args, **kwargs)
+
+        cmd_work.tree_guard.snapshot = watched
+        try:
+            cmd_work.fresh_tree(state, issued)
+        finally:
+            cmd_work.tree_guard.snapshot = snapshot
+        self.assertTrue(dated, "the re-send took no new snapshot")
+        self.assertGreaterEqual(dated[0], old + 3600)
+        self.assertIn("app.ts", issued["tree"]["files"])
+
+    def test_a_re_sent_brief_whose_file_is_gone_still_takes_a_fresh_snapshot(self):
+        n = self.reviewer()
+        (self.dir / "briefs" / f"plan-critic-{n}.md").unlink()
+        (self.worktree / "app.ts").write_text("// the user's, before the re-send\n")
+        state = self.state()
+        issued = next(b for b in state["briefs"]
+                      if b["worker"] == "plan-critic" and b["n"] == n)
+        sys.path.insert(0, str(SCRIPTS))
+        from lib import cmd_work
+        cmd_work.fresh_tree(state, issued)
+        self.assertIn("app.ts", issued["tree"]["files"])
 
 
 class TicketTextTest(InitCase):
