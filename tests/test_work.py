@@ -858,6 +858,35 @@ class BriefTest(WorkCase):
         _, coder = self.brief_of("coder", "--mode", "build")
         self.assertEqual(self.assert_run_lines_set_the_bash_timeout(coder, "coder"), 0)
 
+    SECURITY_REVIEWING = ("reviewer", "security-reviewer", "security-reviewer-sensitive")
+
+    def agent_flat(self, worker):
+        """The worker's agent file, whitespace collapsed to single spaces."""
+        text = (SCRIPTS.parents[2] / "agents" / f"{worker}.md").read_text()
+        return " ".join(text.split())
+
+    def security_review_step(self, worker):
+        """From the agent file's '/security-review skill' to its 'starting point'."""
+        flat = self.agent_flat(worker)
+        start = flat.index("/security-review skill")
+        return flat[start:flat.index("starting point", start)]
+
+    def test_each_security_review_step_names_the_change_since_the_cut_from_origin(self):
+        for worker in self.SECURITY_REVIEWING:
+            with self.subTest(worker=worker):
+                step = self.security_review_step(worker)
+                self.assertRegex(step, r"everything since commit `?\{\{cut\}\}`?")
+                self.assertRegex(step, r"where the branch left `?origin/\{\{base\}\}")
+                self.assertEqual(re.findall(r"(?<!origin/)\{\{base\}\}", step), [], step)
+                if worker != "reviewer":
+                    self.assertIn("uncommitted changes are part of the change", step)
+
+    def test_no_reviewer_is_told_the_base_branch_by_name_even_across_a_line_break(self):
+        for worker in self.SECURITY_REVIEWING:
+            with self.subTest(worker=worker):
+                old = re.search(r"base branch is `?\{\{base\}\}", self.agent_flat(worker))
+                self.assertIsNone(old, f"{worker} still says {old and old.group(0)!r}")
+
 
 class VerifierBriefCase(WorkCase):
     """The verifier's brief and instructions on a standard- or high-risk run."""
@@ -1644,6 +1673,34 @@ class RecordTest(WorkCase):
         self.assertEqual(metrics["refused"]["total"], 1)
         self.assertEqual(metrics["refused"]["by_worker"], {"planner": 1})
 
+    def lose_the_tests_commits(self):
+        """Drop tests_commits from state.json, as a run cut off before its save."""
+        state = self.state()
+        del state["tests_commits"]
+        self.write_state(state)
+
+    def test_a_lost_tests_commit_is_adopted_from_the_local_base_without_origin(self):
+        self.tests_commit()
+        sha = self.state()["tests_commits"][0]["sha"]
+        self.lose_the_tests_commits()
+        self.sh("git", "-C", str(self.worktree), "update-ref", "-d",
+                "refs/remotes/origin/main")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("UNCHANGED"), r.stdout)
+        self.assertEqual([c["sha"] for c in self.state()["tests_commits"]], [sha])
+
+    def test_with_neither_base_ref_commit_tests_refuses_and_adopts_nothing(self):
+        self.tests_commit()
+        self.lose_the_tests_commits()
+        self.sh("git", "-C", str(self.worktree), "update-ref", "-d",
+                "refs/remotes/origin/main")
+        self.sh("git", "-C", str(self.worktree), "update-ref", "-d", "refs/heads/main")
+        r = self.cmd("commit-tests")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no change from HEAD in", r.stdout + r.stderr)
+        self.assertNotIn("tests_commits", self.state())
+
 
 class TreeGuardTest(WorkCase):
     """A worker that never changes the repo (the planner, the plan critic, the
@@ -2259,3 +2316,55 @@ class WorkerWaitRuleTest(unittest.TestCase):
             self.assert_says(text, "before that Bash timeout", name, present=False)
             self.assert_says(text, "--timeout <seconds>", name)
             self.assert_says(text, "`run` ends a hung check", name)
+
+
+class StaleLocalBaseWorkTest(WorkCase):
+    """The review's cut and the tests-commit adoption are measured from
+    origin/<base>, where the worktree was cut, never from the main checkout's
+    local base branch: that one can lag far behind, and every commit merged
+    upstream since it last moved would count as the run's."""
+    checks = RecordTest.checks
+    tests_commit = RecordTest.tests_commit
+
+    def init(self, *extra, **kw):
+        # Origin's main gains an earlier task's tests commit; the main checkout
+        # only fetches, so its local main stays behind origin/main.
+        seed = self.tmp / "seed"
+        (seed / "src").mkdir(parents=True, exist_ok=True)
+        (seed / "src" / "due.acceptance.test.ts").write_text("an earlier task's check\n")
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "test: acceptance checks for an earlier task",
+                cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+    def base_shas(self):
+        """(local main, origin/main) in the main checkout, asserted different."""
+        local = self.sh("git", "rev-parse", "main", cwd=self.repo).strip()
+        upstream = self.sh("git", "rev-parse", "origin/main", cwd=self.repo).strip()
+        self.assertNotEqual(local, upstream)  # the local base branch is behind
+        return local, upstream
+
+    def test_every_reviewer_brief_cuts_where_the_branch_left_origin_not_the_local_base(
+            self):
+        local, upstream = self.base_shas()
+        for worker, sets in (("security-reviewer", {"leads": "none"}),
+                             ("security-reviewer-sensitive", {"leads": "none"}),
+                             ("reviewer", {"scope": "first", "tree": "0" * 40})):
+            with self.subTest(worker=worker):
+                n = self.job(worker, **sets)
+                values = self.brief_values(self.dir / "briefs" / f"{worker}-{n}.md")
+                self.assertEqual(values["cut"], upstream)
+                self.assertNotEqual(values["cut"], local)
+
+    def test_an_upstream_tests_titled_commit_before_the_cut_is_never_adopted(self):
+        _, upstream = self.base_shas()
+        r = self.tests_commit()
+        self.assertTrue(r.stdout.startswith("COMMITTED: "), r.stdout)
+        sha = r.stdout.split()[1]
+        shas = [c["sha"] for c in self.state()["tests_commits"]]
+        self.assertEqual(shas, [sha])
+        self.assertNotIn(upstream, shas)
+        notes = [n["text"] for n in self.state().get("notes") or []]
+        self.assertEqual([t for t in notes if "adopted the tests commit" in t], [], notes)
