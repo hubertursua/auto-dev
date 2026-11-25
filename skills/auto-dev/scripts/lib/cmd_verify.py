@@ -12,7 +12,7 @@ worktree's index (intent-to-add, as the verifier's own diff would).
 prep
     In order, stopping at the first that fails:
     1. An earlier pass's mutation run still going (`mutants run`'s runner, or
-       mutate.py) is waited for, up to --wait seconds (default 270); then a
+       mutate.py) is waited for, up to --wait seconds (default 170); then a
        backup or lock it left (evidence/mutants.json.backup, .lock) is put
        back with `mutate.py --restore`. The earlier pass's mutation-run.json,
        mutation-run-args.json and mutation-pass.json are deleted.
@@ -28,8 +28,17 @@ prep
     5. The acceptance run: the profile's test check (the first `kind: test`
        check with a `files` form, else the first; `autodev.py run test`),
        scoped to the files that hold the checks when it has a `files` form,
-       saved to evidence/acceptance.txt; it gets what is left of 570
-       seconds after the wait in 1, at least 60, and is stopped past that.
+       saved to evidence/acceptance.txt. It runs in the background (a
+       detached runner, `autodev.py _verify-runner`, which saves its result
+       to evidence/acceptance-run.json) and is stopped at `run`'s default
+       timeout: twice the check's newest measured whole run, at least 600 s.
+       Prep waits for it until 170 s after prep started, all its waits
+       counted; a run still going then is RUN_AGAIN. The next prep call
+       picks up that same run instead of starting another, when the code's
+       tree is the one it started on (or, in the same verifier spawn, the one
+       the run itself left, as a run that writes files does); else it waits
+       for that run to end and starts a fresh one. A run is used once, and
+       never before it ended.
        A whole run that finished saves its time to tmp/run/timings.json, for
        `autodev.py run`'s default timeout.
     6. For each PLAN.md condition with acceptance checks, evidence/C<n>.txt:
@@ -47,8 +56,10 @@ prep
                  — its output follows
       STILL_RUNNING: an earlier mutation run is still alive after --wait
                  seconds; run prep again
-      RUN_AGAIN: the acceptance run ran out of time that the wait for an
-                 earlier mutation run took; run prep again
+      RUN_AGAIN: the acceptance run is still going, in the background, 170 s
+                 after prep started; run prep again, which waits on that run
+Every prep call returns within about 170 s, under the 180 s after which the
+Bash tool moves a call to the background.
 tree
     Compares the tree hash now with evidence/tree-start.txt.
       TREE: <hash> — the code is as it was when prep ran: write this hash on
@@ -66,26 +77,33 @@ Exit codes:
 """
 
 import argparse
+import json
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 from . import artifacts as art
-from . import cmd_run, cmd_work, mutation_run
+from . import cmd_init, cmd_run, cmd_work, mutation_run
 from . import state as st
 from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
 STILL_RUNNING, LEFT_CHANGES = 3, 4
 SCRIPTS = Path(__file__).resolve().parent.parent
-WAIT = 270
+# The Bash tool moves a call still running after 180 s to the background, and
+# the verifier must never poll one: one prep call waits at most BUDGET seconds
+# in all, the wait for a mutation run (at most WAIT) included.
+WAIT = BUDGET = 170
 POLL = 5
-# The verifier runs prep in one Bash call of at most 600 s: the acceptance run
-# gets what the wait left of BUDGET, and never less than MIN_RUN.
-BUDGET, MIN_RUN = 570, 60
+RUN_POLL = 0.5  # the acceptance run: most end in a second or two
+YOUNG = 30  # seconds a run whose pid isn't saved yet counts as starting
 TAIL = 30
 PREP_FILES = ("integrity.txt", "tree-start.txt", "changes.diff", "acceptance.txt")
+# The background acceptance run: what it runs (and its pid), its result, its log.
+RUN_FILES = {"args": "acceptance-run-args.json", "result": "acceptance-run.json",
+             "log": "acceptance-run.log"}
 EXPECTED = "the tests written before the code to pass"
 
 
@@ -93,6 +111,7 @@ def add_arguments(parser):
     parser.add_argument("action", choices=("prep", "tree"))
     parser.add_argument("--dir", required=True, help="the run's .auto-dev/")
     parser.add_argument("--budget", type=int, default=BUDGET, help=argparse.SUPPRESS)
+    parser.add_argument("--timeout", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--wait", type=int, default=WAIT,
                         help="prep: seconds to wait for a live mutation run")
 
@@ -201,20 +220,178 @@ def line_owners(lines, names):
     return owners
 
 
-def acceptance_run(ad, wt, state, budget):
-    """Run the checks; (command, exit code or None on a timeout, seconds,
-    output lines, scoped)."""
+def acceptance_command(ad, wt, state):
+    """(the acceptance run's command, the test check, whether it has a scoped
+    form, whether the run is scoped: it has one and MANIFEST.md names files)."""
     gate = state["settings"].get("gate", [])
     n, check = cmd_run.pick(gate, "test", None)
     files = cmd_work.check_files(ad)
-    scoped = cmd_run.PLACEHOLDER in str(check.get("files") or "")
-    command = cmd_run.command_for(n, check, wt, files if scoped and files else None)
+    form = cmd_run.PLACEHOLDER in str(check.get("files") or "")
+    scoped = form and bool(files)
+    command = cmd_run.command_for(n, check, wt, files if scoped else None)
+    return command, check, form, scoped
+
+
+def run_file(ad, key):
+    return ad / "evidence" / RUN_FILES[key]
+
+
+def read_json(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_json(path, data):
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def pending_run(ad):
+    """The background acceptance run not yet used (its args), or None."""
+    opts = read_json(run_file(ad, "args"))
+    return opts if opts and opts.get("id") else None
+
+
+def run_result(ad, opts):
+    """The result of the run `opts` started, or None while it has none."""
+    result = read_json(run_file(ad, "result"))
+    return result if result and result.get("id") == opts["id"] else None
+
+
+def run_alive(opts, proc=None):
+    if proc is not None or opts.get("pid"):
+        return cmd_init.runner_alive(opts.get("pid"), proc)
+    return time.time() - float(opts.get("started") or 0) < YOUNG
+
+
+def spawn_id(ad):
+    """The current verifier spawn: its brief's name and mtime (a brief is
+    written for each spawn), or None when there is none."""
+    try:
+        found = [(b.stat().st_mtime_ns, b.name) for b in (ad / "briefs").glob("verifier-*.md")]
+    except OSError:
+        return None
+    return "{1}@{0}".format(*max(found)) if found else None
+
+
+def discard(ad):
+    for key in ("args", "result"):
+        run_file(ad, key).unlink(missing_ok=True)
+
+
+def start_run(ad, wt, command, tree, timeout, scoped):
+    """Start the detached acceptance runner; (its args, its process)."""
+    discard(ad)
+    (ad / "evidence" / "acceptance.txt").unlink(missing_ok=True)
+    opts = {"id": f"{time.time_ns()}-{os.getpid()}", "command": command,
+            "worktree": str(wt), "tree": tree, "timeout": timeout, "scoped": scoped,
+            "spawn": spawn_id(ad), "started": time.time()}
+    write_json(run_file(ad, "args"), opts)
+    try:
+        with open(run_file(ad, "log"), "w", encoding="utf-8") as log:
+            proc = subprocess.Popen([sys.executable, str(SCRIPTS / "autodev.py"),
+                                     "_verify-runner", str(ad)], stdout=log,
+                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                    start_new_session=True)
+    except OSError as exc:
+        discard(ad)
+        raise Fail(f"could not start the acceptance run: {exc}", CANNOT_RUN,
+                   "ERROR") from None
+    opts["pid"] = proc.pid
+    write_json(run_file(ad, "args"), opts)
+    return opts, proc
+
+
+def wait_run(ad, opts, deadline, proc=None):
+    """The run's result; None while it is still going at `deadline`."""
+    while True:
+        result = run_result(ad, opts)
+        if result:
+            return result
+        if not run_alive(opts, proc):
+            time.sleep(0.2)  # it may have written its result as it ended
+            return run_result(ad, opts) or {
+                "id": opts["id"], "error": "the acceptance run ended without a result "
+                f"(its log: {run_file(ad, 'log')})"}
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        time.sleep(min(RUN_POLL, left))
+
+
+def runner(ad):
+    """The detached acceptance runner: run the command, save its result."""
+    ad = Path(ad)
+    for name in ("SIGINT", "SIGHUP"):  # ignored, so `execute` leaves them ignored
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
+    opts, result = {}, {"error": "the acceptance runner stopped unexpectedly"}
+    try:
+        opts = read_json(run_file(ad, "args")) or {}
+        wt = opts["worktree"]
+        code, seconds = cmd_run.execute(opts["command"], wt, ad / "evidence" /
+                                        "acceptance.txt", opts["timeout"])
+        result = {"code": code, "seconds": seconds}
+        try:  # the tree it left: a run that writes files is still used
+            result["tree_end"] = cmd_work.print_tree(wt)
+        except Fail:
+            pass
+    except Exception as exc:  # record it, whatever it is
+        result = {"error": str(exc) or type(exc).__name__}
+    finally:
+        result["id"] = opts.get("id")
+        write_json(run_file(ad, "result"), result)
+
+
+def usable(ad, wt, opts, result, command, tree):
+    """Whether a pending run's result holds for the code now: it ran the same
+    command and finished, on this tree, or, in this same verifier spawn (which
+    never edits the code), it left this tree, as a run that writes files does."""
+    if "error" in result or opts.get("command") != command:
+        return False
+    if tree == opts.get("tree"):
+        return True
+    spawn = opts.get("spawn")
+    if not spawn or spawn != spawn_id(ad) or not result.get("tree_end"):
+        return False
+    return result["tree_end"] in (tree, cmd_work.print_tree(str(wt)))
+
+
+def acceptance_run(ad, wt, state, tree, deadline, timeout):
+    """The acceptance run: the pending one when it ran on this code, else a
+    new one. (command, exit code or None on a timeout, seconds, output lines,
+    whether the check has a scoped form, the tree it ran on, its timeout), or
+    None while it still runs."""
+    command, check, form, scoped = acceptance_command(ad, wt, state)
+    if timeout is None:
+        timeout = cmd_run.default_timeout(ad, check)[0]
+    opts, result = pending_run(ad), None
+    if opts:
+        result = wait_run(ad, opts, deadline)
+        if result is None:
+            return None
+        if not usable(ad, wt, opts, result, command, tree):
+            opts = result = None
+    if not opts:
+        opts, proc = start_run(ad, wt, command, tree, timeout, scoped)
+        result = wait_run(ad, opts, deadline, proc)
+        if result is None:
+            return None
+        if "error" in result:
+            discard(ad)
+            raise Fail(result["error"], CANNOT_RUN, "ERROR")
+    discard(ad)  # a run is used once
+    code, seconds = result.get("code"), result.get("seconds") or 0
+    if code is not None and not opts.get("scoped"):  # a whole run that finished
+        cmd_run.save_timing(ad, opts["command"], seconds, "verify prep")
     path = ad / "evidence" / "acceptance.txt"
-    code, seconds = cmd_run.execute(command, wt, path, budget)
-    if code is not None and not (scoped and files):  # a whole run that finished
-        cmd_run.save_timing(ad, command, seconds, "verify prep")
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return command, code, seconds, lines, scoped
+    return (opts["command"], code, seconds, lines, form, opts.get("tree") or tree,
+            opts.get("timeout") or timeout)
 
 
 def ran(code, budget):
@@ -251,10 +428,14 @@ def prep(args):
     wt = Path(state["worktree"])
     evidence = ad / "evidence"
     evidence.mkdir(parents=True, exist_ok=True)
-    for name in PREP_FILES:  # an earlier pass's, never read as this one's
-        (evidence / name).unlink(missing_ok=True)
     started = time.monotonic()
-    left = restore(ad, wt, args.wait)
+    deadline = started + args.budget
+    opts = pending_run(ad)
+    going = opts is not None and run_result(ad, opts) is None and run_alive(opts)
+    for name in PREP_FILES:  # an earlier pass's, never read as this one's
+        if not (going and name == "acceptance.txt"):  # a live run writes it
+            (evidence / name).unlink(missing_ok=True)
+    left = restore(ad, wt, max(0, min(args.wait, args.budget)))
     if left:
         token, code, message, lines = left
         emit(args.json, token, message, output=lines)
@@ -266,18 +447,21 @@ def prep(args):
     diff_lines, diff_files = change_set(ad, wt, cut)
     rows, _na = art.manifest(ad / "acceptance" / "MANIFEST.md")
     names = check_names(rows)
-    waited = time.monotonic() - started
-    budget = int(max(args.budget - waited, min(MIN_RUN, args.budget)))
-    command, code, seconds, lines, scoped = acceptance_run(ad, wt, state, budget)
-    if code is None and budget < args.budget and waited >= POLL:
-        # The wait for a mutation run took the time: a fresh call gets it all.
-        emit(args.json, "RUN_AGAIN", f"the acceptance run ran past {budget}s, cut short "
-             f"by {int(waited)}s spent on an earlier mutation run; run `verify prep` "
-             "again")
+    run = acceptance_run(ad, wt, state, tree_hash, deadline, args.timeout)
+    if run is None:
+        opts = pending_run(ad) or {}
+        took = time.time() - float(opts.get("started") or time.time())
+        emit(args.json, "RUN_AGAIN", f"the acceptance run `{opts.get('command')}` is "
+             f"still going after {took:.0f}s, in the background; run `verify prep` "
+             "again, which waits on that same run",
+             output=str(evidence / "acceptance.txt"))
         return STILL_RUNNING
+    command, code, seconds, lines, form, tree_hash, timeout = run
+    # The tree the run checked, which `verify tree` compares with.
+    (evidence / "tree-start.txt").write_text(tree_hash + "\n", encoding="utf-8")
     conditions = art.spec_conditions(ad / "PLAN.md")
     owners = line_owners(lines, names)
-    written = write_evidence(ad, conditions, names, command, code, lines, owners, budget)
+    written = write_evidence(ad, conditions, names, command, code, lines, owners, timeout)
     named = {pair for who in owners.values() for pair in who}
     unnamed = [f"{cid}: {name}" for cid, ns in names.items() for name in ns
                if name and (name, cid) not in named]
@@ -285,7 +469,7 @@ def prep(args):
     warning = (f"the acceptance run's output names none of the {listed} checks "
                f"MANIFEST.md lists, so `{command}` may not run them: run them yourself"
                if code is not None and listed and len(unnamed) == listed else None)
-    how = ran(code, budget)
+    how = ran(code, timeout)
     emit(args.json, "PREPARED",
          f"audit exit {audit_code}, acceptance run {how}",
          tree=tree_hash, cut=cut,
@@ -293,7 +477,7 @@ def prep(args):
          changes=f"{evidence / 'changes.diff'} ({diff_lines} lines, {diff_files} files)",
          acceptance=(f"{evidence / 'acceptance.txt'} — `{command}` {how}"
                      + (f" in {seconds:g}s" if code is not None else "")
-                     + ("" if scoped else " (the whole suite: the test check has no "
+                     + ("" if form else " (the whole suite: the test check has no "
                                           "scoped form)")),
          warning=warning, evidence=", ".join(written) or "none", unnamed=unnamed)
     return OK
