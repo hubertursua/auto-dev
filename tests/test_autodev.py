@@ -8,6 +8,7 @@ it in a temp dir.
 """
 
 import json
+import math
 import os
 import shlex
 import shutil
@@ -4696,6 +4697,29 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertIsNotNone(entry, self.saved_timings())
         self.assertEqual(entry["by"], "verify prep")
 
+    def test_a_measured_command_with_args_sets_run_s_default_timeout(self):
+        # Prep saves a whole run under the command it ran, <args> removed, and
+        # `run` reads it there: the round trip, through the real writer.
+        state = json.loads((self.ad / "state.json").read_text())
+        check = state["settings"]["gate"][0]
+        del check["files"]
+        whole = check["command"]
+        check["command"] += " <args>"
+        (self.ad / "state.json").write_text(json.dumps(state))
+        r = self.verify("prep")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(list(self.saved_timings()), [whole], self.saved_timings())
+        measured = self.saved_timings()[whole]["seconds"]
+        run = [sys.executable, str(AUTODEV), "run", "test", "--dir", str(self.ad)]
+        r = subprocess.run([*run, "--json"], capture_output=True, text=True, cwd=self.tmp,
+                           env=BASE_ENV, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["timeout"], max(600, math.ceil(2 * measured)))
+        r = subprocess.run(run, capture_output=True, text=True, cwd=self.tmp, env=BASE_ENV,
+                           check=False)
+        self.assertIn(f"  timeout: 600s — the floor: twice the {measured:g}s whole run "
+                      "verify prep measured is less", r.stdout.splitlines(), r.stdout)
+
     def test_prep_saves_no_time_for_a_scoped_acceptance_run(self):
         r = self.verify("prep")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -6498,6 +6522,24 @@ class QualityGateTest(RunCase):
         self.assertIsNotNone(entry, self.timings())
         self.assertGreaterEqual(entry["seconds"], 1)
         self.assertEqual(entry["by"], "quality-gate")
+
+    def test_a_measured_command_with_args_sets_run_s_default_timeout(self):
+        # The gate saves a whole run under the command it ran, <args> removed,
+        # and `run` reads it there: the round trip, through the real writer.
+        py = shlex.quote(sys.executable)
+        slow = f"{py} -c 'import time; time.sleep(1.2)'"
+        self.set_ci("none")
+        self.set_gate({"kind": "test", "command": f"{slow} <args>", "report": "TEST.md"})
+        r = self.gate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(list(self.timings()), [slow], self.timings())
+        measured = self.timings()[slow]["seconds"]
+        r = self.autodev("run", "test", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(r.stdout)["timeout"], max(600, math.ceil(2 * measured)))
+        r = self.autodev("run", "test", "--dir", self.dir)
+        self.assertIn(f"  timeout: 600s — the floor: twice the {measured:g}s whole run "
+                      "quality-gate measured is less", r.stdout.splitlines(), r.stdout)
 
     def test_a_scoped_skipped_or_stopped_check_saves_no_time(self):
         self.the_change()
