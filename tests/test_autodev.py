@@ -3783,14 +3783,14 @@ class RunWaitTest(unittest.TestCase):
         return out
 
     def test_wait_prints_the_result_run_printed(self):
-        self.checks(self.slow(3, 0))
+        self.checks(self.slow(6, 0))
         proc = self.start("gate", "1")
         self.started("gate-1-1.txt")
         begun = time.monotonic()
         waited = self.cli("wait")
         took = time.monotonic() - begun
         self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
-        self.assertGreater(took, 1.5, waited.stdout)  # it waited for the check to end
+        self.assertGreater(took, 3, waited.stdout)  # it waited for the check to end
         out = self.same_result(proc, waited)
         self.assertEqual(proc.returncode, 0, out)
         self.assertTrue(out.startswith("PASSED: "), out)
@@ -3830,7 +3830,7 @@ class RunWaitTest(unittest.TestCase):
         self.same_result(proc, waited)
 
     def test_wait_returns_running_while_the_run_goes_on(self):
-        self.checks(self.slow(6, 0))
+        self.checks(self.slow(10, 0))
         proc = self.start("gate", "1")
         output = self.started("gate-1-1.txt")
         begun = time.monotonic()
@@ -3840,7 +3840,7 @@ class RunWaitTest(unittest.TestCase):
         self.assertLess(took, 5, waited.stdout)
         first = waited.stdout.splitlines()[0]
         self.assertTrue(first.startswith("RUNNING: "), waited.stdout)
-        self.assertIn(self.slow(6, 0), first)
+        self.assertIn(self.slow(10, 0), first)
         self.assertIsNotNone(self.output_line(waited.stdout), waited.stdout)
         self.assertIn(str(output), waited.stdout)
         self.assertIsNone(proc.poll(), "the run was stopped")  # it still goes on
