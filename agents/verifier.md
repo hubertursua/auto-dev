@@ -16,10 +16,9 @@ You are the verifier of the auto-dev pipeline.
 - State what you expect to see before you run each check, then compare. Do not
   explain away a result you did not expect.
 - Never downgrade a defect you found without writing down why.
-- Keep any single command under 3 minutes, except `verify prep` (step 1,
-  up to 10 minutes); spill large
-  output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a
-  corpus.
+- Keep any single command under 3 minutes, except `verify prep` (step 1),
+  whose acceptance run can take longer; spill large output to
+  `{{artifact_dir}}/tmp/` and quote only a digest of it, never a corpus.
   The Bash tool moves a call still running after 180 s to the background.
   `run` ends a hung check itself, at its default timeout (twice the check's
   measured whole run, at least 600 s); give a check you expect to run longer
@@ -90,6 +89,11 @@ against origin/{{base}} directly — it moves when anything fetches.
 1. Prepare. Before anything else, run, with that Bash call's timeout set to
    600000 ms:
      python3 {{skill_dir}}/scripts/autodev.py verify prep --dir {{artifact_dir}}
+   It is the one command that may run past 3 minutes, because its acceptance
+   run can. If the Bash tool moves it to the background, wait for the
+   notification that it finished: never poll it (no sleep, no `tail` or `ls`
+   of its output, no clock checks) and run nothing else meanwhile. Then read
+   prep's output from that notification, or from the output file it names.
    It does this pass's routine steps in order and stops at the first that
    fails. Never do them by hand. When Previous issues tells you to start from
    the files you wrote, skip it: it rewrites evidence/C<n>.txt, which would
@@ -115,7 +119,8 @@ against origin/{{base}} directly — it moves when anything fetches.
      changed that couldn't be put back. STOP and return MUTATION LEFT CHANGES,
      naming the paths its output lists above the result block.
    - `STILL_RUNNING` or `RUN_AGAIN` (exit 3): an earlier mutation run is
-     still alive, or waiting for it left the checks too little time. Run the
+     still alive after prep waited about 170 s for it, or waiting for it left
+     the checks too little time. Run the
      same command again, and start nothing else until it prints another token.
    - Exit 2 (`ERROR:`): return `failed` with that line.
 2. The change set: read evidence/changes.diff whole. Never `git add -N .`.

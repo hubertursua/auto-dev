@@ -2557,10 +2557,21 @@ class WorkerWaitRuleTest(unittest.TestCase):
             self.assertIn("under 3 minutes", text, name)
             self.assertNotIn("5 minutes", text, name)
 
-    def test_verifier_keeps_verify_prep_as_its_exception(self):
+    def test_verifier_waits_on_a_backgrounded_verify_prep_notice(self):
         text = self.text("verifier")
-        self.assertIn("except `verify prep`", text)
-        self.assertIn("600000 ms", text)
+        self.assertIn("except `verify prep` (step 1), whose acceptance run can take longer",
+                      text)
+        self.assertNotIn("up to 10 minutes", text)
+        step = text[text.index("1. Prepare."):text.index("2. The change set")]
+        self.assertIn("600000 ms", step)
+        for said in ("It is the one command that may run past 3 minutes",
+                     "because its acceptance run can.",
+                     "If the Bash tool moves it to the background,",
+                     "wait for the notification that it finished: never poll it",
+                     "run nothing else meanwhile",
+                     "read prep's output from that notification,",
+                     "or from the output file it names"):
+            self.assertIn(said, step)
 
     def test_coder_never_writes_its_own_mutants(self):
         sentences = re.split(r"(?<=[.!?])\s+", self.text("coder"))

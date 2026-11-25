@@ -154,15 +154,13 @@ can resume on the new one. Newest first. The current version is in
   write; a record pointing elsewhere, or a `tmp/` that links out of the
   artifact dir, is refused. `mutants run` and `mutants wait` wait 170 seconds
   by default (was 270), and every agent file says a command must stay under 3
-  minutes (was 5), with no exception. The coder no longer writes its own
+  minutes (was 5), except the verifier's `verify prep`, whose acceptance run
+  can take longer. The coder no longer writes its own
   mutants or reverts code to prove a test.
-- **`verify prep` returns within about 170 seconds.** It used to take up to
-  10 minutes in one call. Its acceptance run now goes to the background
-  (`evidence/acceptance-run*.json` and `.log`); when it isn't done, prep
-  prints `RUN_AGAIN`, and running prep again waits on that same run and uses
-  it only if it ran on the same code. `--wait` defaults to 170 (was 270), and
-  the acceptance run stops at `run`'s default timeout instead of 570 seconds.
-  A verifier on the 5.0 instructions already runs prep again on `RUN_AGAIN`.
+- **`verify prep --wait` defaults to 170 seconds** (was 270), so prep waits
+  no longer than `mutants wait` for a leftover mutation run before printing
+  `STILL_RUNNING`. The verifier waits for a backgrounded prep's notice instead
+  of polling.
 - **`next` recovers instead of dead-ending.** When the budget is spent and a
   must-fix is still open, the ready-for-review gate offers a fourth answer
   that adds a round to fix it. A correction committed outside the pipeline is

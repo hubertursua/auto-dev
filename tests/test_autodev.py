@@ -10,6 +10,7 @@ it in a temp dir.
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -4982,8 +4983,18 @@ class MutationRunTest(unittest.TestCase):
         self.assertIn("default 170", text)
         self.assertNotIn("default 270", text)
 
-    def test_verify_prep_keeps_its_own_wait(self):
-        self.assertIn("default 270", self.help_of("verify"))
+    def test_verify_prep_waits_no_longer_than_mutants_wait(self):
+        # Both from the parsers' own defaults: prep gives up on a live mutation
+        # run when `mutants wait` would, and prints STILL_RUNNING.
+        verify, mutants = self.help_of("verify"), self.help_of("mutants")
+        theirs = re.search(r"seconds to wait for the runner \(default (\d+)\)", mutants)
+        ours = re.search(r"seconds to wait for a live mutation run \(default (\d+)\)",
+                         verify)
+        self.assertTrue(theirs and ours, verify)
+        self.assertEqual(ours.group(1), theirs.group(1))
+        self.assertEqual(ours.group(1), "170")
+        self.assertIn("(default 170, no longer than `mutants wait`;", verify)
+        self.assertNotIn("270", verify)
 
     def test_mutants_help_states_the_wait_the_parser_uses(self):
         # Built from the parser's own default, so it changes when the default does.

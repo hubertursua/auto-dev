@@ -616,7 +616,9 @@ moves a Bash call still running after 180 s to the background, so a worker
 keeps each command under 3 minutes and waits on a `run` that went to the
 background with `autodev.py run wait`, which blocks up to 170 s, then prints
 that run's result exactly as `run` would have (or `RUNNING`, to call it
-again), so the worker never polls.
+again), so the worker never polls. The one exception is the verifier's `verify
+prep`, whose acceptance run can take longer: when it goes to the background,
+the verifier waits for Claude Code's notice that it finished.
 
 ### Where saved profiles live
 
@@ -877,7 +879,7 @@ Each artifact's template is in `skills/auto-dev/templates/`.
 | `acceptance/` | Phase 3 (the tester; its repairs in Phases 4–6) | the checks' `MANIFEST.md` (the checks themselves are ordinary test files in the worktree, committed before the build), their runs on the old code (`base-run/`), and `AMBIGUOUS.md`, a condition the tester found reads two ways |
 | `blocked/` | Phases 4–6, coder | build steps the coder stopped on, for the planner |
 | `lint/` | `autodev.py quality-gate` (Phases 5–6) | one report per quality-gate check |
-| `SPEC_EVAL.md`, `evidence/` | Phase 6, the verifier | the verifier's verdicts and what it ran: `verify prep`'s audit, change set, acceptance run and starting tree (`evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`, with the background acceptance run's `acceptance-run-args.json`, `acceptance-run.json` and `acceptance-run.log`) and one evidence file per condition (`evidence/C<n>.txt`); its required changes (`evidence/corrections.md`); the mutants it chose (`evidence/mutation-set.json`) and runs this pass (`mutants.json`); and the files `autodev.py mutants` writes and keeps across passes (`mutation-*`, `mutate.*`) |
+| `SPEC_EVAL.md`, `evidence/` | Phase 6, the verifier | the verifier's verdicts and what it ran: `verify prep`'s audit, change set, acceptance run and starting tree (`evidence/integrity.txt`, `changes.diff`, `acceptance.txt`, `tree-start.txt`) and one evidence file per condition (`evidence/C<n>.txt`); its required changes (`evidence/corrections.md`); the mutants it chose (`evidence/mutation-set.json`) and runs this pass (`mutants.json`); and the files `autodev.py mutants` writes and keeps across passes (`mutation-*`, `mutate.*`) |
 | `review/`, `CODE_REVIEW.md`, `SECURITY_REVIEW.md` | Phase 6 | the panel's raw reports and their merged list (`review/pass-<n>/findings.md`), the re-votes (`VOTES-R<k>.md`), the judge's calls, or the standard-risk reviewer's own (`JUDGMENT.md`), the code review built from them (with the report as it stood before the pass, `CODE_REVIEW.before.md`), the security review, and the review's required changes for the coder (`review/pass-<n>/corrections.md`, `review/security-corrections.md`) |
 | `pr-body.md`, `pr-write.md`, `pr-output-comment.md` | Phase 6 | the generated PR description; the sections of it the orchestrator writes (the Summary, the Assumptions, a template section), with the text they draw on, which `pr publish` puts into the description; and output moved out of it when too long |
 | `triage/` | Phase 6 | the triager's required changes for red CI and human comments, and the comments about an acceptance check, for the tester (`human-<n>-checks.md`) |

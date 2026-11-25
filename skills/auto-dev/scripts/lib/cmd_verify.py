@@ -12,7 +12,8 @@ worktree's index (intent-to-add, as the verifier's own diff would).
 prep
     In order, stopping at the first that fails:
     1. An earlier pass's mutation run still going (`mutants run`'s runner, or
-       mutate.py) is waited for, up to --wait seconds (default 270); then a
+       mutate.py) is waited for, up to --wait seconds (default 170, no longer
+       than `mutants wait`; a run still alive then is STILL_RUNNING); then a
        backup or lock it left (evidence/mutants.json.backup, .lock) is put
        back with `mutate.py --restore`. The earlier pass's mutation-run.json,
        mutation-run-args.json and mutation-pass.json are deleted.
@@ -79,7 +80,7 @@ from .output import CANNOT_RUN, FAILED, OK, Fail, emit
 
 STILL_RUNNING, LEFT_CHANGES = 3, 4
 SCRIPTS = Path(__file__).resolve().parent.parent
-WAIT = 270
+WAIT = mutation_run.WAIT  # no longer than `mutants wait`
 POLL = 5
 # The verifier runs prep in one Bash call of at most 600 s: the acceptance run
 # gets what the wait left of BUDGET, and never less than MIN_RUN.
@@ -94,7 +95,7 @@ def add_arguments(parser):
     parser.add_argument("--dir", required=True, help="the run's .auto-dev/")
     parser.add_argument("--budget", type=int, default=BUDGET, help=argparse.SUPPRESS)
     parser.add_argument("--wait", type=int, default=WAIT,
-                        help="prep: seconds to wait for a live mutation run")
+                        help=f"prep: seconds to wait for a live mutation run (default {WAIT})")
 
 
 def main(args):
