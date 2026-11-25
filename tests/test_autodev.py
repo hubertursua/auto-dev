@@ -1216,6 +1216,15 @@ class ShipTest(RunCase):
     def watch(self, *extra):
         return self.cmd("ci-watch", "--pr", "7", "--interval", "1", *extra)
 
+    def test_ci_watch_help_says_what_the_bash_tool_does_with_its_wait(self):
+        r = self.autodev("ci-watch", "--help")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = " ".join(r.stdout.split())
+        self.assertIn("default 540; the Bash tool moves a call still running after "
+                      "180 s to the background and tells the orchestrator when it ends",
+                      text)
+        self.assertNotIn("under the Bash tool's limit", text)
+
     def checks(self, checks=None, head=None, **response):
         head = head or self.git("rev-parse", "HEAD").strip()
         self.script_gh([{"args": ["pr", "view"],
