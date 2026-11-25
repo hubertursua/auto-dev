@@ -161,9 +161,6 @@ def build_parser():
     # The detached mutation runner `mutants run` starts; not for direct use.
     mutants = sub.add_parser("_mutants-runner")
     mutants.add_argument("artifact_dir")
-    # The detached acceptance runner `verify prep` starts; not for direct use.
-    verify = sub.add_parser("_verify-runner")
-    verify.add_argument("artifact_dir")
     return parser
 
 
@@ -186,10 +183,6 @@ def main(argv=None):
     if args.command == "_mutants-runner":
         from lib import mutation_run
         mutation_run.runner(args.artifact_dir)
-        return 0
-    if args.command == "_verify-runner":
-        from lib import cmd_verify
-        cmd_verify.runner(args.artifact_dir)
         return 0
     _, handler = COMMANDS[args.command]
     try:

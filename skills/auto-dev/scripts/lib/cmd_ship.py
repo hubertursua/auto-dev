@@ -36,9 +36,8 @@ ci-watch [--pr N] [--sha COMMIT] [--max-wait SECONDS] [--interval SECONDS]
     commit in the worktree; the full id is recorded), or the local HEAD without
     it: `next` names the pushed commit, so a tests commit made on top of it
     and not yet pushed doesn't hide its checks. Gives up after --max-wait
-    (default 540; the Bash tool moves a call still running after 180 s to the
-    background and tells the orchestrator when it ends) and reports PENDING;
-    the overall bound is the profile's CI timeout, counted from the first watch of this
+    (default 540, under the Bash tool's limit) and reports PENDING; the overall
+    bound is the profile's CI timeout, counted from the first watch of this
     commit (a watch after a final result — green, red, timeout, unavailable,
     conflict —
     starts the clock again). Checks count only once the PR's head on GitHub is

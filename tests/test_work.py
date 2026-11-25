@@ -2557,13 +2557,10 @@ class WorkerWaitRuleTest(unittest.TestCase):
             self.assertIn("under 3 minutes", text, name)
             self.assertNotIn("5 minutes", text, name)
 
-    def test_verify_prep_is_no_exception_to_the_3_minute_rule(self):
+    def test_verifier_keeps_verify_prep_as_its_exception(self):
         text = self.text("verifier")
-        self.assertNotIn("except `verify prep`", text)
-        self.assertNotIn("600000 ms", text)
-        self.assertIn("verify prep --dir {{artifact_dir}}", text)
-        step = text[text.index("1. Prepare."):text.index("verify prep --dir")]
-        self.assertIn("300000 ms", step)
+        self.assertIn("except `verify prep`", text)
+        self.assertIn("600000 ms", text)
 
     def test_coder_never_writes_its_own_mutants(self):
         sentences = re.split(r"(?<=[.!?])\s+", self.text("coder"))

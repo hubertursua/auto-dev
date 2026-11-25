@@ -1215,15 +1215,6 @@ class ShipTest(RunCase):
     def watch(self, *extra):
         return self.cmd("ci-watch", "--pr", "7", "--interval", "1", *extra)
 
-    def test_ci_watch_help_says_what_the_bash_tool_does_with_its_wait(self):
-        r = self.autodev("ci-watch", "--help")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        text = " ".join(r.stdout.split())
-        self.assertIn("default 540; the Bash tool moves a call still running after "
-                      "180 s to the background and tells the orchestrator when it ends",
-                      text)
-        self.assertNotIn("under the Bash tool's limit", text)
-
     def checks(self, checks=None, head=None, **response):
         head = head or self.git("rev-parse", "HEAD").strip()
         self.script_gh([{"args": ["pr", "view"],
@@ -4407,78 +4398,6 @@ class VerifyPrepTest(unittest.TestCase):
         self.assertTrue(r.stdout.startswith("STILL_RUNNING: "), r.stdout)
         self.assertFalse((self.ad / "evidence" / "tree-start.txt").exists())
 
-    def slow_runner(self, seconds):
-        """runner.py, taking `seconds` first and counting its runs in a file
-        outside the worktree; the count's path."""
-        count = self.tmp / "runs.txt"
-        self.write("runner.py", f"import time\nopen({str(count)!r}, 'a').write('x')\n"
-                   f"time.sleep({seconds})\n" + RUNNER)
-        return count
-
-    def test_a_mutation_wait_never_outlasts_the_budget(self):
-        self.write(".auto-dev/evidence/mutation-run.lock", f"{os.getpid()}\n")
-        began = time.monotonic()
-        r = self.verify("prep", "--wait", "300", "--budget", "1")
-        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
-        self.assertTrue(r.stdout.startswith("STILL_RUNNING: "), r.stdout)
-        self.assertIn("still alive after 1s", r.stdout)
-        self.assertLess(time.monotonic() - began, 30)
-
-    def test_a_run_past_the_budget_is_picked_up_by_the_next_prep(self):
-        count = self.slow_runner(4)
-        began = time.monotonic()
-        r = self.verify("prep", "--budget", "1")
-        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
-        self.assertTrue(r.stdout.startswith("RUN_AGAIN: "), r.stdout)
-        self.assertIn("is still going", r.stdout)
-        self.assertLess(time.monotonic() - began, 4)
-        self.assertFalse((self.ad / "evidence" / "C1.txt").exists())
-        # The next call waits on that same run and uses it: it ran once.
-        r = self.verify("prep")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertTrue(r.stdout.startswith("PREPARED: "), r.stdout)
-        self.assertEqual(count.read_text(), "x")
-        self.assertIn("ok  keeps the due date", self.evidence("acceptance.txt"))
-        self.assertIn("ok  keeps the due date", self.evidence("C1.txt"))
-        # A run is used once: the call after runs the checks again.
-        self.assertEqual(self.verify("prep").returncode, 0)
-        self.assertEqual(count.read_text(), "xx")
-
-    def test_a_run_on_other_code_is_never_used(self):
-        count = self.slow_runner(3)
-        self.write(".auto-dev/briefs/verifier-1.md", "mode: first\n")
-        r = self.verify("prep", "--budget", "1")
-        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
-        # A correction changes the code while the run goes on; a new spawn checks it.
-        self.write("src/todo.ts", "export const todo = 3;\n")
-        self.write(".auto-dev/briefs/verifier-2.md", "mode: re-check\n")
-        r = self.verify("prep")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        # It waited for the first run to end, then ran the checks on this code.
-        self.assertEqual(count.read_text(), "xx")
-        tree = subprocess.run([sys.executable, str(SCRIPTS / "check-fresh.py"),
-                               "--print-tree", str(self.wt)], capture_output=True,
-                              text=True, check=True).stdout.strip()
-        self.assertEqual(self.evidence("tree-start.txt").strip(), tree)
-        self.assertIn(f"  tree: {tree}", r.stdout)
-
-    def test_a_run_that_writes_files_is_used_in_the_same_spawn(self):
-        count = self.tmp / "runs.txt"
-        self.write("runner.py", f"import time\nopen({str(count)!r}, 'a').write('x')\n"
-                   "time.sleep(3)\nopen('report.out', 'w').write('x')\n" + RUNNER)
-        self.write(".auto-dev/briefs/verifier-1.md", "mode: first\n")
-        r = self.verify("prep", "--budget", "1")
-        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
-        started_on = self.evidence("tree-start.txt")
-        r = self.verify("prep")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(count.read_text(), "x")
-        # The tree it ran on is the one noted, so `verify tree` sees the new file.
-        self.assertEqual(self.evidence("tree-start.txt"), started_on)
-        r = self.verify("tree")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("  changed: report.out", r.stdout)
-
     def test_each_output_line_goes_to_the_longest_check_name_it_holds(self):
         self.write(".auto-dev/acceptance/MANIFEST.md", VERIFY_MANIFEST.replace(
             "flags an overdue todo", "keeps the due date when edited"))
@@ -4507,9 +4426,9 @@ class VerifyPrepTest(unittest.TestCase):
             self.assertIn("summary: keeps the due date, flags an overdue todo",
                           self.evidence(name))
 
-    def test_a_run_past_its_timeout_is_stopped_and_said_so(self):
+    def test_a_run_past_its_budget_is_stopped_and_said_so(self):
         self.write("runner.py", "import time\ntime.sleep(30)\n")
-        r = self.verify("prep", "--timeout", "1")
+        r = self.verify("prep", "--budget", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("acceptance run ran past 1s and was stopped", r.stdout)
         self.assertIn("Result: the run ran past 1s and was stopped;", self.evidence("C1.txt"))
@@ -4652,7 +4571,7 @@ class VerifyPrepTest(unittest.TestCase):
 
     def test_prep_does_not_warn_on_a_run_stopped_at_its_time_limit(self):
         self.write("runner.py", "import time\ntime.sleep(30)\n")
-        r = self.verify("prep", "--timeout", "1")
+        r = self.verify("prep", "--budget", "1")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ran past 1s and was stopped", r.stdout)
         self.assertNotIn("warning:", r.stdout)
@@ -5063,11 +4982,8 @@ class MutationRunTest(unittest.TestCase):
         self.assertIn("default 170", text)
         self.assertNotIn("default 270", text)
 
-    def test_verify_prep_waits_no_longer_than_mutants_wait(self):
-        text = self.help_of("verify")
-        self.assertIn("default 170", text)
-        self.assertNotIn("270", text)
-        self.assertNotIn("570", text)
+    def test_verify_prep_keeps_its_own_wait(self):
+        self.assertIn("default 270", self.help_of("verify"))
 
     def test_mutants_help_states_the_wait_the_parser_uses(self):
         # Built from the parser's own default, so it changes when the default does.
