@@ -142,19 +142,27 @@ can resume on the new one. Newest first. The current version is in
   not watched, every check runs whole. A test check with no `files` form, or
   with no changed test file, isn't run before the push at all: the PR body
   says CI runs it, and if the first CI watch can't see CI, the gate runs again
-  with every check whole. A check signed off at a red-gate stop counts as
-  green. `run` now defaults `--timeout` to twice the last measured
+  with every check whole. With CI not watched, the coder's brief says the
+  quality gate runs the test check whole. A check signed off at a red-gate
+  stop counts as green. `run` now defaults `--timeout` to twice the last measured
   whole run (at least 600 seconds) instead of running unbounded, and `run
   gate` says when a check's third attempt failed.
-- **Workers wait on a backgrounded run with `run wait`.** `autodev.py run wait` blocks
-  up to 170 seconds on the last backgrounded `run test` or `run gate` and
-  replays its output (`RUNNING`, exit 4, while it is still going). It reads
-  only output under the run's `tmp/run/` or a path `run --out` may write; a
-  record pointing elsewhere, or a `tmp/` that links out of the artifact dir,
-  is refused. `mutants run` and `mutants wait` wait 170 seconds by default
-  (was 270), and every agent file says a command must stay under 3 minutes
-  (was 5). The coder no longer writes its own mutants or reverts code to
-  prove a test.
+- **Workers wait on a backgrounded run with `run wait`.** `autodev.py run
+  wait` blocks up to 170 seconds on the last backgrounded `run test` or `run
+  gate` and replays its output (`RUNNING`, exit 4, while it is still going).
+  It reads only output under the run's `tmp/run/` or a path `run --out` may
+  write; a record pointing elsewhere, or a `tmp/` that links out of the
+  artifact dir, is refused. `mutants run` and `mutants wait` wait 170 seconds
+  by default (was 270), and every agent file says a command must stay under 3
+  minutes (was 5), with no exception. The coder no longer writes its own
+  mutants or reverts code to prove a test.
+- **`verify prep` returns within about 170 seconds.** It used to take up to
+  10 minutes in one call. Its acceptance run now goes to the background
+  (`evidence/acceptance-run*.json` and `.log`); when it isn't done, prep
+  prints `RUN_AGAIN`, and running prep again waits on that same run and uses
+  it only if it ran on the same code. `--wait` defaults to 170 (was 270), and
+  the acceptance run stops at `run`'s default timeout instead of 570 seconds.
+  A verifier on the 5.0 instructions already runs prep again on `RUN_AGAIN`.
 - **`next` recovers instead of dead-ending.** When the budget is spent and a
   must-fix is still open, the ready-for-review gate offers a fourth answer
   that adds a round to fix it. A correction committed outside the pipeline is
