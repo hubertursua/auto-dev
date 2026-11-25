@@ -125,12 +125,14 @@ can resume on the new one. Newest first. The current version is in
   `<files>` inside quotes or `$` before it, whose `tests` form does the same
   to `<tests>` or `<test>`, or whose command or either form does it to
   `<args>`, is now refused by `validate-config.py` and at run time (exit 2),
-  because the shell would expand what the quoting produces. Unquote the placeholder in the saved
-  profile or `.auto-dev.yml`. A run in flight keeps the gate it copied into
-  `state.json` when it started, so editing the profile doesn't reach it: with
-  such a form its scoped runs, `verify prep` and (with CI watched) the
-  quality gate exit 2. Finish such a run before upgrading, or start it again
-  after fixing the profile.
+  because the shell would expand what the quoting produces. Unquote the
+  placeholder in the saved profile or `.auto-dev.yml`. A run in flight keeps
+  the gate it copied into `state.json` when it started, so editing the
+  profile doesn't reach it: with a quoted `<files>`, its scoped runs, `verify
+  prep` and (with CI watched) the quality gate exit 2. A quoted `<args>` in a
+  command stops every run of that check, whole ones too, but `<args>` is new
+  in 5.1, so no 5.0 run has one. Finish such a run before upgrading, or start
+  it again after fixing the profile.
 - **Local test runs are scoped to the change.** The coder runs non-test checks
   whole but tests only through `run test`, scoped to the change's tests. It
   runs a suite whole only in a correction after the quality gate found that
@@ -157,9 +159,10 @@ can resume on the new one. Newest first. The current version is in
   must-fix is still open, the ready-for-review gate offers a fourth answer
   that adds a round to fix it. A correction committed outside the pipeline is
   re-checked and recorded instead of looping on `commit`. The coder and the
-  acceptance tester stop at 150 and 120 turns (`maxTurns`); a spawn that
-  returns with no result file is sent again once, told to keep its edits, and
-  a second miss stops the run. `state.json` only gains optional keys.
+  acceptance tester stop at 150 and 120 turns (`maxTurns`); such a capped
+  spawn that returns with no result file is sent again once, told to keep its
+  edits, and a second miss stops the run (any other worker is sent the same
+  brief again, as before). `state.json` only gains optional keys.
 - **`next` takes a commit pushed from outside the run.** Before a CI watch, a
   push or the ready gate, `next` fetches the PR branch. A head pushed from the
   run's worktree (a base merged in by hand, say) is re-checked and CI is
@@ -207,7 +210,9 @@ can resume on the new one. Newest first. The current version is in
 - **Fixed:** the tree check no longer skips a worker's out-of-bounds change
   when setup ends in the same second as the brief is written.
 - A run in flight resumes on 5.1, except one whose gate quotes a placeholder
-  (above).
+  (above). One small gap: a fixer still out when you upgrade is sent its 5.0
+  brief again, which has no line for running the change's tests, so it may
+  leave the tests to the quality gate that follows it.
 
 ## Upgrading from 4.27
 

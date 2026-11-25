@@ -954,7 +954,8 @@ skills/auto-dev/
                         shared tables, the profile schema and the Jira steps
   templates/            the artifact templates and the review rubric workers read by path
   scripts/              the Python helpers listed under Dependencies
-    lib/                shared code for autodev.py and check-tests.py (not run directly)
+    lib/                shared code for autodev.py, check-tests.py and
+                        validate-config.py (not run directly)
   evals/                evals.json (pipeline evals, with fixtures in files/)
                         and trigger-eval.json (should / shouldn't trigger)
 tests/                  unit tests for the helper scripts, tools/ and the eval fixtures
