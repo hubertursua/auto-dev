@@ -6544,10 +6544,12 @@ class QualityGateTest(RunCase):
     def test_a_scoped_skipped_or_stopped_check_saves_no_time(self):
         self.the_change()
         self.set_ci("github-actions")
-        # The gate's one test check, run on the change's tests, saves nothing.
+        # The gate's one test check, run on the change's tests, saves nothing;
+        # the lint check beside it, run whole, saves its time.
         self.set_gate(self.lint_check(), self.unit_check())
         r = self.gate()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.timings()["echo lint"]["by"], "quality-gate", self.timings())
         for command in ("echo all", "echo some src/b.test.ts tests/a.test.ts"):
             self.assertNotIn(command, self.timings())
         # The gate's one test check, left to CI, saves nothing.
@@ -6578,25 +6580,6 @@ class QualityGateTest(RunCase):
         for command in ("echo all", "true"):
             self.assertEqual(self.timings()[command]["by"], "quality-gate", self.timings())
         self.assertNotIn("echo some src/b.test.ts tests/a.test.ts", self.timings())
-
-    def test_a_lone_test_check_run_scoped_or_left_to_ci_saves_no_time(self):
-        self.the_change()
-        self.set_ci("github-actions")
-        self.set_gate(self.lint_check(), self.unit_check())
-        self.assertEqual(self.gate().returncode, 0)
-        self.assertIn("echo lint", self.timings())
-        for command in ("echo all", "echo some src/b.test.ts tests/a.test.ts"):
-            self.assertNotIn(command, self.timings())
-        self.set_gate(self.lint_check(),
-                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
-        self.assertEqual(self.gate().returncode, 0)
-        self.assertNotIn("true", self.timings())
-        # Two test checks run whole, so each whole run is measured.
-        self.set_gate(self.lint_check(), self.unit_check(),
-                      {"kind": "test", "command": "true", "report": "CHECKS.md"})
-        self.assertEqual(self.gate().returncode, 0)
-        for command in ("echo all", "true"):
-            self.assertEqual(self.timings()[command]["by"], "quality-gate")
 
     def test_the_gate_run_records_what_it_scoped_and_left_to_ci(self):
         self.the_change()
