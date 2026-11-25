@@ -15,7 +15,8 @@ review of the change, code and security both.
   after trying to break the change and to exploit it.
 - Every finding needs a trigger path: a specific input or sequence, from a real
   caller or from untrusted input, that leads to the failure. Without one, leave
-  it out. You are also its judge: trace it yourself before you keep it.
+  it out, except a security finding, which is Low (the rubric's security
+  table). You are also its judge: trace it yourself before you keep it.
 - Spill large output to `{{artifact_dir}}/tmp/` and quote only a digest of it, never a corpus.
 - Write every command out in full: literal absolute paths, `git -C <path> …`
   for git (never `cd <path> && git …`), values from the brief rather than a
@@ -31,7 +32,7 @@ The orchestrator's prompt names your brief file. Read it first. It holds one
 `name: value` line for each double-braced name below (a long value continues
 on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
-any single command under 5 minutes unless this file says otherwise.
+any single command under 3 minutes unless this file says otherwise.
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
 did not return a result the run could use: this says why, and what to do.
@@ -51,14 +52,31 @@ the one `{{scope}}` names (Scopes, below).
    (`high` when it is `none`), one literal path per file, quoted when it has
    a space. Never run it with no path: it then reviews the branch against its
    upstream, which is empty once the branch is pushed. When the list is
-   `none`, skip the skill. Then run the /security-review skill, telling it the
-   base branch is {{base}}. Their findings are your starting point, not your
-   answer. In scope `after-commit` (a correction's re-review), skip both
-   skills and review the correction yourself, following what it changed
-   downstream: every caller and every use of the values it changed, however
-   few lines it touched.
-2. Then go further yourself. Read the changed files and their tests,
-   {{artifact_dir}}/PLAN.md, the acceptance checks
+   `none`, skip the skill. Then run the /security-review skill. It computes
+   its own diff and log (`origin/HEAD...`, in the session's working
+   directory), which can be another checkout's change, or take in commits
+   merged before this run. So first write this change's diff to a file:
+   `git -C {{worktree}} diff {{cut}} --output={{artifact_dir}}/tmp/security-review-cut.diff`.
+   Tell the skill that this file, {{artifact_dir}}/tmp/security-review-cut.diff,
+   is the whole change to review, and to set aside the diff and log it computes
+   itself. Tell it the change is everything since commit {{cut}}, where the
+   branch left origin/{{base}}; never give it the local base branch by name,
+   which can lag behind origin and widen the review to commits merged before
+   this run. Their findings are your starting point, not your answer: judge
+   every security finding only against the cut diff. Drop one as not this
+   change's only when it is in code the cut diff neither changes nor reaches
+   (neither modifies, calls into nor exposes to new input), such as another
+   checkout's change. Code from a commit merged before this run is not dropped
+   for that reason alone: when the change calls into it, the cut diff reaches it.
+   Classify every other finding by its origin, as step 3 says: introduced when
+   the change adds or modifies the line or exposes old code to new untrusted
+   input, else pre-existing, and a pre-existing High or Medium one is listed
+   for the user. In scope `after-commit`
+   (a correction's re-review), skip both skills and review the correction
+   yourself, following what it changed downstream: every caller and every use
+   of the values it changed, however few lines it touched.
+2. Then go further yourself. Read each changed file in full, not only its
+   hunks, its tests, {{artifact_dir}}/PLAN.md, the acceptance checks
    {{artifact_dir}}/acceptance/MANIFEST.md names, the security directives
    named in {{artifact_dir}}/profile.md, and the binding rules
    ({{binding_rules}}). Try to break the change:
@@ -84,7 +102,13 @@ the one `{{scope}}` names (Scopes, below).
    blame`). For a security finding, also one where the change exposes old
    code to new untrusted input. Count pre-existing code findings without
    listing them; list pre-existing security findings for the user.
-4. A problem that lies in PLAN.md rather than the code (a condition the change
+4. Verify every finding, code and security, as the rubric's _Before you
+   report a finding_ says: read every function its claim depends on, find the
+   layer that may already handle it (for a security finding, the auth, the
+   validation or the escaping on its path), and try to prove it wrong. Leave
+   out a code finding you can prove wrong or aren't sure of. A security
+   finding you can't prove wrong but can't trace is Low, as the rubric says.
+5. A problem that lies in PLAN.md rather than the code (a condition the change
    can only be right by breaking, or a requirement or security criterion the
    plan lacks) is a spec problem. No worker changes the plan: the run stops
    and the user decides. Write {{spec_problem_file}}, one line per problem:
@@ -96,8 +120,9 @@ the one `{{scope}}` names (Scopes, below).
    Spec kept: {{spec_kept}}. When set, the user already kept PLAN.md as
    written for these at a stop: never raise them again.
 
-How findings are judged: read `{{skill_dir}}/templates/rubric.md`, its code
-review findings, security findings and overall report confidence sections.
+How findings are judged: read `{{skill_dir}}/templates/rubric.md`, its before
+you report a finding, code review findings, security findings and overall
+report confidence sections.
 
 ### The code review
 
@@ -112,7 +137,9 @@ its trigger path in the code, else `Holds: no — <why>` or `Holds: pre-existing
 — <why>`; its Category by the rubric (a broken binding rule is correctness);
 and, when it holds and its Category is correctness, tests or
 acceptance-check, its `Trigger path:`, `Judge:`, `Where:`, `Test:`, `Required
-change:` and `In plain words:` lines, each on one line. A finding about an
+change:` and `In plain words:` lines, each on one line, and keep the lines
+`review-build` copies into the coder's corrections.md as small as
+JUDGMENT.md's first comment line says. A finding about an
 acceptance check itself (it asserts what PLAN.md does not say, or can't fail
 when its condition is unmet) is `acceptance-check`: it goes to the acceptance
 tester, never the coder. Under `## Earlier must-fix`, check the current code
@@ -151,7 +178,8 @@ during the run`.
 For every introduced, confirmed must-fix finding, write
 {{artifact_dir}}/review/security-corrections.md in the shape of
 `{{skill_dir}}/templates/corrections.md`, one entry per finding, from its
-Required change line; with none open, write `# Required changes` and `None.`
+Required change line, each as small as that template's first comment line
+says; with none open, write `# Required changes` and `None.`
 
 Run `python3 {{skill_dir}}/scripts/autodev.py check-artifact` on
 SECURITY_REVIEW.md, on security-corrections.md and on {{spec_problem_file}}

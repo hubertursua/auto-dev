@@ -1,8 +1,9 @@
 # Ship stage (Phase 6)
 
 `autodev.py next` drives the Ship stage too, but here it hands you a few steps to do with
-your own tools: writing a commit subject and two PR paragraphs, pushing,
-moving Jira, watching CI after the merge, and the final report. Each is below.
+your own tools: writing a commit subject and the PR body's sections, pushing,
+moving Jira, watching CI after the merge, the final report and the worktree
+question, plus the few in section 2. Each is below.
 `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 
 ## 1. Enter the worktree
@@ -13,74 +14,27 @@ Ship stage, `cd <worktree>` (the tree `resume` printed) and read
 
 ## 2. Run the loop
 
-Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
-see in the Ship stage, in order:
+Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. `next` names
+each worker to spawn, each command to run and each gate to ask. The steps that
+are yours, besides steps 3–9 below:
 
-1. Commit, push, the PR body and `pr publish`: steps 3–5 below. The build,
-   its quality gate green, opens as a **draft PR before any review**, so CI starts on it while
-   the reviews run; its description says it is not verified or reviewed yet. With
-   `gates.open_pr: true` in `.auto-dev.yml`, the open-the-PR gate asks first
-   (exit 5): `Open PR`, `Hold (don't push yet)` or `Stop`.
-2. The first review pass, on the draft's commit: the
-   `verifier` (it runs the acceptance checks against the plan's conditions and
-   audits the test changes; `check-tests.py` refuses any change to a line a
-   tests commit added) and the review. On a standard-risk run the review is one
-   `reviewer`, for code and security both; it judges its own findings and
-   builds `CODE_REVIEW.md` with `review-build --solo`. On a high-risk run it is
-   three `code-reviewer`s and a security reviewer, spawned once the verifier
-   returns (its mutants are planted in the worktree while it runs), then the
-   `review-judge`
-   (twice in one message when the security review found something to verify),
-   maybe re-votes; the verifier also runs mutation and a probe of its own per
-   condition. Both the verifier and the review look for code that passes a
-   test without doing what the condition asks.
-   What the pass leaves open (the verifier's items, must-fix findings, a
-   confirmed security finding) runs **one correction, one round**. First,
-   with CI configured, `next` has CI settle on the pushed commit (`ci-watch`):
-   red CI the `triager` puts on the code joins the same correction. The
-   correction is the `coder` (a finding that an acceptance check is wrong goes
-   to the `acceptance-tester` in repair mode first, on the same round; it
-   repairs the check, or answers `STANDS`, which stops the run and asks the
-   user, #21), then the quality gate you run (`autodev.py quality-gate`, as in
-   the Build stage), then a new pass on the uncommitted correction (the
-   verifier re-checks; the review skips its nested skills), before it is
-   committed on top, pushed and published again (steps 3–5).
-   A criterion the verifier, the reviewer, the judge or a security reviewer
-   finds wrong or missing in PLAN.md (`spec-problems/<worker>-<n>.md`) stops
-   the run once the pass has settled, before any correction (#20): no worker
-   changes the spec. The user says how to change it (the fixer edits PLAN.md,
-   and the checks when they say so; then the verifier's first pass runs
-   again), retries, or signs off, which keeps PLAN.md as written; later
-   workers are told what the user kept (`spec_kept`, `checks_kept`).
-   With no round left before the ready-for-review gate, what is open goes to
-   that gate instead of a correction. Once the pass settles, `next` asks you to
-   run `pr publish` again: the description gets the results.
-3. `ci-watch` on the draft. Whatever it exits, run its `AFTER` line (`next`):
-   `next` asks for `ci-watch` again only while CI is `PENDING`. A draft with no
-   check after the grace period (some workflows skip drafts) is `UNAVAILABLE`:
-   the run goes on, and CI is watched again once the PR is marked ready; CI
-   that never ran is shown as not monitored, never as green. A red check
-   sends the `triager`. A code failure runs a correction, a pass and a new
-   commit (when findings are open too, it joined their correction in step 2). Any other class (`INFRA`, `FLAKY`, `UNKNOWN`, `SECRET`) is not the
-   code's to fix: `next` stops and reports it (exit 4). Once the cause is
-   fixed and CI re-run, _I fixed it myself_ (or `auto-dev continue`) watches
-   it again.
-4. The ready-for-review gate (exit 5): `Mark ready for review`, `Hold (keep it
-   a draft)` or `Stop`. With pre-existing security findings it asks one more
-   question per finding (_What each gate option does_ in
-   `references/tables.md`): run the `mark triage-<ID>` line for each answer.
-   Then `gh pr ready`, as printed.
-5. Jira In Review, CI watched once more (workflows that skip drafts run now,
-   so green from the draft's checks doesn't count), the `triager` on human
-   PR comments, the main gate, `merge-pr`. A human blocker goes to the coder;
-   a comment saying an acceptance check is wrong goes to the acceptance tester's
-   repair mode (the triager writes it to `triage/human-<n>-checks.md`), and a
-   `STANDS` stops the run as above. When both come back, the tester goes
-   first, on one round. A comment that says the plan's conditions are wrong is a
-   claim: the triager lists it, in its own words and naming the comment's id,
-   in `spec-problems/triager-<n>.md`, and the run stops for the user before
-   any correction (#20). CI mode never reports one.
-6. CI on the base branch, Jira Done, the final report, the worktree question.
+- **The quality gate**, when a correction runs, or when a CI watch can't see
+  CI (it timed out or found no checks) after a gate that ran its test check
+  only on the change's tests or left it to CI: `autodev.py quality-gate`, as
+  printed, with the Bash tool's timeout at 600000 ms. Whatever it exits, run its `AFTER` line.
+- **`ci-watch`.** Whatever it exits, run its `AFTER` line (`next`). Never
+  report CI as green when it never ran. On `CONFLICT` (exit 4: the PR conflicts
+  with its base, so no check runs), tell the user the PR conflicts with its
+  base and that they bring the base in themselves, with the commands its line
+  names (fetch the base, merge it in the worktree, resolve, push). You never
+  merge or edit the code: you only run `next`, which re-checks a head pushed
+  from the worktree that the run didn't make.
+- **The ready-for-review gate (exit 5).** With pre-existing security findings
+  it asks one more question per finding (_What each gate option does_ in
+  `references/tables.md`): run the `mark triage-<ID>` line for each answer.
+  Then `gh pr ready`, as printed. When a pass left findings open for want of
+  a round, it also offers `Add a round and fix it`: for that answer run its
+  `AFTER` line (it adds the round), then `next`, which starts the correction.
 
 ## 3. Commit
 
@@ -96,7 +50,9 @@ result, whatever the exit code).
 
 `git -C <worktree> push -u origin HEAD`, exactly as printed. Never `--force`.
 If the push is rejected, tell the user what git printed and stop; don't run the
-`AFTER` line.
+`AFTER` line. When the user rebased or amended the branch in the worktree, so
+it no longer builds on the commit the run pushed, `next` stops (#16) instead of
+printing the push: only the user force-pushes.
 
 ## 5. The PR body
 
@@ -139,8 +95,11 @@ condition title and gate command it copies, is exempt from the ID,
 the follow-ups the user sent to a separate PR at the ready-for-review gate are
 listed in the description once `next` publishes it again.
 `pr publish` ends everything it posts with `<!-- auto-dev -->`, which tells
-the triager to skip it; never post on the PR yourself. Then run the `AFTER`
-line, `autodev.py pr publish`:
+the triager to skip it; never post on the PR yourself. A description over
+GitHub's limit has its quoted command output cut to the last lines, and moved
+to the PR's output comment, by `pr publish` itself; when it is still too long,
+its exit 1 names the sections written by hand to shorten in `pr-write.md`.
+Then run the `AFTER` line, `autodev.py pr publish`:
 
 | Exit | Do |
 |---|---|
@@ -208,9 +167,22 @@ wasn't. A run that stopped early uses the same shape and says where it stopped.
 
 The last question (exit 5) is whether to remove the worktree. On `Remove it`,
 `next` exits 3 with a `cleanup-worktree` command: run it from the main checkout.
+The run's `metrics.json` survives it: `next` writes a copy outside the worktree,
+at the path the question names. When that copy could not be written, the
+question and the ACTION say so and name `.auto-dev/metrics.json` instead: the
+user saves it, or says to go on, before `cleanup-worktree` runs; if they decide
+to keep the worktree instead, run the `gate cleanup keep` command that ACTION
+names. Until `cleanup-worktree` has run, `next` gives the same ACTION again (and
+`resume` picks the run up for it), so a session that ended before the user
+answered can finish it. If git refuses (exit 1), `cleanup-worktree` records the
+worktree as kept, so the run is finished and `next` gives no ACTION for it
+again: leave the tree and tell the user which files are in it. When git
+removed part of the worktree before it failed, its `REFUSED` says so and names
+what is left: tell the user, who removes it by hand. If the run's state is
+still there, the `REFUSED` says so and the worktree is recorded as kept, so
+`next` gives no ACTION for it again; if the state went with the tree, nothing
+is recorded.
 A run that started in a worktree the user made never asks: that worktree stays.
-If git refuses (exit 1), leave the tree and tell the user which files are in
-it.
 
 ## Stops in the Ship stage
 
@@ -219,6 +191,10 @@ Every stop is exit 4 with its reason in `REPORT`
 (`SKILL.md`, _A stop_). The ones that need care:
 
 - **CI red at the main gate (#17):** never merge over it; name each red check.
+- **CI red for a reason the code can't fix (#15: `INFRA`, `FLAKY`, `UNKNOWN`,
+  `SECRET`):** tell the user the class and the check. Once the cause is fixed
+  and CI re-run, _I fixed it myself_ (or `auto-dev continue`) watches it
+  again.
 - **The mutation step may have left a change in the source (#10, high risk
   only):** tell the user not to build on the tree until they've checked the
   paths named.
@@ -229,11 +205,24 @@ Every stop is exit 4 with its reason in `REPORT`
   finding or red check the `REPORT` names, and that they can go on with more
   rounds if they say how many (`references/tables.md`, _The iteration
   budget_).
-- **Someone pushed to the PR branch (#16):** tell the user what the `REPORT`
-  says: to ship those commits, they bring them into the worktree with the
-  `git merge --ff-only` command it names and say `auto-dev continue`. `next`
-  then re-checks them (quality gate, verifier, a review pass on what they
-  changed), `commit` verifies the new head, or commits the re-check's edits on
-  top, and the main gate is asked again.
+- **Someone pushed to the PR branch (#16):** `next` notices it before a CI
+  watch, a push or a gate, as well as at the main gate. Tell the user what
+  the `REPORT` says: to ship those commits, they bring them into the worktree
+  with the `git merge --ff-only` command it names (or, when the run's own
+  unpushed commit and theirs diverged, the `git merge` and the push it names)
+  and say `auto-dev continue`. When the run's correction is still uncommitted,
+  the `REPORT` has them set it aside first (`git add -A` and `git stash push
+  --include-untracked`) and bring it back after (`git stash pop`, resolving
+  any conflict). `next` then re-checks them (quality gate, verifier, a review
+  pass on what they changed), `commit` verifies the new head, or commits the
+  re-check's edits on top, and the run goes on from there: the push, CI on
+  the new head and the gate it was at. A head pushed from the worktree itself
+  needs no stop: `next` re-checks it the same way. When no one pushed but the
+  user rebased or amended the branch in the worktree without pushing it, the
+  PR branch is still at the commit the run pushed and a plain push would be
+  refused: the `REPORT` says so and asks the user to push the rewritten branch
+  themselves with the `git push --force-with-lease` command it names and say
+  `auto-dev continue`. Never force-push it yourself, and never merge the old
+  commits back in.
 - **GitHub refused or queued the merge (#18):** say what blocks it; Jira stays
   where it is.

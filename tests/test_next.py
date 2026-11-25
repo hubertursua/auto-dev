@@ -16,7 +16,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from pathlib import Path
 
@@ -112,8 +114,9 @@ class NextCase(RunCase):
 
     # -------------------------------------------------------------- driving
 
-    def next(self, expect=None, refused_ok=False):
-        r = self.autodev("next", "--dir", self.dir, "--json")
+    def next(self, expect=None, refused_ok=False, reissue=False):
+        r = self.autodev("next", *(["--reissue"] if reissue else []), "--dir", self.dir,
+                         "--json")
         try:
             out = json.loads(r.stdout)
         except ValueError:
@@ -256,7 +259,9 @@ class NextCase(RunCase):
         out = self.next(0)
         self.assertIn(f"read references/{stage}.md", out["ACTION"], json.dumps(out))
         self.assertEqual(self.state()["stage"], stage)
-        self.after(out)
+        # AFTER is `next` itself: the caller runs it and acts on what it prints
+        # (run here, the spawn it printed would be lost, and then waited for).
+        self.assertEqual(out["AFTER"], [self.next_cmd()])
 
     def build_session(self):
         self.expect("coder", "BUILT", blocked="0", test_changes="none")
@@ -380,6 +385,118 @@ class NextCase(RunCase):
             {"worker": worker, "status": "ok", **DEFAULT_KEYS.get(worker, {}),
              **data}))
 
+    def next_reissue(self, expect=None):
+        """`next --reissue`: every agent the last wait named has returned."""
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        try:
+            out = json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --reissue printed no JSON (exit {r.returncode}):\n"
+                      f"{r.stdout}{r.stderr}")
+        if expect is not None:
+            self.assertEqual(out.get("exit"), expect, json.dumps(out, indent=2))
+        return out
+
+    def assert_waits_for(self, out, *names):
+        """`out` tells the orchestrator to wait for each of `names` (`planner #1`)
+        and spawns nothing."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertTrue(out.get("ACTION", "").startswith("wait"), shown)
+        for name in names:
+            self.assertIn(name, out["ACTION"], shown)
+        self.assertNotIn("AGENT", out, shown)
+        self.assertNotIn("BRIEF", out, shown)
+
+    def assert_spawns_planner_1_again(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:planner"], shown)
+        self.assertEqual(self.spawned(out), [("planner", 1)], shown)
+        self.assertFalse((self.dir / "briefs" / "planner-2.md").exists())
+
+    def brief_files(self):
+        return sorted(p.name for p in (self.dir / "briefs").iterdir())
+
+    def stopped_after_three_spawns(self):
+        """planner #1 spawned, then `next --reissue` three times: the third stops."""
+        self.expect("planner")
+        for _ in range(2):
+            self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
+        return out
+
+    def assert_counted(self, number, rule, phase, times=1):
+        """metrics.json counts the stop `next` printed last: the last entry of
+        stops.list is it, and `times` stops carry its number (`none` for one
+        references/tables.md doesn't number)."""
+        path = self.dir / "metrics.json"
+        self.assertTrue(path.is_file(), f"no {path}")
+        stops = json.loads(path.read_text())["stops"]
+        self.assertTrue(stops["list"], stops)
+        self.assertEqual(stops["list"][-1], {"number": number, "rule": rule, "phase": phase},
+                         stops)
+        self.assertEqual(stops["by_number"].get("none" if number is None else str(number)),
+                         times, stops)
+        return stops
+
+    def sent_out_ago(self, worker, n, **ago):
+        """Make `worker` #`n`'s brief look as if it was last sent out `ago` back."""
+        when = (datetime.now(timezone.utc) - timedelta(**ago)).replace(microsecond=0)
+        state = self.state()
+        brief = next(b for b in state["briefs"] if (b["worker"], b["n"]) == (worker, n))
+        brief["at"] = when.isoformat()
+        if "issued_at" in brief:
+            brief["issued_at"] = when.isoformat()
+        self.write_state(state)
+
+    def previous_issues(self, worker, n):
+        """The previous_issues line of `worker` #`n`'s brief file, with the
+        indented lines that continue it, joined into one."""
+        lines = (self.dir / "briefs" / f"{worker}-{n}.md").read_text().splitlines()
+        start = next((i for i, ln in enumerate(lines) if ln.startswith("previous_issues:")),
+                     None)
+        self.assertIsNotNone(start, f"{worker}-{n}.md has no previous_issues line")
+        slot = [lines[start].split(":", 1)[1]]
+        for line in lines[start + 1:]:
+            if not line[:1].isspace():
+                break
+            slot.append(line)
+        return " ".join(part.strip() for part in slot).strip()
+
+    def assert_sent_once_more_to_finish(self, worker, out):
+        """`out` spawns `worker` #2, a new brief with #1's mode and sets, whose
+        previous_issues tells it to keep the earlier spawn's edits and finish."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertEqual(out.get("AGENT"), [f"auto-dev:{worker}"], shown)
+        self.assertEqual(self.spawned(out), [(worker, 2)], shown)
+        self.assertTrue((self.dir / "briefs" / f"{worker}-2.md").is_file(), self.brief_files())
+        self.assertEqual(self.mode(worker, 2), self.mode(worker, 1))
+        self.assertEqual(self.sets(worker, 2), self.sets(worker, 1))
+        note = self.previous_issues(worker, 2).lower()
+        self.assertNotEqual(note, "none")
+        self.assertRegex(note, r"without writing (?:its|your|the|a) result file")
+        self.assertRegex(note, r"\bkeep\b[^.]*\bedits\b")
+        self.assertIn("finish", note)
+        self.assertRegex(note, r"\bwrite (?:its|your|the) result file")
+
+    def assert_stopped_after_two_misses(self, worker, label, cap, out):
+        """`out` is the stop for `worker`, sent out twice and twice ending with
+        no result file: a REPORT naming it, the misses and its turn cap, a
+        QUESTION, and no third brief."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 4, shown)
+        report = " ".join(out.get("REPORT", []))
+        self.assertRegex(report, label, shown)
+        self.assertRegex(report, r"without writing (?:its|your|the|a) result file", shown)
+        self.assertIn("twice", report, shown)
+        self.assertIn("turns", report, shown)
+        self.assertIn(str(cap), report, shown)
+        self.assertTrue(out.get("QUESTION"), shown)
+        self.assertFalse((self.dir / "briefs" / f"{worker}-3.md").exists(), self.brief_files())
+
 
 OVERSIZED_PLAN = PLAN.split("## Size check")[0] + (
     "## Size check\nOVERSIZED: three deliverables.\n"
@@ -451,6 +568,20 @@ class PlanTest(NextCase):
         # The reasons themselves, so the orchestrator never reads PLAN.md.
         self.assertIn("- Split: ship shared lists first, then invites", out["REPORT"])
         self.assertIn("- Subsystems: lists (~6 files), invites (~8 files)", out["REPORT"])
+        self.assert_counted(5, "the planner found the task too big for one PR (OVERSIZED)", 2)
+
+    def test_a_stopped_oversized_run_with_its_plan_set_aside_is_still_stop_5(self):
+        (self.dir / "PLAN.md").write_text(OVERSIZED_PLAN)
+        self.expect("planner", "OVERSIZED", **PLANNED)
+        self.next(4)
+        state = self.state()
+        for entry in state["log"]:
+            if entry["worker"] == "planner":
+                entry["aside"] = True
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("too big for one PR", " ".join(out["REPORT"]))
+        self.assert_counted(5, "the run is stopped", 2, times=2)
 
     def test_oversized_with_no_size_check_section_points_at_the_plan_not_a_reply(self):
         (self.dir / "PLAN.md").write_text(OVERSIZED_PLAN)
@@ -735,6 +866,8 @@ class PlanTest(NextCase):
         out = self.next(4)  # free, but once: no planner/tester loop
         self.assertIn("still finds condition(s) 2 reading two ways",
                       " ".join(out["REPORT"]))
+        self.assert_counted(22, "a condition still reads two ways after the planner's "
+                            "decision", 3)
 
     def test_an_ambiguous_condition_read_the_tester_s_way_goes_on(self):
         self.planned()
@@ -756,6 +889,7 @@ class PlanTest(NextCase):
         self.answer(*jobs[0], "WRITTEN", checks="1", ambiguous="none")  # gaps still
         out = self.next(4)
         self.assertIn("gaps after the tester's second try", " ".join(out["REPORT"]))
+        self.assert_counted(22, "check-manifest found gaps twice", 3)
 
     def test_post_plan_revise_goes_to_the_planner_then_asks_again(self):
         self.planned(gate=False)
@@ -771,10 +905,11 @@ class PlanTest(NextCase):
 
     def test_an_unrecorded_brief_is_reissued_then_stops(self):
         out, jobs = self.expect("planner")
-        self.assertEqual(self.spawned(self.next(0)), jobs)
-        self.next(0)
-        out = self.next(4)
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), jobs)
+        self.next(0, reissue=True)
+        out = self.next(4, reissue=True)
         self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
+        self.assert_counted(7, "a worker failed to return three times", 2)
 
     def test_a_long_session_checkpoints_and_resumes_where_it_stopped(self):
         state = self.state()
@@ -782,7 +917,7 @@ class PlanTest(NextCase):
         (self.dir / "state.json").write_text(json.dumps(state))
         self.expect("planner", "FITS", **PLANNED)
         _, jobs = self.expect("plan-critic")  # a brief in flight is finished first
-        self.assertEqual(self.spawned(self.next(0)), jobs)
+        self.assertTrue(self.next(0)["ACTION"].startswith("wait"))  # not a checkpoint
         (self.dir / "plan-review").mkdir(exist_ok=True)
         (self.dir / "plan-review" / "1.md").write_text(plan_review())
         self.answer(*jobs[0], "APPROVE", blockers="0", risk="high")
@@ -837,8 +972,8 @@ class PlanTest(NextCase):
         self.assertNotIn("AFTER", out)  # `next` records planner #2's result itself
         brief = (self.dir / "briefs" / "planner-2.md").read_text()
         self.assertIn("risk", brief)  # the refused issues ride along
-        self.next(0)
-        self.assertIn("spawned 3 times", " ".join(self.next(4)["REPORT"]))
+        self.next(0, reissue=True)
+        self.assertIn("spawned 3 times", " ".join(self.next(4, reissue=True)["REPORT"]))
 
     def test_next_records_a_returned_worker_itself(self):
         self.expect("planner")
@@ -858,7 +993,7 @@ class PlanTest(NextCase):
         self.assertLess(state["log"][0]["seq"], entry["seq"])
         self.assertNotIn("RECORDED", self.next(0))  # recorded once
         # A brief with no result file is issued again as it is, not refused.
-        self.assertEqual(self.spawned(self.next(0)), [("plan-critic", 1)])
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), [("plan-critic", 1)])
         self.assertNotIn("plan-critic-1", self.state().get("refused", {}))
 
     def test_next_refuses_a_bad_result_itself_and_briefs_the_job_again(self):
@@ -899,7 +1034,7 @@ class PlanTest(NextCase):
         self.assertEqual(jobs, [("planner", 1)])
         for _ in range(3):  # an explain is not a spawn
             self.assertEqual(self.autodev("next", "--dir", self.dir, "--explain").returncode, 0)
-        self.assertEqual(self.spawned(self.next(0)), [("planner", 1)])
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), [("planner", 1)])
 
     def test_a_malformed_manifest_check_is_not_a_round(self):
         self.planned()
@@ -920,7 +1055,11 @@ class PlanTest(NextCase):
         r = self.autodev("brief", "planner", "--mode", "write", "--retry", "1", "--dir",
                          self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.spawned(self.next(0)), [("planner", 2)])
+        out = self.next(0)  # `brief` printed the spawn: planner #2 is out
+        self.assertTrue(out["ACTION"].startswith("wait"), out)
+        self.assertIn("planner #2", out["ACTION"])
+        self.assertNotIn("BRIEF", out)
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), [("planner", 2)])
 
     def test_recording_a_job_again_keeps_its_place(self):
         self.expect("planner", "FITS", **PLANNED)
@@ -954,12 +1093,13 @@ class PlanTest(NextCase):
         _, jobs = self.expect("planner")
         self.answer(*jobs[0], "", status="blocked")
         self.assertIn("did not return ok twice running", " ".join(self.next(4)["REPORT"]))
+        self.assert_counted(6, "a worker returned status blocked", 2)
 
     def test_resume_after_a_worker_never_returned_spawns_it_again(self):
         self.expect("planner")
-        self.next(0)
-        self.next(0)
-        self.assertIn("spawned 3 times", " ".join(self.next(4)["REPORT"]))
+        self.next(0, reissue=True)
+        self.next(0, reissue=True)
+        self.assertIn("spawned 3 times", " ".join(self.next(4, reissue=True)["REPORT"]))
         self.resume()
         self.assertEqual(self.spawned(self.next(0)), [("planner", 1)])
 
@@ -969,6 +1109,143 @@ class PlanTest(NextCase):
         _, jobs = self.expect("planner")
         self.answer(*jobs[0], "", status="failed")
         self.assertIn("failed twice", " ".join(self.next(4)["REPORT"]))
+
+    def test_a_brief_out_in_this_session_is_waited_for(self):
+        self.expect("planner")
+        before = self.brief_files()
+        out = self.next(0)
+        self.assert_waits_for(out, "planner #1")
+        self.assertEqual(self.brief_files(), before)  # no brief written
+
+    def test_asking_again_and_again_while_a_worker_is_out_never_stops_the_run(self):
+        self.expect("planner")
+        events = self.state()["events"]
+        actions = []
+        for _ in range(5):
+            out = self.next()
+            self.assertNotIn("spawned 3 times", " ".join(out.get("REPORT", [])))
+            self.assert_waits_for(out, "planner #1")
+            self.assertEqual(self.state()["events"], events)
+            actions.append(out["ACTION"])
+        self.assertEqual(len(set(actions)), 1, actions)  # the same wait each time
+
+    def test_reissue_sends_the_same_brief_and_a_plain_next_then_waits(self):
+        self.expect("planner")
+        self.assert_spawns_planner_1_again(self.next_reissue(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_three_spawns_by_reissue_still_stop_the_run(self):
+        self.expect("planner")
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]))
+
+    def test_a_brief_from_an_earlier_session_is_sent_again(self):
+        self.expect("planner")
+        self.resume()
+        self.assert_spawns_planner_1_again(self.next(0))
+
+    def test_a_brief_sent_again_after_a_resume_is_waited_for(self):
+        self.expect("planner")
+        self.resume()
+        self.assert_spawns_planner_1_again(self.next(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_a_brief_out_over_three_hours_is_sent_again_then_waited_for(self):
+        self.expect("planner")
+        self.sent_out_ago("planner", 1, hours=3, minutes=10)
+        self.assert_spawns_planner_1_again(self.next(0))
+        self.assert_waits_for(self.next(0), "planner #1")
+
+    def test_a_brief_out_under_three_hours_is_waited_for(self):
+        self.expect("planner")
+        self.sent_out_ago("planner", 1, hours=2, minutes=50)
+        before = self.brief_files()
+        self.assert_waits_for(self.next(0), "planner #1")
+        self.assertEqual(self.brief_files(), before)
+
+    def test_a_brief_sent_again_as_is_starts_its_spawn_time_again(self):
+        # `run gate` counts a check's failed attempts from the brief's mtime;
+        # the same brief sent out again is a new spawn, so its count starts over.
+        self.expect("planner")
+        brief = self.dir / "briefs" / "planner-1.md"
+        os.utime(brief, (1_000_000, 1_000_000))
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        self.assertGreater(brief.stat().st_mtime, time.time() - 60)
+
+    def test_a_retry_at_the_three_spawn_stop_sends_the_brief_again(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_spawns_planner_1_again(self.next(0))
+
+    def test_the_brief_sent_again_after_a_retry_is_waited_for(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_spawns_planner_1_again(self.next(0))
+        before = self.brief_files()
+        self.assert_waits_for(self.next(0), "planner #1")
+        self.assertEqual(self.brief_files(), before)
+
+    def test_a_reissue_stamps_when_it_sent_the_brief_out(self):
+        self.expect("planner")
+        first = next(b for b in self.state()["briefs"] if b["worker"] == "planner")
+        self.next(0, reissue=True)
+        again = next(b for b in self.state()["briefs"] if b["worker"] == "planner")
+        self.assertEqual((again["at"], again["seq"]), (first["at"], first["seq"]))
+        self.assertGreater(again["issued_seq"], first["seq"])
+        self.assertIn("issued_at", again)
+
+    def test_a_brief_whose_issue_time_is_unreadable_is_sent_again(self):
+        for at in ("not a time", "2026-01-01T00:00:00"):  # the second has no zone
+            with self.subTest(at=at):
+                self.setUp()
+                self.expect("planner")
+                state = self.state()
+                state["briefs"][-1]["at"] = at
+                self.write_state(state)
+                self.assert_spawns_planner_1_again(self.next(0))
+
+    def test_explain_waits_too_and_writes_nothing(self):
+        self.expect("planner")
+        before = (self.dir / "state.json").read_text()
+        r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("nothing was done; run `next` to act) wait: planner #1", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+
+    def test_a_lone_spawn_is_sent_in_the_foreground(self):
+        out = self.next(0)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:planner"], json.dumps(out, indent=2))
+        self.assertIn("auto-dev:planner", out["ACTION"])
+        self.assertIn("run_in_background: false", out["ACTION"])
+
+    def test_an_acceptance_tester_ending_with_no_result_file_is_sent_once_more_then_stops(
+            self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        self.assertEqual(jobs, [("acceptance-tester", 1)])
+        check = self.worktree / "src" / "due.acceptance.test.ts"
+        check.parent.mkdir(parents=True, exist_ok=True)
+        check.write_text("test: a todo keeps its due date\n")  # tester #1's edit
+        self.assert_sent_once_more_to_finish("acceptance-tester", self.next_reissue())
+        self.assertEqual(check.read_text(), "test: a todo keeps its due date\n")
+        self.assert_stopped_after_two_misses("acceptance-tester", r"acceptance[ -]tester",
+                                             120, self.next_reissue())
+
+    def test_a_worker_with_no_turn_cap_is_sent_the_same_brief_three_times_then_stops(self):
+        self.expect("planner")
+        for _ in range(2):
+            self.assertEqual(self.spawned(self.next_reissue(0)), [("planner", 1)])
+        out = self.next_reissue(4)
+        self.assertTrue(out.get("QUESTION"), json.dumps(out, indent=2))
+        self.assertEqual(self.brief_files(), ["planner-1.md"])
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 7, stops)
 
 
 class BuildTest(NextCase):
@@ -1071,6 +1348,7 @@ class BuildTest(NextCase):
         self.answer(*jobs[0], "BLOCKED", blocked="1", test_changes="none")
         out = self.next(4)  # once is free; again in the same change, the user decides
         self.assertIn("stopped a step again", " ".join(out["REPORT"]))
+        self.assert_counted(22, "the coder returned BLOCKED again", 4)
 
     def test_phase_5_runs_the_quality_gate_itself_on_the_committed_checks(self):
         self.plan_session()
@@ -1124,6 +1402,7 @@ class BuildTest(NextCase):
             self.assertIn("quality-gate", self.next(0)["ACTION"])
         out = self.next(4)
         self.assertIn("no run was recorded", " ".join(out["REPORT"]))
+        self.assert_counted(9, "the quality gate never finished", 5)
         r = self.autodev("override", "retry", "--text", "run it in the background",
                          "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1157,6 +1436,29 @@ class BuildTest(NextCase):
         self.quality_gate(red=True)
         self.sign_off(self.next(4), "the flaky check is known")
         self.enter_stage("ship")
+
+    def test_the_gate_s_correction_lists_no_report_the_user_signed_off(self):
+        self.plan_session()
+        self.resume()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        state = self.state()
+        state["settings"]["gate"].append(
+            {"kind": "test", "command": "false", "report": "E2E.md"})
+        # An earlier red-gate stop, where the user signed off E2E.md failing.
+        state.setdefault("overrides", []).append({
+            "k": len(state["overrides"]) + 1, "choice": "signoff", "text": "keep it",
+            "stop": {"kind": "red-gate", "number": 9, "signoff": {"reports": ["E2E.md"]}},
+            "seq": 1, "at": "2024-01-01T00:00:00Z"})
+        self.write_state(state)
+        self.quality_gate(red=True)  # TEST.md and the signed-off E2E.md fail
+        self.assertEqual(sorted(self.state()["gate_runs"][-1]["failing"]),
+                         ["E2E.md", "TEST.md"])
+        _, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        listed = self.sets(*jobs[0])["corrections_file"]
+        self.assertIn(f"{self.dir}/lint/TEST.md", listed)
+        self.assertNotIn("E2E.md", listed)
 
     def test_a_repair_commits_the_testers_change_not_the_coders_lines(self):
         # The coder added its own test to a check file, then stopped a step;
@@ -1261,6 +1563,303 @@ class BuildTest(NextCase):
         self.assertNotIn("stopped", self.state()["budget"])
         r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_the_quality_gate_action_says_test_checks_run_only_on_the_change_s_tests(self):
+        self.plan_session()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        out = self.next(0)
+        self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+        self.assertIn("only on the change's tests when CI is watched", out["ACTION"])
+
+    def test_the_phase_5_gate_action_keeps_its_rule_for_explain(self):
+        self.plan_session()
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        out = self.next(0)
+        self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+        self.assertNotIn("RULE", out)  # only the re-run CI that can't be watched asks shows it
+
+    def test_a_reissued_coder_starts_the_gate_attempt_count_again(self):
+        self.plan_session()
+        self.expect("coder")  # spawned, and never returns
+        state = self.state()
+        state["settings"]["gate"][0]["command"] = "false"
+        self.write_state(state)
+
+        def failing_run():
+            r = self.autodev("run", "gate", "1", "--dir", self.dir)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            return [x for x in r.stdout.splitlines() if x.startswith("  attempt:")]
+
+        self.assertEqual(failing_run(), ["  attempt: 1 of 3 failed for check 1"])
+        self.assertEqual(failing_run(), ["  attempt: 2 of 3 failed for check 1"])
+        time.sleep(0.05)
+        # sent out again as a new brief, #2, since it returned with no result file
+        self.assertEqual(self.spawned(self.next(0, reissue=True)), [("coder", 2)])
+        time.sleep(0.05)
+        self.assertEqual(failing_run(), ["  attempt: 1 of 3 failed for check 1"])
+
+    def coder_ended_with_no_result_file(self):
+        """The build's coder #1 edits due.ts and returns with no result file."""
+        self.plan_session()
+        _, jobs = self.expect("coder")
+        self.assertEqual(jobs, [("coder", 1)])
+        (self.worktree / "due.ts").write_text("export const due = 1;\n")
+        self.assertFalse((self.dir / "returns" / "coder-1.json").exists())
+
+    def test_a_coder_ending_with_no_result_file_is_sent_once_more_to_keep_its_edits(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assertEqual((self.worktree / "due.ts").read_text(), "export const due = 1;\n")
+
+    def test_a_coder_ending_with_no_result_file_twice_stops_naming_its_turn_cap(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+
+    def test_explain_previews_the_capped_re_spawn_and_writes_no_brief(self):
+        self.coder_ended_with_no_result_file()
+        before, briefs = (self.dir / "state.json").read_text(), self.brief_files()
+        r = self.autodev("next", "--explain", "--reissue", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("coder-2.md", r.stdout)
+        self.assertNotIn("coder-2.md", briefs)
+        self.assertEqual(self.brief_files(), briefs)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+
+    def test_the_capped_stop_is_asked_again_and_a_retry_sends_one_more_noted_brief(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+        out = self.next(4)  # not waited for: the stop is asked again
+        self.assertIn("twice", " ".join(out.get("REPORT", [])))
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 7, stops)
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertEqual(self.spawned(out), [("coder", 3)], json.dumps(out, indent=2))
+        self.assertEqual(self.sets("coder", 3), self.sets("coder", 1))
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+
+    def capped_stop(self):
+        """Coder #1 and its noted re-spawn #2 both end with no result file: stop 7."""
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+
+    def assert_stops_again_on_the_miss_of(self, n):
+        """Coder #n, sent out once more after the stop was lifted, ends with no
+        result file too: `next --reissue` stops (7) and writes no later brief."""
+        out = self.next_reissue(4)
+        shown = json.dumps(out, indent=2)
+        report = " ".join(out.get("REPORT", []))
+        self.assertIn(f"coder #{n}", report, shown)
+        self.assertIn("twice", report, shown)
+        self.assertFalse((self.dir / "briefs" / f"coder-{n + 1}.md").exists(),
+                         self.brief_files())
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 7, stops)
+
+    def test_the_re_spawn_after_a_lifting_retry_stops_again_on_its_own_miss(self):
+        self.capped_stop()
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.spawned(self.next(0)), [("coder", 3)])
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+        self.assert_stops_again_on_the_miss_of(3)
+
+    def test_the_re_spawn_after_a_resume_stops_again_on_its_own_miss(self):
+        self.capped_stop()
+        self.resume()
+        out = self.next(0)
+        self.assertEqual(self.spawned(out), [("coder", 3)], json.dumps(out, indent=2))
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+        self.assert_stops_again_on_the_miss_of(3)
+
+    def test_explain_on_the_second_miss_previews_the_stop_and_stamps_nothing(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        metrics = self.dir / "metrics.json"
+        before, files = (self.dir / "state.json").read_text(), self.brief_files()
+        counted = metrics.read_text() if metrics.exists() else None
+        r = self.autodev("next", "--explain", "--reissue", "--dir", self.dir)
+        self.assertIn("twice", r.stdout, r.stdout + r.stderr)
+        self.assertIn("150", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+        self.assertEqual(self.brief_files(), files)
+        self.assertNotIn("stopped_seq", self.brief("coder", 2))
+        self.assertEqual(metrics.read_text() if metrics.exists() else None, counted)
+
+    def coder_refused(self):
+        """Coder #1 weakens a committed check line and returns: `record` refuses
+        it (MISMATCH), and `next` spawns coder #2, its refused retry."""
+        self.plan_session()
+        _, jobs = self.expect("coder")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("weakened\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        out = self.next(0, refused_ok=True)
+        self.assertIn("coder-1: refused (MISMATCH)", out["RECORDED"])
+        self.assertEqual(self.spawned(out), [("coder", 2)], json.dumps(out, indent=2))
+        return out
+
+    REFUSED = "`record` refused your last return for this job"
+    ISSUE = "src/due.acceptance.test.ts at line(s) 1"
+
+    def test_a_refused_capped_worker_gets_the_refusal_s_issues_not_the_no_result_note(self):
+        self.coder_refused()
+        issues = self.previous_issues("coder", 2)
+        self.assertIn(self.REFUSED, issues)
+        self.assertIn(self.ISSUE, issues)
+        self.assertNotIn("keep those edits", issues)
+        self.assertNotIn("ended without writing its result file", issues)
+        self.assertFalse(self.brief("coder", 2).get("turn_retry"))
+        (self.dir / "returns" / "coder-2.json").write_text("{not json")  # refused again
+        out = self.next_reissue(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("coder-2: refused (MALFORMED)", out["RECORDED"], shown)
+        self.assertEqual(self.spawned(out), [("coder", 3)], shown)
+        self.assertNotIn("REPORT", out, shown)  # no capped worker's twice-missing stop
+        issues = self.previous_issues("coder", 3)
+        self.assertNotIn("keep those edits", issues)
+        self.assertFalse(self.brief("coder", 3).get("turn_retry"))
+
+    def brief(self, worker, n):
+        return next(b for b in self.state()["briefs"] if (b["worker"], b["n"]) == (worker, n))
+
+    def test_a_refused_retry_that_ends_with_no_result_file_keeps_its_issues_with_the_note(
+            self):
+        self.coder_refused()  # coder #2 then ends with no result file
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("coder", 3)])
+        issues = self.previous_issues("coder", 3)
+        self.assertIn(self.REFUSED, issues)
+        self.assertIn(self.ISSUE, issues)
+        self.assertIn("keep those edits", issues)
+        self.assertIn("undo", issues)  # an issue that says to undo an edit wins
+        self.assertLess(issues.index(self.ISSUE), issues.index("keep those edits"))
+
+    def test_a_blocked_once_brief_that_ends_with_no_result_file_keeps_that_text_with_the_note(
+            self):
+        self.plan_session()
+        _, jobs = self.expect("coder")
+        self.answer(*jobs[0], "", status="blocked")
+        _, jobs = self.expect("coder")  # once: spawned again, told why
+        self.assertEqual(jobs, [("coder", 2)])
+        told = "Your last spawn for this job returned `blocked`"
+        self.assertIn(told, self.previous_issues("coder", 2))
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("coder", 3)])
+        issues = self.previous_issues("coder", 3)
+        self.assertIn(told, issues)
+        self.assertIn("keep those edits", issues)
+
+    def test_a_capped_coder_s_re_spawn_keeps_the_deviations_and_steps_it_stopped(self):
+        self.coder_ended_with_no_result_file()
+        deviation = "- step 1: built the sort in place: the helper the plan names is gone"
+        stopped = "- step 2: the store has no date type"
+        (self.dir / "deviations").mkdir(exist_ok=True)
+        (self.dir / "deviations" / "coder-1.md").write_text(deviation + "\n")
+        (self.dir / "blocked").mkdir(exist_ok=True)
+        (self.dir / "blocked" / "coder-1.md").write_text(stopped + "\n")
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assertEqual((self.dir / "deviations" / "coder-2.md").read_text(), deviation + "\n")
+        self.assertEqual((self.dir / "blocked" / "coder-2.md").read_text(), stopped + "\n")
+        issues = self.previous_issues("coder", 2)
+        self.assertIn("deviations_file", issues)
+        self.assertIn("blocked_file", issues)
+        self.answer("coder", 2, "BLOCKED", blocked="1", deviations="1", test_changes="none")
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("coder-2: ok BLOCKED", out["RECORDED"], shown)
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["planner"], shown)
+        self.assertIn(f"{self.dir}/blocked/coder-2.md", self.sets(*jobs[0])["blocked"])
+        sys.path.insert(0, str(SCRIPTS))
+        lines = import_module("lib.cmd_review").deviation_lines(self.state(), self.dir)
+        self.assertIn(f"  {deviation}", lines)
+
+    def test_a_refused_issue_outlasts_two_misses_and_the_lifted_stop(self):
+        self.coder_refused()  # coder #2, the refused retry, ends with no result file
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("coder", 3)])
+        self.assert_stops_again_on_the_miss_of(3)  # #3, the capped re-spawn, too
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(0)
+        self.assertEqual(self.spawned(out), [("coder", 4)], json.dumps(out, indent=2))
+        issues = self.previous_issues("coder", 4)
+        self.assertIn(self.REFUSED, issues)
+        self.assertIn(self.ISSUE, issues)
+        self.assertIn("keep those edits", issues)
+        self.assertLess(issues.index(self.ISSUE), issues.index("keep those edits"))
+
+    def test_a_refused_acceptance_tester_s_capped_re_spawn_keeps_the_refusal_with_the_note(
+            self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        self.assertEqual(jobs, [("acceptance-tester", 1)])
+        (self.dir / "returns" / "acceptance-tester-1.json").write_text("{not json")
+        out = self.next(0, refused_ok=True)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("acceptance-tester-1: refused (MALFORMED)", out["RECORDED"], shown)
+        self.assertEqual(self.spawned(out), [("acceptance-tester", 2)], shown)
+        refusal = self.previous_issues("acceptance-tester", 2)
+        self.assertIn(self.REFUSED, refusal)
+        # Tester #2 ends with no result file: its capped re-spawn keeps the refusal.
+        out = self.next_reissue(0)
+        self.assertEqual(self.spawned(out), [("acceptance-tester", 3)],
+                         json.dumps(out, indent=2))
+        issues = self.previous_issues("acceptance-tester", 3)
+        self.assertIn(refusal, issues)
+        self.assertIn("keep those edits", issues)
+        self.assertLess(issues.index(refusal), issues.index("keep those edits"))
+
+    def test_a_blocked_acceptance_tester_s_capped_re_spawn_keeps_that_text_with_the_note(
+            self):
+        self.planned()
+        _, jobs = self.expect("acceptance-tester")
+        self.answer(*jobs[0], "", status="blocked")
+        _, jobs = self.expect("acceptance-tester")  # once: spawned again, told why
+        self.assertEqual(jobs, [("acceptance-tester", 2)])
+        told = "Your last spawn for this job returned `blocked`"
+        self.assertIn(told, self.previous_issues("acceptance-tester", 2))
+        self.assertEqual(self.spawned(self.next_reissue(0)), [("acceptance-tester", 3)])
+        issues = self.previous_issues("acceptance-tester", 3)
+        self.assertIn(told, issues)
+        self.assertIn("keep those edits", issues)
+        self.assertLess(issues.index(told), issues.index("keep those edits"))
+
+    def test_after_a_lifted_stop_the_coder_gets_the_lists_of_the_spawn_it_replaces(self):
+        self.coder_ended_with_no_result_file()
+        deviation = "- step 1: built the sort in place: the helper the plan names is gone"
+        stopped = "- step 2: the store has no date type"
+        for sub, line in (("deviations", deviation), ("blocked", stopped)):
+            (self.dir / sub).mkdir(exist_ok=True)
+            (self.dir / sub / "coder-1.md").write_text(line + "\n")
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        # Coder #2 updates both lists, then ends with no result file too.
+        (self.dir / "deviations" / "coder-2.md").write_text(
+            deviation + "\n- step 3: kept the old cache: the plan's one is not built yet\n")
+        (self.dir / "blocked" / "coder-2.md").write_text(
+            stopped + "\n- step 4: the export needs a format the plan does not name\n")
+        self.assert_stopped_after_two_misses("coder", r"\bcoder\b", 150, self.next_reissue())
+        r = self.autodev("override", "retry", "--text", "I fixed the cause", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.spawned(self.next(0)), [("coder", 3)])
+        for sub in ("deviations", "blocked"):
+            self.assertEqual((self.dir / sub / "coder-3.md").read_text(),
+                             (self.dir / sub / "coder-2.md").read_text(), sub)
+        self.assertIn("coder-2.md", self.previous_issues("coder", 3))
+
+    def test_a_capped_re_spawn_with_no_lists_to_carry_writes_none(self):
+        self.coder_ended_with_no_result_file()
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        self.assertFalse((self.dir / "deviations" / "coder-2.md").exists())
+        self.assertFalse((self.dir / "blocked" / "coder-2.md").exists())
+        self.assertNotIn("deviations_file", self.previous_issues("coder", 2))
 
 
 class ShipTest(NextCase):
@@ -1715,6 +2314,12 @@ class ShipTest(NextCase):
         self.assertIn(f"merge-pr --pr 12 --sha {sha}", out["ACTION"])
         r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # the squash commit's body is the published description's Summary only
+        calls = [json.loads(ln)["args"]
+                 for ln in (self.tmp / "gh.log").read_text().splitlines()]
+        merge = next(c for c in calls if c[:2] == ["pr", "merge"])
+        self.assertEqual(merge[merge.index("--body") + 1], "Todos can carry a due date.")
+        self.assertIn("## Acceptance conditions", self.published())
         out = self.next(0)
         self.assertIn("mark main-ci", out["AFTER"][0])
         self.assertIn("gh pr view 12 --json mergeCommit", out["ACTION"])  # names the PR
@@ -1726,6 +2331,9 @@ class ShipTest(NextCase):
         self.after(out, "Keep it")
         out = self.next(3)
         self.assertEqual(self.state()["phases"]["6"]["status"], "done")
+        # exit 3 writes the run's metrics, as it finished
+        metrics = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(metrics["run"]["state"], "finished")
         log = [json.loads(ln)["args"] for ln in
                (self.tmp / "gh.log").read_text().splitlines()]
         self.assertEqual(sum(1 for a in log if a[:2] == ["pr", "create"]), 1)
@@ -1754,7 +2362,10 @@ class ShipTest(NextCase):
         self.draft_pr()
         out = self.next(0)
         self.assertEqual([w for w, _ in self.spawned(out)], ["verifier"])
-        self.assertEqual(self.spawned(self.next(0)), self.spawned(out))  # not returned yet
+        waiting = self.next(0)  # not returned yet: waited for, not spawned again
+        self.assertTrue(waiting["ACTION"].startswith("wait"), waiting)
+        self.assertIn(f"verifier #{self.spawned(out)[0][1]}", waiting["ACTION"])
+        self.assertNotIn("BRIEF", waiting)
         self.answer(*self.spawned(out)[0], None, status="failed")
         again = self.spawned(self.next(0))
         self.assertEqual([w for w, _ in again], ["verifier"])  # still alone
@@ -2131,6 +2742,7 @@ class ShipTest(NextCase):
         self.write_state(state)
         self.assertIn("The commit step failed (not-verified)",
                       " ".join(self.next(4)["REPORT"]))
+        self.assert_counted(14, "the commit failed", 6)
 
     def test_gh_failing_at_publish_is_not_a_refusal(self):
         _sha, _url, _out, body = self.to_body(first=[
@@ -2151,6 +2763,8 @@ class ShipTest(NextCase):
         left = self.state()["budget"]["remaining"]  # human-1 is spent
         out = self.next(4)  # the tester and the comment disagree: the user decides
         self.assertIn("a PR comment judges them wrong", " ".join(out["REPORT"]))
+        self.assert_counted(21, "the acceptance tester and the worker that questioned a "
+                            "check disagree", 6)
         self.sign_off(out)
         # Nothing changed: no second round, no pass; the main gate asks.
         self.assertIn("main gate", self.next(5)["QUESTION"])
@@ -2229,6 +2843,7 @@ class ShipTest(NextCase):
         self.assertIn("PROBLEMS", r.stdout)
         out = self.next(4)  # never exit 1, never the same publish again
         self.assertIn(".auto-dev/", " ".join(out["REPORT"]))
+        self.assert_counted(None, "pr publish was refused", 6)  # one stop, shown twice
         self.assertIn("auto-dev continue", " ".join(out["REPORT"]))
         self.resume()  # the user fixed it: a resume lifts the stop
         self.assertIn(str(body), self.next(0)["ACTION"])
@@ -2248,6 +2863,7 @@ class ShipTest(NextCase):
         out = self.next(4)
         self.assertIn("gh pr view 12 --json state", " ".join(out["REPORT"]))
         self.assertEqual(self.next(4)["exit"], 4)
+        self.assert_counted(None, "a merge whose outcome is unknown", 6)  # once
 
     def test_a_triage_answer_is_kept_and_listed_as_a_follow_up(self):
         self.reviewed_pr()
@@ -2338,6 +2954,898 @@ class ShipTest(NextCase):
         self.assertIn("We put 5 small deliberate bugs", text)
         self.assertIn("They caught 4.", text)
 
+    # ------------------------------------------- a description over GitHub's limit
+
+    LIMIT = 60000
+
+    def long_output_body(self, lines=1200, last=None):
+        """S3 to the draft's first description, its quality gate quoting `lines`
+        lines of a check's output (`line 0001 ok …`, then `last` when given);
+        the comment calls a cut makes are scripted. Returns the commit."""
+        if lines:
+            output = [f"line {i:04d} ok: the step ran and passed" for i in range(1, lines + 1)]
+            self.lint_tail = "\n".join(output + ([last] if last else []))
+        sha, _, _, body = self.to_body(first=[
+            {"args": ["pr", "view", "12", "--json", "comments"],
+             "stdout": json.dumps({"comments": []})},
+            {"args": ["pr", "comment", "12"],
+             "stdout": "https://github.com/acme/app/pull/12#issuecomment-99\n"}])
+        if lines:  # generated whole: only the written Summary takes it over
+            self.assertIn(f"line {lines:04d} ok", body.read_text())
+        return sha
+
+    def finished(self, summary):
+        """Write pr-write.md with `summary` as its Summary; return the finished
+        description `pr publish` assembles from it (a draft: no live one)."""
+        sys.path.insert(0, str(SCRIPTS))
+        cmd_pr = import_module("lib.cmd_pr")
+        if not hasattr(self, "unwritten"):  # pr-write.md as generate wrote it
+            self.unwritten = (self.dir / "pr-write.md").read_text()
+        sources, mine = self.unwritten.split(self.MARK)
+        mine = re.sub(r"<!-- WRITE: .*?-->", lambda _: summary, mine, count=1)
+        mine = re.sub(r"<!-- WRITE: .*?-->", "Due dates are stored in UTC.", mine)
+        self.write_slots(sources, mine)
+        return cmd_pr.splice_written((self.dir / "pr-body.md").read_text(), self.dir,
+                                     self.state()["phase6"].get("slots"))
+
+    @staticmethod
+    def padding(size):
+        """`size` characters of plain sentences, ending in a full stop."""
+        text = ("\nDue dates sort the list, the earliest first." * (size // 40 + 1))[:size]
+        return text[:-1] + "." if size else ""
+
+    def written_to(self, total, head="Todos can carry a due date."):
+        """Write a Summary that brings the finished description to `total`
+        characters; return the finished description."""
+        size = len(self.finished(head))
+        text = self.finished(head + self.padding(total - size))
+        self.assertEqual(len(text), total)
+        return text
+
+    def publish_now(self):
+        """`pr publish`; returns (the run, the gh calls it made)."""
+        log = self.tmp / "gh.log"
+        before = len(log.read_text().splitlines()) if log.exists() else 0
+        r = self.autodev("pr", "publish", "--dir", self.dir)
+        calls = [json.loads(ln) for ln in log.read_text().splitlines()[before:]] \
+            if log.exists() else []
+        return r, calls
+
+    @staticmethod
+    def called(calls, *prefix):
+        return [c for c in calls if c["args"][:len(prefix)] == list(prefix)]
+
+    @staticmethod
+    def problems(r):
+        return [ln.split("problem: ", 1)[1] for ln in r.stdout.splitlines()
+                if ln.strip().startswith("problem: ")]
+
+    def assert_nothing_published(self, calls):
+        self.assertEqual(self.called(calls, "pr", "create"), [])
+        self.assertEqual(self.called(calls, "pr", "edit"), [])
+
+    def test_publish_cuts_long_output_to_its_last_lines_when_over_the_limit(self):
+        self.long_output_body()
+        text = self.written_to(60293)
+        self.assertGreater(len(text), self.LIMIT)
+        r, _ = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PUBLISHED", r.stdout)
+        sent = self.published()
+        self.assertLessEqual(len(sent), self.LIMIT)
+        for i in range(1191, 1201):
+            self.assertIn(f"line {i:04d} ok", sent)
+        self.assertNotIn("line 1190 ok", sent)
+
+    def test_a_description_at_exactly_the_limit_is_published_as_assembled(self):
+        self.long_output_body()
+        text = self.written_to(self.LIMIT)
+        r, calls = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sent = self.published()
+        self.assertEqual(sent, text)
+        for i in range(1, 1201):
+            self.assertIn(f"line {i:04d} ok", sent)
+        self.assertEqual(self.called(calls, "pr", "comment"), [])
+
+    def test_output_cut_from_the_description_goes_whole_to_one_comment_it_names(self):
+        sha = self.long_output_body()
+        self.written_to(60293)
+        r, calls = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        posted = self.called(calls, "pr", "comment")
+        self.assertEqual(len(posted), 1, calls)
+        self.assertEqual(self.called(calls, "api", "-X", "PATCH"), [])
+        comment = "".join(posted[0]["files"].values())
+        self.assertEqual(comment.split("\n")[0], f"Command output for commit {sha[:12]}")
+        for i in range(1, 1201):
+            self.assertIn(f"line {i:04d} ok", comment)
+        sent = self.published().split("\n")
+        last = max(i for i, ln in enumerate(sent) if "line 1200 ok" in ln)
+        pointer = f'comment "Command output for commit {sha[:12]}"'
+        self.assertTrue(any(pointer in ln for ln in sent[last + 1:last + 6]),
+                        "\n".join(sent[last - 2:last + 6]))
+
+    def test_cut_output_that_names_a_criterion_still_passes_the_wording_checks(self):
+        self.long_output_body(last="PASS criterion S1: owner only")
+        self.written_to(60293)
+        r, _ = self.publish_now()
+        self.assertNotIn("uses a condition or finding ID", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PUBLISHED", r.stdout)
+
+    def test_an_id_written_in_the_summary_of_an_over_limit_description_is_refused(self):
+        self.long_output_body(last="PASS criterion S1: owner only")
+        self.written_to(60293, head="Todos can carry a due date (S1).")
+        r, calls = self.publish_now()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("PROBLEMS", r.stdout)
+        problems = self.problems(r)  # the output was cut: the ID is all that is left
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("uses a condition or finding ID: S1", problems[0])
+        self.assert_nothing_published(calls)
+        self.assertEqual(self.called(calls, "pr", "comment"), [])
+
+    def assert_written_text_too_long(self, r):
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("PROBLEMS", r.stdout)
+        problems = self.problems(r)
+        for problem in problems:
+            self.assertNotIn("cut output blocks", problem)
+
+        def over(problem):
+            return any(int(n.replace(",", "")) > self.LIMIT
+                       for n in re.findall(r"\d[\d,]*\d", problem))
+        long = [p for p in problems if over(p)]
+        self.assertEqual(len(long), 1, problems)
+        self.assertTrue("60000" in long[0] or "60,000" in long[0], long[0])
+        for section in ("Summary", "Assumptions", "template"):
+            self.assertIn(section, long[0])
+
+    def test_a_summary_too_long_by_itself_is_refused_without_asking_to_cut_output(self):
+        self.long_output_body(lines=0)
+        summary = "Todos can carry a due date." + self.padding(61000 - 27)
+        self.assertEqual(len(summary), 61000)
+        self.finished(summary)
+        r, calls = self.publish_now()
+        self.assert_written_text_too_long(r)
+        self.assert_nothing_published(calls)
+
+    def test_a_summary_too_long_with_long_output_is_refused_and_posts_no_comment(self):
+        self.long_output_body()
+        summary = "Todos can carry a due date." + self.padding(61000 - 27)
+        self.finished(summary)
+        r, calls = self.publish_now()
+        self.assert_written_text_too_long(r)
+        self.assert_nothing_published(calls)
+        self.assertEqual(self.called(calls, "pr", "comment"), [])
+
+    def test_a_publish_that_cuts_output_says_so_and_leaves_the_files_as_generated(self):
+        self.long_output_body()
+        generated = (self.dir / "pr-body.md").read_text()
+        self.written_to(60293)
+        r, _ = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("output_cut: 1 output block(s) cut to their last 10 lines, 0 moved "
+                      "whole", r.stdout)
+        self.assertEqual((self.dir / "pr-body.md").read_text(), generated)
+        self.assertFalse((self.dir / "pr-output-comment.md").exists())
+        self.assertTrue(any("cut to their last 10 lines" in n["text"]
+                            for n in self.state()["notes"]))
+
+    def test_a_publish_that_fits_prints_no_cut(self):
+        self.long_output_body()
+        self.written_to(self.LIMIT)
+        r, _ = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("output_cut", r.stdout)
+
+    def test_a_refresh_of_an_open_pr_cuts_again_and_edits_its_output_comment(self):
+        sha = self.long_output_body()
+        self.written_to(60293)
+        r, _ = self.publish_now()  # the draft: output cut, its comment posted
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.state()["phase6"]["output_comment"], "99")
+        live = self.published().replace("Todos can carry a due date.",
+                                        "Todos can carry a due date. Edited on GitHub.", 1)
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([{"args": ["pr", "view", "12", "--json", "body"],
+                         "stdout": json.dumps({"body": live})},
+                        {"args": ["api", "-X", "PATCH"], "stdout": "{}"}] + gh)
+        r, calls = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sent = self.published()
+        self.assertLessEqual(len(sent), self.LIMIT)
+        self.assertIn("Todos can carry a due date. Edited on GitHub.", sent)
+        self.assertIn("line 1200 ok", sent)
+        self.assertNotIn("line 1190 ok", sent)
+        self.assertEqual(self.called(calls, "pr", "comment"), [])
+        patched = self.called(calls, "api", "-X", "PATCH")
+        self.assertEqual(len(patched), 1, calls)
+        self.assertTrue(patched[0]["args"][3].endswith("/issues/comments/99"), patched)
+        comment = "".join(patched[0]["files"].values())
+        self.assertTrue(comment.startswith(f"Command output for commit {sha[:12]}\n"),
+                        comment[:200])
+        self.assertNotIn("superseded", comment)
+        for i in (1, 600, 1200):
+            self.assertIn(f"line {i:04d} ok", comment)
+
+    def test_a_live_summary_that_takes_the_merged_description_over_is_cut(self):
+        # The files fit; only the Summary a person lengthened on GitHub takes
+        # the description over, so the cut must run on the merged text.
+        self.long_output_body()
+        self.written_to(self.LIMIT)
+        r, _ = self.publish_now()  # the draft: it fits, nothing cut
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("output_cut", r.stdout)
+        live = self.published().replace("Todos can carry a due date.",
+                                        "Todos can carry a due date. Edited on GitHub.", 1)
+        self.assertIn("Edited on GitHub.", live)
+        cmd_pr = import_module("lib.cmd_pr")
+        spliced = cmd_pr.splice_written((self.dir / "pr-body.md").read_text(), self.dir,
+                                        self.state()["phase6"].get("slots"))
+        self.assertLessEqual(len(spliced), self.LIMIT)
+        self.assertGreater(len(cmd_pr.merge_live(live, spliced)), self.LIMIT)
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([{"args": ["pr", "view", "12", "--json", "body"],
+                         "stdout": json.dumps({"body": live})}] + gh)
+        r, _ = self.publish_now()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PUBLISHED", r.stdout)
+        sent = self.published()
+        self.assertLessEqual(len(sent), self.LIMIT)
+        self.assertIn("Todos can carry a due date. Edited on GitHub.", sent)
+        self.assertIn("line 1200 ok", sent)
+        self.assertNotIn("line 1190 ok", sent)
+
+    READY_ANSWERS = ("Mark ready for review", "Hold (keep it a draft)", "Stop")
+    ADD_A_ROUND = "Add a round and fix it"
+
+    def gate_labels(self, out):
+        """The answers the gate's first question in `out` offers, in order."""
+        questions = json.loads(out["QUESTION"])["questions"]
+        return [option["label"] for option in questions[0]["options"]]
+
+    def budget_line(self, out):
+        budget = out.get("BUDGET") or ""
+        return budget if isinstance(budget, str) else " ".join(budget)
+
+    def ready_gate_with_a_finding_left_open(self):
+        """A budget of 4 rounds, all spent, and review pass 1 leaving must-fix
+        C1 open: `next` asks the ready-for-review gate. Returns its output."""
+        self.draft_pr()
+        state = self.state()
+        state["budget"].update(total=4, remaining=0)
+        self.write_state(state)
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts against a "
+            "missing due date\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        self.refresh_body()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        return out
+
+    def test_a_ready_gate_with_a_finding_left_open_for_want_of_a_round_offers_one_more(self):
+        out = self.ready_gate_with_a_finding_left_open()
+        self.assertEqual(self.gate_labels(out), [*self.READY_ANSWERS, self.ADD_A_ROUND])
+        lines = [ln.split(" → ", 1)[1] for ln in out["AFTER"]
+                 if ln.startswith(f'"{self.ADD_A_ROUND}"')]
+        self.assertEqual(len(lines), 1, out["AFTER"])
+        self.assertIn("budget raise --by 1", lines[0])
+        r = subprocess.run(lines[0], shell=True, capture_output=True, text=True,
+                           env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, lines[0] + "\n" + r.stdout + r.stderr)
+        self.assertIn("RAISED: 1 of 5 left", r.stdout)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spent `pass-1` (review correction); 0 of 5 left",
+                      self.budget_line(out), shown)
+        self.assertEqual(out.get("AGENT"), ["auto-dev:coder"], shown)
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["coder"], shown)
+        self.assertEqual(self.sets(*jobs[0])["corrections_file"],
+                         f"{self.dir}/review/pass-1/corrections.md")
+        self.assertNotIn("QUESTION", out, shown)
+        self.assertNotIn("REPORT", out, shown)
+
+    def test_a_ready_gate_with_nothing_left_open_offers_the_three_answers_and_no_raise(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertEqual(self.gate_labels(out), list(self.READY_ANSWERS))
+        self.assertFalse([ln for ln in out["AFTER"] if "budget raise" in ln], out["AFTER"])
+        budget = self.state()["budget"]
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not stopped on the budget", r.stdout + r.stderr)
+        self.assertEqual(self.state()["budget"], budget)
+
+    def test_once_the_pr_is_marked_ready_a_round_can_not_be_added_for_what_is_open(self):
+        out = self.ready_gate_with_a_finding_left_open()
+        self.after(out, "Mark ready for review")
+        self.refresh_body()
+        out = self.next(0)
+        self.assertIn("gh pr ready 12", out["ACTION"])
+        self.after(out)
+        self.assertIn("pr-ready", self.state()["marks"])
+        budget = self.state()["budget"]
+        r = self.autodev("budget", "raise", "--by", "1", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not stopped on the budget", r.stdout + r.stderr)
+        self.assertEqual(self.state()["budget"], budget)
+
+    def correction_checked_in_the_working_tree(self):
+        """Pass 1 leaves must-fix C1 open; the coder's correction stays in the
+        working tree, review pass 2 checks it there, and `next` asks for
+        `commit`. Returns the verified commit before the correction."""
+        self.draft_pr()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.review_text = CLEAN_REVIEW
+        self.panel()
+        self.assertEqual(self.state()["phase6"]["review_pass"], 2)
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        return self.state()["phase6"]["verified_sha"]
+
+    def commit_and_push_by_hand(self, message):
+        """The user commits the working tree and pushes it, outside the run."""
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", message, cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        return self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+
+    def test_a_checked_correction_committed_and_pushed_by_hand_is_recorded_as_verified(
+            self):
+        earlier = self.correction_checked_in_the_working_tree()
+        logged = set((self.dir / "WORK_LOG.md").read_text().splitlines())
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertNotIn("commit: run", out["ACTION"], shown)
+        self.assertIn("push", out["ACTION"], shown)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        added = "\n".join(ln for ln in (self.dir / "WORK_LOG.md").read_text().splitlines()
+                          if ln not in logged)
+        self.assertIn(head[:7], added)
+        self.assertIn("verified commit", added.lower())
+        self.after(out)
+        self.refresh_body()  # asks to publish the description, not for `commit`
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+
+    def test_a_hand_commit_carrying_an_unchecked_edit_is_not_recorded_as_verified(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        (self.worktree / "due.ts").write_text("export const due = 3;\n")  # no check ran on it
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], earlier)
+        self.assertIn("commit: run", out["ACTION"], shown)
+        self.assertFalse([ln for ln in out.get("AFTER", []) if "git push" in ln], shown)
+
+
+class HandCommitTest(NextCase):
+    """A correction review pass 2 checked in the working tree, then committed
+    by hand: when `next` records HEAD as the verified commit, and when it asks
+    for `commit` or re-checks instead. A class of its own, beside ShipTest's
+    hand-commit checks, so run-tests.py runs it in a process of its own rather
+    than making ShipTest, the slowest class, slower."""
+
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    published = ShipTest.published
+    correction_checked_in_the_working_tree = ShipTest.correction_checked_in_the_working_tree
+    commit_and_push_by_hand = ShipTest.commit_and_push_by_hand
+
+    def correction_made(self, before_gate=None):
+        """Pass 1 leaves must-fix C1 open and the coder corrects it in the working
+        tree; `before_gate` runs after `next` records the coder and before the
+        quality gate. Returns the verified commit before the correction."""
+        self.draft_pr()
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(
+            "# Required changes\n1. C1: guard the sort in src/sort.ts\n")
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        if before_gate is None:
+            self.quality_gate()
+        else:
+            out = self.next(0)
+            self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+            before_gate()
+            r = self.autodev("quality-gate", "--dir", self.dir)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return self.state()["phase6"]["verified_sha"]
+
+    def commit_by_hand(self, *extra):
+        """The user commits the working tree outside the run, and pushes nothing."""
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "commit", "-q", *extra, cwd=self.worktree)
+        return self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+
+    def assert_asks_for_commit(self, out, earlier):
+        shown = json.dumps(out, indent=2)
+        self.assertIn("commit: run", out["ACTION"], shown)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], earlier)
+        self.assertFalse([ln for ln in out.get("AFTER", []) if "git push" in ln], shown)
+
+    def test_a_hand_commit_with_a_tracked_file_deleted_on_top_is_not_recorded(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        self.commit_and_push_by_hand("fix: guard sort")
+        (self.worktree / "due.ts").unlink()  # tracked, deleted, not committed
+        self.assert_asks_for_commit(self.next(0), earlier)
+
+    def test_a_hand_commit_with_an_uncommitted_edit_on_top_is_not_recorded(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        self.commit_and_push_by_hand("fix: guard sort")
+        (self.worktree / "sort.ts").write_text("export const sort = 2;\n")  # not committed
+        self.assert_asks_for_commit(self.next(0), earlier)
+
+    def test_a_hand_commit_that_changes_a_committed_check_line_is_not_recorded(self):
+        def weaken():  # the reports are stamped with it: only the check guard is left
+            (self.worktree / "src" / "due.acceptance.test.ts").write_text("weakened\n")
+        earlier = self.correction_made(before_gate=weaken)
+        self.review_text = CLEAN_REVIEW
+        self.panel()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        self.assert_asks_for_commit(self.next(0), earlier)
+
+    def test_a_checked_hand_commit_not_pushed_yet_is_recorded_and_then_pushed(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        head = self.commit_by_hand("-m", "fix: guard sort")
+        self.assertNotEqual(head, earlier)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        self.assertIn("push -u origin HEAD", out["ACTION"], shown)
+        self.assertTrue([ln for ln in out["AFTER"] if f"mark pushed --value {head}" in ln],
+                        shown)
+
+    def test_a_recorded_hand_commit_is_committed_at_once_not_at_the_next_next(self):
+        self.correction_checked_in_the_working_tree()
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        out = self.next(0)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], head)
+        self.assertGreaterEqual(phase6["commit_seq"], phase6["passes"][-1]["seq"])
+        logged = set((self.dir / "WORK_LOG.md").read_text().splitlines())
+        self.after(out)  # mark pushed
+        self.next(0)
+        added = [ln for ln in (self.dir / "WORK_LOG.md").read_text().splitlines()
+                 if ln not in logged]
+        self.assertFalse([ln for ln in added if "stands" in ln], added)
+
+    def test_a_checked_correction_amended_into_the_pushed_commit_stops_as_rewritten(self):
+        self.correction_checked_in_the_working_tree()
+        head = self.commit_by_hand("--amend", "--no-edit")
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+        self.assertIn("rewritten", " ".join(out.get("REPORT", [])), shown)
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["list"][-1]["number"], 16, stops)
+
+    def test_explain_on_a_checked_hand_commit_previews_recording_it_and_saves_nothing(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        state, log = ((self.dir / name).read_text() for name in ("state.json", "WORK_LOG.md"))
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"record HEAD {head[:12]} as the verified commit", r.stdout)
+        self.assertEqual((self.dir / "state.json").read_text(), state)
+        self.assertEqual((self.dir / "WORK_LOG.md").read_text(), log)
+        self.assertEqual(self.state()["phase6"]["verified_sha"], earlier)
+
+    def committed_while_the_pass_is_out(self, before_gate=None, scope="after-commit"):
+        """Pass 2 (`scope`) starts on the uncommitted correction; before its
+        workers read it the user commits and pushes the working tree by hand,
+        and the pass's workers then return clean, the judge last (answered, not
+        recorded). `before_gate` is correction_made's. Returns (the verified
+        commit, the hand commit, the judge's job)."""
+        earlier = self.correction_made(before_gate=before_gate)
+        out = self.next(0)  # pass 2 on the uncommitted correction: the verifier first
+        shown = json.dumps(out, indent=2)
+        (vjob,) = self.spawned(out)
+        self.assertEqual(vjob[0], "verifier", shown)
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], scope)
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before the pass reads it
+        self.verifier_answer(vjob)
+        out = self.next(0)
+        jobs = self.spawned(out)
+        sec = [j for j in jobs if j[0].startswith("security-reviewer")]
+        panel = [j for j in jobs if j[0] == "code-reviewer"]
+        self.assertEqual((len(sec), len(panel)), (1, 3), json.dumps(out, indent=2))
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.answer(*sec[0], "CLEAN", must_fix="0", pre_existing="0")
+        for w, n in panel:
+            (self.dir / "review" / "pass-2" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        _, (judge,) = self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
+        return earlier, head, judge
+
+    def test_a_correction_committed_while_its_review_pass_is_out_is_re_checked(self):
+        earlier, head, _ = self.committed_while_the_pass_is_out()
+        out = self.next(0)  # the pass settled clean, on a diff that held nothing
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], earlier)
+        self.assertEqual(phase6.get("unverified_commit"), head)
+        self.assertNotIn("commit: run", out.get("ACTION", ""), shown)
+        last = phase6["passes"][-1]
+        self.assertEqual((last["n"], last.get("since")), (3, earlier), shown)
+        self.assertIn("sort.ts", last["files"])
+        self.assertEqual([w for w, _ in self.spawned(out)], ["verifier"], shown)
+
+    def drop_start_head(self):
+        """The last pass as a `next` from before start_pass stamped its HEAD saved it."""
+        state = self.state()
+        state["phase6"]["passes"][-1].pop("start_head", None)
+        self.write_state(state)
+
+    def assert_re_checks_since(self, out, earlier, head):
+        """`out` records `head` as under re-check, not verified, and starts pass 3
+        on everything since verified commit `earlier`."""
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], earlier, shown)
+        self.assertEqual(phase6.get("unverified_commit"), head, shown)
+        last = phase6["passes"][-1]
+        self.assertEqual((last["n"], last["scope"], last.get("since")),
+                         (3, "outside", earlier), shown)
+        self.assertEqual([w for w, _ in self.spawned(out)], ["verifier"], shown)
+
+    def assert_recorded_without_a_new_pass(self, out, earlier, head):
+        """`out` records hand commit `head` as the verified commit (not `earlier`)
+        and starts no review pass 3."""
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertNotEqual(head, earlier)
+        self.assertEqual(phase6["verified_sha"], head, shown)
+        self.assertNotIn("commit: run", out.get("ACTION", ""), shown)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2), shown)
+        self.assertFalse((self.dir / "review" / "pass-3").exists())
+
+    def test_a_correction_committed_while_an_outside_pass_is_out_is_re_checked(self):
+        # The outside pass starts at the merge M, not at the verified commit V:
+        # only its start stamp tells that the hand commit came while it was out.
+        earlier, head, _ = self.committed_while_the_pass_is_out(
+            before_gate=self.merge_base_by_hand, scope="outside")
+        self.assertNotEqual(self.state()["phase6"]["passes"][-1].get("start_head"),
+                            earlier)
+        out = self.next(0)  # the pass settled clean, on a diff without the correction
+        self.assert_re_checks_since(out, earlier, head)
+
+    def test_an_older_after_commit_pass_settled_before_a_hand_commit_records_it(self):
+        earlier = self.correction_checked_in_the_working_tree()
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["end_head"], earlier)
+        self.drop_start_head()  # as a `next` from 5.0.0 saved it
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assert_recorded_without_a_new_pass(self.next(0), earlier, head)
+
+    def test_an_older_after_commit_pass_out_during_a_hand_commit_re_checks_it(self):
+        earlier, head, _ = self.committed_while_the_pass_is_out()
+        self.drop_start_head()  # as a `next` from 5.0.0 saved it
+        out = self.next(0)  # records the judge: the pass ends at the hand commit
+        self.assertEqual(self.state()["phase6"]["passes"][1]["end_head"], head)
+        self.assert_re_checks_since(out, earlier, head)
+
+    def test_an_older_outside_pass_settled_before_a_hand_commit_records_it(self):
+        earlier = self.correction_made(before_gate=self.merge_base_by_hand)
+        merged = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        self.review_text = CLEAN_REVIEW
+        self.panel()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        last = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((last["scope"], last.get("since"), last["end_head"]),
+                         ("outside", earlier, merged))
+        self.drop_start_head()  # as a `next` from 5.0.0 saved it
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        self.assert_recorded_without_a_new_pass(self.next(0), earlier, head)
+
+    def test_explain_on_a_correction_committed_while_its_pass_is_out_previews_the_re_check(
+            self):
+        _, _, judge = self.committed_while_the_pass_is_out()
+        r = self.autodev("record", *map(str, judge), "--dir", self.dir)  # as `next` would
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        files = [(self.dir / name).read_text() for name in ("state.json", "WORK_LOG.md")]
+        index = [self.sh("git", *args, cwd=self.worktree)
+                 for args in (("diff", "--cached"), ("status", "--porcelain"))]
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("record HEAD as under re-check and start a review pass on everything "
+                      "since the verified commit", r.stdout)
+        self.assertEqual([(self.dir / name).read_text()
+                          for name in ("state.json", "WORK_LOG.md")], files)
+        self.assertEqual([self.sh("git", *args, cwd=self.worktree)
+                          for args in (("diff", "--cached"), ("status", "--porcelain"))],
+                         index)
+        phase6 = self.state()["phase6"]
+        self.assertNotIn("unverified_commit", phase6)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2))
+        self.assertFalse((self.dir / "review" / "pass-3").exists())
+
+    def merge_base_by_hand(self):
+        """base.ts lands on main, from another clone; the user merges main into
+        the worktree by hand, the correction uncommitted, and pushes nothing."""
+        base = self.tmp / "base-clone"
+        self.sh("git", "clone", "-q", "-b", "main", str(self.tmp / "origin.git"), str(base))
+        (base / "base.ts").write_text("export const base = 1;\n")
+        self.sh("git", "add", "base.ts", cwd=base)
+        self.sh("git", "commit", "-q", "-m", "add base.ts", cwd=base)
+        self.sh("git", "push", "-q", "origin", "main", cwd=base)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+        self.sh("git", "merge", "-q", "--no-edit", "origin/main", cwd=self.worktree)
+
+    def test_a_correction_checked_by_an_outside_pass_then_committed_by_hand_is_verified(
+            self):
+        earlier = self.correction_made(before_gate=self.merge_base_by_hand)
+        merged = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        self.assertNotEqual(merged, earlier)
+        self.review_text = CLEAN_REVIEW
+        self.panel()  # pass 2 reads the working tree against the verified commit
+        phase6 = self.state()["phase6"]
+        last = phase6["passes"][-1]
+        self.assertEqual((last["n"], last["scope"], last.get("since")),
+                         (2, "outside", earlier), json.dumps(last, indent=2))
+        self.assertIn("base.ts", last["files"])
+        self.assertEqual(phase6.get("unverified_commit"), merged)
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        head = self.commit_and_push_by_hand("fix: guard sort")
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], head, shown)
+        self.assertNotIn("commit: run", out["ACTION"], shown)
+        self.assertIn("push", out["ACTION"], shown)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2), shown)
+        self.assertFalse(self.spawned(out), shown)
+
+    def test_a_hand_commit_after_a_pass_that_settled_at_a_checkpoint_is_verified(self):
+        earlier = self.correction_made()
+        self.review_text = CLEAN_REVIEW
+        self.panel()  # pass 2's judge answers: the next `next` records it
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # due in the `next` that records it
+        self.write_state(state)
+        out = self.next(6)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("checkpoint", out["ACTION"], shown)
+        self.assertTrue([ln for ln in out["RECORDED"] if ln.startswith("review-judge")],
+                        shown)
+        self.after(out)  # the handoff; the session ends
+        head = self.commit_and_push_by_hand("fix: guard sort")  # between sessions
+        self.resume()
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1000
+        self.write_state(state)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], head, shown)
+        self.assertNotEqual(head, earlier)
+        self.assertNotIn("commit: run", out["ACTION"], shown)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2), shown)
+        self.assertFalse((self.dir / "review" / "pass-3").exists())
+
+    def test_a_hand_commit_after_re_votes_recorded_at_a_checkpoint_is_verified(self):
+        earlier = self.correction_made()
+        _, jobs = self.reviewers()  # pass 2, on the uncommitted correction
+        for w, n in jobs:
+            (self.dir / "review" / "pass-2" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("x"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        lone = CODE_REVIEW.replace("1 open", "0 open").replace(
+            "| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | 3/3 | High "
+            "| open |\n", "")  # lone findings only, nothing must-fix
+        (self.dir / "CODE_REVIEW.md").write_text(lone.format(tree=self.tree()))
+        self.expect("review-judge", "REVOTE", must_fix_open="0", revote="2")
+        _, jobs = self.expect("code-reviewer")  # the re-votes
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            rows = "".join(f"| {fid} | disagree | not reachable |\n" for fid in ("C4", "C6")
+                           if fid in self.sets(w, n)["findings"])
+            (self.dir / "review" / "pass-2" / f"VOTES-{slot}.md").write_text(
+                "| Finding | Vote | Reason |\n|---|---|---|\n" + rows)
+            self.answer(w, n, "VOTED", findings="1", leads="0")
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # due in the `next` that records them
+        self.write_state(state)
+        out = self.next(6)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("checkpoint", out["ACTION"], shown)
+        self.assertTrue([ln for ln in out["RECORDED"] if ln.startswith("code-reviewer")],
+                        shown)
+        self.assertEqual(self.state()["phase6"]["passes"][-1].get("end_head"), earlier)
+        self.after(out)  # the handoff; the session ends
+        head = self.commit_and_push_by_hand("fix: guard sort")  # between sessions
+        self.resume()
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1000
+        self.write_state(state)
+        out = self.next(0)  # applies the re-votes: nothing is left open
+        self.assert_recorded_without_a_new_pass(out, earlier, head)
+        self.assertIn("lone finding; re-vote", (self.dir / "CODE_REVIEW.md").read_text())
+
+    def test_a_hand_commit_during_a_judge_s_spec_problem_stop_signed_off_is_verified(self):
+        earlier = self.correction_made()
+        _, jobs = self.reviewers()  # pass 2, on the uncommitted correction
+        for w, n in jobs:
+            (self.dir / "review" / "pass-2" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(CLEAN_REVIEW.format(tree=self.tree()))
+        _, (judge,) = self.expect("review-judge")
+        (self.dir / "spec-problems").mkdir(exist_ok=True)
+        (self.dir / "spec-problems" / f"review-judge-{judge[1]}.md").write_text(
+            "- condition 1: the panel shows the order is backwards\n")
+        self.answer(*judge, "CLEAN", must_fix_open="0", revote="0", spec_problems="1")
+        out = self.next(4)
+        self.assertIn("in review pass 2", " ".join(out["REPORT"]))
+        head = self.commit_and_push_by_hand("fix: guard sort")  # during the stop
+        self.sign_off(out)
+        self.assert_recorded_without_a_new_pass(self.next(0), earlier, head)
+
+    # A step of a high-risk pass that sends a worker out after `next` stamped
+    # the pass's end HEAD drops the stamp: a commit made while that worker is
+    # out is re-checked, never recorded. One test per place review_step (or
+    # the re-votes) sends a worker out again.
+
+    def write_spec_problem(self, worker, n, text):
+        path = self.dir / "spec-problems" / f"{worker}-{n}.md"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text)
+
+    def panel_returns(self, jobs, review=CLEAN_REVIEW, findings="none"):
+        """Pass 2's code reviewers return with `findings` and the judge's
+        CODE_REVIEW.md is `review`."""
+        for w, n in jobs:
+            (self.dir / "review" / "pass-2" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report(findings))
+            self.answer(w, n, "REVIEWED", findings="0" if findings == "none" else "1",
+                        leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(review.format(tree=self.tree()))
+
+    def retried_at_the_stamped_stop(self, earlier, out):
+        """At pass 2's spec-problem stop `out`, stamped at the verified commit,
+        the user retries."""
+        self.assertIn("in review pass 2", " ".join(out["REPORT"]))
+        self.assertEqual(self.state()["phase6"]["passes"][-1].get("end_head"), earlier)
+        r = self.autodev("override", "retry", "--text", "I changed PLAN.md", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_hand_commit_while_a_high_risk_retried_verifier_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        out = self.next(0)  # pass 2, on the uncommitted correction: the verifier first
+        (ver,) = self.spawned(out)
+        self.assertEqual(ver[0], "verifier", json.dumps(out, indent=2))
+        self.write_spec_problem(*ver, "- missing: a todo with no due date must sort last\n")
+        self.spec_eval()
+        self.answer(*ver, "ALL_MET", tree="x", corrections="0", spec_problems="1")
+        jobs = self.spawned(self.next(0))
+        sec = [j for j in jobs if j[0].startswith("security-reviewer")]
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.answer(*sec[0], "CLEAN", must_fix="0", pre_existing="0")
+        self.panel_returns([j for j in jobs if j[0] == "code-reviewer"])
+        self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
+        self.retried_at_the_stamped_stop(earlier, self.next(4))
+        _, (again,) = self.expect("verifier")  # the pass's verifier, out again
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before it reads it
+        self.verifier_answer(again)
+        self.assert_re_checks_since(self.next(0), earlier, head)
+
+    def test_a_hand_commit_while_a_retried_security_reviewer_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        _, panel = self.reviewers(problems="- missing: the due date must be the owner's to "
+                                           "set\n")
+        self.panel_returns(panel)
+        self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
+        self.retried_at_the_stamped_stop(earlier, self.next(4))
+        _, (sec,) = self.expect("security-reviewer-sensitive")  # out again
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before it reads it
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.answer(*sec, "CLEAN", must_fix="0", pre_existing="0")
+        self.assert_re_checks_since(self.next(0), earlier, head)
+
+    def test_a_hand_commit_while_a_retried_judge_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        _, panel = self.reviewers()  # pass 2, on the uncommitted correction
+        self.panel_returns(panel)
+        _, (judge,) = self.expect("review-judge")
+        self.write_spec_problem(*judge, "- condition 1: the panel shows the order is "
+                                        "backwards\n")
+        self.answer(*judge, "CLEAN", must_fix_open="0", revote="0", spec_problems="1")
+        self.retried_at_the_stamped_stop(earlier, self.next(4))
+        _, (again,) = self.expect("review-judge")  # it consolidates the pass again
+        self.assertEqual(self.mode(*again), "consolidate")
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before it reads it
+        self.answer(*again, "CLEAN", must_fix_open="0", revote="0")
+        self.assert_re_checks_since(self.next(0), earlier, head)
+
+    def test_a_hand_commit_while_a_leads_security_run_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        lead = ("- `src/due.ts:9` — the owner is not checked (raised by R2) → passed to "
+                "the security review")
+        _, panel = self.reviewers()  # pass 2, on the uncommitted correction
+        self.panel_returns(panel, CLEAN_REVIEW.replace("## Security leads\nnone",
+                                                       f"## Security leads\n{lead}"))
+        self.expect("review-judge", "CLEAN", must_fix_open="0", revote="0")
+        # The `next` that finds the pass returned stamps its end, then sends
+        # the leads out.
+        _, (sec,) = self.expect("security-reviewer-sensitive")
+        self.assertEqual(self.sets(*sec)["leads"], lead)
+        head = self.commit_and_push_by_hand("fix: guard sort")  # while it is out
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        self.answer(*sec, "CLEAN", must_fix="0", pre_existing="0")
+        self.assert_re_checks_since(self.next(0), earlier, head)
+
+    def test_a_hand_commit_while_a_re_spawned_security_verify_is_out_is_re_checked(self):
+        earlier = self.correction_made()
+        # A pre-existing finding: the judge verifies it beside its consolidate.
+        pending = SECURITY_REVIEW.replace("| Medium | confirmed |", "| Medium | pending |")
+        _, panel = self.reviewers(security=(pending, "CLEAN", "0", "1"))
+        lone = CODE_REVIEW.replace("1 open", "0 open").replace(
+            "| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | 3/3 | High "
+            "| open |\n", "")  # lone findings only, nothing must-fix
+        self.panel_returns(panel, lone, findings="x")
+        _, jobs = self.expect("review-judge")
+        verify = next(j for j in jobs if self.mode(*j) == "security-verify")
+        consolidate = next(j for j in jobs if j != verify)
+        self.answer(*verify, "", status="blocked")
+        self.answer(*consolidate, "REVOTE", must_fix_open="0", revote="2")
+        _, jobs = self.expect("code-reviewer")  # the re-votes
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            rows = "".join(f"| {fid} | disagree | not reachable |\n" for fid in ("C4", "C6")
+                           if fid in self.sets(w, n)["findings"])
+            (self.dir / "review" / "pass-2" / f"VOTES-{slot}.md").write_text(
+                "| Finding | Vote | Reason |\n|---|---|---|\n" + rows)
+            self.answer(w, n, "VOTED", findings="1", leads="0")
+        # The `next` that applies the re-votes stamps the pass's end, then
+        # sends the security-verify judge out again.
+        _, (again,) = self.expect("review-judge")
+        self.assertEqual(self.mode(*again), "security-verify")
+        self.assertIn("lone finding; re-vote", (self.dir / "CODE_REVIEW.md").read_text())
+        head = self.commit_and_push_by_hand("fix: guard sort")  # while it is out
+        (self.dir / "SECURITY_REVIEW.md").write_text(SECURITY_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "security-corrections.md").write_text(
+            "# Required changes\nNone.\n")
+        self.answer(*again, "VERIFIED", must_fix_open="0", revote="0")
+        self.assert_re_checks_since(self.next(0), earlier, head)
 
 # A standard-risk plan: no Security/Compliance criteria, so no S1 check.
 STANDARD_PLAN = (PLAN.replace("Risk: high — only the owner may set a due date",
@@ -2370,6 +3878,7 @@ class LeanTest(NextCase):
     refresh_body = ShipTest.refresh_body
     published = ShipTest.published
     mark_ready = ShipTest.mark_ready
+    commit_and_push_by_hand = ShipTest.commit_and_push_by_hand
     plan_text = STANDARD_PLAN
 
     def setUp(self):
@@ -2476,12 +3985,12 @@ class LeanTest(NextCase):
         at_push, at_ready = self.walk_to_ready("REVISE")
         self.assertEqual((at_push, at_ready), (6, 8))
 
-    def test_a_standard_run_verifies_without_mutation_or_probes(self):
+    def test_a_standard_run_verifies_with_probes_but_without_mutation(self):
         self.draft_pr()
         ver, rev = self.solo(verifier=None)
         brief = (self.dir / "briefs" / f"verifier-{ver[1]}.md").read_text()
         self.assertIn("mutation_cap: 0 (off: a standard-risk run)", brief)
-        self.assertIn("probes: off (a standard-risk run)", brief)
+        self.assertEqual([ln for ln in brief.splitlines() if ln.startswith("probes:")], [])
         self.assertEqual(self.sets(*rev)["scope"], "first")
         self.assertEqual(self.sets(*rev)["tree"], self.state()["phase6"]["passes"][0]["tree"])
         self.assertEqual(self.state()["phase6"]["passes"][0]["lane"], "standard")
@@ -2582,6 +4091,7 @@ class LeanTest(NextCase):
         self.answer(*jobs[0], None, status="failed")
         out = self.next(4)
         self.assertIn("did not return ok twice running", " ".join(out["REPORT"]))
+        self.assert_counted(13, "the pass's verifier returned status failed twice", 6)
 
     def spec_problem(self, worker, n, text="- condition 1: the ticket asks for the latest "
                                            "due date first\n"):
@@ -2604,6 +4114,7 @@ class LeanTest(NextCase):
         self.assertIn("found PLAN.md wrong in review pass 1", report)
         self.assertIn("condition 1: the ticket asks for the latest due date first", report)
         self.assertEqual(self.state()["stop"]["kind"], "spec-problem")
+        self.assert_counted(20, "a worker found a criterion wrong", 6)
         self.assertEqual(self.state()["budget"]["remaining"], left)  # no round, no coder
         self.sign_off(out, "the spec is right")
         out, jobs = self.expect("coder")  # the verifier's correction goes ahead
@@ -2632,6 +4143,54 @@ class LeanTest(NextCase):
         self.assertGreater(again[0][1], ver[1])
         # The user may have changed PLAN.md: the verifier judges every condition again.
         self.assertEqual(self.sets(*again[0])["mode"], "first pass")
+
+    def correction_pass_stopped_on_a_spec_problem(self):
+        """Pass 1 leaves C1 open; the coder's correction stays in the working
+        tree, and pass 2's verifier and reviewer return, the verifier finding a
+        criterion missing: `next` stops. Returns (the verified commit, the
+        stop)."""
+        self.draft_pr()
+        self.solo(verifier="CORRECT", finding=True)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        ver, _ = self.solo(verifier=None)  # pass 2, on the uncommitted correction
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], "after-commit")
+        self.spec_eval()
+        self.spec_problem(*ver, "- missing: a todo with no due date must sort last\n")
+        self.answer(*ver, "ALL_MET", tree="x", corrections="0", spec_problems="1")
+        out = self.next(4)
+        self.assertIn("in review pass 2", " ".join(out["REPORT"]))
+        return self.state()["phase6"]["verified_sha"], out
+
+    def test_a_hand_commit_during_a_spec_problem_stop_signed_off_is_verified(self):
+        earlier, out = self.correction_pass_stopped_on_a_spec_problem()
+        head = self.commit_and_push_by_hand("fix: guard sort")  # during the stop
+        self.sign_off(out)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertNotEqual(head, earlier)
+        self.assertEqual(phase6["verified_sha"], head, shown)
+        self.assertEqual((phase6["review_pass"], len(phase6["passes"])), (2, 2), shown)
+
+    def test_a_hand_commit_while_a_retried_verifier_is_out_is_re_checked(self):
+        earlier, _ = self.correction_pass_stopped_on_a_spec_problem()
+        r = self.autodev("override", "retry", "--text", "I added it to PLAN.md",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, (again,) = self.expect("verifier")  # the pass's verifier, out again
+        head = self.commit_and_push_by_hand("fix: guard sort")  # before it reads it
+        self.verifier_answer(again)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        phase6 = self.state()["phase6"]
+        self.assertEqual(phase6["verified_sha"], earlier, shown)
+        self.assertEqual(phase6.get("unverified_commit"), head, shown)
+        last = phase6["passes"][-1]
+        self.assertEqual((last["n"], last["scope"], last.get("since")),
+                         (3, "outside", earlier), shown)
 
     def test_a_fix_to_the_spec_holds_a_brief_still_out_to_the_new_spec(self):
         self.draft_pr()
@@ -2748,6 +4307,226 @@ class LeanTest(NextCase):
         self.assertIn("spent `pass-1`", out["BUDGET"])
         self.assertEqual(self.state()["budget"]["remaining"], left - 1)  # one round
         self.assertEqual(self.state()["phase6"]["corrections"][-1]["also"], ["ci-1"])
+
+    def test_a_pass_half_returned_records_and_waits(self):
+        self.draft_pr()
+        ver, rev = self.solo(verifier=None)  # only the reviewer's result is written
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue([ln for ln in out.get("RECORDED", [])
+                         if ln.startswith(f"reviewer-{rev[1]}:")], shown)
+        self.assert_waits_for(out, f"verifier #{ver[1]}")
+        self.assertNotIn(f"reviewer #{rev[1]}", out["ACTION"], shown)
+        self.assertIn("only once every agent this wait names has returned", out["ACTION"])
+
+    def test_a_pass_whose_last_worker_returns_moves_on_without_a_respawn(self):
+        self.draft_pr()
+        ver, _ = self.solo(verifier=None)
+        self.next(0)  # the reviewer's result is recorded
+        self.verifier_answer(ver)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue([ln for ln in out.get("RECORDED", [])
+                         if ln.startswith(f"verifier-{ver[1]}:")], shown)
+        self.assertFalse([w for w, _ in self.spawned(out) if w in ("verifier", "reviewer")],
+                         shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+
+    def test_a_parallel_pass_is_sent_in_one_message_not_the_foreground(self):
+        self.draft_pr()
+        out = self.next(0)
+        self.assertEqual(sorted(w for w, _ in self.spawned(out)), ["reviewer", "verifier"],
+                         json.dumps(out, indent=2))
+        self.assertIn("in one message, in parallel", out["ACTION"])
+        self.assertNotIn("run_in_background: false", out["ACTION"])
+
+    def test_the_three_spawn_stop_on_a_pass_ends_both_workers(self):
+        # Neither worker of the pass ever returns: the stop ends both spawns, so
+        # after talk the stop is asked again, not a wait for the other worker.
+        self.draft_pr()
+        out = self.next(0)
+        self.assertEqual(sorted(w for w, _ in self.spawned(out)), ["reviewer", "verifier"],
+                         json.dumps(out, indent=2))
+        for _ in range(2):
+            self.assertEqual(len(self.spawned(self.next_reissue(0))), 2)
+        out = self.next_reissue(4)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        r = self.autodev("override", "talk", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), shown)
+        self.assertIn("QUESTION", out, shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+
+    GREEN_CHECKS = ({"name": "test", "state": "SUCCESS", "bucket": "pass",
+                     "link": "https://ci/1"},)
+    RED_CHECKS = ({"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"},)
+
+    def pushed_commit_under_a_tests_commit(self, checks):
+        """A draft PR whose pushed commit has `checks` on GitHub, a tests commit
+        made on top of it locally (not pushed), and a pass that leaves one
+        must-fix finding open. Returns (pushed commit, tests commit)."""
+        self.draft_pr(extra=self.ci_on(checks))
+        pushed = self.state()["phase6"]["verified_sha"]
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        head = self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+        self.assertNotEqual(head, pushed)
+        self.solo(finding=True)
+        return pushed, head
+
+    def assert_watches(self, out, sha):
+        """`out` asks for a CI watch that names `sha` with --sha, and no stop."""
+        shown = json.dumps(out, indent=2)
+        self.assertIn("ci-watch", out.get("ACTION", ""), shown)
+        self.assertRegex(out["ACTION"], rf"--sha[= ]'?{sha}\b", shown)
+        self.assertNotIn("REPORT", out, shown)
+
+    def watch_as_asked(self, out):
+        """Run the CI watch command `out` asks for, without waiting."""
+        found = re.search(r"`([^`]*ci-watch[^`]*)`", out["ACTION"])
+        self.assertIsNotNone(found, out["ACTION"])
+        return subprocess.run(found.group(1) + " --max-wait 0", shell=True,
+                              capture_output=True, text=True, env=self.env, cwd=self.tmp,
+                              check=False)
+
+    def test_a_tests_commit_on_the_pushed_commit_lets_ci_settle(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        out = self.next(0)
+        self.assert_watches(out, pushed)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("GREEN", r.stdout)
+        self.assertIn(pushed[:12], r.stdout)
+        out, jobs = self.expect("coder")
+        self.assertEqual(self.mode(*jobs[0]), "correction")
+        self.assertNotIn("ci-watch", out["ACTION"])
+
+    def test_red_ci_on_the_pushed_commit_under_a_tests_commit_is_triaged(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.RED_CHECKS)
+        out = self.next(0)
+        self.assert_watches(out, pushed)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        self.assertEqual(self.mode(*jobs[0]), "ci")
+
+    def test_a_watch_on_another_commit_stops_and_a_resume_watches_again(self):
+        pushed, head = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertNotIn(r.returncode, (0, 2), r.stdout + r.stderr)  # it watched the local HEAD
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn(pushed[:12], report)
+        self.assertIn(head[:12], report)
+        self.assertIn("never", report)
+        self.resume()
+        self.assert_watches(self.next(0), pushed)
+
+    def test_a_ci_result_from_an_earlier_commit_asks_for_a_watch(self):
+        self.draft_pr(extra=self.ci_on(self.GREEN_CHECKS))
+        self.solo(finding=True)
+        state = self.state()
+        pushed = state["phase6"]["verified_sha"]
+        parent = self.sh("git", "rev-parse", f"{pushed}^", cwd=self.worktree).strip()
+        state["phase6"]["ci"] = {"sha": parent, "status": "green", "failing": [],
+                                 "seq": state["phase6"]["commit_seq"] - 1}
+        self.write_state(state)
+        self.assert_watches(self.next(0), pushed)
+
+    def stop_labels(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertIn("QUESTION", out, shown)
+        return [o["label"] for o in json.loads(out["QUESTION"])["questions"][0]["options"]]
+
+    def test_a_watch_on_another_commit_offers_a_retry_and_no_sign_off(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertNotIn(r.returncode, (0, 2), r.stdout + r.stderr)  # it watched the local HEAD
+        out = self.next(4)
+        labels = self.stop_labels(out)
+        self.assertIn("I fixed it myself", labels)
+        self.assertNotIn("Sign off and go on", labels)
+        self.assertIn("It can't be signed off: CI never reported on the commit that ships.",
+                      out["SUMMARY"], json.dumps(out, indent=2))
+        self.assertEqual(self.state()["stop"]["no_signoff"],
+                         "CI never reported on the commit that ships")
+        r = self.autodev("override", "retry", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_watches(self.next(0), pushed)
+
+    def test_a_final_ci_record_of_another_commit_stops_too(self):
+        pushed, head = self.pushed_commit_under_a_tests_commit(self.GREEN_CHECKS)
+        for status in ("unavailable", "green"):
+            with self.subTest(status=status):
+                state = self.state()
+                self.assertGreater(state["events"], state["phase6"]["commit_seq"])
+                state["phase6"]["ci"] = {"sha": head, "status": status, "failing": [],
+                                         "seq": state["events"]}
+                self.write_state(state)
+                report = " ".join(self.next(4)["REPORT"])
+                self.assertIn(pushed[:12], report)
+                self.assertIn(head[:12], report)
+
+    def test_red_ci_watched_again_after_a_resume_names_the_pushed_commit(self):
+        pushed, _ = self.pushed_commit_under_a_tests_commit(self.RED_CHECKS)
+        out = self.next(0)
+        self.assert_watches(out, pushed)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        (self.dir / "triage" / "ci-1.md").write_text("# Triage\nA flaky runner.\n")
+        self.answer(*jobs[0], "FLAKY", blockers="0", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
+        self.assertIn("classed it FLAKY", " ".join(self.next(4)["REPORT"]))
+        self.resume()
+        self.assert_watches(self.next(0), pushed)
+
+    def test_ci_on_the_draft_before_the_ready_gate_names_the_pushed_commit(self):
+        self.draft_pr(extra=self.ci_on(self.GREEN_CHECKS))
+        verified = self.state()["phase6"]["verified_sha"]
+        self.solo()
+        self.refresh_body()
+        out = self.next(0)
+        self.assert_watches(out, verified)
+        r = self.watch_as_asked(out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def test_the_watch_after_the_pr_is_marked_ready_names_the_pushed_commit(self):
+        self.draft_pr(extra=self.ci_on(self.GREEN_CHECKS))
+        verified = self.state()["phase6"]["verified_sha"]
+        self.solo()
+        self.refresh_body()
+        r = self.watch_as_asked(self.next(0))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.mark_ready()
+        state = self.state()  # CI settled before the PR was marked ready: the re-watch
+        self.assertEqual(state["phase6"]["ci"]["status"], "green")
+        self.assertLess(state["phase6"]["ci"]["seq"], state["marks"]["pr-ready"]["seq"])
+        self.assert_watches(self.next(0), verified)
+
+    def briefs_at_push_and_ready(self, verdict):
+        """Brief files written by the first push and by the ready-for-review gate."""
+        self.plan_session(verdict)
+        self.build_session()
+        self.draft_pr(started=True)
+        self.assertTrue(self.state()["marks"]["pushed"])
+        at_push = len(self.brief_files())
+        self.solo()
+        self.refresh_body()
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+        return at_push, len(self.brief_files())
+
+    def test_the_standard_happy_path_still_spawns_four_by_the_push_and_six_by_ready(self):
+        self.assertEqual(self.briefs_at_push_and_ready("APPROVE"), (4, 6))
+
+    def test_one_plan_revision_still_spawns_six_by_the_push_and_eight_by_ready(self):
+        self.assertEqual(self.briefs_at_push_and_ready("REVISE"), (6, 8))
 
 
 class PublishTest(NextCase):
@@ -3032,6 +4811,275 @@ class PublishTest(NextCase):
         body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.", text))
         r = self.lib("pr-body", "--check", body, "--dir", self.dir)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    # ------------------------------------------ cutting output to fit the limit
+
+    def quoting(self, blocks):
+        """A description quoting each (label, output lines) of `blocks` as one
+        check's output in a quoted region of its own, the way generate does."""
+        body = self.cmd_pr().Body()
+        for line in ("## Summary", "Todos can carry a due date.", "", "## Quality gate",
+                     "The repo's own checks, run on commit aaaaaaaaaaaa:"):
+            body.text(line)
+        for label, lines in blocks:
+            body.text(f"- `{label}`: passed")
+            start = body.quote()
+            body.block(label, [("Output:", lines)])
+            body.unquote(start)
+        body.text("")
+        body.text("## Assumptions")
+        return body
+
+    def cut(self, body, padding):
+        """cut_output on what `body` renders, with `padding` characters of plain
+        sentences after it; returns (the text it was given, what it returned)."""
+        cmd_pr = self.cmd_pr()
+        from lib.cmd_ship import quoted_digests
+        text = body.render()[0] + ShipTest.padding(padding)
+        return text, cmd_pr.cut_output(text, "a" * 40, quoted_digests(text))
+
+    def comment_dir(self):
+        tmp = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        return tmp
+
+    def test_the_longest_output_block_is_cut_first_and_a_shorter_one_keeps_its_output(self):
+        short = [f"short {i:04d} ok" for i in range(1, 31)]
+        long = [f"long {i:04d} ok: the step ran and passed" for i in range(1, 1201)]
+        body = self.quoting([("check two", short), ("check one", long)])
+        text, result = self.cut(body, 60300 - len(body.render()[0]))
+        self.assertEqual(len(text), 60300)
+        cut = result[0]
+        self.assertLessEqual(len(cut), 60000)
+        for i in range(1191, 1201):
+            self.assertIn(f"long {i:04d} ok", cut)
+        self.assertNotIn("long 1190 ok", cut)
+        for i in range(1, 31):
+            self.assertIn(f"short {i:04d} ok", cut)
+
+    def test_blocks_are_moved_whole_only_when_cutting_them_all_is_not_enough(self):
+        wide = " the step ran and passed;" * 10
+        short = [f"short {i:04d} ok" for i in range(1, 31)]
+        long = [f"long {i:04d} ok:{wide}" for i in range(1, 201)]
+        self.assertLess(len("\n".join(long)), 55000)  # fits whole in the comment
+        body = self.quoting([("check two", short), ("check one", long)])
+        # With both blocks cut to their last 10 lines, still 1,000 over.
+        _, result = self.cut(body, 61000 - len(body.render(10)[0]))
+        cut, moved = result[0], result[1]
+        self.assertLessEqual(len(cut), 60000)
+        pointer = '(output in the comment "Command output for commit aaaaaaaaaaaa")'
+        self.assertEqual(cut.count(pointer), 1, cut[-5000:])
+        self.assertNotIn("long 0200 ok", cut)
+        for i in range(21, 31):  # the shorter block stays, cut, in the description
+            self.assertIn(f"short {i:04d} ok", cut)
+        comment = self.cmd_pr().comment_text(self.comment_dir(), "a" * 40, moved)
+        self.assertLessEqual(len(comment), 60000)
+        for i in (1, 100, 200):
+            self.assertIn(f"long {i:04d} ok", comment)
+
+    def test_output_too_long_for_the_comment_keeps_only_its_last_lines_there(self):
+        big = [f"big {i:04d} ok: the step ran and passed" for i in range(1, 1801)]
+        small = [f"small {i:04d} ok: the step ran and passed" for i in range(1, 501)]
+        body = self.quoting([("check one", big), ("check two", small)])
+        _, result = self.cut(body, 45000)  # over even with the big block cut
+        self.assertGreater(len("\n".join(big)), 60000)
+        comment = self.cmd_pr().comment_text(self.comment_dir(), "a" * 40, result[1])
+        self.assertLessEqual(len(comment), 60000)
+        self.assertEqual(comment.split("\n")[0], "Command output for commit aaaaaaaaaaaa")
+        for i in range(1, 501):  # the block that fits goes in whole
+            self.assertIn(f"small {i:04d} ok", comment)
+        for i in range(1791, 1801):
+            self.assertIn(f"big {i:04d} ok", comment)
+        self.assertNotIn("big 1790 ok", comment)
+        notes = [ln for ln in comment.split("\n")
+                 if re.search(r"earlier lines.*left out", ln, re.IGNORECASE)]
+        self.assertEqual(len(notes), 1, comment[:3000])
+        self.assertIn("limit", notes[0])
+
+    def test_cut_regions_stay_exempt_and_each_block_is_moved_once(self):
+        from lib.cmd_ship import unquoted
+        wide = " the step ran and passed;" * 10
+        short = [f"short {i:04d} ok" for i in range(1, 31)]
+        long = [f"long {i:04d} ok:{wide}" for i in range(1, 1201)]
+        body = self.quoting([("check two", short), ("check one", long)])
+        _, (cut, moved, digests, counts) = self.cut(body, 61000 - len(body.render(10)[0]))
+        self.assertEqual(counts, (2, 1))
+        self.assertEqual([label for label, _ in moved], ["`check one`: passed",
+                                                         "`check two`: passed"])
+        self.assertEqual(moved[0][1], [("Output:", long)])  # the full output, not the cut
+        prose = unquoted(cut, digests)
+        self.assertNotIn("short 0030 ok", prose)
+        self.assertNotIn("output in the comment", prose)
+        self.assertIn("Due dates sort the list", prose)
+
+    def test_a_description_that_fits_is_not_cut(self):
+        long = [f"long {i:04d} ok" for i in range(1, 1201)]
+        body = self.quoting([("check one", long)])
+        text, (cut, moved, _, counts) = self.cut(body, 100)
+        self.assertEqual((cut, moved, counts), (text, [], (0, 0)))
+
+    def test_an_edited_region_is_not_cut(self):
+        long = [f"long {i:04d} ok" for i in range(1, 1201)]
+        body = self.quoting([("check one", long)])
+        text = body.render()[0].replace("long 0001 ok", "long 0001 edited") + \
+            ShipTest.padding(60000)
+        cut, moved, _, _ = self.cmd_pr().cut_output(text, "a" * 40, [])
+        self.assertEqual((cut, moved), (text, []))
+
+    def test_the_comment_adds_the_cut_output_after_what_generate_moved(self):
+        cmd_pr = self.cmd_pr()
+        ad = self.comment_dir()
+        (ad / "pr-output-comment.md").write_text(
+            "Command output for commit aaaaaaaaaaaa\n\n**check zero**\nearlier\n\n"
+            + cmd_pr.MARKER + "\n")
+        comment = cmd_pr.comment_text(ad, "a" * 40, [("`check one`: passed",
+                                                      [("Output:", ["one", "two"])])])
+        self.assertTrue(comment.startswith("Command output for commit aaaaaaaaaaaa\n"))
+        self.assertLess(comment.index("earlier"), comment.index("`check one`: passed"))
+        self.assertEqual(comment.count(cmd_pr.MARKER), 1)
+        self.assertTrue(comment.endswith("</details>\n\n" + cmd_pr.MARKER + "\n"))
+        self.assertIsNone(cmd_pr.comment_text(ad, "a" * 40, []))
+
+    def test_output_holding_a_line_that_reads_as_the_fence_is_still_cut(self):
+        long = [f"long {i:04d} ok: the step ran and passed" for i in range(1, 1201)]
+        for name, odd in (("a lone fence", ["```"]),
+                          ("a fenced snippet", ["```ts", "const due = 1;", "```"]),
+                          ("a fence, then the closing tag", ["```", "</details>"])):
+            with self.subTest(name):
+                output = long[:600] + odd + long[600:]
+                body = self.quoting([("check one", output)])
+                text, (cut, moved, _, counts) = self.cut(body, 60300 - len(body.render()[0]))
+                self.assertEqual(len(text), 60300)
+                self.assertLessEqual(len(cut), 60000)
+                self.assertEqual(counts, (1, 0))
+                for i in range(1191, 1201):
+                    self.assertIn(f"long {i:04d} ok", cut)
+                self.assertNotIn("long 1190 ok", cut)
+                self.assertNotIn("long 0601 ok", cut)
+                self.assertEqual(moved, [("`check one`: passed", [("Output:", output)])])
+
+    def test_a_block_whose_runs_do_not_read_back_is_moved_whole_as_written(self):
+        cmd_pr = self.cmd_pr()
+        from lib.cmd_ship import quoted_digests
+        long = [f"long {i:04d} ok: the step ran and passed" for i in range(1, 1201)]
+        body = self.quoting([("check one", long)])
+        rendered = body.render()[0]
+        # No fence opens the run: not a block details() writes.
+        rendered = rendered.replace("  Output:\n  ```\n", "  Output:\n", 1)
+        text = rendered + ShipTest.padding(60300 - len(rendered))
+        cut, moved, _, counts = cmd_pr.cut_output(text, "a" * 40, quoted_digests(text))
+        self.assertLessEqual(len(cut), 60000)
+        self.assertEqual(counts, (0, 1))
+        self.assertIn('(output in the comment "Command output for commit aaaaaaaaaaaa")', cut)
+        self.assertNotIn("long 1200 ok", cut)
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0][0], "`check one`: passed")
+        comment = cmd_pr.comment_text(self.comment_dir(), "a" * 40, moved)
+        self.assertLessEqual(len(comment), 60000)
+        for i in (1, 600, 1200):
+            self.assertIn(f"\nlong {i:04d} ok: the step ran and passed\n", comment)
+        self.assertIn("\nOutput:\n", comment)
+
+    def test_an_output_comment_with_an_id_is_edited_to_hold_the_cut_output(self):
+        cmd_pr = self.cmd_pr()
+        ad = self.comment_dir()
+        calls = []
+
+        def gh(_wt, *args):
+            name = args[args.index("-F") + 1].split("@", 1)[1]
+            calls.append((args, Path(name).read_text()))
+            return 0, "", ""
+        real = cmd_pr.gh
+        cmd_pr.gh = gh
+        self.addCleanup(setattr, cmd_pr, "gh", real)
+        moved = [("`check one`: passed",
+                  [("Output:", [f"line {i:04d} ok" for i in range(1, 1201)])])]
+        self.assertEqual(cmd_pr.output_comment(".", ad, 12, "55", "a" * 40, moved), "55")
+        self.assertEqual(len(calls), 1)
+        args, posted = calls[0]
+        self.assertEqual(args[:3], ("api", "-X", "PATCH"))
+        self.assertTrue(args[3].endswith("/issues/comments/55"), args)
+        self.assertEqual(posted, cmd_pr.comment_text(ad, "a" * 40, moved))
+        self.assertTrue(posted.startswith("Command output for commit aaaaaaaaaaaa\n"))
+        self.assertIn("line 0001 ok", posted)
+        self.assertNotIn("superseded", posted)
+
+    def gate_check(self, name):
+        """A check for the PR-body gates: `lint`, `unit` (`echo all` with a `files`
+        form), `unscoped` (`echo all` with none), `unscoped_args` (`unscoped` with
+        `<args>`) or `checks` (`true`, with none)."""
+        return {"lint": {"kind": "lint", "command": "echo lint", "report": "LINT.md"},
+                "unit": {"kind": "test", "command": "echo all", "report": "TEST.md",
+                         "files": "echo some <files>"},
+                "unscoped": {"kind": "test", "command": "echo all", "report": "TEST.md"},
+                "unscoped_args": {"kind": "test", "command": "echo all <args>",
+                                  "report": "TEST.md"},
+                "checks": {"kind": "test", "command": "true", "report": "CHECKS.md"}}[name]
+
+    def gate_on_the_change(self, ci, gate):
+        """The quality gate of the checks `gate` names (see `gate_check`), run
+        with `ci` on a branch that added tests/a.test.ts and holds an untracked
+        src/b.test.ts, then the PR body generated."""
+        state = self.state()
+        state["settings"]["ci"] = ci
+        state["settings"]["gate"] = [self.gate_check(name) for name in gate]
+        self.write_state(state)
+        if not (self.worktree / "tests" / "a.test.ts").exists():
+            (self.worktree / "tests").mkdir(exist_ok=True)
+            (self.worktree / "tests" / "a.test.ts").write_text("a\n")
+            self.sh("git", "-C", str(self.worktree), "add", "tests/a.test.ts")
+            self.sh("git", "-C", str(self.worktree), "commit", "-q", "-m", "add a test")
+            (self.worktree / "src").mkdir(exist_ok=True)
+            (self.worktree / "src" / "b.test.ts").write_text("b\n")
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        state = self.state()
+        state["phase6"]["verified_sha"] = self.sh("git", "rev-parse", "HEAD",
+                                                  cwd=self.worktree).strip()
+        self.write_state(state)
+        r = self.lib("pr-body", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return (self.dir / "pr-body.md").read_text()
+
+    def test_the_pr_body_names_a_check_run_on_the_change_s_tests_and_one_left_to_ci(self):
+        scoped = ("- `echo some src/b.test.ts tests/a.test.ts`: passed (the change's tests; "
+                  "CI runs the whole check)")
+        for gate, lines in (
+                (("lint", "unit"), (scoped,)),
+                (("lint", "unscoped"), ("- `echo all`: not run before the push; CI runs it",)),
+                (("lint", "unit", "checks"), ("- `echo all`: passed", "- `true`: passed"))):
+            text = self.gate_on_the_change("github-actions", gate)
+            section = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+            for line in lines:
+                self.assertTrue(line in text,
+                                f"no {line!r} in the quality-gate section:\n{section}")
+            if len(gate) == 3:  # two test checks: both run whole, nothing left to CI
+                self.assertNotIn("not run before the push", text)
+                self.assertNotIn("the change's tests; CI runs the whole check", text)
+
+    def test_a_check_left_to_ci_is_named_without_its_args_placeholder(self):
+        text = self.gate_on_the_change("github-actions", ("lint", "unscoped_args"))
+        section = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+        self.assertIn("- `echo all`: not run before the push; CI runs it", section)
+        self.assertNotIn("<args>", section)
+
+    def test_a_scoped_command_naming_a_pipeline_term_passes_the_body_lint(self):
+        (self.worktree / "tests").mkdir(exist_ok=True)
+        (self.worktree / "tests" / "held-out-split.test.ts").write_text("split\n")
+        text = self.gate_on_the_change("github-actions", ("lint", "unit"))
+        scoped = ("- `echo some src/b.test.ts tests/a.test.ts tests/held-out-split.test.ts`: "
+                  "passed (the change's tests; CI runs the whole check)")
+        self.assertIn(scoped, text)
+        sys.path.insert(0, str(SCRIPTS))
+        from lib.cmd_ship import lint_body
+        problems = lint_body(text, self.state())
+        self.assertFalse([p for p in problems if "pipeline term" in p], problems)
+
+    def test_the_pr_body_shows_a_whole_run_as_before_when_ci_is_not_watched(self):
+        text = self.gate_on_the_change("none", ("lint", "unit", "checks"))
+        gate = text.split("## Quality gate", 1)[-1].split("\n## ", 1)[0]
+        for line in ("- `echo all`: passed", "- `true`: passed"):
+            self.assertTrue(line in text, f"no {line!r} in the quality-gate section:\n{gate}")
 
 
 class TemplateTest(unittest.TestCase):
@@ -3709,6 +5757,7 @@ class CiTest(NextCase):
         self.assertIn("INFRA", report)
         self.assertIn("triage/ci-1.md", report)
         self.assertIn("The run stops here", report)
+        self.assert_counted(15, "the triager returned INFRA", 6)
 
     def test_a_secret_ci_failure_stops_and_continue_watches_again(self):
         self.github_ci()
@@ -3721,6 +5770,7 @@ class CiTest(NextCase):
         report = " ".join(self.next(4)["REPORT"])
         self.assertIn("Once the secret is fixed and CI re-run", report)
         self.assertNotIn("do not re-run", report)
+        self.assert_counted(15, "the triager returned SECRET", 6)
         self.resume()
         self.assertIn("ci-watch", self.next(0)["ACTION"])
 
@@ -3730,10 +5780,209 @@ class CiTest(NextCase):
         state["phase6"]["ci"]["status"] = "timeout"
         state["phase6"]["ci"]["seq"] = state["events"] + 1
         self.write_state(state)
+        self.quality_gate()  # its test check was left to CI: it runs whole now
         self.no_comments()
         out = self.next(5)
         self.assertIn("CI: not monitored (timeout) — never assume green",
                       " ".join(out["SUMMARY"]))
+
+    def no_checks_on_the_draft(self, mergeable):
+        """The reviewed draft with GitHub CI; GitHub says the PR is `mergeable`
+        (CONFLICTING or MERGEABLE) and reports no check on its head, for the
+        next poll only. Returns the draft's commit."""
+        self.github_ci()
+        sha, _ = self.reviewed_pr()
+        responses = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([
+            {"args": ["pr", "view", "12", "--json"], "times": 1,
+             "stdout": json.dumps({"headRefOid": sha, "mergeable": mergeable})},
+            {"args": ["pr", "checks"], "times": 1, "exit": 1,
+             "stderr": "no checks reported on the 'feat/due-dates' branch"},
+            *responses])
+        return sha
+
+    def test_a_conflict_is_named_at_the_ready_gate(self):
+        sha = self.no_checks_on_the_draft("CONFLICTING")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--sha", sha, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertTrue([ln for ln in r.stdout.splitlines() if ln.startswith("CONFLICT:")],
+                        r.stdout + r.stderr)
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        summary = " ".join(out["SUMMARY"])
+        self.assertNotIn("not monitored", summary)
+        line = next((ln for ln in out["SUMMARY"]
+                     if "conflicts with its base" in ln.lower()), None)
+        self.assertIsNotNone(line, summary)
+        self.assertIn("not run", line.lower())
+        self.assertRegex(line, r"\bmain\b")
+
+    def test_no_checks_on_a_draft_that_does_not_conflict_is_not_monitored_at_the_ready_gate(
+            self):
+        sha = self.no_checks_on_the_draft("MERGEABLE")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--sha", sha, "--max-wait", "0", "--grace", "0",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("UNAVAILABLE", r.stdout)
+        self.quality_gate()  # its test check was left to CI: it runs whole now
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        summary = " ".join(out["SUMMARY"])
+        self.assertIn("not monitored (unavailable)", summary)
+        self.assertNotIn("conflicts with its base", summary.lower())
+
+    def newest_gate_run_is(self, **fields):
+        """The newest quality-gate run, with only these of its CI fields."""
+        state = self.state()
+        newest = state["gate_runs"][-1]
+        for key in ("ci_watched", "scoped", "skipped"):
+            newest.pop(key, None)
+        newest.update(fields)
+        self.write_state(state)
+
+    def unwatchable_after_a_gate_that_left_a_check_to_ci(self):
+        """The reviewed draft; its newest quality gate left TEST.md to CI, then a
+        CI watch on the draft's commit found no checks (unavailable)."""
+        sha = self.no_checks_on_the_draft("MERGEABLE")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--sha", sha, "--max-wait", "0", "--grace", "0",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("UNAVAILABLE", r.stdout)
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+
+    def test_unwatchable_ci_runs_the_quality_gate_whole_before_the_ready_gate(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        action = out.get("ACTION", "")
+        # The ACTION is the gate's run itself: its first command is `quality-gate`,
+        # and it doesn't say nothing was done or send the orchestrator to `next` instead.
+        first = re.search(r"`([^`]*)`", action)
+        self.assertIsNotNone(first, shown)
+        words = shlex.split(first.group(1))
+        self.assertTrue(any(w.endswith("autodev.py") for w in words), shown)
+        self.assertIn("quality-gate", words, shown)
+        self.assertIn("--dir", words, shown)
+        self.assertNotIn("nothing was done", action, shown)
+        self.assertNotIn("--explain", action, shown)
+        self.assertNotIn("QUESTION", out, shown)
+        self.assertIn("CI can't be watched", out.get("RULE", ""), shown)
+        self.assertIn("the quality gate runs every check whole", out.get("RULE", ""), shown)
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- **Scope:** whole", (self.dir / "lint" / "TEST.md").read_text())
+        self.assertIs(self.state()["gate_runs"][-1].get("ci_watched"), False)
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+
+    def test_a_red_whole_rerun_after_unwatchable_ci_stops_and_names_the_failing_check(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        state = self.state()
+        state["phase6"]["ci"]["status"] = "timeout"  # a watch that timed out does the same
+        self.write_state(state)
+        self.quality_gate(red=True)
+        out = self.next(4)
+        self.assertIn("TEST.md", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        self.assertNotIn("ready gate", out.get("QUESTION", ""))
+        r = self.autodev("override", "retry", "--text", "I fixed the check", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.quality_gate(red=True)  # a retry runs the gate again
+        out = self.next(4)
+        self.assertIn("TEST.md", " ".join(out["REPORT"]), json.dumps(out, indent=2))
+        self.sign_off(out)  # a sign-off accepts the failing report
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def test_a_gate_run_that_owes_no_whole_run_goes_to_the_ready_gate(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        for fields in ({"ci_watched": False},
+                       {"ci_watched": True, "scoped": [], "skipped": []},
+                       {}):  # a run from before the change: no ci_watched key
+            self.newest_gate_run_is(**fields)
+            out = self.next(5)
+            self.assertIn("ready gate", out["QUESTION"], fields)
+
+    def test_a_green_watch_after_a_gate_that_left_a_check_to_ci_asks_no_gate_run(self):
+        self.github_ci()
+        self.reviewed_pr(extra=self.GREEN)
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+        self.watch()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertNotIn("quality-gate", out.get("ACTION", ""))
+
+    def test_a_red_watch_after_a_gate_that_left_a_check_to_ci_goes_to_the_triager(self):
+        self.github_ci()
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.newest_gate_run_is(ci_watched=True, skipped=["TEST.md"])
+        self.watch(1)
+        self.expect("triager")
+
+    def test_the_whole_gate_re_run_is_an_action_without_explain_and_a_dry_run_with_it(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        # --explain first: each plain `next` counts an ask, and a third stops.
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        explained = json.loads(r.stdout)
+        self.assertTrue(explained["ACTION"].startswith(
+            "(--explain: nothing was done; run `next` to act) run the quality gate"),
+            r.stdout)
+        self.assertIn("CI can't be watched", explained.get("RULE", ""), r.stdout)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue(out["ACTION"].startswith("run the quality gate"), shown)
+        self.assertNotIn("--explain", out["ACTION"], shown)
+        self.assertIn("CI can't be watched", out.get("RULE", ""), shown)
+        r = self.autodev("next", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        action = next(ln for ln in r.stdout.splitlines() if ln.startswith("ACTION: "))
+        self.assertTrue(action.startswith("ACTION: run the quality gate"), r.stdout)
+        self.assertNotIn("--explain", action, r.stdout)
+        self.assertTrue([ln for ln in r.stdout.splitlines()
+                         if ln.startswith("RULE: ") and "CI can't be watched" in ln], r.stdout)
+
+    def test_a_gate_that_only_scoped_its_test_check_owes_a_whole_run_too(self):
+        self.unwatchable_after_a_gate_that_left_a_check_to_ci()
+        self.newest_gate_run_is(ci_watched=True, scoped=["TEST.md"], skipped=[])
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("quality-gate", out["ACTION"], shown)
+        self.assertIn("CI can't be watched", out.get("RULE", ""), shown)
+        self.assertNotIn("QUESTION", out, shown)
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def unwatchable_after_ready(self, status, **fields):
+        """The PR marked ready, its newest quality gate with these CI fields,
+        then a CI watch after the mark that ended `status`: `next` asks for the
+        quality gate, run whole, and only then the main gate."""
+        self.ready()
+        self.newest_gate_run_is(ci_watched=True, **fields)
+        state = self.state()
+        state["phase6"]["ci"]["status"] = status
+        state["phase6"]["ci"]["seq"] = state["events"] + 1
+        self.write_state(state)
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("quality-gate", out["ACTION"], shown)
+        self.assertIn(f"CI can't be watched ({status})", out.get("RULE", ""), shown)
+        self.assertNotIn("main gate", out.get("QUESTION", ""), shown)
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.no_comments()
+        self.assertIn("main gate", self.next(5)["QUESTION"])
+
+    def test_an_unavailable_watch_after_ready_and_a_scoped_gate_runs_the_gate_whole(self):
+        self.unwatchable_after_ready("unavailable", scoped=["TEST.md"], skipped=[])
+
+    def test_a_timed_out_watch_after_ready_and_a_gate_that_left_a_check_to_ci_runs_it_whole(
+            self):
+        self.unwatchable_after_ready("timeout", scoped=[], skipped=["TEST.md"])
 
 
 class HumanAndMainGateTest(NextCase):
@@ -3792,6 +6041,7 @@ class HumanAndMainGateTest(NextCase):
         self.assertNotIn("Sign off", out.get("QUESTION", ""))
         self.assertNotIn("merge-pr", json.dumps(out))
         self.assertIn(f"merge --ff-only origin/{branch}", report)
+        self.assert_counted(16, "the PR head moved", 6)
         return old, url, branch
 
     def recheck(self, old, branch, edit=None):
@@ -3896,6 +6146,1044 @@ class HumanAndMainGateTest(NextCase):
         self.verify_only(second)
 
 
+class OutsidePushTest(NextCase):
+    """A commit on the PR branch that the run did not make, pushed after the
+    run's own push: `next` re-checks it (or stops, when the worktree doesn't
+    have it) before it watches CI, asks for a push or asks the ready gate."""
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    published = ShipTest.published
+    github_ci = CiTest.github_ci
+    GREEN = CiTest.GREEN
+    push_outside = HumanAndMainGateTest.push_outside
+    verify_only = HumanAndMainGateTest.verify_only
+    URL = "https://github.com/acme/app"
+    FIX = "# Required changes\n1. C1: guard the sort in src/sort.ts against a missing due date\n"
+
+    def setUp(self):
+        self.seen = []  # every `next` output, to check what was never asked
+        super().setUp()
+
+    def next(self, expect=None, refused_ok=False, reissue=False):
+        out = super().next(expect, refused_ok, reissue)
+        self.seen.append(out)
+        return out
+
+    def head(self):
+        return self.sh("git", "rev-parse", "HEAD", cwd=self.worktree).strip()
+
+    def reviewed_with_ci(self):
+        """The draft PR at its pushed, reviewed commit, CI on GitHub and not
+        watched yet. Returns the commit."""
+        self.github_ci()
+        sha, _ = self.reviewed_pr(extra=self.GREEN)
+        return sha
+
+    def base_merged_and_pushed(self):
+        """base.ts lands on main; the user merges main into the worktree by
+        hand and pushes the merge. Returns the merge commit."""
+        base = self.tmp / "base-clone"
+        self.sh("git", "clone", "-q", "-b", "main", str(self.tmp / "origin.git"), str(base))
+        (base / "base.ts").write_text("export const base = 1;\n")
+        self.sh("git", "add", "base.ts", cwd=base)
+        self.sh("git", "commit", "-q", "-m", "add base.ts", cwd=base)
+        self.sh("git", "push", "-q", "origin", "main", cwd=base)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+        self.sh("git", "merge", "-q", "--no-edit", "origin/main", cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        return self.head()
+
+    def asks_for_the_re_check(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        self.assertIn("quality-gate", out.get("ACTION", ""), shown)
+        self.assertNotIn("ci-watch", out["ACTION"], shown)
+        self.assertNotIn("push -u origin HEAD", out["ACTION"], shown)
+
+    def re_check(self, review=None, judged="CLEAN", corrections=None):
+        """Run the quality gate the re-check asks for, then its review pass.
+        Returns what the last code reviewer was told to review."""
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.panel(review=review, judged=judged, corrections=corrections)
+        n = max(b["n"] for b in self.state()["briefs"] if b["worker"] == "code-reviewer")
+        return self.sets("code-reviewer", n)
+
+    def watched(self, out, sha):
+        return re.search(rf"ci-watch[^`]*--sha[= ]'?{sha[:12]}", out.get("ACTION", ""))
+
+    def assert_never_watched(self, sha):
+        asked = [o["ACTION"] for o in self.seen if self.watched(o, sha)]
+        self.assertFalse(asked, f"a CI watch on {sha[:12]} was asked for: {asked}")
+
+    def asked_push_of(self, out, sha):
+        return "push -u origin HEAD" in out.get("ACTION", "") and re.search(
+            rf"pushed'?\s+'?--value'?\s+'?{sha[:12]}", " ".join(out.get("AFTER", [])))
+
+    def publish_the_new_head(self, head, until):
+        """Take `next`'s push and description steps for `head` until
+        `until(out)`; returns that output."""
+        self.script_gh(GH_OK + [
+            {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": self.URL})},
+            {"args": ["pr", "view", "12", "--json", "body"],
+             "stdout": json.dumps({"body": self.published()})},
+            {"args": ["pr", "edit"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json", "number,url,body"],
+             "stdout": json.dumps({"number": 12, "url": f"{self.URL}/pull/12",
+                                   "body": f"Checked at commit {head}"})},
+            {"args": ["pr", "view", "12", "--json"],
+             "stdout": json.dumps({"url": f"{self.URL}/pull/12", "isDraft": True,
+                                   "state": "OPEN", "headRefOid": head})},
+            *self.GREEN])
+        for _ in range(8):
+            out = self.next()
+            shown = json.dumps(out, indent=2)
+            self.assertIn(out.get("exit"), (0, 5), shown)
+            if until(out):
+                return out
+            action = out.get("ACTION", "")
+            if "push -u origin HEAD" in action:
+                self.sh("git", "push", "-q", "-u", "origin", "HEAD", cwd=self.worktree)
+                self.after(out)
+            elif "pr publish" in action + " ".join(out.get("AFTER", [])):
+                body = self.dir / "pr-body.md"
+                if body.exists():
+                    body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                                           body.read_text()))
+                write = self.dir / "pr-write.md"
+                if write.exists() and ShipTest.MARK in write.read_text():
+                    sources, mine = write.read_text().split(ShipTest.MARK)
+                    write.write_text(sources + ShipTest.MARK + re.sub(
+                        r"<!-- WRITE: .*?-->", "Todos can carry a due date.", mine))
+                r = self.autodev("pr", "publish", "--dir", self.dir)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            else:
+                self.fail(f"a step other than the push or the description:\n{shown}")
+        self.fail("the push and the description never settled")
+
+    def corrected_and_committed(self):
+        """The draft at its pushed commit, CI on GitHub and green there; the
+        review's must-fix is corrected, re-reviewed and committed, not pushed.
+        Returns (the pushed commit, the new commit)."""
+        self.github_ci()
+        pushed, _ = self.draft_pr(extra=self.GREEN)
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(self.FIX)
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.review_clean()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "fix: guard the sort", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        corrected = self.head()
+        self.assertNotEqual(corrected, pushed)
+        return pushed, corrected
+
+    def test_a_base_merge_pushed_from_the_worktree_is_re_checked_not_waited_on(self):
+        verified = self.reviewed_with_ci()
+        merged = self.base_merged_and_pushed()
+        self.asks_for_the_re_check(self.next(0))
+        sets = self.re_check()
+        self.assertEqual(sets["scope"], "outside")
+        self.assertIn("base.ts", sets["files"])
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)  # COMMITTED: the merge commit, no new commit
+        out = self.publish_the_new_head(merged, lambda o: "ci-watch" in o.get("ACTION", ""))
+        self.assertTrue(self.watched(out, merged), out["ACTION"])
+        self.assert_never_watched(verified)
+
+    def test_a_finding_in_the_re_check_goes_to_the_coder_without_a_ci_watch(self):
+        verified = self.reviewed_with_ci()
+        self.base_merged_and_pushed()
+        self.asks_for_the_re_check(self.next(0))
+        self.re_check(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        out, _ = self.expect("coder")
+        self.assertNotIn("ci-watch", out.get("ACTION", ""))
+        self.assert_never_watched(verified)
+
+    def test_the_run_s_own_tests_commit_not_pushed_starts_no_re_check(self):
+        verified = self.reviewed_with_ci()
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        self.assertNotEqual(self.head(), verified)
+        out = self.next(0)
+        self.assertTrue(self.watched(out, verified), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_the_run_s_own_verified_commit_not_pushed_is_pushed_not_re_checked(self):
+        self.corrected_and_committed()
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("push -u origin HEAD", out.get("ACTION", ""), shown)
+        self.assertNotIn("quality-gate", out["ACTION"], shown)
+        self.assertNotIn("REPORT", out)
+
+    def test_a_pushed_mark_for_a_head_the_run_did_not_make_does_not_loop(self):
+        verified = self.reviewed_with_ci()
+        merged = self.base_merged_and_pushed()
+        self.seen = []  # only what `next` says after the outside push counts
+        r = self.autodev("mark", "pushed", "--value", merged, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.asks_for_the_re_check(self.next(0))
+        self.re_check()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)
+        self.publish_the_new_head(merged, lambda o: "ci-watch" in o.get("ACTION", ""))
+        self.assertFalse([o for o in self.seen if self.asked_push_of(o, verified)],
+                         f"the push of {verified[:12]} was asked for again")
+
+    def test_a_push_the_run_still_owes_is_asked_for_with_its_own_commit(self):
+        _, corrected = self.corrected_and_committed()
+        out = self.next(0)  # the PR branch is behind the new commit
+        self.assertTrue(self.asked_push_of(out, corrected), json.dumps(out, indent=2))
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        out = self.next(0)  # pushed, not recorded: the PR branch is at it
+        self.assertTrue(self.asked_push_of(out, corrected), json.dumps(out, indent=2))
+
+    def test_without_ci_a_head_pushed_after_the_review_is_re_checked_before_the_ready_gate(
+            self):
+        self.reviewed_pr()
+        (self.worktree / "app.ts").write_text("export const one = 2;\n")
+        self.sh("git", "commit", "-q", "-am", "tweak app.ts", cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        pushed = self.head()
+        self.asks_for_the_re_check(self.next())
+        self.re_check()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(pushed)  # COMMITTED: the pushed commit, not "nothing to commit"
+        out = self.publish_the_new_head(pushed, lambda o: o.get("exit") == 5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertFalse([o for o in self.seen if o.get("exit") == 4])
+
+    def test_without_ci_and_nothing_pushed_the_ready_gate_is_asked(self):
+        self.reviewed_pr()
+        self.assertIn("ready gate", self.next(5)["QUESTION"])
+
+    def test_a_push_from_another_clone_stops_before_any_ci_watch(self):
+        verified = self.reviewed_with_ci()
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("someone pushed", report)
+        self.assertIn("app.ts", report)
+        self.assertRegex(report, rf"git -C '?{re.escape(str(self.worktree))}'? merge "
+                                 rf"--ff-only '?origin/{re.escape(branch)}")
+        self.assertNotIn("ci-watch", json.dumps(out))
+        self.assert_counted(16, "the PR head moved", 6)
+        self.assert_never_watched(verified)
+
+    def test_an_outside_push_brought_in_as_the_stop_says_is_re_checked(self):
+        verified = self.reviewed_with_ci()
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        self.next(4)
+        self.sh("git", "-C", str(self.worktree), "merge", "-q", "--ff-only",
+                f"origin/{branch}")
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+        self.assert_never_watched(verified)
+
+
+class MovedHeadTest(NextCase):
+    """More on a PR head pushed outside the run: the CI fold, and the push of
+    the old commit after the new head was recorded as pushed."""
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    published = ShipTest.published
+    github_ci = CiTest.github_ci
+    GREEN = CiTest.GREEN
+    push_outside = HumanAndMainGateTest.push_outside
+    verify_only = HumanAndMainGateTest.verify_only
+    URL = OutsidePushTest.URL
+    FIX = OutsidePushTest.FIX
+    head = OutsidePushTest.head
+    reviewed_with_ci = OutsidePushTest.reviewed_with_ci
+    base_merged_and_pushed = OutsidePushTest.base_merged_and_pushed
+    asks_for_the_re_check = OutsidePushTest.asks_for_the_re_check
+    re_check = OutsidePushTest.re_check
+    asked_push_of = OutsidePushTest.asked_push_of
+    publish_the_new_head = OutsidePushTest.publish_the_new_head
+    corrected_and_committed = OutsidePushTest.corrected_and_committed
+    watched = OutsidePushTest.watched
+    assert_never_watched = OutsidePushTest.assert_never_watched
+
+    def setUp(self):
+        self.seen = []
+        super().setUp()
+
+    def next(self, expect=None, refused_ok=False, reissue=False):
+        out = super().next(expect, refused_ok, reissue)
+        self.seen.append(out)
+        return out
+
+    def test_once_an_outside_head_is_marked_pushed_the_old_push_never_comes_back(self):
+        verified = self.reviewed_with_ci()
+        self.assertTrue([o for o in self.seen if self.asked_push_of(o, verified)])
+        merged = self.base_merged_and_pushed()
+        r = self.autodev("mark", "pushed", "--value", merged, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.seen = []  # the setup's own push of `verified` was right
+        self.asks_for_the_re_check(self.next(0))
+        self.re_check()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)
+        out = self.publish_the_new_head(merged, lambda o: "ci-watch" in o.get("ACTION", ""))
+        self.assertIn(merged[:12], out["ACTION"])
+        self.assertFalse([o for o in self.seen if self.asked_push_of(o, verified)],
+                         f"the push of {verified[:12]} was asked for again")
+
+    def test_a_push_from_another_clone_stops_the_ci_fold_before_its_watch(self):
+        self.github_ci()
+        self.draft_pr(extra=self.GREEN)
+        _, jobs = self.reviewers()
+        for w, n in jobs:
+            (self.dir / "review" / "pass-1" / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (self.dir / "review" / "pass-1" / "corrections.md").write_text(self.FIX)
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("someone pushed", report)
+        self.assertIn("app.ts", report)
+        self.assertIn(f"origin/{branch}", report)
+        self.assertNotIn("ci-watch", json.dumps(out))
+        self.assert_counted(16, "the PR head moved", 6)
+
+    def pass_must_fix(self):
+        """The pass the panel is spawned for leaves C1 (in sort.ts) open."""
+        _, jobs = self.reviewers()
+        pass_dir = self.dir / "review" / f"pass-{self.state()['phase6']['review_pass']}"
+        for w, n in jobs:
+            (pass_dir / f"{self.sets(w, n)['reviewer']}.md").write_text(
+                r_report("- null due date crashes sort"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        (self.dir / "CODE_REVIEW.md").write_text(OPEN_REVIEW.format(tree=self.tree()))
+        (pass_dir / "corrections.md").write_text(self.FIX)
+        self.expect("review-judge", "MUST_FIX", must_fix_open="1", revote="0")
+
+    def correction_left_uncommitted(self, extra=()):
+        """Pass 1 on the draft (CI on GitHub, green) leaves C1 open; the coder
+        corrects sort.ts (and writes each of `extra`), the gate is green, and
+        the after-commit pass leaves a must-fix open, the correction still
+        uncommitted. Returns the pushed commit."""
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        for rel in extra:
+            (self.worktree / rel).write_text("export const more = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        return verified
+
+    def base_merge_fast_forwarded(self):
+        """base.ts lands on main and a merge of it is pushed to the PR branch;
+        the worktree, its correction uncommitted, fast-forwards to the merge (a
+        merge made in it would need the correction set aside first). Returns
+        the merge commit, HEAD and the PR's head both."""
+        base = self.tmp / "base-clone"
+        self.sh("git", "clone", "-q", "-b", "main", str(self.tmp / "origin.git"), str(base))
+        (base / "base.ts").write_text("export const base = 1;\n")
+        self.sh("git", "add", "base.ts", cwd=base)
+        self.sh("git", "commit", "-q", "-m", "add base.ts", cwd=base)
+        self.sh("git", "push", "-q", "origin", "main", cwd=base)
+        branch = self.state()["branch"]
+        merging = self.tmp / "merge-clone"
+        self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"), str(merging))
+        self.sh("git", "merge", "-q", "--no-edit", "origin/main", cwd=merging)
+        self.sh("git", "push", "-q", "origin", branch, cwd=merging)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+        self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
+        return self.head()
+
+    def committed_on_top_of(self, parent):
+        """`commit` after the re-check commits the uncommitted correction on top
+        of `parent`."""
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "fix: guard the sort", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        head = self.head()
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD^", cwd=self.worktree).strip(),
+                         parent)
+        self.assertIn("sort.ts", self.sh("git", "show", "--name-only", "--format=", "HEAD",
+                                         cwd=self.worktree).split())
+        self.assertEqual(self.state()["phase6"]["verified_sha"], head)
+
+    def test_a_base_merge_pushed_with_a_correction_uncommitted_is_re_checked(self):
+        verified = self.correction_left_uncommitted()
+        merged = self.base_merge_fast_forwarded()
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+        sets = self.re_check()
+        self.assertIn("base.ts", sets["files"])
+        self.assertIn("sort.ts", sets["files"])
+        self.committed_on_top_of(merged)
+        self.assertFalse([o for o in self.seen if o.get("exit") == 4])
+        self.assertEqual(len([o for o in self.seen if self.watched(o, verified)]), 1)
+
+    def test_a_push_from_another_clone_with_a_correction_uncommitted_is_re_checked(self):
+        self.correction_left_uncommitted()
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("app.ts", report)
+        self.assertIn(f"merge --ff-only origin/{branch}", report)
+        self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
+        pushed = self.head()
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+        self.re_check()
+        self.committed_on_top_of(pushed)
+
+    def test_a_push_over_the_uncommitted_correction_asks_to_stash_it_first(self):
+        self.correction_left_uncommitted()  # sort.ts, new in the worktree
+        branch = self.state()["branch"]
+        other = self.tmp / "other"
+        self.sh("git", "clone", "-q", "-b", branch, str(self.tmp / "origin.git"), str(other))
+        (other / "sort.ts").write_text("export const sort = 2;\n")
+        self.sh("git", "add", "sort.ts", cwd=other)
+        self.sh("git", "commit", "-q", "-m", "sort it", cwd=other)
+        self.sh("git", "push", "-q", "origin", branch, cwd=other)
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("correction is uncommitted", report)
+        wt, ref = re.escape(str(self.worktree)), re.escape(f"origin/{branch}")
+        steps = [rf"git -C '?{wt}'? add -A",
+                 rf"git -C '?{wt}'? stash push --include-untracked",
+                 rf"git -C '?{wt}'? merge --ff-only '?{ref}",
+                 rf"git -C '?{wt}'? stash pop"]
+        at = [re.search(s, report) for s in steps]
+        self.assertTrue(all(at), report)
+        self.assertEqual([m.start() for m in at], sorted(m.start() for m in at), report)
+        self.assert_counted(16, "the PR head moved", 6)
+        # Without the stash, git refuses: the fast-forward would overwrite sort.ts.
+        r = subprocess.run(["git", "merge", "--ff-only", f"origin/{branch}"],
+                           cwd=self.worktree, env=self.env, capture_output=True, text=True,
+                           check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "stash", "push", "--include-untracked", cwd=self.worktree)
+        self.sh("git", "merge", "-q", "--ff-only", f"origin/{branch}", cwd=self.worktree)
+        pushed = self.head()
+        r = subprocess.run(["git", "stash", "pop"], cwd=self.worktree, env=self.env,
+                           capture_output=True, text=True, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)  # both changed sort.ts
+        self.assertIn("<<<<<<<", (self.worktree / "sort.ts").read_text())
+        (self.worktree / "sort.ts").write_text("export const sort = 3;\n")  # resolved
+        self.sh("git", "add", "sort.ts", cwd=self.worktree)
+        self.sh("git", "stash", "drop", "-q", cwd=self.worktree)
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+        self.assertIn("sort.ts", self.re_check()["files"])
+        self.committed_on_top_of(pushed)
+
+    def test_a_push_over_a_clean_tree_asks_for_no_stash(self):
+        self.reviewed_with_ci()
+        self.push_outside("export const one = 1; // reworded\n")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("merge --ff-only", report)
+        self.assertNotIn("stash", report)
+        self.assertNotIn("uncommitted", report)
+
+    def test_a_push_that_diverged_from_the_run_s_unpushed_commit_is_merged_and_pushed(self):
+        self.corrected_and_committed()
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertIn("app.ts", report)
+        self.assertNotIn("sort.ts", report)  # the run's own commit is no outside change
+        self.assertNotIn("--ff-only", report)  # git can't fast-forward diverged commits
+        wt = re.escape(str(self.worktree))
+        self.assertRegex(report, rf"git -C '?{wt}'? merge '?origin/{re.escape(branch)}")
+        self.assertRegex(report, rf"git -C '?{wt}'? push origin HEAD")
+        self.assert_counted(16, "the PR head moved", 6)
+        self.sh("git", "merge", "-q", "--no-edit", f"origin/{branch}", cwd=self.worktree)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.asks_for_the_re_check(out)
+        self.assertNotIn("REPORT", out)
+
+    def stale_tracking_ref(self):
+        """refs/remotes/origin/<branch> at a commit unrelated to the run's (an
+        earlier branch of that name, deleted on GitHub). Returns the branch."""
+        branch = self.state()["branch"]
+        stale = self.sh("git", "commit-tree", "HEAD^{tree}", "-m", "an earlier branch",
+                        cwd=self.worktree).strip()
+        self.sh("git", "update-ref", f"refs/remotes/origin/{branch}", stale,
+                cwd=self.worktree)
+        return branch
+
+    def test_a_stale_tracking_ref_before_the_first_push_is_no_outside_push(self):
+        self.ship_ready()
+        self.lint()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "feat(todos): add due dates", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.stale_tracking_ref()  # origin.git holds only the base branch
+        out = self.next(0)
+        self.assertIn("push -u origin HEAD", out.get("ACTION", ""), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def committed_not_pushed(self):
+        """The build verified and committed, its first push not made yet."""
+        self.ship_ready()
+        self.lint()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "feat(todos): add due dates", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.state().get("marks") or {}).get("pushed"))
+
+    def asks_for_the_first_push(self, out):
+        shown = json.dumps(out, indent=2)
+        self.assertIn("push -u origin HEAD", out.get("ACTION", ""), shown)
+        self.assertNotIn("REPORT", out, shown)
+
+    def test_an_earlier_pr_s_branch_on_origin_before_the_first_push_is_no_outside_push(self):
+        self.committed_not_pushed()
+        branch = self.stale_tracking_ref()
+        # Left on origin by an earlier PR of that name: the fetch succeeds.
+        self.sh("git", "push", "-q", "origin",
+                f"refs/remotes/origin/{branch}:refs/heads/{branch}", cwd=self.worktree)
+        self.asks_for_the_first_push(self.next(0))
+
+    def test_an_unreachable_origin_before_the_first_push_is_no_outside_push(self):
+        self.committed_not_pushed()
+        self.stale_tracking_ref()
+        self.sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"),
+                cwd=self.worktree)  # fetch and ls-remote exit 128, not 2
+        self.asks_for_the_first_push(self.next(0))
+
+    def test_explain_before_the_first_push_shows_the_push_not_a_stop(self):
+        self.committed_not_pushed()
+        self.stale_tracking_ref()  # --explain fetches nothing: only this ref is read
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("push -u origin HEAD", r.stdout)
+        self.assertNotIn("someone pushed", r.stdout)
+
+    def test_a_tracking_ref_for_a_branch_deleted_on_origin_is_no_outside_push(self):
+        verified = self.reviewed_with_ci()
+        branch = self.stale_tracking_ref()
+        self.sh("git", "update-ref", "-d", f"refs/heads/{branch}",
+                cwd=self.tmp / "origin.git")  # gone from origin, still tracked here
+        out = self.next(0)
+        self.assertTrue(self.watched(out, verified), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_the_run_s_own_tests_commit_pushed_starts_no_re_check(self):
+        verified = self.reviewed_with_ci()
+        self.assertTrue(self.state().get("tests_commits"))  # the acceptance checks'
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        self.sh("git", "push", "-q", "origin", "HEAD", cwd=self.worktree)
+        self.assertNotEqual(self.head(), verified)
+        self.assertGreater(len(self.state()["tests_commits"]), 1)
+        out = self.next(0)
+        self.assertTrue(self.watched(out, verified), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_after_a_re_check_is_committed_a_pass_s_findings_wait_for_ci_on_it(self):
+        self.github_ci()
+        self.ship_ready()
+        self.lint()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "feat(todos): add due dates", "--dir",
+                         self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("push -u origin HEAD", self.next(0)["ACTION"])
+        self.sh("git", "push", "-q", "-u", "origin", "HEAD", cwd=self.worktree)
+        merged = self.base_merged_and_pushed()  # before the draft PR opens
+        r = self.autodev("mark", "pushed", "--value", merged, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.asks_for_the_re_check(self.next(0))
+        self.re_check()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)
+        self.script_gh(GH_OK + [
+            {"args": ["repo", "view", "--json", "url"], "stdout": json.dumps({"url": self.URL})},
+            {"args": ["pr", "list"], "stdout": "[]"},
+            {"args": ["pr", "create"], "stdout": f"{self.URL}/pull/12\n"},
+            {"args": ["pr", "edit", "12"], "stdout": ""},
+            {"args": ["pr", "view", "12", "--json", "number,url,body"],
+             "stdout": json.dumps({"number": 12, "url": f"{self.URL}/pull/12",
+                                   "body": f"Checked at commit {merged}"})},
+            *self.GREEN])
+        out = self.next(0)
+        body = self.dir / "pr-body.md"
+        self.assertIn(str(body), out["ACTION"], json.dumps(out, indent=2))
+        body.write_text(re.sub(r"<!-- WRITE: .*?-->", "Todos can carry a due date.",
+                               body.read_text()))
+        self.after(out)
+        self.pass_must_fix()  # the first pass, after the re-check's commit
+        out = self.next(0)
+        self.assertTrue(self.watched(out, merged), json.dumps(out, indent=2))
+
+    def test_a_base_merge_pushed_while_pass_1_runs_is_re_checked_before_its_ci_wait(self):
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.base_merged_and_pushed()
+        self.asks_for_the_re_check(self.next(0))
+        self.assert_never_watched(verified)
+
+    def test_a_base_merged_during_a_correction_after_a_conflict_is_re_checked(self):
+        # CONFLICT on the draft while pass 1's findings are open: the coder's
+        # correction starts, and the user brings the base in, as the CONFLICT
+        # line says, while the coder's edit is still uncommitted. The pass
+        # before `commit` reviews the merge too, not only the coder's edit.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        responses = json.loads((self.tmp / "gh.json").read_text())
+        self.script_gh([
+            {"args": ["pr", "view", "12", "--json"], "times": 1,
+             "stdout": json.dumps({"headRefOid": verified, "mergeable": "CONFLICTING"})},
+            {"args": ["pr", "checks"], "times": 1, "exit": 1,
+             "stderr": "no checks reported on the 'feat/due-dates' branch"},
+            *responses])
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("CONFLICT:", r.stdout)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        merged = self.base_merged_and_pushed()
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual(p["scope"], "outside", json.dumps(p, indent=2))
+        self.assertEqual(p.get("since"), verified)
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("sort.ts", p["files"])
+        n = max(b["n"] for b in self.state()["briefs"] if b["worker"] == "code-reviewer")
+        self.assertIn("base.ts", self.sets("code-reviewer", n)["files"])
+        self.committed_on_top_of(merged)
+
+    def test_a_base_merged_during_a_correction_with_nothing_left_to_commit_is_verified(
+            self):
+        # As above, but the correction leaves the tree as the merge has it: the
+        # re-check reviews the merge, and `commit` verifies the merge commit.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        merged = self.base_merged_and_pushed()
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual(p["scope"], "outside", json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        self.verify_only(merged)
+
+    def land_base(self):
+        """base.ts lands on main, pushed from another clone, and the worktree
+        fetches it."""
+        base = self.tmp / "base-clone"
+        self.sh("git", "clone", "-q", "-b", "main", str(self.tmp / "origin.git"), str(base))
+        (base / "base.ts").write_text("export const base = 1;\n")
+        self.sh("git", "add", "base.ts", cwd=base)
+        self.sh("git", "commit", "-q", "-m", "add base.ts", cwd=base)
+        self.sh("git", "push", "-q", "origin", "main", cwd=base)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.worktree)
+
+    def base_merged_not_pushed(self):
+        """base.ts lands on main; the user merges main into the worktree by
+        hand and does not push the merge. Returns the merge commit."""
+        self.land_base()
+        self.sh("git", "merge", "-q", "--no-edit", "origin/main", cwd=self.worktree)
+        return self.head()
+
+    def merged_during_the_correction(self, edit=True, push=True):
+        """CI on GitHub, green on the draft; pass 1 leaves C1 open and the
+        coder's correction starts. While it runs (its edit to sort.ts left
+        uncommitted when `edit`), the user merges the base in (and pushes the
+        merge when `push`); the coder returns and the gate is green. Returns
+        (the verified commit, the merge commit)."""
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        if edit:
+            (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        merged = self.base_merged_and_pushed() if push else self.base_merged_not_pushed()
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.seen = []  # the watch of the verified commit before the merge was right
+        return verified, merged
+
+    def re_check_finding_goes_to_the_coder(self, verified, merged):
+        """The pass since `verified` leaves a must-fix open: the next step is
+        the coder for it, with no second re-check and no watch of `verified`.
+        The merge is recorded as the commit under re-check."""
+        self.panel(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        p6 = self.state()["phase6"]
+        self.assertEqual(p6.get("unverified_commit"), merged)
+        p = p6["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        passes, corrections = len(p6["passes"]), len(p6["corrections"])
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual([w for w, _ in self.spawned(out)], ["coder"], shown)
+        self.assertNotIn("quality-gate", out["ACTION"], shown)
+        p6 = self.state()["phase6"]
+        self.assertEqual(len(p6["passes"]), passes)
+        self.assertEqual([k["entry"] for k in p6["corrections"][corrections:]], ["review"])
+        self.assertFalse([k for k in p6["corrections"] if k["entry"] == "outside"])
+        self.assert_never_watched(verified)
+
+    def test_a_re_check_over_an_uncommitted_correction_sends_its_finding_to_the_coder(
+            self):
+        verified, merged = self.merged_during_the_correction(edit=True)
+        self.re_check_finding_goes_to_the_coder(verified, merged)
+
+    def test_a_re_check_with_nothing_left_to_commit_sends_its_finding_to_the_coder(self):
+        verified, merged = self.merged_during_the_correction(edit=False)
+        self.re_check_finding_goes_to_the_coder(verified, merged)
+
+    def test_a_base_merge_pushed_while_the_after_commit_pass_runs_is_re_checked(self):
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()  # the after-commit pass, its reports on the tree before the merge
+        self.assertEqual(self.state()["phase6"]["passes"][-1]["scope"], "after-commit")
+        # The pass staged sort.ts as intent-to-add: git merges only with it set
+        # aside, as stop 16's report says.
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "stash", "push", "-q", "--include-untracked", cwd=self.worktree)
+        merged = self.base_merged_and_pushed()
+        self.sh("git", "stash", "pop", "-q", cwd=self.worktree)
+        self.seen = []  # the watch of the verified commit before the merge was right
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        r = self.autodev("commit", "--message", "fix: guard the sort", "--dir", self.dir)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("STALE", r.stdout + r.stderr)
+        self.assertEqual(self.head(), merged)
+        self.asks_for_the_re_check(self.next(0))
+        sets = self.re_check()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("sort.ts", p["files"])
+        self.assertIn("base.ts", sets["files"])
+        self.committed_on_top_of(merged)
+        self.assert_never_watched(verified)
+
+    def test_a_base_merged_in_and_not_pushed_during_a_correction_is_re_checked(self):
+        verified, merged = self.merged_during_the_correction(edit=True, push=False)
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("sort.ts", p["files"])
+        self.committed_on_top_of(merged)
+        out = self.next(0)
+        self.assertTrue(self.asked_push_of(out, self.head()), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_a_base_merged_over_a_check_repair_s_tests_commit_is_re_checked_as_outside(
+            self):
+        # The repair is a tests commit T on the verified commit; the base is
+        # merged in on top of T: HEAD is past the verified commit by T and by
+        # commits the run did not make.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.panel(CHECK_REVIEW, "MUST_FIX", corrections="# Required changes\nNone.\n")
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("acceptance-tester")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, repaired")
+        self.answer(*jobs[0], "REPAIRED", checks="1", ambiguous="none")
+        out = self.next(0)  # records the repair, commits it as a tests commit
+        self.assertIn("quality-gate", out["ACTION"], json.dumps(out, indent=2))
+        tests = self.head()
+        self.assertEqual(self.state()["tests_commits"][-1]["sha"], tests)
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD^", cwd=self.worktree).strip(),
+                         verified)
+        self.base_merged_not_pushed()
+        r = self.autodev("quality-gate", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.autodev("next", "--explain", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("commits the run did not make", r.stdout)
+        self.assertNotIn("as a tests commit", r.stdout)
+        self.assertNotIn("tests commit is on top", r.stdout)
+        out = self.next(0)  # the pass starts: the verifier first
+        self.assertIn("auto-dev:verifier", out["AGENT"], json.dumps(out, indent=2))
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+
+    def test_a_rebase_onto_the_base_during_a_correction_is_re_checked_before_a_push(self):
+        # The user rebases the PR branch onto the base, the coder's edit
+        # stashed around it, and force-pushes: the verified commit is no
+        # ancestor of HEAD any more, yet the commits since it are re-checked.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        self.land_base()
+        self.sh("git", "add", "-A", cwd=self.worktree)
+        self.sh("git", "stash", "push", "-q", "--include-untracked", cwd=self.worktree)
+        self.sh("git", "rebase", "-q", "origin/main", cwd=self.worktree)
+        self.sh("git", "push", "-q", "--force", "origin", "HEAD", cwd=self.worktree)
+        self.sh("git", "stash", "pop", "-q", cwd=self.worktree)
+        rebased = self.head()
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", verified, rebased],
+                           cwd=self.worktree, env=self.env, check=False)
+        self.assertNotEqual(r.returncode, 0)  # the rebase rewrote the verified commit
+        self.seen = []
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.assertIn("base.ts", p["files"])
+        self.assertIn("sort.ts", p["files"])
+        self.assertFalse([o for o in self.seen if "push -u origin HEAD" in o.get("ACTION", "")])
+
+    def rewritten_during_the_correction(self, rewrite):
+        """CI on GitHub, green on the draft; pass 1 leaves C1 open and the
+        coder corrects sort.ts. While it runs, `rewrite()` rewrites the branch
+        in the worktree (returning the new HEAD) and nothing is pushed; the
+        pass since the pushed commit is clean and `commit` commits the
+        correction on top. Returns (the pushed commit, the new HEAD)."""
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        rewritten = rewrite()
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", verified, rewritten],
+                           cwd=self.worktree, env=self.env, check=False)
+        self.assertNotEqual(r.returncode, 0)  # the pushed commit was rewritten
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel()
+        p = self.state()["phase6"]["passes"][-1]
+        self.assertEqual((p["scope"], p.get("since")), ("outside", verified),
+                         json.dumps(p, indent=2))
+        self.committed_on_top_of(rewritten)
+        branch = self.state()["branch"]
+        self.assertEqual(self.sh("git", "rev-parse", f"origin/{branch}",
+                                 cwd=self.worktree).strip(), verified)  # nothing pushed
+        return verified, self.head()
+
+    def asks_the_user_to_force_push(self, verified, head):
+        """`next` stops on the rewritten branch, calls no one else's push and
+        asks for no merge; once the user force-pushes it, the push step comes
+        with no stop."""
+        out = self.next(4)
+        report = " ".join(out["REPORT"])
+        self.assertNotIn("someone pushed", report)
+        self.assertNotRegex(report, r"git -C \S+ merge")
+        self.assertNotIn("sort.ts", report)  # the run's own files are no one else's
+        self.assertIn("rewritten", report)
+        self.assertIn(verified[:12], report)
+        wt = re.escape(str(self.worktree))
+        branch = re.escape(self.state()["branch"])
+        self.assertRegex(report, rf"git -C '?{wt}'? push '?--force-with-lease={branch}:"
+                                 rf"{verified}'? origin HEAD")
+        self.assert_counted(16, "the worktree's branch was rewritten", 6)
+        self.sh("git", "push", "-q", "--force-with-lease", "origin", "HEAD",
+                cwd=self.worktree)
+        self.resume()  # auto-dev continue
+        out = self.next(0)
+        self.assertTrue(self.asked_push_of(out, head), json.dumps(out, indent=2))
+        self.assertNotIn("REPORT", out)
+
+    def test_a_rebase_not_pushed_during_a_correction_asks_the_user_to_force_push(self):
+        def rebase():
+            self.land_base()
+            self.sh("git", "add", "-A", cwd=self.worktree)
+            self.sh("git", "stash", "push", "-q", "--include-untracked", cwd=self.worktree)
+            self.sh("git", "rebase", "-q", "origin/main", cwd=self.worktree)
+            self.sh("git", "stash", "pop", "-q", cwd=self.worktree)
+            return self.head()
+        self.asks_the_user_to_force_push(*self.rewritten_during_the_correction(rebase))
+
+    def test_an_amend_not_pushed_during_a_correction_asks_the_user_to_force_push(self):
+        def amend():
+            self.sh("git", "commit", "-q", "--amend", "-m", "feat: due dates, reworded",
+                    cwd=self.worktree)
+            return self.head()
+        self.asks_the_user_to_force_push(*self.rewritten_during_the_correction(amend))
+
+    def test_an_outside_head_marked_pushed_but_never_verified_still_stops_as_a_push(self):
+        # `mark pushed` names a head someone else pushed, which the run never
+        # verified and the worktree doesn't hold: that is no rewrite of the
+        # run's own commit, so no force-push is asked for.
+        self.reviewed_with_ci()
+        self.push_outside("export const one = 1; // reworded\n")
+        outside = self.sh("git", "rev-parse", "HEAD", cwd=self.tmp / "other").strip()
+        r = self.autodev("mark", "pushed", "--value", outside, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("someone pushed", report)
+        self.assertNotIn("force", report)
+        self.assert_counted(16, "the PR head moved", 6)
+
+    def test_a_non_utf8_uncommitted_path_is_shown_escaped_in_the_report(self):
+        # As correction_left_uncommitted, with a path whose name isn't UTF-8
+        # in the correction too; macOS can't write such a name, so it is
+        # planted in the index alone while the coder works.
+        self.github_ci()
+        self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=b"x\n",
+                              cwd=self.worktree, env=self.env, capture_output=True,
+                              check=True).stdout.decode().strip()
+        subprocess.run([b"git", b"update-index", b"--add", b"--cacheinfo",
+                        b"100644," + blob.encode() + b",caf\xe9.ts"],
+                       cwd=self.worktree, env=self.env, capture_output=True, check=True)
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        self.push_outside("export const one = 1; // reworded\n")
+        # Without --json, the REPORT goes to a strict UTF-8 stdout.
+        r = subprocess.run([sys.executable, str(AUTODEV), "next", "--dir", str(self.dir)],
+                           capture_output=True, cwd=self.tmp, check=False,
+                           env={**self.env, "PYTHONIOENCODING": "utf-8:strict"})
+        stdout = r.stdout.decode("utf-8")
+        self.assertEqual(r.returncode, 4, stdout + r.stderr.decode("utf-8", "replace"))
+        self.assertIn("someone pushed", stdout)
+        self.assertIn("correction is uncommitted (caf\\xe9.ts, sort.ts)", stdout)
+
+    def test_a_diverged_push_over_an_uncommitted_correction_is_stashed_merged_and_pushed(
+            self):
+        # The run's own tests commit on the verified commit, not pushed, the
+        # coder's edit uncommitted; someone pushes on the verified commit.
+        self.github_ci()
+        verified, _ = self.draft_pr(extra=self.GREEN)
+        self.pass_must_fix()
+        self.assertTrue(self.watched(self.next(0), verified))
+        r = self.autodev("ci-watch", "--sha", verified, "--max-wait", "0", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, jobs = self.expect("coder")
+        (self.worktree / "sort.ts").write_text("export const sort = 1;\n")
+        (self.worktree / "src" / "due.acceptance.test.ts").write_text("test, tightened\n")
+        r = self.autodev("commit-tests", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("COMMITTED", r.stdout)
+        self.assertEqual(self.sh("git", "rev-parse", "HEAD^", cwd=self.worktree).strip(),
+                         verified)
+        self.answer(*jobs[0], "BUILT", blocked="0", test_changes="none")
+        self.quality_gate()
+        self.panel(OPEN_REVIEW, "MUST_FIX", self.FIX)
+        branch = self.push_outside("export const one = 1; // reworded\n")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("correction is uncommitted (sort.ts)", report)
+        self.assertNotIn("--ff-only", report)
+        wt, ref = re.escape(str(self.worktree)), re.escape(f"origin/{branch}")
+        steps = [rf"git -C '?{wt}'? add -A",
+                 rf"git -C '?{wt}'? stash push --include-untracked",
+                 rf"git -C '?{wt}'? merge '?{ref}",
+                 rf"git -C '?{wt}'? push origin HEAD",
+                 rf"git -C '?{wt}'? stash pop"]
+        at = [re.search(s, report) for s in steps]
+        self.assertTrue(all(at), report)
+        self.assertEqual([m.start() for m in at], sorted(m.start() for m in at), report)
+        self.assertNotRegex(report, r",\s*,")
+        self.assert_counted(16, "the PR head moved", 6)
+
+    def test_more_than_five_uncommitted_paths_are_counted_not_listed(self):
+        self.correction_left_uncommitted(extra=[f"a{i}.ts" for i in range(1, 6)])
+        self.push_outside("export const one = 1; // reworded\n")
+        report = " ".join(self.next(4)["REPORT"])
+        self.assertIn("correction is uncommitted (a1.ts, a2.ts, a3.ts, a4.ts, a5.ts and 1 "
+                      "more)", report)
+        self.assertNotIn("sort.ts", report)
+
+    def test_an_unreachable_origin_uses_the_branch_last_fetched(self):
+        verified = self.reviewed_with_ci()
+        self.base_merged_and_pushed()  # the push moved origin/<branch> here too
+        self.sh("git", "remote", "set-url", "origin", str(self.tmp / "missing.git"),
+                cwd=self.worktree)
+        self.asks_for_the_re_check(self.next(0))
+        self.assert_never_watched(verified)
+
+    def test_a_checkpoint_probe_fetches_and_sees_a_push_first(self):
+        self.reviewed_with_ci()
+        self.push_outside("export const one = 1; // reworded\n")  # not fetched here
+        state = self.state()
+        state["settings"]["checkpoint_events"] = 1  # a checkpoint is due
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("someone pushed", " ".join(out["REPORT"]))
+        self.assert_counted(16, "the PR head moved", 6)
+
+
 class ReVoteTest(NextCase):
     ship_ready = ShipTest.ship_ready
     to_body = ShipTest.to_body
@@ -3951,6 +7239,7 @@ class ReVoteTest(NextCase):
         self.assertEqual([self.sets(*j)["reviewer"] for j in jobs], ["R3"])
         out = self.next(4)
         self.assertIn("R3 (failed twice)", " ".join(out["REPORT"]))
+        self.assert_counted(None, "a re-voter gave no usable vote twice", 6)
 
 
 class RiskRecheckTest(NextCase):
@@ -4047,6 +7336,497 @@ class RiskRecheckTest(NextCase):
         self.next(0)
         self.assertEqual(self.state()["risk_recheck"]["seq"], seq)
 
+    def declare(self, *globs):
+        """The run's settings declare `globs` sensitive, as a profile would."""
+        state = self.state()
+        state["settings"]["sensitive_paths"] = list(globs)
+        self.write_state(state)
+
+    def test_a_file_under_a_declared_glob_raises_the_risk(self):
+        self.standard_session()
+        self.declare("src/middleware.ts", "src/users/**")
+        self.write("src/users/controller.ts")
+        state = self.verified()
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/controller.ts"])
+        self.assertIn("risk raised to high after the build: it touches "
+                      "src/users/controller.ts", [n["text"] for n in state["notes"]])
+
+    def test_a_file_beside_a_declared_directory_stays_standard(self):
+        self.standard_session()
+        self.declare("src/middleware.ts", "src/users/**")
+        self.write("src/users.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+    def test_a_bare_name_matches_at_any_depth_and_a_double_star_spans_folders(self):
+        self.standard_session()
+        self.declare("middleware.ts", "src/**/guard.ts", "/lib/app.ts")
+        for rel in ("api/v2/middleware.ts", "src/guard.ts", "src/a/b/guard.ts",
+                    "lib/app.ts"):
+            self.write(rel)
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches api/v2/middleware.ts, lib/app.ts, src/a/b/guard.ts, src/guard.ts"])
+
+    def test_a_star_stops_at_a_slash_and_a_slashed_glob_is_anchored(self):
+        self.standard_session()
+        self.declare("src/*.ts", "lib/app.ts")
+        self.write("src/users/controller.ts")
+        self.write("vendor/lib/app.ts")
+        state = self.verified()
+        # Neither built file matches. The run's two acceptance checks sit
+        # directly in src/, so `src/*.ts` names them and nothing else.
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches " + ", ".join(sorted(self.CHECKS))])
+
+    MIDDLEWARE = ("export function check(req) { return req.headers.authorization "
+                  "&& req.session; }\n")
+    WORDS_WHY = ("it adds lines naming a sensitive area: src/middleware.ts "
+                 "(authorization, session)")
+
+    def test_a_sensitive_word_on_an_added_line_raises_the_risk(self):
+        self.standard_session()
+        self.write("src/middleware.ts", self.MIDDLEWARE)
+        state = self.verified()
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def committed_middleware_with(self, key):
+        """The repo's git config sets `key`; the build commits src/middleware.ts,
+        so the words are found through the diff, not by reading a new file."""
+        self.standard_session()
+        self.sh("git", "config", key, "true", cwd=self.worktree)
+        self.write("src/middleware.ts", "export const x = 1;\n")
+        self.sh("git", "add", "src/middleware.ts", cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "middleware", cwd=self.worktree)
+        self.write("src/middleware.ts", self.MIDDLEWARE)
+        return self.verified()
+
+    def test_the_added_line_scan_ignores_a_mnemonic_diff_prefix(self):
+        state = self.committed_middleware_with("diff.mnemonicPrefix")
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_diff_noprefix(self):
+        state = self.committed_middleware_with("diff.noprefix")
+        self.assertTrue(state["high_risk"])
+        self.assertEqual(state["risk_recheck"]["why"], [self.WORDS_WHY])
+
+    def test_a_run_without_the_sensitive_paths_setting_still_rechecks(self):
+        self.standard_session()
+        state = self.state()
+        state["settings"].pop("sensitive_paths", None)
+        self.write_state(state)
+        self.write("src/users/controller.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+
+class AddedLineWordsTest(NextCase):
+    """The base branch holds src/legacy.ts with `export const token = 1;`,
+    which the build rewrites: a word only on a removed line does not count."""
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def init(self, *extra, **kw):
+        seed = self.tmp / "seed"
+        (seed / "src").mkdir(exist_ok=True)
+        (seed / "src" / "legacy.ts").write_text("export const token = 1;\n")
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "legacy", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "pull", "-q", "--ff-only", "origin", "main", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+    def test_longer_words_and_words_on_removed_lines_do_not_count(self):
+        self.standard_session()
+        self.assertIn("token", self.sh("git", "show", "main:src/legacy.ts",
+                                       cwd=self.worktree))
+        self.write("src/legacy.ts", "export const one = 1;\n")
+        self.write("src/name.ts", "export const author = tokenizer();\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+
+class StaleLocalBaseTest(NextCase):
+    """The risk re-check measures the build against origin/<base>, the branch
+    the worktree was cut from, not the main checkout's local base branch: that
+    one can lag far behind, and every commit merged since would count as the
+    build's."""
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def init(self, *extra, **kw):
+        # Origin's main moves on by 30 files; the main checkout only fetches, so
+        # its local main stays behind origin/main.
+        seed = self.tmp / "seed"
+        for i in range(30):
+            (seed / "src" / "merged").mkdir(parents=True, exist_ok=True)
+            # A sensitive word on a merged line: the added-line scan must not
+            # count it either.
+            (seed / "src" / "merged" / f"f{i}.ts").write_text(f"export const token{i} = {i};\n")
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "merged since", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "fetch", "-q", "origin", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+    def test_a_stale_local_base_branch_does_not_count_merged_commits_as_the_build(self):
+        local = self.sh("git", "rev-parse", "main", cwd=self.repo).strip()
+        remote = self.sh("git", "rev-parse", "origin/main", cwd=self.repo).strip()
+        self.assertNotEqual(local, remote)  # the local base branch is behind
+        self.standard_session()
+        self.write("src/due.ts")
+        state = self.verified()
+        # The build and its acceptance checks, not the 30 files merged since.
+        self.assertLess(state["risk_recheck"]["files"], 30, state["risk_recheck"])
+        self.assertEqual(state["risk_recheck"]["why"], [], state["risk_recheck"])
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+        self.assertFalse(state["high_risk"])
+
+
+class SensitiveScanTest(NextCase):
+    """More of the risk re-check's declared globs and added-line scan."""
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+    declare = RiskRecheckTest.declare
+
+    def commit(self, rel, text):
+        """The build commits `rel` holding `text` (a name with `\\` or `*` is literal)."""
+        self.write(rel, text)
+        self.sh("git", "--literal-pathspecs", "add", "--", rel, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "add", cwd=self.worktree)
+
+    def committed(self, rel, before, after):
+        """The build commits `rel` holding `before`, then changes it to `after`."""
+        self.commit(rel, before)
+        self.write(rel, after)
+
+    # A name that is not UTF-8 (`caf` and the byte 0xE9), as Python passes it to git.
+    NOT_UTF8 = "caf" + b"\xe9".decode("utf-8", "surrogateescape")
+
+    def commit_unwritten(self, rel, text):
+        """Commit `rel` holding `text` through the index alone, marked
+        skip-worktree: no file is written, so a name that is not UTF-8 commits
+        on any file system, and the working tree stays as it was."""
+        blob = self.tmp / "blob.txt"
+        blob.write_text(text)
+        sha = self.sh("git", "hash-object", "-w", str(blob), cwd=self.worktree).strip()
+        self.sh("git", "update-index", "--add", "--cacheinfo", f"100644,{sha},{rel}",
+                cwd=self.worktree)
+        self.sh("git", "update-index", "--skip-worktree", "--", rel, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "add", cwd=self.worktree)
+
+    def test_a_committed_name_that_is_not_utf8_is_named_printably(self):
+        self.standard_session()
+        self.commit_unwritten(f"src/auth/{self.NOT_UTF8}.ts", "export const x = 1;\n")
+        state = self.verified()  # `next` exits 0 past the re-check
+        why = "it touches src/auth/caf\\xe9.ts"
+        self.assertEqual(state["risk_recheck"]["why"], [why])
+        self.assertIn(why, (self.dir / "WORK_LOG.md").read_text(encoding="utf-8"))
+
+    def test_an_added_line_in_a_name_that_is_not_utf8_is_named_printably(self):
+        self.standard_session()
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.ts", "export const session = 1;\n")
+        state = self.verified()
+        why = "it adds lines naming a sensitive area: lib/caf\\xe9.ts (session)"
+        self.assertEqual(state["risk_recheck"]["why"], [why])
+        self.assertIn(why, (self.dir / "WORK_LOG.md").read_text(encoding="utf-8"))
+
+    def test_a_committed_name_that_is_not_utf8_outside_a_sensitive_area(self):
+        self.standard_session()
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.txt", "plain\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_base_branch_name_that_is_not_utf8_is_read(self):
+        # The base branch tracks the name: committed before the session, with
+        # main and origin/main moved to that commit, so it is in `ls-files`
+        # but not in the build's diff.
+        self.commit_unwritten(f"lib/{self.NOT_UTF8}.txt", "plain\n")
+        for ref in ("refs/heads/main", "refs/remotes/origin/main"):
+            self.sh("git", "update-ref", ref, "HEAD", cwd=self.worktree)
+        self.standard_session()
+        self.write("src/due.ts")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_trailing_slash_a_question_mark_and_a_bracket(self):
+        self.standard_session()
+        self.declare("users/", "src/v?.ts", "src/[ab].ts")
+        for rel in ("users/a/b.ts", "api/users/x.ts", "src/v1.ts", "src/v10.ts",
+                    "src/a.ts", "src/[ab].ts"):
+            self.write(rel)
+        state = self.verified()
+        # `users/` is anchored at the root; `?` is one character; `[` is literal.
+        self.assertEqual(state["risk_recheck"]["why"],
+                         ["it touches src/[ab].ts, src/v1.ts, users/a/b.ts"])
+
+    def test_a_lock_file_s_words_do_not_count(self):
+        self.standard_session()
+        self.write("package-lock.json", '{"node_modules/@auth0/auth0-spa-js": {}}\n')
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_binary_file_s_words_do_not_count(self):
+        self.standard_session()
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "blob.bin").write_bytes(b"\0token session\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_file_named_by_both_signals_is_reported_once(self):
+        self.standard_session()
+        self.write("src/auth/login.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/login.ts"])
+
+    def test_an_added_line_that_starts_with_plus_signs_is_scanned(self):
+        self.standard_session()
+        self.committed("src/notes.txt", "notes\n", "notes\n++ session\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: src/notes.txt (session)"])
+
+    def test_a_tracked_name_with_a_space_is_named_as_built(self):
+        self.standard_session()
+        self.committed("src/my file.ts", "export const x = 1;\n",
+                       "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: src/my file.ts (session)"])
+
+    def test_a_tracked_name_git_quotes_is_named_as_built(self):
+        self.standard_session()
+        self.committed('src/say"hi".ts', "export const x = 1;\n",
+                       "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            'it adds lines naming a sensitive area: src/say"hi".ts (session)'])
+
+    def test_three_words_a_file_and_five_files_at_most(self):
+        self.standard_session()
+        for i in range(6):
+            self.write(f"src/f{i}.ts", "token(); logout(); session; login(auth);\n")
+        state = self.verified()
+        listed = ", ".join(f"src/f{i}.ts (auth, login, logout)" for i in range(5))
+        self.assertEqual(state["risk_recheck"]["why"], [
+            f"it adds lines naming a sensitive area: {listed} and 1 more"])
+
+    def test_a_committed_quoted_name_under_a_declared_glob_is_named_raw(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        self.commit("src/users/café.ts", "export const x = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/café.ts"])
+
+    # The next three commit with a clean working tree, so each name reaches the
+    # re-check only through the committed diff, never through `git status`.
+    def test_a_committed_name_with_a_quote_under_a_declared_glob_is_named_raw(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        self.commit('src/users/say"hi".ts', "export const x = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ['it touches src/users/say"hi".ts'])
+
+    def test_a_committed_name_with_a_backslash_is_reported_once(self):
+        self.standard_session()
+        self.commit("src/auth/back\\slash.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/back\\slash.ts"])
+
+    def test_committed_names_with_a_tab_and_a_control_byte_are_reported_once(self):
+        self.standard_session()
+        for rel in ("src/auth/ctl\x01.ts", "src/auth/a\tb.ts"):
+            self.commit(rel, "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it touches src/auth/a\tb.ts, src/auth/ctl\x01.ts"])
+
+    def test_a_committed_quoted_sensitive_path_is_reported_once(self):
+        self.standard_session()
+        self.commit("src/auth/café.ts", "const token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/café.ts"])
+
+    def test_a_committed_quoted_name_is_scanned_through_the_diff(self):
+        self.standard_session()
+        self.commit('src/say"hi".ts', "export const session = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            'it adds lines naming a sensitive area: src/say"hi".ts (session)'])
+
+    def test_names_with_a_backslash_a_tab_and_a_control_byte_are_named_as_built(self):
+        self.standard_session()
+        names = ("src/back\\slash.ts", "src/a\tb.ts", "src/ctl\x01.ts")
+        for rel in names:
+            self.committed(rel, "export const x = 1;\n", "export const session = 1;\n")
+        state = self.verified()
+        listed = ", ".join(f"{rel} (session)" for rel in sorted(names))
+        self.assertEqual(state["risk_recheck"]["why"], [
+            f"it adds lines naming a sensitive area: {listed}"])
+
+    def committed_middleware_under(self, *config, attributes=None):
+        """The repo's git config sets each (key, value) in `config`; the build
+        commits src/middleware.ts (and a .gitattributes holding `attributes`),
+        then adds the middleware's sensitive line to it."""
+        self.standard_session()
+        for key, value in config:
+            self.sh("git", "config", key, value, cwd=self.worktree)
+        if attributes:
+            self.commit(".gitattributes", attributes)
+        self.committed("src/middleware.ts", "export const x = 1;\n",
+                       RiskRecheckTest.MIDDLEWARE)
+        return self.verified()
+
+    def test_the_added_line_scan_ignores_a_forced_colour(self):
+        state = self.committed_middleware_under(("color.ui", "always"))
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_an_external_diff(self):
+        state = self.committed_middleware_under(("diff.external", "true"))
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+    def test_the_added_line_scan_ignores_a_textconv_driver(self):
+        state = self.committed_middleware_under(("diff.strip.textconv", "true"),
+                                                attributes="*.ts diff=strip\n")
+        self.assertEqual(state["risk_recheck"]["why"], [RiskRecheckTest.WORDS_WHY])
+
+
+class BaseFilesCase(NextCase):
+    """The base branch holds BASE ((path, text) pairs) before the run starts."""
+    BASE = ()
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def seed(self, seed):
+        """Anything more to commit on the base branch, in the clone `seed`."""
+
+    def init(self, *extra, **kw):
+        seed = self.tmp / "seed"
+        for rel, text in self.BASE:
+            (seed / rel).parent.mkdir(parents=True, exist_ok=True)
+            (seed / rel).write_text(text)
+        self.seed(seed)
+        self.sh("git", "add", "-A", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "base", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "pull", "-q", "--ff-only", "origin", "main", cwd=self.repo)
+        return super().init(*extra, **kw)
+
+
+class TrackedQuotedNameTest(BaseFilesCase):
+    """A tracked file whose name git quotes is scanned through its diff, as any
+    tracked file is: a word already on the base branch does not count."""
+    TWO_LINES = "const session = 1;\nconst a = 1;\n"
+    BASE = (("lib/café.ts", TWO_LINES), ('src/say"hi".ts', TWO_LINES),
+            ("package-lock.json", "{}\n"))
+
+    def test_a_non_ascii_name_changed_off_its_sensitive_line_stays_standard(self):
+        self.standard_session()
+        self.write("lib/café.ts", "const session = 1;\nconst a = 2;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_quoted_name_changed_off_its_sensitive_line_stays_standard(self):
+        self.standard_session()
+        self.write('src/say"hi".ts', "const session = 1;\nconst a = 2;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+    def test_a_word_added_to_a_non_ascii_name_comes_from_its_diff(self):
+        self.standard_session()
+        self.write("lib/café.ts", "const session = 1;\nconst a = 1;\nconst token = 1;\n")
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [
+            "it adds lines naming a sensitive area: lib/café.ts (token)"])
+
+    def test_a_tracked_lock_file_s_added_words_do_not_count(self):
+        self.standard_session()
+        self.write("package-lock.json", '{"node_modules/@auth0/auth0-spa-js": {}}\n')
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["high"], False, state["risk_recheck"])
+
+
+class MovedFileTest(BaseFilesCase):
+    """A file the build moves has its lines counted as added, whatever the
+    repo's diff.renames says, as an untracked move's lines already are."""
+    BASE = (("src/store.ts", "const session = 1;\n"),)
+    MOVED_WHY = "it adds lines naming a sensitive area: src/data/store.ts (session)"
+
+    def moved_under(self, renames):
+        self.standard_session()
+        self.sh("git", "config", "diff.renames", renames, cwd=self.worktree)
+        (self.worktree / "src" / "data").mkdir()
+        self.sh("git", "mv", "src/store.ts", "src/data/store.ts", cwd=self.worktree)
+        return self.verified()
+
+    def test_a_moved_file_s_lines_count_with_renames_off(self):
+        state = self.moved_under("false")
+        self.assertEqual(state["risk_recheck"]["why"], [self.MOVED_WHY])
+
+    def test_a_moved_file_s_lines_count_with_renames_on(self):
+        state = self.moved_under("true")
+        self.assertEqual(state["risk_recheck"]["why"], [self.MOVED_WHY])
+
+
+class CommittedMoveTest(BaseFilesCase):
+    """A move the build commits names the file's old path, under git's default
+    diff.renames, with the working tree left as committed."""
+    BASE = (("src/auth/guard.ts", "export const x = 1;\n"),
+            ("src/users/a.ts", "export const x = 1;\n"))
+    declare = RiskRecheckTest.declare
+
+    def committed_move(self, old, new):
+        self.sh("git", "mv", old, new, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "move", cwd=self.worktree)
+        return self.verified()
+
+    def test_a_committed_move_out_of_a_sensitive_word_directory(self):
+        self.standard_session()
+        state = self.committed_move("src/auth/guard.ts", "src/guard.ts")
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/auth/guard.ts"])
+
+    def test_a_committed_move_out_of_a_declared_glob(self):
+        self.standard_session()
+        self.declare("src/users/**")
+        state = self.committed_move("src/users/a.ts", "src/a.ts")
+        self.assertEqual(state["risk_recheck"]["why"], ["it touches src/users/a.ts"])
+
+
+class SubmoduleBumpTest(BaseFilesCase):
+    """The base branch holds a submodule at lib/; a bump shows as one changed
+    path, never as lines of the files inside it."""
+    FILE_PROTOCOL = ("-c", "protocol.file.allow=always")
+
+    def seed(self, seed):
+        sub = self.tmp / "sublib"
+        self.sh("git", "init", "-q", "-b", "main", str(sub))
+        (sub / "a.txt").write_text("plain\n")
+        self.sh("git", "add", "-A", cwd=sub)
+        self.sh("git", "commit", "-q", "-m", "sub", cwd=sub)
+        self.sh("git", *self.FILE_PROTOCOL, "submodule", "add", "-q", str(sub), "lib",
+                cwd=seed)
+
+    def test_a_bumped_submodule_s_inner_lines_are_not_scanned(self):
+        self.standard_session()
+        self.sh("git", "config", "diff.submodule", "diff", cwd=self.worktree)
+        self.sh("git", *self.FILE_PROTOCOL, "submodule", "update", "-q", "--init", "lib",
+                cwd=self.worktree)
+        inner = self.worktree / "lib"
+        (inner / "a.txt").write_text("plain\nconst session = 1;\n")
+        self.sh("git", "commit", "-q", "-am", "bump", cwd=inner)
+        state = self.verified()
+        self.assertEqual(state["risk_recheck"]["why"], [], state["risk_recheck"])
+
 
 class RiskAtTheReadyGateTest(NextCase):
     ship_ready = ShipTest.ship_ready
@@ -4066,6 +7846,31 @@ class RiskAtTheReadyGateTest(NextCase):
         out = self.next(5)
         self.assertIn("ready gate", out["QUESTION"])
         self.assertIn("Risk: high after the build (it touches src/auth/token.ts)",
+                      out["SUMMARY"])
+
+
+class DeclaredPathAtTheReadyGateTest(NextCase):
+    ship_ready = ShipTest.ship_ready
+    to_body = ShipTest.to_body
+    draft_pr = ShipTest.draft_pr
+    reviewed_pr = ShipTest.reviewed_pr
+    refresh_body = ShipTest.refresh_body
+    published = ShipTest.published
+
+    def build_session(self):
+        state = self.state()
+        state["settings"]["sensitive_paths"] = ["src/middleware.ts", "src/users/**"]
+        self.write_state(state)
+        (self.worktree / "src" / "users").mkdir(parents=True, exist_ok=True)
+        (self.worktree / "src" / "users" / "controller.ts").write_text(
+            "export const x = 1;\n")
+        super().build_session()
+
+    def test_the_ready_gate_names_a_file_under_a_declared_glob(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.assertIn("Risk: high after the build (it touches src/users/controller.ts)",
                       out["SUMMARY"])
 
 
@@ -4090,7 +7895,7 @@ class ReviewEffortTest(NextCase):
         self.assertIn("review pass 1: the panel runs at effort xhigh",
                       (self.dir / "WORK_LOG.md").read_text())
         # Re-issued (not recorded yet), in text: each PROMPT is followed by its EFFORT.
-        r = self.autodev("next", "--dir", self.dir)
+        r = self.autodev("next", "--reissue", "--dir", self.dir)
         lines = r.stdout.splitlines()
         prompts = [i for i, ln in enumerate(lines) if ln.startswith("PROMPT: ")]
         self.assertEqual(len(prompts), 3, r.stdout)
@@ -4152,7 +7957,26 @@ class ReviewEffortTest(NextCase):
         state = json.loads((self.dir / "state.json").read_text())
         del state["phase6"]["passes"][0]["effort"]  # as an older `next` saved it
         (self.dir / "state.json").write_text(json.dumps(state))
-        self.assertEqual(self.next(0)["EFFORT"], ["xhigh"] * 3)  # the plan, not the default
+        self.assertEqual(self.next(0, reissue=True)["EFFORT"],  # the plan, not the default
+                         ["xhigh"] * 3)
+
+    def test_a_failed_reviewer_is_re_spawned_under_its_own_reviewer_slot(self):
+        self.to_panel()
+        _, jobs = self.reviewers()
+        self.assertEqual(sorted(self.sets(w, n)["reviewer"] for w, n in jobs),
+                         ["R1", "R2", "R3"])
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            if slot == "R2":
+                self.answer(w, n, "", status="failed")
+                continue
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("x"))
+            self.answer(w, n, "REVIEWED", findings="1", leads="0")
+        _, again = self.expect("code-reviewer")
+        self.assertEqual(len(again), 1, again)
+        self.assertEqual(self.sets(*again[0])["reviewer"], "R2")
+        brief = (self.dir / "briefs" / f"{again[0][0]}-{again[0][1]}.md").read_text()
+        self.assertIn("reviewer: R2", brief.splitlines())
 
 
 class QuoteTest(RunCase):
@@ -4198,9 +8022,12 @@ class TextOutputTest(NextCase):
         self.assertTrue(lines[2].startswith(f"BRIEF: {self.dir}/briefs/planner-1.md"))
         self.assertTrue(lines[3].startswith("PROMPT: Your brief is at"))
         self.assertEqual(len(lines), 4)  # no AFTER: the next `next` records the result
-        self.assertIn("run `next` (it records their results)", lines[0])
+        self.assertIn("run `next` (it records its result)", lines[0])
         self.assertFalse(any(ln.startswith("RULE:") for ln in lines))
         r = self.autodev("next", "--dir", self.dir, "--explain")
+        self.assertIn("nothing was done; run `next` to act) wait: planner #1", r.stdout)
+        self.assertIn("RULE: a brief sent out in this session has no result yet", r.stdout)
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--explain")
         self.assertIn("RULE: a brief was issued", r.stdout)
 
 
@@ -4286,6 +8113,28 @@ class OverrideTest(OverrideCase):
         self.enter_stage("ship")
         self.assertEqual(self.state()["budget"]["remaining"], 4)  # the gate's correction is free
 
+    def test_a_capped_re_spawn_sent_by_the_next_that_settles_a_fix_stops_on_its_miss(self):
+        BuildTest.coder_ended_with_no_result_file(self)
+        self.assert_sent_once_more_to_finish("coder", self.next_reissue())
+        out = self.next_reissue(4)
+        self.assertIn("twice", " ".join(out["REPORT"]))
+        n = self.fix(out, "give the coder more room")[1]
+        (self.worktree / "src").mkdir(exist_ok=True)
+        (self.worktree / "src" / "sorted.ts").write_text("export const stable = true;\n")
+        self.report(n, changed="- `src/sorted.ts` — the stable sort the user asked for")
+        self.answer("fixer", n, "FIXED", fix_report=str(self.dir / "override" /
+                                                        f"fixer-{n}.md"), changed="1")
+        out = self.next(0)  # settles the fix, and sends coder #2's job out once more
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.spawned(out), [("coder", 3)], shown)
+        self.assertIn("keep those edits", self.previous_issues("coder", 3))
+        out = self.next_reissue(4)  # coder #3 ends with no result file too
+        shown = json.dumps(out, indent=2)
+        report = " ".join(out.get("REPORT", []))
+        self.assertIn("coder #3", report, shown)
+        self.assertIn("twice", report, shown)
+        self.assertFalse((self.dir / "briefs" / "coder-4.md").exists(), shown)
+
     def test_a_typed_instruction_spawns_the_fixer_and_the_gate_runs_again(self):
         out, _ = self.red_gate()
         n = self.fix(out)[1]
@@ -4359,7 +8208,8 @@ class OverrideTest(OverrideCase):
         self.assertIn(f"fixer-{n}: refused (MISMATCH)", out["RECORDED"])
         issues = self.state()["refused"][f"fixer-{n}"]
         self.assertTrue(any("`.auto-dev/state.json`" in i for i in issues), issues)
-        _, jobs = self.expect("fixer")  # the retry, held to the first brief's copy
+        jobs = self.spawned(out)  # the retry, held to the first brief's copy
+        self.assertEqual([w for w, _ in jobs], ["fixer"], json.dumps(out, indent=2))
         m = jobs[0][1]
         entry = next(b for b in self.state()["briefs"]
                      if b["worker"] == "fixer" and b["n"] == m)
@@ -4525,12 +8375,13 @@ class OverrideTest(OverrideCase):
         self.assertEqual(changed, [".auto-dev/acceptance/MANIFEST.md"])  # other rows stay
         self.report(n, changed="- `.auto-dev/acceptance/MANIFEST.md` — dropped")
         self.answer("fixer", n, "FIXED", fix_report="x", changed="1")
-        self.next(0, refused_ok=True)
+        out = self.next(0, refused_ok=True)
         issues = self.state()["refused"][f"fixer-{n}"]
         self.assertTrue(any("still holds its test" in i for i in issues), issues)
         self.assertTrue(any("condition S1 has no check left" in i for i in issues), issues)
         # The retry takes the test out and adds the row.
-        _, jobs = self.expect("fixer")
+        jobs = self.spawned(out)
+        self.assertEqual([w for w, _ in jobs], ["fixer"], json.dumps(out, indent=2))
         installed = self.worktree / "src" / "due.acceptance.test.ts"
         installed.write_text("")
         r = self.amend("--not-automatable",
@@ -4635,6 +8486,7 @@ class OverrideTest(OverrideCase):
         out = self.next(4)
         self.assertNotIn("Sign off and go on", self.labels(out))
         self.assertIn("planted change", " ".join(out["SUMMARY"]))
+        self.assert_counted(10, "the verifier returned MUTATION_LEFT_CHANGES", 6)
         r = self.autodev("override", "signoff", "--text", "fine", "--dir", self.dir)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("can't be signed off", r.stdout + r.stderr)
@@ -4682,6 +8534,49 @@ class OverrideTest(OverrideCase):
         _, jobs = self.expect("planner")  # the kept plan gets its steps first
         self.assertEqual(self.mode(*jobs[0]), "revise")
 
+    def test_the_three_spawn_stop_asks_again_after_talk_and_leave(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("override", "talk", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("spawned 3 times", " ".join(out["REPORT"]), shown)
+        self.assertIn("QUESTION", out, shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+        r = self.autodev("override", "leave", "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("The user chose to leave the run stopped here; the worktree stays.",
+                      " ".join(out["REPORT"]), shown)
+        self.assertFalse(out.get("ACTION", "").startswith("wait"), shown)
+
+    def test_a_fixer_at_the_three_spawn_stop_is_waited_for_alone(self):
+        out = self.stopped_after_three_spawns()
+        job = self.fix(out, "point the planner at the fixture")
+        self.assertEqual(job, ("fixer", 1))
+        out = self.next(0)
+        self.assert_waits_for(out, "fixer #1")
+        self.assertNotIn("planner #1", out["ACTION"])
+        self.report(1, proposal="Point the planner at the fixture repo.")
+        self.answer("fixer", 1, "NEEDS_CONSENT", fix_report="x", changed="0")
+        out = self.next(4)
+        self.assertEqual(self.labels(out)[0], "Approve the fixer's proposal")
+
+    def test_the_brief_a_fixed_fixer_sends_again_is_waited_for(self):
+        # The fixer's FIXED lifts the stop at the same seq the planner's brief is
+        # then sent out again at: that brief is out, not stale.
+        (self.dir / "acceptance" / "MANIFEST.md").unlink()  # the plan stage: no checks yet
+        out = self.stopped_after_three_spawns()
+        self.assertEqual(self.fix(out, "point the planner at the fixture"), ("fixer", 1))
+        self.report(1)
+        self.answer("fixer", 1, "FIXED", fix_report=str(self.dir / "override" / "fixer-1.md"),
+                    changed="0")
+        out = self.next(0)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("BRIEF"), [str(self.dir / "briefs" / "planner-1.md")], shown)
+        self.assert_waits_for(self.next(0), "planner #1")
+
 
 class OverrideShipTest(OverrideCase):
     """Overrides in Phase 6: a correction that changed nothing."""
@@ -4719,6 +8614,7 @@ class OverrideShipTest(OverrideCase):
 
     def test_retry_reopens_a_correction_that_changed_nothing_at_no_round(self):
         out = self.unchanged_correction()
+        self.assert_counted(None, "a correction changed nothing", 6)
         left = self.state()["budget"]["remaining"]
         r = self.answer_stop(out, "I fixed it myself", "clarified the finding")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -4834,3 +8730,2753 @@ class OverrideShipTest(OverrideCase):
                                         cwd=self.worktree).split() + self.sh(
             "git", "ls-files", "--others", "--exclude-standard",
             cwd=self.worktree).split()), ["coder.ts", "fixer.ts"])
+
+
+# A saved profile for the setup tests: two gate checks, so a lookup can find
+# one of them never adopted.
+SAVED_PROFILE = """\
+stack: typescript
+setup: ["echo ready > setup-ran.txt"]
+gate:
+  - { kind: test, command: "true", report: "TEST.md" }
+  - { kind: lint, command: "npx eslint .", report: "LINT.md" }
+"""
+BOTH_ADOPTED = "check 1: adopted — package.json:9\ncheck 2: adopted — .eslintrc.json:1\n"
+PROFILER_DRAFT = """\
+stack: typescript
+setup: ["echo ready > setup-ran.txt"]
+gate:
+  - { kind: test, command: "true", report: "TEST.md" }
+"""
+PROFILER_REPORT = ("PROFILE\n```yaml\n" + PROFILER_DRAFT + "```\n"
+                   "EVIDENCE\n- true: package.json:9\n"
+                   "NOT ADOPTED — eslint: no config file or dependency\n"
+                   "NOT INSTALLED — jq: not on PATH\n"
+                   "QUESTIONS — the e2e suite in CI is left out of the gate; keep it out?\n")
+FULL_OVERRIDE = 'setup: ["true"]\ngate:\n  - { kind: test, command: "true", report: "TEST.md" }\n'
+
+
+class SetupFlowTest(RunCase):
+    """`next --repo <repo> --task <task>` sets a run up before it exists: it
+    prints the lookup or profiler to spawn and the profile question, then
+    creates the run. The origin looks like GitHub (a throwaway git config
+    rewrites it to the local bare repo), so profile-path.py names a saved
+    profile under AUTO_DEV_PROFILES_DIR; TMPDIR is the test's own folder."""
+
+    TASK = "Add due dates to todos"
+    OPTIONS = ("Looks right — save it for this repo", "Looks right — use it for this run only",
+               "Change something (tell me what)", "Stop")
+    assert_counted = NextCase.assert_counted
+
+    def setUp(self):
+        super().setUp()
+        self.temp = self.tmp / "tmpdir"
+        self.temp.mkdir()
+        self.profiles = self.tmp / "profiles"
+        gitconfig = self.tmp / "gitconfig"
+        gitconfig.write_text(f'[url "file://localhost{self.tmp / "origin.git"}"]\n'
+                             "\tinsteadOf = https://github.com/acme/app.git\n")
+        self.env.update(TMPDIR=str(self.temp), AUTO_DEV_PROFILES_DIR=str(self.profiles),
+                        GIT_CONFIG_GLOBAL=str(gitconfig))
+        self.sh("git", "remote", "set-url", "origin", "https://github.com/acme/app.git",
+                cwd=self.repo)
+        r = subprocess.run([sys.executable, str(SCRIPTS / "profile-path.py"), str(self.repo)],
+                           capture_output=True, text=True, env=self.env, check=False)
+        self.assertIn(r.returncode, (0, 1), r.stdout + r.stderr)
+        self.saved = Path(r.stdout.splitlines()[0].split(": ", 1)[1])
+        self.worktree = self.tmp / "app-add-due-dates-to-todos"
+        self.dir = self.worktree / ".auto-dev"
+        self.outs = []
+
+    # -------------------------------------------------------------- driving
+
+    def setup_next(self, *extra, task=None, wait="5", expect=None):
+        r = self.autodev("next", "--repo", self.repo, "--task", task or self.TASK,
+                         "--max-wait", wait, *extra, "--json")
+        try:
+            out = json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --repo printed no JSON (exit {r.returncode}):\n"
+                      f"{r.stdout}{r.stderr}")
+        self.outs.append(out)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), r.returncode, shown)
+        if expect is not None:
+            self.assertEqual(out.get("exit"), expect, shown)
+        return out
+
+    def next_dir(self, expect=None):
+        r = self.autodev("next", "--dir", self.dir, "--json")
+        try:
+            out = json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --dir printed no JSON (exit {r.returncode}):\n"
+                      f"{r.stdout}{r.stderr}")
+        if expect is not None:
+            self.assertEqual(out.get("exit"), expect, json.dumps(out, indent=2))
+        return out
+
+    def brief(self, out, worker):
+        """The slot values of the one `worker` brief `out` spawns."""
+        self.assertEqual(out.get("AGENT"), [f"auto-dev:{worker}"], json.dumps(out, indent=2))
+        path = Path(out["BRIEF"][0])
+        values, name = {"path": str(path)}, None
+        for line in path.read_text().splitlines()[1:]:
+            if line.startswith("  ") and name:
+                values[name] += "\n" + line[2:]
+            else:
+                name, _, value = line.partition(": ")
+                values[name] = value
+        return values
+
+    def returns(self, values, worker, status, answer, **data):
+        answer_file = values.get("answer_file") or values["result_file"][:-5] + "-answer.md"
+        if answer is not None:
+            Path(answer_file).write_text(answer)
+        Path(values["result_file"]).write_text(json.dumps(
+            {"worker": worker, "status": status, **data}))
+
+    def lookup_answers(self, out, answer, status="ok", nxt="ANSWERED"):
+        values = self.brief(out, "lookup")
+        self.returns(values, "lookup", status, answer, next=nxt,
+                     answer_file=values.get("answer_file", "none"))
+        return values
+
+    def profiler_returns(self, out, draft=PROFILER_DRAFT, status="ok"):
+        values = self.brief(out, "profiler")
+        Path(values["draft_path"]).write_text(draft)
+        self.returns(values, "profiler", status, PROFILER_REPORT, next="CONFIRM",
+                     draft=values["draft_path"], questions="1")
+        return values
+
+    def to_question(self, task=None):
+        self.profiler_returns(self.setup_next(task=task, expect=0))
+        return self.setup_next(task=task, expect=5)
+
+    def with_saved_profile(self, answer, text=SAVED_PROFILE, **kw):
+        """A saved profile, its lookup answered with `answer`; the next `next`."""
+        self.save_profile(text)
+        self.lookup_answers(self.setup_next(expect=0, **kw), answer)
+        return self.setup_next(**kw)
+
+    def save_profile(self, text=SAVED_PROFILE):
+        self.saved.parent.mkdir(parents=True, exist_ok=True)
+        self.saved.write_text(text)
+
+    def commit_override(self, text):
+        seed = self.tmp / "seed"
+        (seed / ".auto-dev.yml").write_text(text)
+        self.sh("git", "add", ".auto-dev.yml", cwd=seed)
+        self.sh("git", "commit", "-q", "-m", "override", cwd=seed)
+        self.sh("git", "push", "-q", "origin", "main", cwd=seed)
+        self.sh("git", "pull", "-q", "--ff-only", "origin", "main", cwd=self.repo)
+
+    def options(self, out):
+        return tuple(o["label"]
+                     for o in json.loads(out["QUESTION"])["questions"][0]["options"])
+
+    def answer_with(self, out, label, text="drop the lint check"):
+        """Run the AFTER line for `label`, its placeholder filled with `text`."""
+        line = next((ln.split(" → ", 1)[1] for ln in out.get("AFTER", [])
+                     if ln.startswith(f'"{label}"')), None)
+        self.assertIsNotNone(line, json.dumps(out, indent=2))
+        line = re.sub(r"'<[^']*>'", lambda _: shlex.quote(text), line)
+        return subprocess.run(line, shell=True, capture_output=True, text=True,
+                              env=self.env, cwd=self.tmp, check=False)
+
+    def answered(self, out, label, text="drop the lint check"):
+        r = self.answer_with(out, label, text)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def ready(self, out, worktree=None):
+        """`out` is the action to move into a created run's worktree."""
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(out.get("exit"), 0, shown)
+        after = out.get("AFTER", [])
+        self.assertEqual(len(after), 1, shown)
+        argv = shlex.split(after[0])
+        self.assertEqual(argv[:4], ["python3", str(AUTODEV), "next", "--dir"], shown)
+        self.assertEqual(len(argv), 5, shown)
+        ad = Path(argv[4])
+        if worktree is not None:
+            self.assertEqual(ad, worktree / ".auto-dev", shown)
+        self.worktree, self.dir = ad.parent, ad
+        self.assertTrue((ad / "state.json").exists(), shown)
+        self.assertIn(str(ad.parent), out.get("ACTION", ""), shown)
+
+    def to_the_planner(self):
+        for _ in range(3):
+            out = self.next_dir(0)
+            if out.get("AGENT"):
+                self.assertEqual(out["AGENT"], ["auto-dev:planner"], json.dumps(out, indent=2))
+                return out
+        self.fail("next --dir never spawned the planner")
+
+    def profile_line(self):
+        for line in (self.dir / "profile.md").read_text().splitlines():
+            if line.startswith("- **Profile:** "):
+                return line[len("- **Profile:** "):]
+        self.fail("profile.md has no Profile line")
+
+    def gate(self):
+        return [check["command"] for check in self.state()["settings"]["gate"]]
+
+    def work_log(self):
+        return (self.dir / "WORK_LOG.md").read_text()
+
+    def summary(self, out):
+        return "\n".join(out.get("SUMMARY", []))
+
+    def no_run_made(self):
+        self.assertEqual(sorted(p.name for p in self.tmp.glob("app-*")), [])
+
+    def worker_briefs(self):
+        return sorted(p.name for p in self.temp.rglob("*.md")
+                      if re.match(r"(profiler|lookup)-\d+\.md$", p.name))
+
+    def leave_out(self, out):
+        """Answer `out`'s gate-check question with Leave them out; the next `next`."""
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        self.answered(out, "Leave them out of this run")
+        return self.setup_next()
+
+    def failed_setup(self):
+        """A saved profile whose setup is `false`: the run is made and stops."""
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        out = self.with_saved_profile(BOTH_ADOPTED, text=self.saved.read_text())
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        report = "\n".join(out.get("REPORT", []))
+        for part in ("false", "exited 1", str(self.saved)):
+            self.assertIn(part, report)
+        self.assertTrue((self.dir / "state.json").exists())
+        return out
+
+    # -------------------------------------------------------------- a saved profile
+
+    def test_a_saved_profile_sets_up_the_run_after_one_lookup(self):
+        self.save_profile()
+        out = self.setup_next(expect=0)
+        self.assertIn("npx eslint .", self.lookup_answers(out, BOTH_ADOPTED)["question"])
+        out = self.setup_next(expect=0)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.state()["branch"], "feat/add-due-dates-to-todos")
+        self.assertEqual(self.sh("git", "branch", "--show-current", cwd=self.worktree).strip(),
+                         "feat/add-due-dates-to-todos")
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}")
+        profile_md = (self.dir / "profile.md").read_text()
+        self.assertIn("| 1 | test | `true` |", profile_md)
+        self.assertIn("| 2 | lint | `npx eslint .` |", profile_md)
+        self.assertTrue([ln for ln in out.get("SUMMARY", [])
+                         if f"Using the saved profile at {self.saved}" in ln],
+                        json.dumps(out, indent=2))
+        self.assertEqual([a for o in self.outs for a in o.get("AGENT", [])],
+                         ["auto-dev:lookup"])
+        self.assertFalse([o for o in self.outs if o.get("exit") == 5 or o.get("QUESTION")])
+
+    def test_a_lookup_with_no_usable_answer_keeps_every_check(self):
+        cases = [("failed", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("blocked", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("ok", "OUT_OF_SCOPE", "OUT_OF_SCOPE: whether eslint counts is a verdict\n"),
+                 ("ok", "ANSWERED", "Both tools look used to me.\n")]
+        self.save_profile()
+        for i, (status, nxt, answer) in enumerate(cases, 1):
+            with self.subTest(status=status, next=nxt):
+                task = f"Add due dates case {i}"
+                self.lookup_answers(self.setup_next(task=task, expect=0), answer,
+                                    status=status, nxt=nxt)
+                out = self.setup_next(task=task)
+                self.ready(out)
+                self.assertEqual(self.gate(), ["true", "npx eslint ."])
+                self.assertNotIn("dropped gate check", self.work_log())
+
+    def test_a_check_the_repo_never_adopted_is_left_out_of_this_run(self):
+        out = self.leave_out(self.with_saved_profile(
+            "check 1: adopted — package.json:9\n"
+            "check 2: not adopted — no eslint config or dependency\n"))
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}, without npx eslint .")
+        self.assertIn(f"dropped gate check npx eslint .: the user left it out of this run; the "
+                      f"lookup found its tool not adopted (saved profile {self.saved})",
+                      self.work_log())
+        self.assertTrue([ln for ln in out.get("SUMMARY", [])
+                         if "npx eslint ." in ln and str(self.saved) in ln],
+                        json.dumps(out, indent=2))
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_contradicting_or_out_of_range_answer_lines_drop_nothing(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: adopted — package.json:12\n"
+                                      "check 2: not adopted — no eslint config\n"
+                                      "check 7: not adopted — no such tool\n")
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertNotIn("dropped gate check", self.work_log())
+
+    def test_a_lookup_answer_in_doubt_drops_no_check(self):
+        out = self.with_saved_profile("I could not tell for check 2\n")
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertNotIn("dropped gate check", self.work_log())
+
+    # -------------------------------------------------------------- researching a profile
+
+    def test_with_no_profile_the_profiler_researches_then_the_user_is_asked(self):
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.assertEqual(values["repo"], str(self.repo))
+        self.assertEqual(values["base"], "main")
+        scratch = self.temp / f"auto-dev-setup-{os.getuid()}"
+        self.assertTrue(str(values["draft_path"]).startswith(f"{scratch}{os.sep}"), values)
+        self.profiler_returns(out)
+        out = self.setup_next(expect=5)
+        shown = json.dumps(out, indent=2)
+        summary = self.summary(out)
+        for line in PROFILER_DRAFT.splitlines():
+            self.assertIn(line.strip(), summary)
+        questions = summary.find("the e2e suite in CI")
+        self.assertNotEqual(questions, -1, shown)
+        for later in ("jq: not on PATH", "package.json:9"):
+            self.assertGreater(summary.find(later), questions, shown)
+        self.assertTrue([ln for ln in out["SUMMARY"] if f"Save path: {self.saved}" in ln], shown)
+        self.assertEqual(self.options(out), self.OPTIONS)
+        self.assertEqual(len(out["AFTER"]), 4, shown)
+        for label, line in zip(self.OPTIONS, out["AFTER"]):
+            self.assertTrue(line.startswith(f'"{label}" → '), shown)
+        self.no_run_made()
+        self.assertEqual(self.sh("git", "status", "--porcelain", cwd=self.repo), "")
+
+    def test_an_origin_with_no_save_path_leaves_out_the_save_option(self):
+        self.sh("git", "remote", "set-url", "origin", str(self.tmp / "origin.git"),
+                cwd=self.repo)
+        out = self.to_question()
+        self.assertEqual(self.options(out), self.OPTIONS[1:])
+        self.assertEqual(len(out["AFTER"]), 3, json.dumps(out, indent=2))
+        self.assertRegex(self.summary(out).lower(), r"can(no|'|’)t be saved")
+        self.no_run_made()
+
+    def test_the_save_answer_writes_the_profile_and_creates_the_run(self):
+        self.answered(self.to_question(), self.OPTIONS[0])
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        name = self.saved.relative_to(self.profiles).with_suffix("").as_posix()
+        days = {datetime.now().date().isoformat(),
+                datetime.now(timezone.utc).date().isoformat()}
+        self.assertIn(self.saved.read_text().splitlines()[0],
+                      {f"# auto-dev profile for {name}, saved {day}" for day in days})
+        r = subprocess.run([sys.executable, str(SCRIPTS / "validate-config.py"), "--profile",
+                            str(self.saved)], capture_output=True, text=True, env=self.env,
+                           check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.profile_line(), "researched by the profiler, confirmed by the user")
+
+    def test_the_run_only_answer_creates_the_run_without_saving_the_profile(self):
+        self.answered(self.to_question(), self.OPTIONS[1])
+        self.ready(self.setup_next(), self.tmp / "app-add-due-dates-to-todos")
+        self.assertFalse(self.saved.exists())
+
+    def test_the_change_answer_has_the_profiler_redo_the_draft_then_asks_again(self):
+        first = self.brief(self.setup_next(expect=0), "profiler")
+        self.profiler_returns(self.outs[-1])
+        self.answered(self.setup_next(expect=5), self.OPTIONS[2], "drop the lint check")
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.assertNotEqual(values["path"], first["path"])
+        self.assertIn("drop the lint check", values["previous_issues"])
+        self.profiler_returns(out)
+        out = self.setup_next(expect=5)
+        self.assertEqual(self.options(out), self.OPTIONS)
+        self.no_run_made()
+
+    def test_the_stop_answer_ends_setup_with_nothing_created(self):
+        self.answered(self.to_question(), "Stop")
+        out = self.setup_next(expect=4)
+        report = " ".join(out.get("REPORT", [])).lower()
+        self.assertIn("profile question", report)
+        self.assertIn("nothing", report)
+        self.no_run_made()
+        self.brief(self.setup_next(expect=0), "profiler")  # a later call starts over
+
+    def test_a_profile_that_cannot_be_saved_still_sets_up_the_run(self):
+        blocker = self.profiles / self.saved.relative_to(self.profiles).parts[0]
+        self.profiles.mkdir()
+        blocker.write_text("a file where the folder should be\n")
+        out = self.to_question()
+        self.answered(out, self.OPTIONS[0])
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        summary = self.summary(out)
+        self.assertRegex(summary.lower(), r"not (been )?saved")
+        self.assertIn(str(blocker), summary)
+        for line in PROFILER_DRAFT.splitlines():
+            self.assertIn(line.strip(), summary)
+        self.assertFalse(self.saved.exists())
+
+    def test_an_invalid_saved_profile_is_researched_and_offered_for_overwrite(self):
+        self.save_profile('stack: typescript\nsetup: ["true"]\n')
+        out = self.setup_next(expect=0)
+        self.profiler_returns(out)  # the profiler, not a lookup
+        out = self.setup_next(expect=5)
+        shown = json.dumps(out, indent=2)
+        self.assertIn("a saved profile must set `gate`", self.summary(out))
+        self.assertIn(self.OPTIONS[0], self.options(out))
+        self.assertTrue([ln for ln in out["SUMMARY"] if f"Save path: {self.saved}" in ln], shown)
+        self.assertNotIn("auto-dev:lookup", [a for o in self.outs for a in o.get("AGENT", [])])
+
+    def test_an_invalid_draft_is_sent_back_once_then_setup_stops(self):
+        bad = 'stack: typescript\nsetup: ["true"]\n'
+        first = self.profiler_returns(self.setup_next(expect=0), draft=bad)
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.assertNotEqual(values["path"], first["path"])
+        self.assertIn("must set `gate`", values["previous_issues"])
+        self.profiler_returns(out, draft=bad)
+        out = self.setup_next(expect=4)
+        self.assertIn("must set `gate`", "\n".join(out.get("REPORT", [])))
+        self.assertNotIn("QUESTION", out)
+        self.no_run_made()
+
+    # -------------------------------------------------------------- .auto-dev.yml
+
+    def test_an_override_with_setup_and_gate_needs_no_research(self):
+        self.commit_override(FULL_OVERRIDE)
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertNotIn("AGENT", out)
+        self.assertNotIn("QUESTION", out)
+        self.assertEqual(self.worker_briefs(), [])
+        self.assertEqual(self.profile_line(), ".auto-dev.yml")
+
+    def test_a_partial_override_is_researched_and_listed_in_the_question(self):
+        self.commit_override("iteration_budget: 2\n")
+        out = self.to_question()
+        self.assertTrue([ln for ln in out["SUMMARY"]
+                         if "iteration_budget" in ln and ".auto-dev.yml" in ln],
+                        json.dumps(out, indent=2))
+
+    def test_an_override_with_an_unknown_key_stops_before_anything(self):
+        self.commit_override("iteration_budgt: 2\n")
+        out = self.setup_next(expect=4)
+        self.assertIn("did you mean `iteration_budget`", "\n".join(out.get("REPORT", [])))
+        self.assertNotIn("AGENT", out)
+        self.assertEqual(self.worker_briefs(), [])
+        self.no_run_made()
+
+    # -------------------------------------------------------------- setup that can't finish
+
+    def test_a_failed_setup_stops_and_continue_runs_it_again_from_the_fixed_profile(self):
+        self.failed_setup()
+        self.save_profile()  # the user fixes the saved file
+        self.next_dir(4)
+        self.assertFalse((self.worktree / "setup-ran.txt").exists())
+        r = self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.assertIn("RESUME", r.stdout, r.stdout + r.stderr)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+
+    def test_a_retry_reads_the_saved_profile_with_the_scratch_folder_gone(self):
+        self.failed_setup()
+        self.save_profile()
+        for path in self.temp.iterdir():
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        r = self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.assertIn("RESUME", r.stdout, r.stdout + r.stderr)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+
+    def test_a_signed_out_gh_stops_before_any_research(self):
+        self.script_gh([{"args": ["auth", "status"], "stderr": "not logged in", "exit": 1}])
+        out = self.setup_next(expect=4)
+        self.assertIn("not signed in", "\n".join(out.get("REPORT", [])))
+        self.assertNotIn("AGENT", out)
+        self.assertEqual(self.worker_briefs(), [])
+        self.no_run_made()
+        self.assertEqual(self.sh("git", "branch", "--list", "feat/*", cwd=self.repo), "")
+
+    def test_setup_still_running_at_the_wait_limit_is_an_action(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "sleep 3"))
+        self.lookup_answers(self.setup_next(expect=0, wait="1"), BOTH_ADOPTED)
+        out = self.setup_next(wait="1")
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+
+    # -------------------------------------------------------------- running it again
+
+    def test_a_worker_with_no_result_is_waited_for_and_reissue_sends_it_again(self):
+        self.brief(self.setup_next(expect=0), "profiler")
+        out = self.setup_next(expect=0)
+        shown = json.dumps(out, indent=2)
+        self.assertTrue(out.get("ACTION", "").startswith("wait"), shown)
+        self.assertIn("profiler #1", out["ACTION"], shown)
+        self.assertNotIn("AGENT", out, shown)
+        values = self.brief(self.setup_next("--reissue", expect=0), "profiler")
+        self.assertEqual(Path(values["path"]).name, "profiler-2.md")
+
+    def test_a_third_spawn_with_no_result_stops_naming_the_retry_command(self):
+        self.brief(self.setup_next(expect=0), "profiler")
+        for _ in range(2):
+            self.brief(self.setup_next("--reissue", expect=0), "profiler")
+        out = self.setup_next("--reissue", expect=4)
+        report = "\n".join(out.get("REPORT", []))
+        self.assertIn("profiler", report)
+        self.assertTrue([ln for ln in out.get("REPORT", [])
+                         if "next" in ln and "--repo" in ln and "--reissue" in ln], report)
+
+    def test_an_existing_run_for_the_task_is_pointed_to_not_made_again(self):
+        r = self.autodev("init", "--repo", self.repo, "--slug", "add-due-dates-to-todos",
+                         "--task", self.TASK, "--profile", self.profile, "--max-wait", "30")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        before = self.sh("git", "worktree", "list", cwd=self.repo)
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertNotIn("AGENT", out)
+        self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
+
+    def test_a_folder_at_the_worktree_path_gets_a_numbered_suffix(self):
+        self.commit_override(FULL_OVERRIDE)
+        taken = self.tmp / "app-add-due-dates-to-todos"
+        taken.mkdir()
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos-2")
+        self.assertEqual(self.state()["branch"], "feat/add-due-dates-to-todos-2")
+        self.assertEqual(list(taken.iterdir()), [])
+
+    def test_a_leftover_branch_gets_a_numbered_suffix(self):
+        self.commit_override(FULL_OVERRIDE)
+        self.sh("git", "branch", "feat/add-due-dates-to-todos", cwd=self.repo)
+        out = self.setup_next(expect=0)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos-2")
+        self.assertEqual(self.state()["branch"], "feat/add-due-dates-to-todos-2")
+        self.assertFalse((self.tmp / "app-add-due-dates-to-todos").exists())
+
+    # -------------------------------------------------------------- a Jira ticket
+
+    def test_ticket_details_given_once_reach_the_run(self):
+        text = "Add due dates\n\nTodos get an optional due date."
+        url = "https://acme.atlassian.net/browse/PROJ-123"
+        ticket = self.tmp / "t.txt"
+        ticket.write_text(text)
+        self.save_profile()
+        out = self.setup_next("--ticket", "PROJ-123", "--ticket-url", url,
+                              "--ticket-text-file", ticket, "--jira", "available, cloudId abc",
+                              task="PROJ-123", expect=0)
+        self.lookup_answers(out, BOTH_ADOPTED)
+        out = self.setup_next(task="PROJ-123")
+        self.ready(out)
+        state = self.state()
+        self.assertEqual(state["branch"], "feat/proj-123-add-due-dates")
+        self.assertEqual(state["task"]["ticket"], "PROJ-123")
+        self.assertEqual(state["task"]["ticket_url"], url)
+        self.assertEqual(state["task"]["ticket_text"], text)
+        self.assertIn("- **Jira:** available, cloudId abc\n",
+                      (self.dir / "profile.md").read_text())
+        values = self.brief(self.to_the_planner(), "planner")
+        self.assertEqual(values["task"], text)
+
+    def test_a_missing_or_empty_ticket_text_file_cannot_run(self):
+        self.save_profile()
+        empty = self.tmp / "empty.txt"
+        empty.write_text("")
+        for path in (self.tmp / "missing.txt", empty):
+            with self.subTest(file=path.name):
+                r = self.autodev("next", "--repo", self.repo, "--task", "PROJ-123",
+                                 "--ticket", "PROJ-123", "--ticket-text-file", path, "--json")
+                both = r.stdout + r.stderr
+                self.assertEqual(r.returncode, 2, both)
+                self.assertIn("ERROR", both)
+                self.assertIn(str(path), both)
+                self.assertEqual(self.worker_briefs(), [])
+        # The same call with a readable file goes on: the file was the cause.
+        readable = self.tmp / "t.txt"
+        readable.write_text("Add due dates\n\nTodos get an optional due date.")
+        self.brief(self.setup_next("--ticket", "PROJ-123", "--ticket-text-file", readable,
+                                   task="PROJ-123", expect=0), "lookup")
+
+    def test_a_ticket_run_keeps_the_ask_in_the_user_s_words(self):
+        ask = "Add due dates to todos"
+        self.save_profile()
+        out = self.setup_next("--ticket", "PROJ-123", "--ask", ask,
+                              "--jira", "unavailable: no Atlassian MCP",
+                              task="PROJ-123", expect=0)
+        self.lookup_answers(out, BOTH_ADOPTED)
+        self.ready(self.setup_next(task="PROJ-123"))
+        tree = self.worktree
+        self.assertEqual(self.state()["task"]["ask"], ask)
+        # With Jira unavailable there is no ticket text: the planner gets the ask.
+        values = self.brief(self.to_the_planner(), "planner")
+        self.assertEqual(values["task"], ask)
+        # The user's own wording finds the run again.
+        r = self.autodev("resume", "--repo", self.repo, "--task", ask)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"^(RESUME|ASK)\b", r.stdout)
+        before = self.sh("git", "worktree", "list", cwd=self.repo)
+        out = self.setup_next(task=ask)
+        self.ready(out, tree)
+        self.assertNotIn("AGENT", out)
+        self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
+
+    # -------------------------------------------------------------- safety
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX folder ownership")
+    def test_a_scratch_parent_others_can_write_to_or_a_symlink_is_refused(self):
+        parent = self.temp / f"auto-dev-setup-{os.getuid()}"
+        theirs = self.tmp / "theirs"
+        theirs.mkdir()
+        for case in ("writable by others", "a symlink"):
+            with self.subTest(case=case):
+                if parent.is_symlink():
+                    parent.unlink()
+                elif parent.exists():
+                    shutil.rmtree(parent)
+                if case == "a symlink":
+                    parent.symlink_to(theirs, target_is_directory=True)
+                    watched, why = theirs, r"link"
+                else:
+                    parent.mkdir()
+                    os.chmod(parent, 0o777)
+                    watched, why = parent, r"writ"
+                r = self.autodev("next", "--repo", self.repo, "--task", self.TASK, "--json")
+                both = r.stdout + r.stderr
+                self.assertEqual(r.returncode, 2, both)
+                self.assertIn("ERROR", both)
+                self.assertIn(str(parent), both)
+                self.assertRegex(both.lower(), why)
+                self.assertEqual(list(watched.iterdir()), [])
+                self.no_run_made()
+
+    def test_task_text_in_the_printed_commands_never_runs_as_shell(self):
+        task = "Add dates'; touch pwned; echo '"
+        question = self.to_question(task=task)
+        for line in question["AFTER"]:
+            argv = shlex.split(re.sub(r"'<[^']*>'", "'x'", line.split(" → ", 1)[1]))
+            self.assertEqual(argv[argv.index("--task") + 1], task, line)
+        self.answered(question, self.OPTIONS[1])
+        self.ready(self.setup_next(task=task))
+        self.assertEqual(self.state()["task"]["text"], task)
+        for label in (self.OPTIONS[0], self.OPTIONS[2], "Stop"):
+            self.answer_with(question, label)  # the run exists: these may be refused
+        self.assertEqual([str(p) for p in self.tmp.rglob("pwned")], [])
+
+    # -------------------------------------------------------------- more of setup (the coder's)
+
+    def scratch_folder(self):
+        folders = [p for p in (self.temp / f"auto-dev-setup-{os.getuid()}").iterdir()
+                   if p.is_dir()]
+        self.assertEqual(len(folders), 1, folders)
+        return folders[0]
+
+    def test_the_scratch_folder_goes_once_the_run_is_set_up(self):
+        out = self.with_saved_profile(BOTH_ADOPTED)
+        self.ready(out)
+        self.assertEqual(list((self.temp / f"auto-dev-setup-{os.getuid()}").iterdir()), [])
+
+    def test_retry_keeps_the_checks_dropped_at_creation(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        out = self.leave_out(self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                                     "check 2: not adopted — no eslint config\n",
+                                                     text=self.saved.read_text()))
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        self.save_profile()  # the user fixes the setup; the lint check is still listed
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+        self.assertEqual(self.gate(), ["true"])
+
+    def test_a_run_without_an_origin_record_retries_with_the_saved_setup(self):
+        self.failed_setup()
+        (self.dir / "profile-origin.json").unlink()  # as a run made by 5.0
+        self.save_profile(SAVED_PROFILE + '  - { kind: build, command: "make", '
+                                          'report: "BUILD.md" }\n')
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])  # the run's own
+
+    def test_a_draft_the_user_kept_for_the_run_is_retried_from_the_run(self):
+        self.answered(self.to_question(), self.OPTIONS[1])
+        self.ready(self.setup_next())
+        self.assertEqual((self.dir / "profile.yml").read_text(), PROFILER_DRAFT)
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text()),
+                         {"kind": "draft"})
+
+    def test_a_stale_pre_run_brief_is_sent_again(self):
+        self.brief(self.setup_next(expect=0), "profiler")
+        setup = self.scratch_folder() / "setup.json"
+        info = json.loads(setup.read_text())
+        info["spawns"][-1]["issued_at"] = (datetime.now(timezone.utc)
+                                           - timedelta(hours=4)).isoformat()
+        setup.write_text(json.dumps(info))
+        values = self.brief(self.setup_next(expect=0), "profiler")
+        self.assertEqual(Path(values["path"]).name, "profiler-2.md")
+
+    def test_reissue_after_the_never_returned_stop_spawns_again(self):
+        self.brief(self.setup_next(expect=0), "profiler")
+        for _ in range(2):
+            self.brief(self.setup_next("--reissue", expect=0), "profiler")
+        self.setup_next("--reissue", expect=4)
+        self.setup_next(expect=4)  # without --reissue it stays stopped
+        values = self.brief(self.setup_next("--reissue", expect=0), "profiler")
+        self.assertEqual(Path(values["path"]).name, "profiler-4.md")
+
+    def test_a_profiler_that_fails_twice_stops(self):
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.returns(values, "profiler", "failed", None, next="CONFIRM",
+                     draft=values["draft_path"], questions="0")
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        self.assertIn("failed", values["previous_issues"])
+        self.returns(values, "profiler", "failed", None, next="CONFIRM",
+                     draft=values["draft_path"], questions="0")
+        out = self.setup_next(expect=4)
+        self.assertTrue([ln for ln in out["REPORT"] if "--reissue" in ln],
+                        json.dumps(out, indent=2))
+        self.assertNotIn("QUESTION", out)
+        self.no_run_made()
+
+    def test_the_question_says_where_the_report_is_when_it_has_no_file(self):
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        Path(values["draft_path"]).write_text(PROFILER_DRAFT)
+        Path(values["result_file"]).write_text(json.dumps(
+            {"worker": "profiler", "status": "ok", "next": "CONFIRM",
+             "draft": values["draft_path"], "questions": "0"}))
+        out = self.setup_next(expect=5)
+        self.assertIn("in its reply", self.summary(out))
+
+    def test_explain_and_setup_flags_without_repo_cannot_run(self):
+        for args in (("next", "--repo", self.repo, "--task", self.TASK, "--explain"),
+                     ("next", "--task", self.TASK)):
+            with self.subTest(args=args):
+                r = self.autodev(*args)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("ERROR", r.stderr)
+        self.assertEqual(self.worker_briefs(), [])
+
+    def test_next_dir_waits_for_setup_still_running(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt",
+                                                "sleep 2 && echo ready > setup-ran.txt"))
+        self.lookup_answers(self.setup_next(expect=0, wait="1"), BOTH_ADOPTED)
+        self.ready(self.setup_next(wait="0"))
+        self.assertEqual(self.state()["phases"]["1"]["status"], "in-progress")
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+        self.assertEqual(self.state()["phases"]["1"]["status"], "done")
+
+    # -------------------------------------------------------------- more of setup (corrections)
+
+    BAD_DRAFT = 'stack: typescript\nsetup: ["true"]\n'
+    JEST_PROFILE = SAVED_PROFILE.replace('command: "true"', 'command: "npx jest"')
+    NOT_SAVED = r"not (been )?saved"
+
+    def profiler_fails(self, out, status="failed"):
+        values = self.brief(out, "profiler")
+        self.returns(values, "profiler", status, None, next="CONFIRM",
+                     draft=values["draft_path"], questions="0")
+        return values
+
+    def unusable(self, out, kind):
+        """The profiler `out` spawns returns `kind`: failed, or an invalid draft."""
+        if kind == "failed":
+            return self.profiler_fails(out)
+        return self.profiler_returns(out, draft=self.BAD_DRAFT)
+
+    def next_in(self, repo, *extra, task=None, wait="5"):
+        """`next --repo <repo>` from another checkout than self.repo."""
+        r = self.autodev("next", "--repo", repo, "--task", task or self.TASK,
+                         "--max-wait", wait, *extra, "--json")
+        out = json.loads(r.stdout)
+        self.assertEqual(out.get("exit"), r.returncode, r.stdout + r.stderr)
+        return out
+
+    def next_dir_with(self, *extra):
+        r = self.autodev("next", "--dir", self.dir, *extra, "--json")
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            self.fail(f"next --dir printed no JSON (exit {r.returncode}):\n{r.stdout}{r.stderr}")
+
+    def report(self, out):
+        return "\n".join(out.get("REPORT", []))
+
+    def kept_failed_run(self, out):
+        """`out` stops on a failed setup with the run kept: move into it."""
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        self.assertIn("The run is kept", self.report(out))
+        runs = [p for p in self.tmp.glob("app-*") if (p / ".auto-dev" / "state.json").exists()]
+        self.assertEqual(len(runs), 1, runs)
+        self.worktree, self.dir = runs[0], runs[0] / ".auto-dev"
+
+    def resume_to_the_planner(self):
+        r = self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.assertIn("RESUME", r.stdout, r.stdout + r.stderr)
+        self.to_the_planner()
+        self.assertTrue((self.worktree / "setup-ran.txt").exists())
+
+    # C1, C2: a profiler that leaves no usable draft
+
+    def test_reissue_at_the_unusable_profiler_stop_spawns_it_again(self):
+        for kind in ("failed", "invalid"):
+            with self.subTest(kind=kind):
+                task = f"Add due dates {kind}"
+                for _ in range(2):
+                    self.unusable(self.setup_next(task=task, expect=0), kind)
+                self.assertIn("--reissue", self.report(self.setup_next(task=task, expect=4)))
+                self.setup_next(task=task, expect=4)  # without --reissue it stays stopped
+                out = self.setup_next("--reissue", task=task, expect=0)
+                self.assertEqual(Path(self.brief(out, "profiler")["path"]).name, "profiler-3.md")
+                # A fresh count: one more unusable return is sent back, not a stop.
+                self.unusable(out, kind)
+                out = self.setup_next(task=task, expect=0)
+                self.assertEqual(Path(self.brief(out, "profiler")["path"]).name, "profiler-4.md")
+
+    def test_unusable_returns_of_either_kind_stop_at_the_second(self):
+        for order in (("failed", "invalid"), ("invalid", "failed")):
+            with self.subTest(order=order):
+                task = f"Add due dates {order[0]} first"
+                self.unusable(self.setup_next(task=task, expect=0), order[0])
+                self.unusable(self.setup_next(task=task, expect=0), order[1])
+                report = self.report(self.setup_next(task=task, expect=4))
+                self.assertIn("status failed", report)
+                self.assertIn("must set `gate`", report)
+                self.assertIn("--reissue", report)
+                self.assertNotIn("profiler-3.md", self.worker_briefs())
+        self.no_run_made()
+
+    # C5: a retry after the user's change keeps the change
+
+    def test_a_retry_after_a_change_keeps_the_user_s_request(self):
+        for kind, why in (("failed", "status failed"), ("invalid", "must set `gate`")):
+            with self.subTest(kind=kind):
+                task = f"Add due dates {kind}"
+                self.answered(self.to_question(task=task), self.OPTIONS[2], "drop the lint check")
+                self.unusable(self.setup_next(task=task, expect=0), kind)
+                values = self.brief(self.setup_next(task=task, expect=0), "profiler")
+                for part in ("drop the lint check", "Start from that draft", why):
+                    self.assertIn(part, values["previous_issues"])
+
+    # C3, C4: a saved profile that changes, goes, or loses its test check
+
+    def test_a_gate_question_with_no_test_check_left_names_the_check_and_saved_file(self):
+        out = self.with_saved_profile("check 1: not adopted — no jest dependency\n"
+                                      "check 2: adopted — .eslintrc.json:1\n",
+                                      text=self.JEST_PROFILE)
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        summary = out.get("SUMMARY", [])
+        self.assertTrue([ln for ln in summary if "npx jest" in ln and "not adopted" in ln],
+                        summary)
+        self.assertTrue([ln for ln in summary if str(self.saved) in ln], summary)
+        self.assertFalse([ln for ln in summary if "profile.yml" in ln], summary)
+        self.no_run_made()
+
+    def test_a_changed_saved_profile_is_looked_up_again(self):
+        self.with_saved_profile("check 1: not adopted — no jest dependency\n"
+                                "check 2: adopted — .eslintrc.json:1\n", text=self.JEST_PROFILE)
+        self.assertEqual(self.outs[-1].get("exit"), 5)
+        self.save_profile()  # the user makes check 1 another test command
+        values = self.lookup_answers(self.setup_next(expect=0), BOTH_ADOPTED)
+        self.assertIn("`true`", values["question"])
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+
+    def test_each_setup_question_refuses_the_other_s_answers(self):
+        self.save_profile()
+        self.lookup_answers(self.setup_next(expect=0),
+                            "check 1: adopted — package.json:9\n"
+                            "check 2: not adopted — no eslint config\n")
+        self.setup_next(expect=5)
+        r = self.autodev("setup-answer", "run-only", "--repo", self.repo, "--task", self.TASK)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no profile question", (r.stdout + r.stderr).lower())
+        self.saved.unlink()
+        self.to_question(task="Add due dates researched")
+        r = self.autodev("setup-answer", "keep", "--repo", self.repo,
+                         "--task", "Add due dates researched")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no gate-check question", (r.stdout + r.stderr).lower())
+
+    def test_a_gate_question_answered_once_is_closed(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n")
+        self.answered(out, "Keep them")
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text())["kept"],
+                         [{"n": 2, "command": "npx eslint ."}])
+
+    def test_a_gate_answer_given_before_the_saved_file_changed_is_asked_again(self):
+        out = self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                      "check 2: not adopted — no eslint config\n")
+        self.answered(out, "Leave them out of this run")
+        self.save_profile(SAVED_PROFILE.replace("echo ready", "echo set up"))  # same gate
+        out = self.setup_next(expect=5)
+        self.assertNotIn("AGENT", out)  # the same gate: its lookup's answer still holds
+        self.assertEqual(self.options(out), ("Keep them", "Leave them out of this run", "Stop"))
+        self.no_run_made()
+
+    def test_a_saved_profile_removed_after_its_lookup_is_researched(self):
+        self.save_profile()
+        self.brief(self.setup_next(expect=0), "lookup")
+        self.saved.unlink()
+        self.brief(self.setup_next(expect=0), "profiler")
+
+    # C6: a kept run's failed setup says what its profile left out or didn't save
+
+    def test_a_kept_run_s_failed_setup_names_the_dropped_check(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        out = self.leave_out(self.with_saved_profile("check 1: adopted — package.json:9\n"
+                                                     "check 2: not adopted — no eslint config\n",
+                                                     text=self.saved.read_text()))
+        self.kept_failed_run(out)
+        self.assertTrue([ln for ln in out["REPORT"] if "npx eslint ." in ln
+                         and str(self.saved) in ln], self.report(out))
+
+    def test_a_kept_run_s_failed_setup_shows_a_draft_that_was_not_saved(self):
+        blocker = self.profiles / self.saved.relative_to(self.profiles).parts[0]
+        self.profiles.mkdir()
+        blocker.write_text("a file where the folder should be\n")
+        draft = PROFILER_DRAFT.replace("echo ready > setup-ran.txt", "false")
+        self.profiler_returns(self.setup_next(expect=0), draft=draft)
+        self.answered(self.setup_next(expect=5), self.OPTIONS[0])
+        out = self.setup_next(expect=4)
+        self.kept_failed_run(out)
+        report = self.report(out)
+        self.assertRegex(report, self.NOT_SAVED)
+        self.assertIn(str(blocker), report)
+        self.assertIn('setup: ["false"]', report)
+
+    # C7, C16: Stop, then the start-over command
+
+    def stop_then_start_over(self, *flags):
+        """Answer Stop, run the start-over command the REPORT prints, then take
+        setup to the run (run-only)."""
+        self.profiler_returns(self.setup_next(*flags, task="PROJ-123", expect=0))
+        self.answered(self.setup_next(task="PROJ-123", expect=5), "Stop")
+        out = self.setup_next(task="PROJ-123", expect=4)
+        line = next((ln for ln in out["REPORT"] if "start over" in ln), None)
+        self.assertIsNotNone(line, self.report(out))
+        argv = shlex.split(re.search(r"`([^`]*)`", line).group(1))
+        r = subprocess.run([*argv, "--max-wait", "5", "--json"], capture_output=True,
+                           text=True, env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.profiler_returns(json.loads(r.stdout))
+        self.answered(self.setup_next(task="PROJ-123", expect=5), self.OPTIONS[1])
+        self.ready(self.setup_next(task="PROJ-123"))
+
+    def test_start_over_after_stop_keeps_the_ticket_details(self):
+        text = "Add due dates\n\nTodos get an optional due date."
+        url = "https://acme.atlassian.net/browse/PROJ-123"
+        ticket = self.tmp / "t.txt"
+        ticket.write_text(text)
+        self.stop_then_start_over("--ticket", "PROJ-123", "--ticket-url", url,
+                                  "--ticket-text-file", ticket,
+                                  "--jira", "available, cloudId abc")
+        task = self.state()["task"]
+        self.assertEqual((task["ticket"], task["ticket_url"], task["ticket_text"]),
+                         ("PROJ-123", url, text))
+        self.assertIn("- **Jira:** available, cloudId abc\n",
+                      (self.dir / "profile.md").read_text())
+
+    def test_start_over_after_stop_keeps_the_ask(self):
+        ask = "Add due dates to todos"
+        self.stop_then_start_over("--ticket", "PROJ-123", "--ask", ask,
+                                  "--jira", "unavailable: no Atlassian MCP")
+        self.assertEqual(self.state()["task"]["ask"], ask)
+        self.assertEqual(self.brief(self.to_the_planner(), "planner")["task"], ask)
+        r = self.autodev("resume", "--repo", self.repo, "--task", ask)
+        self.assertNotIn("FRESH", r.stdout, r.stdout + r.stderr)
+
+    # C14: init refuses a confirmed draft before the run exists
+
+    def draft_init_refuses(self, label):
+        (self.repo / "notes.txt").write_text("not ignored\n")
+        values = self.profiler_returns(self.setup_next(expect=0),
+                                       draft=PROFILER_DRAFT + 'worktree_files: ["notes.txt"]\n')
+        question = self.setup_next(expect=5)
+        self.answered(question, label)
+        out = self.setup_next(expect=4)
+        self.assertTrue(out["REPORT"][0].startswith("Setup stopped before the run was created"),
+                        self.report(out))
+        self.assertIn(values["draft_path"], self.report(out))
+        self.no_run_made()
+        return question
+
+    def test_init_refusing_a_draft_opens_the_profile_question_again(self):
+        question = self.draft_init_refuses(self.OPTIONS[1])
+        self.answered(question, self.OPTIONS[2], "drop notes.txt from worktree_files")
+        values = self.brief(self.setup_next(expect=0), "profiler")
+        self.assertIn("drop notes.txt from worktree_files", values["previous_issues"])
+
+    def test_init_refusing_a_saved_draft_runs_from_the_fixed_saved_file(self):
+        self.draft_init_refuses(self.OPTIONS[0])
+        self.saved.write_text(self.saved.read_text().replace('worktree_files: ["notes.txt"]\n',
+                                                             ""))
+        self.ready(self.setup_next())
+        self.assertEqual(self.state()["settings"].get("worktree_files", []), [])
+
+    # C8: a failed setup retried from where the profile came from
+
+    def test_a_run_only_draft_s_failed_setup_is_retried_from_its_profile_yml(self):
+        self.profiler_returns(self.setup_next(expect=0), draft=PROFILER_DRAFT.replace(
+            "echo ready > setup-ran.txt", "false"))
+        self.answered(self.setup_next(expect=5), self.OPTIONS[1])
+        out = self.setup_next(expect=4)
+        self.kept_failed_run(out)
+        self.assertIn(str(self.dir / "profile.yml"), self.report(out))
+        (self.dir / "profile.yml").write_text(PROFILER_DRAFT)
+        self.resume_to_the_planner()
+
+    def test_an_override_run_s_failed_setup_is_retried_from_auto_dev_yml(self):
+        self.commit_override(FULL_OVERRIDE.replace('setup: ["true"]', 'setup: ["false"]'))
+        out = self.setup_next(expect=4)
+        self.kept_failed_run(out)
+        self.assertIn(str(self.repo / ".auto-dev.yml"), self.report(out))
+        (self.repo / ".auto-dev.yml").write_text(FULL_OVERRIDE.replace(
+            'setup: ["true"]', 'setup: ["echo ready > setup-ran.txt"]'))
+        self.resume_to_the_planner()
+
+    def test_a_profile_saved_at_the_question_is_retried_from_the_saved_file(self):
+        self.profiler_returns(self.setup_next(expect=0), draft=PROFILER_DRAFT.replace(
+            "echo ready > setup-ran.txt", "false"))
+        self.answered(self.setup_next(expect=5), self.OPTIONS[0])
+        out = self.setup_next(expect=4)
+        self.kept_failed_run(out)
+        self.assertIn(str(self.saved), self.report(out))
+        self.saved.write_text(self.saved.read_text().replace('"false"',
+                                                             '"echo ready > setup-ran.txt"'))
+        self.resume_to_the_planner()
+
+    def test_a_run_with_no_origin_and_no_saved_profile_retries_its_own_setup(self):
+        flag = ".auto-dev/go.txt"
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt",
+                                                f"test -f {flag} && echo ready > setup-ran.txt"))
+        self.kept_failed_run(self.with_saved_profile(BOTH_ADOPTED, text=self.saved.read_text()))
+        (self.dir / "profile-origin.json").unlink()
+        self.saved.unlink()
+        (self.worktree / flag).write_text("go\n")
+        self.resume_to_the_planner()
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+
+    def test_a_saved_profile_unreadable_at_retry_stops_with_the_validator_s_errors(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        self.kept_failed_run(self.leave_out(self.with_saved_profile(
+            "check 1: adopted — package.json:9\ncheck 2: not adopted — no eslint config\n",
+            text=self.saved.read_text())))
+        self.saved.write_text("gate: [unclosed\n")
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        out = self.next_dir(4)
+        self.assertIn("not valid YAML", self.report(out))
+
+    def test_next_dir_with_setup_still_running_at_its_wait_limit_waits_again(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "sleep 6"))
+        self.lookup_answers(self.setup_next(expect=0, wait="0"), BOTH_ADOPTED)
+        self.ready(self.setup_next(wait="0"))
+        out = self.next_dir_with("--max-wait", "1")
+        self.assertEqual(out.get("exit"), 0, json.dumps(out, indent=2))
+        self.assertNotIn("AGENT", out)
+        self.assertTrue([ln for ln in out.get("AFTER", []) if "next --dir" in ln
+                         or ("next" in shlex.split(ln) and "--dir" in shlex.split(ln))], out)
+
+    def test_a_retried_setup_that_fails_again_stops_with_phase_1_held(self):
+        self.failed_setup()
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        out = self.next_dir(4)
+        report = self.report(out)
+        self.assertIn("exited 1", report)
+        self.assertIn("false", report)
+        self.assertEqual(self.state()["phases"]["1"]["status"], "held")
+        self.assert_counted(3, "Phase 1's setup failed", 1)
+
+    def test_a_setup_that_fails_again_after_its_hold_counts_again(self):
+        self.failed_setup()
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.next_dir(4)  # setup ran again inside the run and failed: #3
+        self.assert_counted(3, "Phase 1's setup failed", 1)
+        out = self.next_dir(4)  # the run is held: not a stop of its own
+        self.assertIn("Phase 1's setup failed", self.report(out))
+        self.assert_counted(3, "Phase 1's setup failed", 1)
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        self.next_dir(4)  # a new setup attempt failed: a new stop
+        self.assert_counted(3, "Phase 1's setup failed", 1, times=2)
+
+    def test_a_setup_that_fails_in_the_run_it_made_writes_its_metrics(self):
+        self.failed_setup()  # `next --repo` made the run, and its setup failed
+        data = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(data["stops"]["total"], 0)  # a setup stop is not counted
+        self.assertEqual(data["run"], {"state": "held", "phase": 1, "size": None,
+                                       "high_risk": None})
+        copies = sorted((self.tmp / "metrics").rglob("*.json"))
+        self.assertEqual(len(copies), 1, copies)
+        self.assertEqual(copies[0].read_text(), (self.dir / "metrics.json").read_text())
+
+    def test_a_setup_stop_before_the_run_exists_writes_no_metrics(self):
+        self.script_gh([{"args": ["auth", "status"], "stderr": "not logged in", "exit": 1}])
+        self.setup_next(expect=4)
+        self.no_run_made()
+        self.assertFalse((self.tmp / "metrics").exists())
+
+    def test_the_profile_question_names_the_metrics_folder(self):
+        self.assertIn(f"metrics folder {self.tmp / 'metrics'};",
+                      self.summary(self.to_question()))
+
+    def test_the_profile_question_names_the_metrics_folder_under_xdg_config_home(self):
+        del self.env["AUTO_DEV_METRICS_DIR"]
+        self.env["XDG_CONFIG_HOME"] = str(self.tmp / "config")
+        summary = self.summary(self.to_question())
+        self.assertIn(f"metrics folder {self.tmp / 'config' / 'auto-dev' / 'metrics'};",
+                      summary)
+        self.assertIn(f"profiles folder {self.profiles};", summary)
+
+    def test_init_continue_that_cannot_run_is_an_error(self):
+        self.profiler_returns(self.setup_next(expect=0), draft=PROFILER_DRAFT.replace(
+            "echo ready > setup-ran.txt", "false"))
+        self.answered(self.setup_next(expect=5), self.OPTIONS[1])
+        self.kept_failed_run(self.setup_next(expect=4))
+        (self.dir / "profile.yml").unlink()
+        (self.dir / "profile.yml").mkdir()  # validate-config.py can't read it: exit 2
+        self.autodev("resume", "--repo", self.repo, "--task", self.TASK)
+        r = self.autodev("next", "--dir", self.dir)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR: init --continue could not run", r.stdout + r.stderr)
+
+    def test_a_held_phase_1_names_the_file_to_fix_and_auto_dev_continue(self):
+        self.failed_setup()
+        report = self.report(self.next_dir(4))
+        self.assertIn(str(self.saved), report)
+        self.assertIn("auto-dev continue", report)
+
+    # C9: what the SUMMARY says about the run's profile and worktree
+
+    def test_the_summary_names_a_profile_saved_at_the_question(self):
+        self.answered(self.to_question(), self.OPTIONS[0])
+        self.assertIn(f"Saved the confirmed profile to {self.saved}",
+                      self.summary(self.setup_next(expect=0)))
+
+    def test_the_summary_names_a_profile_kept_for_this_run_only(self):
+        self.answered(self.to_question(), self.OPTIONS[1])
+        self.assertIn("Using the profile the user confirmed, for this run only",
+                      self.summary(self.setup_next(expect=0)))
+
+    def test_the_summary_names_a_full_override(self):
+        self.commit_override(FULL_OVERRIDE)
+        self.assertIn("Using the setup and quality gate the repo's .auto-dev.yml sets",
+                      self.summary(self.setup_next(expect=0)))
+
+    def test_a_worktree_the_user_made_is_adopted_and_named_in_the_summary(self):
+        self.commit_override(FULL_OVERRIDE)
+        for ahead in (0, 1):
+            with self.subTest(ahead=ahead):
+                mine = self.tmp / f"mine-{ahead}"
+                self.sh("git", "worktree", "add", "-q", str(mine), "-b", f"feat/mine-{ahead}",
+                        "origin/main", cwd=self.repo)
+                if ahead:
+                    (mine / "early.ts").write_text("export const e = 1;\n")
+                    self.sh("git", "add", "early.ts", cwd=mine)
+                    self.sh("git", "commit", "-q", "-m", "early", cwd=mine)
+                task = f"Add due dates in mine {ahead}"
+                out = self.next_in(mine, task=task)
+                self.ready(out, mine)
+                summary = self.summary(out)
+                self.assertIn("uses the worktree the user made", summary)
+                if ahead:
+                    self.assertIn("already holds 1 commit(s)", summary)
+                else:
+                    self.assertNotIn("already holds", summary)
+
+    def test_the_summary_says_setup_is_still_running(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "sleep 3"))
+        self.lookup_answers(self.setup_next(expect=0, wait="1"), BOTH_ADOPTED)
+        out = self.setup_next(wait="1")
+        self.ready(out)
+        self.assertIn("Setup is still running", self.summary(out))
+
+    # C10: the branch name
+
+    def test_the_branch_name_takes_at_most_five_words(self):
+        self.commit_override(FULL_OVERRIDE)
+        cases = [("Add due dates to the todo list", "feat/add-due-dates-to-the"),
+                 ("!!! ???", "feat/task")]
+        for task, branch in cases:
+            with self.subTest(task=task):
+                self.ready(self.setup_next(task=task))
+                self.assertEqual(self.state()["branch"], branch)
+
+    def test_a_ticket_text_that_starts_with_its_key_does_not_repeat_it(self):
+        self.commit_override(FULL_OVERRIDE)
+        ticket = self.tmp / "t.txt"
+        ticket.write_text("PROJ-123 Add due dates\n\nTodos get an optional due date.")
+        self.ready(self.setup_next("--ticket", "PROJ-123", "--ticket-text-file", ticket,
+                                   task="PROJ-123"))
+        self.assertEqual(self.state()["branch"], "feat/proj-123-add-due-dates")
+
+    # C11: a report line that only starts with a section's word
+
+    def test_a_question_starting_with_a_section_word_stays_a_question(self):
+        out = self.setup_next(expect=0)
+        values = self.brief(out, "profiler")
+        Path(values["draft_path"]).write_text(PROFILER_DRAFT)
+        report = ("PROFILE\n```yaml\n" + PROFILER_DRAFT + "```\n"
+                  "QUESTIONS — the e2e suite in CI is left out of the gate; keep it out?\n"
+                  "Profile assumes Node 20 from .nvmrc; confirm the version.\n"
+                  "Evidence for the build step is thin.\n"
+                  "NOT INSTALLED — jq: not on PATH\n"
+                  "EVIDENCE\n- true: package.json:9\n")
+        self.returns(values, "profiler", "ok", report, next="CONFIRM",
+                     draft=values["draft_path"], questions="3")
+        summary = self.setup_next(expect=5)["SUMMARY"]
+        later = min(summary.index("NOT INSTALLED — jq: not on PATH"), summary.index("EVIDENCE"))
+        for line in ("Profile assumes Node 20 from .nvmrc; confirm the version.",
+                     "Evidence for the build step is thin."):
+            self.assertIn(line, summary)
+            self.assertLess(summary.index(line), later)
+
+    # C12: init stopping or failing before the run exists
+
+    def test_init_stopping_before_the_run_exists_names_the_command_to_run_again(self):
+        (self.repo / "notes.txt").write_text("not ignored\n")
+        out = self.with_saved_profile(BOTH_ADOPTED,
+                                      text=SAVED_PROFILE + 'worktree_files: ["notes.txt"]\n')
+        self.assertEqual(out.get("exit"), 4, json.dumps(out, indent=2))
+        self.assertTrue(out["REPORT"][0].startswith("Setup stopped before the run was created"))
+        self.assertTrue([ln for ln in out["REPORT"] if "next" in ln and "--repo" in ln],
+                        self.report(out))
+        self.no_run_made()
+        self.assertEqual(self.sh("git", "branch", "--list", "feat/*", cwd=self.repo), "")
+
+    def test_init_that_cannot_run_is_an_error(self):
+        self.script_gh([*GH_OK[:2], {"args": ["repo", "view", "--json", "defaultBranchRef"],
+                                     "stdout": "{}"}])
+        self.save_profile()
+        self.lookup_answers(self.setup_next(expect=0), BOTH_ADOPTED)
+        r = self.autodev("next", "--repo", self.repo, "--task", self.TASK, "--max-wait", "5")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("ERROR: autodev.py init could not run", r.stdout + r.stderr)
+        self.no_run_made()
+
+    # C13: branches.prefix and branches.base
+
+    def test_branches_prefix_names_the_branch_and_its_suffix_check(self):
+        self.commit_override(FULL_OVERRIDE + "branches:\n  prefix: fix\n")
+        self.sh("git", "branch", "feat/add-due-dates-to-todos", cwd=self.repo)
+        self.ready(self.setup_next())
+        self.assertEqual(self.state()["branch"], "fix/add-due-dates-to-todos")
+        self.sh("git", "branch", "fix/add-due-dates-today", cwd=self.repo)
+        self.ready(self.setup_next(task="Add due dates today"))
+        self.assertEqual(self.state()["branch"], "fix/add-due-dates-today-2")
+
+    def test_branches_base_is_the_profiler_s_base(self):
+        self.commit_override("branches:\n  base: develop\n")
+        self.assertEqual(self.brief(self.setup_next(expect=0), "profiler")["base"], "develop")
+
+    # C17: --ask needs --repo
+
+    def test_ask_without_repo_cannot_run(self):
+        for args in (("next", "--dir", self.dir, "--ask", self.TASK), ("next", "--ask", self.TASK)):
+            with self.subTest(args=args[:2]):
+                r = self.autodev(*args)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("ERROR: --ask needs --repo (it sets a run up)", r.stderr)
+        self.assertEqual(self.worker_briefs(), [])
+
+    # C19: a run whose task text matches comes before one whose ask does
+
+    def test_a_run_whose_task_text_matches_comes_before_one_whose_ask_does(self):
+        for task, (first, second) in (("Fix login", ("aaa-fix-login", "zzz-abc-1")),
+                                      ("Fix logout", ("zzz-fix-logout", "aaa-abc-2"))):
+            with self.subTest(task=task):
+                ticket = "ABC-1" if task == "Fix login" else "ABC-2"
+                made = {}
+                for slug in (first, second):
+                    extra = (("--task", task) if "fix" in slug else
+                             ("--task", ticket, "--ticket", ticket, "--ask", task))
+                    r = self.autodev("init", "--repo", self.repo, "--slug", slug, *extra,
+                                     "--profile", self.profile, "--max-wait", "30")
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    made[slug] = self.tmp / f"app-{slug}"
+                before = self.sh("git", "worktree", "list", cwd=self.repo)
+                out = self.setup_next(task=task)
+                text_run = first if "fix" in first else second
+                self.ready(out, made[text_run])
+                self.assertNotIn("AGENT", out)
+                self.assertEqual(self.sh("git", "worktree", "list", cwd=self.repo), before)
+
+    # -------------------------------------------------------------- the gate-check question
+
+    ESLINT_NOT_ADOPTED = ("check 1: adopted — package.json:9\n"
+                          "check 2: not adopted — no eslint config\n")
+    JEST_NOT_ADOPTED = ("check 1: not adopted — no jest dependency\n"
+                        "check 2: adopted — .eslintrc.json:1\n")
+    GATE_QUESTION_OPTIONS = ("Keep them", "Leave them out of this run", "Stop")
+
+    def nothing_set_up_yet(self):
+        """No worktree, branch or run for the task exists."""
+        self.no_run_made()
+        self.assertEqual(len(self.sh("git", "worktree", "list", cwd=self.repo).splitlines()), 1)
+        self.assertEqual(self.sh("git", "branch", "--list", "*due-dates*", cwd=self.repo).strip(),
+                         "")
+
+    def at_the_gate_check_question(self, answer=None, text=SAVED_PROFILE):
+        """A saved profile whose lookup flags a check: the question it asks."""
+        out = self.with_saved_profile(answer or self.ESLINT_NOT_ADOPTED, text=text)
+        self.assertEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+        return out
+
+    def after_line(self, out, label):
+        return next((ln for ln in out.get("AFTER", []) if ln.startswith(f'"{label}" → ')), "")
+
+    def test_a_not_adopted_check_is_asked_about_before_the_run_exists(self):
+        out = self.at_the_gate_check_question()
+        shown = json.dumps(out, indent=2)
+        summary = self.summary(out)
+        for part in ("npx eslint .", "no eslint config", str(self.saved)):
+            self.assertIn(part, summary, shown)
+        self.assertEqual(self.options(out), self.GATE_QUESTION_OPTIONS)
+        self.assertEqual(len(out["AFTER"]), 3, shown)
+        for label, line in zip(self.GATE_QUESTION_OPTIONS, out["AFTER"]):
+            self.assertTrue(line.startswith(f'"{label}" → '), shown)
+        self.nothing_set_up_yet()
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_a_lookup_that_flags_nothing_usable_asks_nothing_and_keeps_every_check(self):
+        cases = [("every check adopted", "ok", "ANSWERED", BOTH_ADOPTED),
+                 ("contradicting lines", "ok", "ANSWERED",
+                  ("check 1: adopted — package.json:9\ncheck 2: adopted — package.json:12\n"
+                   "check 2: not adopted — no eslint config\n")),
+                 ("outside the gate", "ok", "ANSWERED", "check 7: not adopted — no such tool\n"),
+                 ("prose only", "ok", "ANSWERED", "Neither eslint nor the tests look adopted.\n"),
+                 ("failed", "failed", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("blocked", "blocked", "ANSWERED", "check 2: not adopted — no eslint config\n"),
+                 ("out of scope", "ok", "OUT_OF_SCOPE",
+                  "check 2: not adopted — no eslint config\n")]
+        self.save_profile()
+        for i, (case, status, nxt, answer) in enumerate(cases, 1):
+            with self.subTest(case=case):
+                task = f"Add due dates lookup case {i}"
+                self.lookup_answers(self.setup_next(task=task, expect=0), answer,
+                                    status=status, nxt=nxt)
+                out = self.setup_next(task=task)
+                self.assertNotEqual(out.get("exit"), 5, json.dumps(out, indent=2))
+                self.assertNotIn("QUESTION", out)
+                self.ready(out)
+                self.assertEqual(self.gate(), ["true", "npx eslint ."])
+                self.assertNotIn("dropped gate check", self.work_log())
+
+    def test_keep_runs_every_check_and_says_a_failing_one_stops_for_sign_off(self):
+        out = self.at_the_gate_check_question()
+        self.assertIn("setup-answer keep", self.after_line(out, "Keep them"))
+        self.answered(out, "Keep them")
+        out = self.setup_next()
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true", "npx eslint ."])
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}")
+        kept = [ln for ln in out.get("SUMMARY", []) if "npx eslint ." in ln
+                and "quality gate" in ln.lower() and "sign" in ln.lower()]
+        self.assertTrue(kept, json.dumps(out, indent=2))
+        self.assertIn("kept gate check npx eslint .", self.work_log())
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_after_keep_a_further_next_points_to_the_run_without_asking(self):
+        self.answered(self.at_the_gate_check_question(), "Keep them")
+        self.ready(self.setup_next(), self.tmp / "app-add-due-dates-to-todos")
+        lookups = len([p for p in self.worker_briefs() if p.startswith("lookup-")])
+        out = self.setup_next()
+        self.assertNotIn("QUESTION", out)
+        self.assertNotIn("AGENT", out)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(len([p for p in self.worker_briefs() if p.startswith("lookup-")]),
+                         lookups)
+
+    def test_leave_out_creates_the_run_without_the_check_and_keeps_the_saved_file(self):
+        out = self.at_the_gate_check_question()
+        self.assertIn("setup-answer drop", self.after_line(out, "Leave them out of this run"))
+        self.answered(out, "Leave them out of this run")
+        out = self.setup_next()
+        shown = json.dumps(out, indent=2)
+        self.ready(out, self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(), f"saved profile {self.saved}, without npx eslint .")
+        notes = [ln.split("dropped gate check npx eslint .:", 1)[1]
+                 for ln in self.work_log().splitlines()
+                 if "dropped gate check npx eslint .:" in ln]
+        self.assertEqual(len(notes), 1, self.work_log())
+        self.assertIn("user", notes[0].lower(), self.work_log())
+        self.assertRegex(notes[0].lower(), r"\bleft\b.*\bout\b")
+        named = [ln for ln in out.get("SUMMARY", [])
+                 if "npx eslint ." in ln and str(self.saved) in ln]
+        self.assertTrue(named, shown)
+        summary = self.summary(out).lower()
+        self.assertRegex(summary, r"unchanged|not changed")
+        self.assertRegex(summary, r"\bask")
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+
+    def test_a_check_left_out_stays_out_when_a_failed_setup_is_retried(self):
+        self.save_profile(SAVED_PROFILE.replace("echo ready > setup-ran.txt", "false"))
+        self.answered(self.at_the_gate_check_question(text=self.saved.read_text()),
+                      "Leave them out of this run")
+        self.kept_failed_run(self.setup_next())
+        self.save_profile()  # the user fixes the setup; the lint check is still listed
+        self.resume_to_the_planner()
+        self.assertEqual(self.gate(), ["true"])
+
+    def test_with_no_test_check_left_only_keep_and_stop_are_offered(self):
+        out = self.at_the_gate_check_question(self.JEST_NOT_ADOPTED, text=self.JEST_PROFILE)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.options(out), ("Keep them", "Stop"))
+        self.assertEqual(len(out["AFTER"]), 2, shown)
+        self.assertTrue([ln for ln in out.get("SUMMARY", [])
+                         if re.search(r"no `?test`? check", ln.lower())], shown)
+        self.nothing_set_up_yet()
+        self.answered(out, "Keep them")
+        self.ready(self.setup_next(), self.tmp / "app-add-due-dates-to-todos")
+        self.assertEqual(self.gate(), ["npx jest", "npx eslint ."])
+
+    def test_leave_out_with_no_test_check_left_is_refused_and_asked_again(self):
+        out = self.at_the_gate_check_question(self.JEST_NOT_ADOPTED, text=self.JEST_PROFILE)
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertIn("test check", said.lower())
+        again = self.setup_next(expect=5)
+        self.assertEqual(self.options(again), self.options(out))
+        self.assertEqual(self.options(again), ("Keep them", "Stop"))
+        self.nothing_set_up_yet()
+
+    def test_stop_at_the_gate_check_question_creates_nothing(self):
+        self.answered(self.at_the_gate_check_question(), "Stop")
+        out = self.setup_next(expect=4)
+        report = self.report(out).lower()
+        self.assertRegex(report, r"gate[- ]check question")
+        self.assertIn("stop", report)
+        self.assertIn("nothing", report)
+        self.nothing_set_up_yet()
+        self.assertEqual(self.saved.read_text(), SAVED_PROFILE)
+        self.brief(self.setup_next(expect=0), "lookup")  # a later call starts over
+
+    def test_a_gate_answer_after_the_saved_profile_changed_is_refused(self):
+        self.at_the_gate_check_question()
+        self.save_profile(PROFILER_DRAFT)  # the user removes check 2 themselves
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertRegex(said.lower(), r"no gate[- ]check question")
+        values = self.brief(self.setup_next(expect=0), "lookup")
+        self.assertIn("`true`", values["question"])
+        self.assertNotIn("npx eslint .", values["question"])
+        self.nothing_set_up_yet()
+
+    # -------------------------------------------------------------- review corrections
+
+    GATE_ONLY_OVERRIDE = 'gate:\n  - { kind: test, command: "true", report: "TEST.md" }\n'
+    THREE_CHECKS = (SAVED_PROFILE
+                    + '  - { kind: typecheck, command: "npx tsc", report: "TYPES.md" }\n')
+    TWO_NOT_ADOPTED = ("check 1: adopted — package.json:9\n"
+                       "check 2: not adopted — no eslint config\n"
+                       "check 3: not adopted — no typescript dependency\n")
+
+    def no_gate_answer_traces(self, out):
+        log = self.work_log()
+        self.assertNotIn("kept gate check", log)
+        self.assertNotIn("dropped gate check", log)
+        summary = self.summary(out)
+        self.assertNotIn("Kept at your answer", summary)
+        self.assertNotIn("Left out of this run", summary)
+
+    def test_a_gate_the_auto_dev_yml_sets_skips_the_saved_profile_s_lookup(self):
+        for override, saved in ((FULL_OVERRIDE, SAVED_PROFILE),
+                                (self.GATE_ONLY_OVERRIDE, self.JEST_PROFILE)):
+            with self.subTest(saved=saved):
+                self.commit_override(override)
+                self.save_profile(saved)
+                task = f"Add due dates override {len(self.outs)}"
+                out = self.setup_next(task=task, expect=0)
+                shown = json.dumps(out, indent=2)
+                self.assertNotIn("AGENT", out, shown)
+                self.assertNotIn("QUESTION", out, shown)
+                self.ready(out)
+                self.assertEqual(self.worker_briefs(), [])
+                self.assertEqual(self.gate(), ["true"])
+                self.no_gate_answer_traces(out)
+
+    def asks_after_the_lookup_despite(self, override):
+        """A committed `.auto-dev.yml` that leaves `gate` out: the saved profile
+        is still looked up, and the flagged check asked about."""
+        self.commit_override(override)
+        self.save_profile()
+        first = self.setup_next(expect=0)
+        self.lookup_answers(first, self.ESLINT_NOT_ADOPTED)
+        out = self.setup_next(expect=5)
+        shown = json.dumps(out, indent=2)
+        self.assertEqual(self.options(out), self.GATE_QUESTION_OPTIONS, shown)
+        self.assertIn("check 2: `npx eslint .`", self.summary(out), shown)
+        self.nothing_set_up_yet()
+
+    def test_an_auto_dev_yml_setting_only_setup_still_gets_the_lookup_and_question(self):
+        self.asks_after_the_lookup_despite('setup: ["true"]\n')
+
+    def test_an_auto_dev_yml_setting_neither_setup_nor_gate_still_gets_the_question(self):
+        self.asks_after_the_lookup_despite("branches:\n  base: main\n")
+
+    def test_the_keep_promise_says_the_coder_tries_to_make_a_failing_check_green_first(self):
+        promise = r"coder.*green.*still (red|fail).*quality gate stops.*sign"
+        out = self.at_the_gate_check_question()
+        keep = next(o["description"] for o in json.loads(out["QUESTION"])["questions"][0]
+                    ["options"] if o["label"] == "Keep them")
+        self.assertRegex(keep.lower(), promise)
+        self.assertRegex(self.summary(out).lower().replace("\n", " "), promise)
+        self.answered(out, "Keep them")
+        out = self.setup_next()
+        self.ready(out)
+        kept = [ln for ln in out.get("SUMMARY", []) if "npx eslint ." in ln]
+        self.assertEqual(len(kept), 1, json.dumps(out, indent=2))
+        self.assertRegex(kept[0].lower(), promise)
+
+    def test_one_answer_leaves_out_every_flagged_check(self):
+        out = self.at_the_gate_check_question(self.TWO_NOT_ADOPTED, text=self.THREE_CHECKS)
+        summary = self.summary(out)
+        for part in ("npx eslint .", "no eslint config", "npx tsc", "no typescript dependency"):
+            self.assertIn(part, summary)
+        self.answered(out, "Leave them out of this run")
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true"])
+        self.assertEqual(self.profile_line(),
+                         f"saved profile {self.saved}, without npx eslint ., npx tsc")
+        log = self.work_log()
+        for cmd in ("npx eslint .", "npx tsc"):
+            self.assertEqual(log.count(f"dropped gate check {cmd}:"), 1, log)
+        self.assertEqual(self.saved.read_text(), self.THREE_CHECKS)
+
+    def test_one_answer_keeps_every_flagged_check(self):
+        out = self.at_the_gate_check_question(self.TWO_NOT_ADOPTED, text=self.THREE_CHECKS)
+        self.answered(out, "Keep them")
+        self.ready(self.setup_next())
+        self.assertEqual(self.gate(), ["true", "npx eslint .", "npx tsc"])
+        log = self.work_log()
+        for cmd in ("npx eslint .", "npx tsc"):
+            self.assertEqual(log.count(f"kept gate check {cmd}:"), 1, log)
+        self.assertEqual(json.loads((self.dir / "profile-origin.json").read_text())["kept"],
+                         [{"n": 2, "command": "npx eslint ."}, {"n": 3, "command": "npx tsc"}])
+
+    def test_leaving_out_a_flagged_test_and_lint_check_is_refused_naming_both(self):
+        self.at_the_gate_check_question("check 1: not adopted — no jest dependency\n"
+                                        "check 2: not adopted — no eslint config\n",
+                                        text=self.JEST_PROFILE)
+        r = self.autodev("setup-answer", "drop", "--repo", self.repo, "--task", self.TASK)
+        said = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, said)
+        self.assertIn("REFUSED", said)
+        self.assertIn("npx jest", said)
+        self.assertIn("npx eslint .", said)
+        self.nothing_set_up_yet()
+
+    def test_a_long_lookup_reason_is_cut_to_200_characters(self):
+        line = "check 2: not adopted — " + "no eslint config anywhere " * 12
+        out = self.at_the_gate_check_question("check 1: adopted — package.json:9\n" + line + "\n")
+        summary = self.summary(out)
+        self.assertIn(line.strip()[:200], summary)
+        self.assertNotIn(line.strip()[:201], summary)
+
+class MetricsTest(OverrideCase):
+    """`next` writes .auto-dev/metrics.json, and a copy outside the worktree,
+    whenever it completes a run's step (exit 3) or stops it (exit 4)."""
+
+    ship_ready = ShipTest.ship_ready
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    open_pr = ShipTest.open_pr
+    merge_ready = ShipTest.merge_ready
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def setUp(self):
+        super().setUp()
+        self.metrics_dir = self.tmp / "metrics"
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)
+
+    def metrics(self):
+        path = self.dir / "metrics.json"
+        self.assertTrue(path.is_file(), f"no {path}")
+        return json.loads(path.read_text())
+
+    def stopped_at_the_post_plan_gate(self):
+        """The user answers Stop at the post-plan gate; `next` reports it."""
+        out = self.next(5)
+        self.assertIn("post-plan gate", out["QUESTION"])
+        self.after(out, "Stop")
+        return self.next(4)
+
+    def test_a_stop_writes_metrics_json_with_the_run_and_its_events(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertEqual(data["metrics"], 1)
+        self.assertEqual(data["run"]["state"], "open")
+        self.assertEqual(data["run"]["phase"], 2)
+        self.assertEqual(data["events"], self.state()["events"])
+
+    def test_explain_and_a_plain_action_write_no_metrics(self):
+        out = self.next(0)  # the first step only spawns the planner
+        self.assertEqual(self.spawned(out), [("planner", 1)])
+        self.assertFalse((self.dir / "metrics.json").exists())
+        for _ in range(2):
+            self.next_reissue(0)
+        self.next_reissue(4)
+        self.assertTrue((self.dir / "metrics.json").is_file())
+        (self.dir / "metrics.json").unlink()
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertFalse((self.dir / "metrics.json").exists())
+
+    def test_spawns_count_each_time_a_brief_was_sent_out(self):
+        self.stopped_after_three_spawns()
+        self.assertEqual(self.metrics()["spawns"], {"total": 3, "by_worker": {"planner": 3}})
+
+    def test_a_refused_planner_and_its_retry_each_count_as_a_spawn_and_one_refusal(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        _, jobs = self.expect("planner")
+        self.assertEqual(jobs, [("planner", 1)])
+        self.answer("planner", 1, "FITS", reading="none", entry_points_changed="no")
+        out = self.next(0, refused_ok=True)  # no `risk`: refused, and briefed again
+        self.assertEqual(self.spawned(out), [("planner", 2)], json.dumps(out, indent=2))
+        self.answer("planner", 2, "FITS", **PLANNED)
+        self.critic()
+        self.stopped_at_the_post_plan_gate()
+        data = self.metrics()
+        self.assertEqual(data["spawns"]["by_worker"]["planner"], 2)
+        self.assertEqual(data["refused"], {"total": 1, "by_worker": {"planner": 1},
+                                           "by_token": {"MALFORMED": 1}})
+
+    def test_rounds_count_what_was_spent_left_and_added(self):
+        state = self.state()
+        state["budget"].update(total=1, remaining=0, spends=[
+            {"id": "fix-0", "what": "an earlier correction", "at": state["created"],
+             "seq": 1}])
+        self.write_state(state)
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic("REVISE", blockers=1)
+        self.next(4)  # no round left for the plan's revision
+        out = self.next(4)  # the same stop, reported again
+        self.raise_from_report(out, 2)
+        self.expect("planner", "REVISED", **PLANNED)
+        self.critic("APPROVE", mode="recheck")
+        self.stopped_at_the_post_plan_gate()
+        data = self.metrics()
+        self.assertEqual(data["rounds"], {
+            "total": 3, "spent": 2, "remaining": 1, "raised": 2,
+            "spends": [{"id": "fix-0", "what": "an earlier correction"},
+                       {"id": "plan-critic-1", "what": "plan revision"}]})
+        self.assertEqual(data["stops"]["by_number"], {"11": 1, "19": 1})
+
+    def test_a_run_that_spent_nothing_still_has_every_rounds_key(self):
+        self.stopped_after_three_spawns()
+        rounds = self.metrics()["rounds"]
+        self.assertEqual((rounds["spent"], rounds["spends"], rounds["raised"]), (0, [], 0))
+        self.assertEqual(rounds["remaining"], rounds["total"])
+
+    def test_a_stop_reported_twice_counts_once_by_its_number(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic()
+        first = self.stopped_at_the_post_plan_gate()
+        second = self.next(4)
+        for shown in (first, second):  # the same stop both times
+            self.assertIn("stopped at the post-plan gate", " ".join(shown["REPORT"]))
+        data = self.metrics()
+        self.assertEqual(data["stops"]["total"], 1)
+        self.assertEqual(data["stops"]["by_number"], {"19": 1})
+        self.assertEqual(len(data["stops"]["list"]), 1)
+        self.assertEqual(data["stops"]["list"][0]["number"], 19)
+        self.assertEqual(data["stops"]["list"][0]["rule"], "the run is stopped")
+        self.assertEqual(data["run"]["state"], "stopped")
+
+    def test_a_red_gate_stop_after_the_user_s_fix_counts_again(self):
+        out, _ = self.red_gate()
+        self.next(4)  # the same stop, reported again
+        r = self.answer_stop(out, "I fixed it myself", "I fixed the lint config")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.quality_gate(red=True)
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")
+        self.quality_gate(red=True)
+        out = self.next(4)
+        self.assertIn("still red after the coder's correction", " ".join(out["REPORT"]))
+        self.assertEqual(self.metrics()["stops"]["by_number"], {"9": 2})
+
+    def test_a_run_held_at_a_gate_has_no_stop(self):
+        self.reviewed_pr()
+        out = self.next(5)
+        self.assertIn("ready gate", out["QUESTION"])
+        self.after(out, "Hold (keep it a draft)")
+        out = self.next(4)
+        self.assertIn("held", " ".join(out["REPORT"]))
+        self.assertEqual(self.metrics()["stops"]["total"], 0)
+
+    def review_files(self):
+        """The fixture's review files, with condition-shaped rows."""
+        code = """\
+# Code review — feat/due-dates
+
+**Overall confidence: High** — reviewers finished: 3/3; coverage: full; must-fix decided 2–1: none
+Latest pass: 2 — scope: the correction
+Tree: {tree}
+Must-fix: 1 open · 1 fixed   ·   Advisory: 1   ·   Noise: 2   ·   Dropped (pre-existing): 1
+
+## Must-fix
+| ID | Finding | Location | Category | Votes | Confidence | Status |
+|----|---------|----------|----------|-------|------------|--------|
+| C1 | null due date crashes sort | `src/sort.ts:4` | correctness | 3/3 | High | open |
+| C2 | blank title saved | `src/save.ts:18` | tests | 2/3 (re-vote) | Medium | fixed (pass 2) |
+
+## Pending re-vote
+| ID | Finding | Location | Category | Raised by | Re-voters | Votes |
+|----|---------|----------|----------|-----------|-----------|-------|
+
+## Advisory
+| ID | Finding | Location | Category | Votes | Confidence | Why advisory |
+|----|---------|----------|----------|-------|------------|--------------|
+| C3 | the sort could be cached | `src/sort.ts:9` | performance | 2/3 | Low | no user impact |
+
+## Noise
+| ID | Finding | Raised by | Why dismissed |
+|----|---------|-----------|---------------|
+| C4 | a due date in the past | R1 | allowed by the spec |
+| C5 | a long title | R2 | the field has a limit |
+
+## Security leads
+none
+
+## Passes
+| Pass | Scope | Reviewers finished | Must-fix found | Re-votes |
+|------|-------|--------------------|----------------|----------|
+| 1 | whole change | 3/3 | 2 | 1 |
+| 2 | the correction | 3/3 | 0 | 0 |
+""".format(tree="0" * 40)
+        security = """\
+# Security review — feat/due-dates
+
+**Overall confidence: High** — finished: yes; coverage: full; High/Medium verified: 2/2
+Run 1 — reviewer: security-reviewer — scope: the whole change since `abc`
+Tree: {tree}
+Must-fix: 1 open · 0 fixed   ·   For the user (pre-existing): 1   ·   Advisory: 0
+
+## Findings
+| ID | Finding | Location | Origin | Confidence | Verified | Verdict | Status |
+|----|---------|----------|--------|------------|----------|---------|--------|
+| S1 | anyone sets a due date | `src/due.ts:9` | introduced | High | confirmed | must-fix | open |
+| S2 | token not rotated | `src/auth.ts:88` | pre-existing | Medium | confirmed | for the user | — |
+| S3 | a date in a log | `src/log.ts:3` | introduced | Medium | refuted | advisory | — |
+
+## Coverage
+Every changed file.
+""".format(tree="0" * 40)
+        (self.dir / "CODE_REVIEW.md").write_text(code)
+        (self.dir / "SECURITY_REVIEW.md").write_text(security)
+
+    def test_review_findings_are_counted_kept_and_dropped(self):
+        self.stopped_after_three_spawns()
+        self.review_files()
+        state = self.state()
+        state["phase6"]["passes"] = [{"n": 1, "scope": "first"},
+                                     {"n": 2, "scope": "correction"}]
+        self.write_state(state)
+        self.next_reissue(4)  # the same stop, reported again: metrics written again
+        data = self.metrics()
+        self.assertEqual(data["code_review"], {
+            "passes": 2, "must_fix": 2, "advisory": 1, "pending": 0, "noise": 2,
+            "pre_existing": 1, "kept": 3, "dropped": 3})
+        self.assertEqual(data["security_review"],
+                         {"findings": 3, "refuted": 1, "kept": 2, "dropped": 1})
+
+    def test_a_run_with_no_review_has_null_review_blocks(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertIn("code_review", data)
+        self.assertIn("security_review", data)
+        self.assertIsNone(data["code_review"])
+        self.assertIsNone(data["security_review"])
+
+    def test_the_diff_size_comes_from_the_risk_re_check(self):
+        self.standard_session()
+        for i in range(30):
+            self.write(f"src/part{i}.ts")
+        state = self.verified()
+        lines = int(re.search(r"(\d+) lines", state["risk_recheck"]["why"][0]).group(1))
+        state["settings"]["open_pr_gate"] = True
+        self.write_state(state)
+        self.lint()
+        out = self.next(5)
+        self.assertIn("pr gate", out["QUESTION"])
+        self.after(out, "Hold (don't push yet)")
+        self.next(4)
+        self.assertEqual(self.metrics()["diff"], {"files": 32, "lines": lines, "high": True})
+
+    def test_a_run_stopped_in_the_plan_stage_has_no_diff(self):
+        self.stopped_after_three_spawns()
+        data = self.metrics()
+        self.assertIn("diff", data)
+        self.assertIsNone(data["diff"])
+
+    def test_removing_the_worktree_keeps_the_run_s_metrics(self):
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        saved = self.metrics_dir / "app" / "feat-due-dates.json"
+        out = self.next(5)
+        self.assertIn("Remove the worktree", json.dumps(out))
+        self.assertIn(str(saved), json.dumps(out))
+        self.after(out, "Remove it")
+        out = self.next(3)
+        last = (self.dir / "metrics.json").read_text()
+        r = self.autodev("cleanup-worktree", "--dir", self.dir, cwd=self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.worktree.exists())
+        self.assertTrue(saved.is_file(), f"no {saved}")
+        self.assertEqual(saved.read_text(), last)
+        self.assertEqual(json.loads(saved.read_text())["run"]["state"], "finished")
+
+    def test_a_metrics_copy_that_cannot_be_written_changes_no_output(self):
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        self.expect("planner")
+        for _ in range(2):
+            self.next_reissue(0)
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        report = json.loads(r.stdout)["REPORT"]
+        self.assertIn("spawned 3 times", " ".join(report))
+        self.assertIn("metrics copy not written", r.stderr)
+        self.assertTrue((self.dir / "metrics.json").is_file())
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)
+        self.assertEqual(self.next(4)["REPORT"], report)  # the stop as it reads when written
+
+    def test_a_copy_that_cannot_be_written_is_told_before_the_worktree_goes(self):
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        inside = str(self.dir / "metrics.json")
+        out = self.next(5)
+        question = json.dumps(out)
+        self.assertIn("Remove the worktree", question)
+        self.assertIn("the metrics copy could not be written", question)
+        self.assertIn(inside, question)
+        self.assertNotIn("stays at", question)
+        self.after(out, "Remove it")
+        out = self.next(3)
+        self.assertIn("the metrics copy could not be written", out["ACTION"])
+        self.assertIn(inside, out["ACTION"])
+        self.assertIn("cleanup-worktree", out["ACTION"])
+        self.assertNotIn("metrics stay at", out["ACTION"])
+        self.assertTrue((self.dir / "metrics.json").is_file())
+
+    def test_the_copy_s_file_name_replaces_unsafe_branch_characters(self):
+        state = self.state()
+        state["branch"] = "feat/a b+c_d.e"
+        self.write_state(state)
+        self.stopped_after_three_spawns()
+        saved = self.metrics_dir / "app" / "feat-a-b-c_d.e.json"
+        self.assertTrue(saved.is_file(), sorted(str(p) for p in self.metrics_dir.rglob("*"))
+                        if self.metrics_dir.exists() else "no metrics folder")
+        self.assertEqual(saved.read_text(), (self.dir / "metrics.json").read_text())
+
+    def test_explain_at_remove_it_tells_whether_the_copy_can_be_written(self):
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+        out = self.next(5)
+        self.assertIn("stays at", json.dumps(out))
+        # Checking the copy can be written leaves nothing beside it.
+        self.assertEqual([p.name for p in (self.metrics_dir / "app").iterdir()
+                          if p.name != "feat-due-dates.json"], [])
+        self.after(out, "Remove it")
+        explain = ["next", "--explain", "--dir", self.dir, "--json"]
+        r = self.autodev(*explain)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        action = json.loads(r.stdout)["ACTION"]
+        self.assertIn("metrics stay at", action)
+        self.assertNotIn("could not be written", action)
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        r = self.autodev(*explain)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        action = json.loads(r.stdout)["ACTION"]
+        self.assertIn("--explain", action)
+        self.assertIn("the metrics copy could not be written", action)
+        self.assertIn(str(self.dir / "metrics.json"), action)
+        self.assertNotIn("UNSAVED", r.stdout)
+        self.assertEqual(r.stderr, "")  # --explain writes nothing, so reports no write
+
+
+class MetricsFileTest(OverrideCase):
+    """What metrics.json holds beyond the acceptance checks, through `next` and
+    tests/lib_cli.py's `metrics` (what `next` writes at exits 3 and 4)."""
+
+    def metrics(self):
+        r = self.lib("metrics", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual(out["message"], str(self.dir / "metrics.json"))
+        return json.loads((self.dir / "metrics.json").read_text()), out["copied"]
+
+    def test_a_metrics_json_that_cannot_be_written_changes_no_output(self):
+        (self.dir / "metrics.json").mkdir()
+        self.expect("planner")
+        for _ in range(2):
+            self.next_reissue(0)
+        r = self.autodev("next", "--reissue", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("spawned 3 times", " ".join(json.loads(r.stdout)["REPORT"]))
+        self.assertIn("metrics.json not written", r.stderr)
+        self.assertNotIn("TALLY", r.stdout)
+        saved = self.tmp / "metrics" / "app" / "feat-due-dates.json"
+        self.assertTrue(saved.is_file())  # the copy is written all the same
+
+    def test_the_text_output_of_a_stop_has_no_tally(self):
+        self.stopped_after_three_spawns()
+        r = self.autodev("next", "--reissue", "--dir", self.dir)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("REPORT:", r.stdout)
+        self.assertNotIn("TALLY", r.stdout)
+        self.assertNotIn("number", r.stdout)
+
+    def test_the_copy_folder_falls_back_to_the_xdg_config_folder(self):
+        del self.env["AUTO_DEV_METRICS_DIR"]
+        self.env["XDG_CONFIG_HOME"] = str(self.tmp / "config")
+        _, copied = self.metrics()
+        self.assertEqual(copied, str(self.tmp / "config" / "auto-dev" / "metrics" / "app"
+                                     / "feat-due-dates.json"))
+        self.assertTrue(Path(copied).is_file())
+
+    def test_the_copy_folder_falls_back_to_the_home_config_folder(self):
+        del self.env["AUTO_DEV_METRICS_DIR"]
+        self.env.pop("XDG_CONFIG_HOME", None)
+        self.env["HOME"] = str(self.tmp / "home")
+        _, copied = self.metrics()
+        self.assertEqual(copied, str(self.tmp / "home" / ".config" / "auto-dev" / "metrics"
+                                     / "app" / "feat-due-dates.json"))
+
+    def test_a_branch_of_dots_stays_inside_the_metrics_folder(self):
+        state = self.state()
+        state["branch"] = "../.."
+        self.write_state(state)
+        _, copied = self.metrics()
+        self.assertEqual(Path(copied).parent, self.tmp / "metrics" / "app")
+        self.assertEqual(Path(copied).name, "-...json")
+
+    def test_a_review_file_that_cannot_be_read_gives_a_null_block(self):
+        (self.dir / "CODE_REVIEW.md").write_bytes(b"\xff\xfe not text")
+        (self.dir / "SECURITY_REVIEW.md").write_text("# Security review\n\nno table\n")
+        data, _ = self.metrics()
+        self.assertIsNone(data["code_review"])
+        self.assertIsNone(data["security_review"])
+
+    def test_a_re_check_from_before_the_upgrade_has_no_counts(self):
+        state = self.state()
+        state["risk_recheck"] = {"seq": 3, "high": False, "why": []}
+        self.write_state(state)
+        data, _ = self.metrics()
+        self.assertEqual(data["diff"], {"files": None, "lines": None, "high": False})
+
+    def test_the_numbered_stops_and_the_ones_the_table_does_not_number(self):
+        state = self.state()
+        state["stops"] = [
+            {"number": 9, "rule": "the quality gate is red after its correction",
+             "phase": 5, "at": state["created"], "seq": 4},
+            {"number": None, "rule": "commit-tests refused", "phase": 4,
+             "at": state["created"], "seq": 5}]
+        self.write_state(state)
+        data, _ = self.metrics()
+        self.assertEqual(data["stops"]["by_number"], {"9": 1, "none": 1})
+        self.assertEqual(data["stops"]["list"][1],
+                         {"number": None, "rule": "commit-tests refused", "phase": 4})
+
+    def test_a_stop_after_a_fixer_ran_counts_again(self):
+        out, _ = self.red_gate()
+        n = self.fix(out)[1]
+        self.report(n, proposal="Also relax the lint rule.")
+        self.answer("fixer", n, "NEEDS_CONSENT", fix_report="x", changed="0")
+        out = self.next(4)  # the stop asked again, after the fixer ran
+        self.assertIn("still red", " ".join(out["REPORT"]))
+        stops = json.loads((self.dir / "metrics.json").read_text())["stops"]
+        self.assertEqual(stops["by_number"], {"9": 2})
+
+    def test_pending_re_votes_are_counted_apart_from_kept_and_dropped(self):
+        MetricsTest.review_files(self)
+        path = self.dir / "CODE_REVIEW.md"
+        text = path.read_text().replace(
+            "| ID | Finding | Location | Category | Raised by | Re-voters | Votes |\n"
+            "|----|---------|----------|----------|-----------|-----------|-------|\n",
+            "| ID | Finding | Location | Category | Raised by | Re-voters | Votes |\n"
+            "|----|---------|----------|----------|-----------|-----------|-------|\n"
+            "| C6 | a lone finding | `src/a.ts:1` | correctness | R1 | R2, R3 | 1/3 |\n"
+            "| C7 | another lone one | `src/b.ts:2` | tests | R2 | R1, R3 | 1/3 |\n")
+        self.assertIn("| C7 |", text)
+        path.write_text(text)
+        data, _ = self.metrics()
+        self.assertEqual(data["code_review"], {
+            "passes": 0, "must_fix": 2, "advisory": 1, "pending": 2, "noise": 2,
+            "pre_existing": 1, "kept": 3, "dropped": 3})
+
+    def test_a_stop_reported_again_at_once_after_a_retry_counts_twice(self):
+        out = self.refused_commit()
+        r = self.autodev("override", "retry", "--text", "the checks are fine",
+                         "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)  # the same step refused again, nothing between
+        self.assertIn("could not be committed", " ".join(out["REPORT"]))
+        self.assert_counted(None, "commit-tests refused", 3, times=2)
+
+    def test_a_stop_reported_again_after_talk_counts_once(self):
+        out = self.refused_commit()
+        r = self.answer_stop(out, "Let's talk it through")
+        self.assertIn("TALK", r.stdout)
+        self.next(4)
+        self.assert_counted(None, "commit-tests refused", 3)
+
+    def test_a_stop_reported_again_after_leave_counts_once(self):
+        out = self.refused_commit()
+        r = self.answer_stop(out, "Leave it stopped")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.next(4)
+        self.assertIn("leave the run stopped", " ".join(out["REPORT"]))
+        self.assert_counted(None, "commit-tests refused", 3)
+
+    def test_a_stop_reported_again_in_a_new_session_counts_once(self):
+        self.refused_commit()
+        self.resume()
+        out = self.next(4)
+        self.assertIn("could not be committed", " ".join(out["REPORT"]))
+        self.assert_counted(None, "commit-tests refused", 3)
+
+    def refused_commit(self):
+        """The tester's checks are already in HEAD (committed by hand): their
+        commit is refused, and `next` stops."""
+        self.planned()
+        self.expect("acceptance-tester", "WRITTEN", checks="4", ambiguous="none")
+        self.sh("git", "add", *self.CHECKS, cwd=self.worktree)
+        self.sh("git", "commit", "-q", "-m", "the checks, by hand", cwd=self.worktree)
+        out = self.next(4)
+        self.assertIn("could not be committed", " ".join(out["REPORT"]))
+        self.assert_counted(None, "commit-tests refused", 3)
+        return out
+
+    def test_a_question_as_the_first_other_exit_writes_no_metrics(self):
+        (self.dir / "PLAN.md").write_text(self.plan_text)
+        self.expect("planner", "FITS", **PLANNED)
+        self.critic()
+        out = self.next(5)
+        self.assertIn("post-plan gate", out["QUESTION"])
+        self.assertFalse((self.dir / "metrics.json").exists())
+        self.assertFalse((self.tmp / "metrics").exists())
+
+    def test_a_checkpoint_writes_no_metrics(self):
+        _, jobs = self.expect("planner")
+        self.answer(*jobs[0], "", status="failed")
+        state = self.state()
+        state["settings"]["checkpoint_events"] = state["events"]
+        self.write_state(state)
+        out = self.next(6)
+        self.assertIn("--checkpoint", out["AFTER"][0])
+        self.assertFalse((self.dir / "metrics.json").exists())
+        self.assertFalse((self.tmp / "metrics").exists())
+
+    def test_a_step_next_could_not_take_writes_metrics_and_counts_no_stop(self):
+        self.expect("planner")
+        state = self.state()
+        state["refused"] = {"planner-1": []}  # refused, with no issues to retry with
+        self.write_state(state)
+        r = self.autodev("next", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("could not take its step", " ".join(json.loads(r.stdout)["REPORT"]))
+        data = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(data["stops"], {"total": 0, "by_number": {}, "list": []})
+        self.assertEqual(data["spawns"]["by_worker"], {"planner": 1})
+        saved = self.tmp / "metrics" / "app" / "feat-due-dates.json"
+        self.assertEqual(saved.read_text(), (self.dir / "metrics.json").read_text())
+
+
+class MetricsStopsTest(OverrideCase):
+    """Each stop `next` reaches is counted in metrics.json by its number in
+    references/tables.md, its rule and its phase."""
+
+    ship_ready = ShipTest.ship_ready
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    open_pr = ShipTest.open_pr
+    merge_ready = ShipTest.merge_ready
+    standard_session = RiskRecheckTest.standard_session
+    write = RiskRecheckTest.write
+    verified = RiskRecheckTest.verified
+
+    def test_a_spec_the_planner_finds_impossible_is_stop_8(self):
+        self.plan_session()
+        self.resume()
+        _, jobs = self.expect("coder")
+        (self.dir / "blocked" / "coder-1.md").write_text("- step 1: the store has no date type\n")
+        self.answer(*jobs[0], "BLOCKED", blocked="1", test_changes="none")
+        self.expect("planner", "SPEC_IMPOSSIBLE", **PLANNED)
+        out = self.next(4)
+        self.assertIn("impossible to meet", " ".join(out["REPORT"]))
+        self.assert_counted(8, "the planner returned SPEC_IMPOSSIBLE", 4)
+
+    def test_a_gate_whose_checks_fail_is_a_stop_the_table_does_not_number(self):
+        self.open_pr()
+        self.expect("triager", "TRIAGED", blockers="0", acceptance_checks="0",
+                    triage_file="none", checks_file="none")
+        gh = json.loads((self.tmp / "gh.json").read_text())
+        fields = ("url,isDraft,reviewDecision,reviews,comments,mergeable,mergeStateStatus,"
+                  "headRefOid,state")
+        self.script_gh([{"args": ["pr", "view", "12", "--json", fields],
+                         "stdout": json.dumps({"isDraft": True, "state": "OPEN"})}] + gh)
+        out = self.next(4)
+        self.assertIn("still a draft", " ".join(out["REPORT"]))
+        self.assert_counted(None, "a main gate precondition failed", 6)
+
+    def test_a_panel_with_no_usable_report_is_stop_13(self):
+        self.draft_pr()
+        _out, jobs = self.reviewers()
+        for w, n in jobs:
+            slot = self.sets(w, n)["reviewer"]
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text(r_report("none"))
+            self.answer(w, n, "REVIEWED", findings="0", leads="0")
+        for w, n in [*jobs, self.security_job]:
+            r = self.autodev("record", w, n, "--dir", self.dir)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for w, n in jobs:  # the reports lost after they were recorded
+            slot = self.sets(w, n)["reviewer"]
+            (self.dir / "review" / "pass-1" / f"{slot}.md").write_text("cut short\n")
+        out = self.next(4)
+        self.assertIn("No code reviewer wrote a usable report", " ".join(out["REPORT"]))
+        self.assert_counted(13, "the panel produced nothing", 6)
+
+    def test_a_result_stale_again_after_its_re_check_is_stop_12(self):
+        self.ship_ready()
+        self.lint()
+        self.assertIn("commit: run", self.next(0)["ACTION"])
+        state = self.state()
+        # The outside change was re-checked (its correction closed), and the
+        # commit then found results stale again.
+        state["phase6"]["corrections"].append({
+            "entry": "outside", "file": None, "checks": None, "seq": state["events"] + 1,
+            "after_commit": False, "rule": "the code changed outside the pipeline",
+            "budget": None, "spend_id": None, "closed": True})
+        state["phase6"]["commit_attempt"] = {"result": "stale", "seq": state["events"] + 2}
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("stale again right after its own re-run", " ".join(out["REPORT"]))
+        self.assert_counted(12, "stale twice running", 6)
+
+    def test_an_empty_change_is_stop_14(self):
+        self.ship_ready()
+        (self.worktree / "due.ts").unlink()
+        self.lint()
+        out = self.next(4)
+        self.assertIn("There is nothing to commit", " ".join(out["REPORT"]))
+        self.assert_counted(14, "an empty change", 6)
+
+    def test_a_ci_correction_that_changed_nothing_is_a_stop_the_table_does_not_number(self):
+        state = self.state()
+        state["settings"]["ci"] = "github"
+        self.write_state(state)
+        checks = [{"name": "test", "state": "FAILURE", "bucket": "fail",
+                   "link": "https://ci/1"}]
+        self.reviewed_pr(extra=[{"args": ["pr", "checks"], "stdout": json.dumps(checks)}])
+        self.assertIn("ci-watch", self.next(0)["ACTION"])
+        r = self.autodev("ci-watch", "--dir", self.dir, "--max-wait", "0")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        _, jobs = self.expect("triager")
+        (self.dir / "triage" / "ci-1.md").write_text("# Required changes\n1. x\n")
+        self.answer(*jobs[0], "CODE", blockers="0", acceptance_checks="0",
+                    triage_file=str(self.dir / "triage" / "ci-1.md"), checks_file="none")
+        self.expect("coder", "BUILT", blocked="0", test_changes="none")  # it changes nothing
+        out = self.next(4)
+        self.assertIn("the correction changed nothing", " ".join(out["REPORT"]))
+        self.assert_counted(None, "a CI correction changed nothing", 6)
+
+    def test_a_merge_github_refused_is_stop_18(self):
+        sha = self.merge_ready(first=[{"args": ["pr", "merge"], "stderr": "not mergeable",
+                                       "exit": 1}])
+        self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        out = self.next(4)
+        self.assertIn("GitHub did not merge the PR", " ".join(out["REPORT"]))
+        self.assert_counted(18, "merge-pr did not merge", 6)
+
+    def test_red_ci_at_the_main_gate_is_stop_17(self):
+        self.merge_ready()
+        state = self.state()
+        state["phase6"]["ci"] = {"status": "red", "failing": ["test — https://ci/1"],
+                                 "sha": state["phase6"]["verified_sha"],
+                                 "seq": state["events"]}
+        self.write_state(state)
+        out = self.next(4)
+        self.assertIn("CI is red on the PR", " ".join(out["REPORT"]))
+        self.assert_counted(17, "red CI at the main gate", 6)
+
+    def test_the_diff_s_lines_are_its_line_count_not_its_file_count(self):
+        self.standard_session()
+        self.write("src/due.ts", "export const a = 1;\nexport const b = 2;\n"
+                                 "export const c = 3;\nexport const d = 4;\n")
+        self.verified()
+        r = self.lib("metrics", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        data = json.loads((self.dir / "metrics.json").read_text())
+        self.assertEqual(data["diff"], {"files": 3, "lines": 6, "high": False})
+
+
+class MetricsCleanupTest(OverrideCase):
+    """The worktree question and its "Remove it": where the metrics stay, and
+    the `cleanup-worktree` command until the worktree is gone."""
+
+    ship_ready = ShipTest.ship_ready
+    refresh_body = ShipTest.refresh_body
+    reviewed_pr = ShipTest.reviewed_pr
+    mark_ready = ShipTest.mark_ready
+    open_pr = ShipTest.open_pr
+    merge_ready = ShipTest.merge_ready
+
+    def setUp(self):
+        super().setUp()
+        self.metrics_dir = self.tmp / "metrics"
+        self.saved = self.metrics_dir / "app" / "feat-due-dates.json"
+        self.inside = self.dir / "metrics.json"
+
+    def to_the_worktree_question(self):
+        """The PR merged, CI on main marked and the final report written: the
+        next `next` asks whether to remove the worktree."""
+        sha = self.merge_ready()
+        self.next(0)
+        r = self.autodev("merge-pr", "--pr", "12", "--sha", sha, "--dir", self.dir)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.next(0)
+        self.autodev("mark", "main-ci", "--value", "green", "--dir", self.dir)
+        self.after(self.next(0))  # the final report
+
+    def removed(self):
+        """Answer the worktree question "Remove it"; the question."""
+        out = self.next(5)
+        self.assertIn("Remove the worktree", json.dumps(out))
+        self.after(out, "Remove it")
+        return out
+
+    def next_3(self):
+        """`next`, exit 3: (its ACTION, its stderr)."""
+        r = self.autodev("next", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        return json.loads(r.stdout)["ACTION"], r.stderr
+
+    def assert_saved_action(self, action):
+        self.assertIn("cleanup-worktree", action)
+        self.assertIn("metrics stay at", action)
+        self.assertIn(str(self.saved), action)
+        self.assertNotIn("could not be written", action)
+
+    def assert_unsaved_action(self, action):
+        self.assertIn("the metrics copy could not be written", action)
+        self.assertIn(str(self.inside), action)
+        self.assertIn("cleanup-worktree", action)
+        self.assertNotIn("metrics stay at", action)
+
+    def test_remove_it_names_the_copy_and_says_so_again_until_the_worktree_goes(self):
+        self.to_the_worktree_question()
+        self.removed()
+        action, stderr = self.next_3()
+        self.assert_saved_action(action)
+        self.assertEqual(stderr, "")
+        self.assertTrue(self.saved.is_file())
+        again, _ = self.next_3()  # the session ended before cleanup-worktree ran
+        self.assertEqual(again, action)
+
+    def test_a_copy_that_could_not_be_written_is_told_again_by_a_later_next(self):
+        self.to_the_worktree_question()
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        self.removed()
+        action, _ = self.next_3()
+        self.assert_unsaved_action(action)
+        again, stderr = self.next_3()
+        self.assert_unsaved_action(again)
+        self.assertIn("metrics copy not written", stderr)
+
+    def test_a_copy_path_that_fails_only_when_written_is_told_at_remove_it(self):
+        self.to_the_worktree_question()
+        self.saved.mkdir(parents=True)  # the folder takes files; the copy's path doesn't
+        out = self.removed()
+        self.assertIn("stays at", json.dumps(out))
+        action, stderr = self.next_3()
+        self.assert_unsaved_action(action)
+        self.assertIn("metrics copy not written", stderr)
+
+    def test_a_metrics_json_that_could_not_be_written_leaves_remove_it_as_it_is(self):
+        self.to_the_worktree_question()
+        if self.inside.exists():
+            self.inside.unlink()
+        self.inside.mkdir()
+        self.removed()
+        action, stderr = self.next_3()
+        self.assert_saved_action(action)
+        self.assertIn("metrics.json not written", stderr)
+        self.assertTrue(self.saved.is_file())
+
+    def test_a_copy_folder_that_takes_no_file_is_told_at_the_question(self):
+        self.to_the_worktree_question()
+        folder = self.saved.parent
+        folder.mkdir(parents=True, exist_ok=True)
+        folder.chmod(0o555)
+        self.addCleanup(folder.chmod, 0o755)
+        try:
+            with tempfile.NamedTemporaryFile(dir=folder):
+                pass
+        except OSError:
+            pass
+        else:
+            self.skipTest("this user can write to a read-only folder (root)")
+        out = self.next(5)
+        question = json.dumps(out)
+        self.assertIn("the metrics copy could not be written", question)
+        self.assertIn(str(self.inside), question)
+        self.assertNotIn("stays at", question)
+        self.after(out, "Remove it")
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        action = json.loads(r.stdout)["ACTION"]
+        self.assertIn("the metrics copy could not be written", action)
+        self.assertIn(str(self.inside), action)
+
+    def test_keep_it_leaves_nothing_more_to_do(self):
+        self.to_the_worktree_question()
+        out = self.next(5)
+        self.after(out, "Keep it")
+        for _ in range(2):
+            action, _ = self.next_3()
+            self.assertEqual(action, "the run is complete; nothing more to do")
+
+    def test_resume_picks_up_a_run_whose_worktree_is_still_to_remove(self):
+        self.to_the_worktree_question()
+        self.removed()
+        action, _ = self.next_3()
+        r = self.autodev("resume", "--repo", self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(r.stdout.startswith("RESUME"), r.stdout)
+        self.assertIn("cleanup-worktree", r.stdout)
+        again, _ = self.next_3()
+        self.assertEqual(again, action)
+
+    def test_resume_finds_a_kept_worktree_s_run_finished(self):
+        self.to_the_worktree_question()
+        self.after(self.next(5), "Keep it")
+        self.next_3()
+        r = self.autodev("resume", "--repo", self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("RESUME", r.stdout)
+
+    # The run's task, as init set it (RunCase.init).
+    TASK = "Add due dates to todos"
+    DONE = "the run is complete; nothing more to do"
+
+    def resume(self, *extra):
+        """`resume --repo <main>` (with `extra`): its stdout."""
+        r = self.autodev("resume", "--repo", self.repo, *extra)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def other_run(self):
+        """A second open run of another task, beside this one: its worktree."""
+        r = self.autodev("init", "--repo", self.repo, "--slug", "overdue",
+                         "--task", "Show overdue todos", "--profile", self.profile,
+                         "--max-wait", "30")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return self.tmp / "app-overdue"
+
+    def assert_finished(self):
+        """A bare `resume` finds the run finished: from the main checkout it
+        leaves the run alone (no open run), and from its worktree it prints
+        FINISHED."""
+        out = self.resume()
+        self.assertTrue(out.startswith("ASK"), out)
+        self.assertIn("no open run", out)
+        r = self.autodev("resume", "--repo", self.worktree)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], f"FINISHED: {self.worktree}", r.stdout)
+
+    def refused_cleanup(self):
+        """Answer "Remove it" with an untracked file in the worktree: git
+        refuses `cleanup-worktree` (exit 1)."""
+        self.to_the_worktree_question()
+        self.removed()
+        (self.worktree / "stray-notes.txt").write_text("the user's notes\n")
+        self.next_3()
+        r = self.autodev("cleanup-worktree", "--dir", self.dir, cwd=self.repo)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("REFUSED", r.stdout + r.stderr)
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_resume_task_picks_up_a_run_whose_worktree_is_still_to_remove(self):
+        self.to_the_worktree_question()
+        self.removed()
+        self.next_3()
+        out = self.resume("--task", self.TASK)
+        self.assertTrue(out.startswith("RESUME"), out)
+        action = next((ln for ln in out.splitlines() if ln.strip().startswith("action:")),
+                      "")
+        self.assertIn("cleanup-worktree", action, out)
+
+    def test_a_bare_resume_asks_which_run_beside_a_pending_cleanup(self):
+        self.to_the_worktree_question()
+        self.removed()
+        self.next_3()
+        other = self.other_run()
+        out = self.resume()
+        self.assertTrue(out.startswith("ASK"), out)
+        self.assertIn(str(self.worktree), out)
+        self.assertIn(str(other), out)
+
+    def test_next_repo_sets_a_new_run_up_while_the_old_cleanup_is_pending(self):
+        self.to_the_worktree_question()
+        self.removed()
+        self.next_3()  # the session ends before cleanup-worktree runs
+        self.assert_a_new_run_is_set_up()
+
+    def test_next_repo_sets_a_new_run_up_right_after_remove_it(self):
+        self.to_the_worktree_question()
+        self.removed()  # the session ends before the `next` that finishes the run
+        self.assert_a_new_run_is_set_up()
+
+    def assert_a_new_run_is_set_up(self):
+        """`next --repo --task <the run's task>` starts setting a new run up,
+        and leaves this run's worktree and state as they were."""
+        before = (self.dir / "state.json").read_text()
+        temp = self.tmp / "tmpdir"
+        temp.mkdir()
+        self.env.update(TMPDIR=str(temp), AUTO_DEV_PROFILES_DIR=str(self.tmp / "profiles"))
+        r = self.autodev("next", "--repo", self.repo, "--task", self.TASK, "--max-wait",
+                         "5", "--json")
+        shown = r.stdout + r.stderr
+        self.assertNotIn("move into the run's worktree", shown)
+        self.assertNotIn(str(self.worktree) + " ", shown)
+        out = json.loads(r.stdout)
+        self.assertEqual(out.get("exit"), r.returncode, shown)
+        self.assertIn(out.get("exit"), (0, 5), shown)  # setup's first step for a new run
+        self.assertTrue(self.worktree.is_dir())
+        self.assertEqual((self.dir / "state.json").read_text(), before)
+
+    def test_a_cleanup_git_refuses_ends_the_run(self):
+        self.refused_cleanup()
+        action, _ = self.next_3()
+        self.assertEqual(action, self.DONE)
+        self.assertEqual(self.state()["gates"][-1]["choice"], "keep")
+        self.assert_finished()
+        self.assertTrue(self.resume("--task", self.TASK).startswith("FINISHED"))
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_a_cleanup_git_refuses_leaves_another_open_run_to_resume(self):
+        self.refused_cleanup()
+        other = self.other_run()
+        out = self.resume()
+        self.assertEqual(out.splitlines()[0], f"RESUME: {other}", out)
+
+    def test_a_run_5_0_left_with_its_worktree_stays_finished(self):
+        # On 5.0, "Remove it" recorded `gate cleanup proceed`, git refused the
+        # removal and nothing more was saved: no `keep` gate, no cleanup_given.
+        self.refused_cleanup()
+        state = self.state()
+        self.assertEqual(state["gates"][-1]["choice"], "keep")
+        state["gates"].pop()
+        self.assertEqual(state["gates"][-1]["choice"], "proceed")
+        self.assertTrue(state.pop("cleanup_given"))
+        self.write_state(state)
+        self.assert_finished()
+        self.assertTrue(self.resume("--task", self.TASK).startswith("FINISHED"))
+        action, _ = self.next_3()
+        self.assertEqual(action, self.DONE)
+        other = self.other_run()
+        out = self.resume()
+        self.assertEqual(out.splitlines()[0], f"RESUME: {other}", out)
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_explain_gives_the_removal_without_saving_that_it_was_given(self):
+        self.to_the_worktree_question()
+        self.removed()
+        r = self.autodev("next", "--explain", "--dir", self.dir, "--json")
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("cleanup-worktree", json.loads(r.stdout)["ACTION"])
+        self.assertNotIn("cleanup_given", self.state())
+        self.next_3()
+        self.assertTrue(self.state()["cleanup_given"])
+
+    def read_only(self, folder):
+        """Make `folder` read-only for this test, or skip it where the user
+        can write to a read-only folder anyway (root)."""
+        folder.chmod(0o555)
+        self.addCleanup(lambda: folder.exists() and folder.chmod(0o755))
+        try:
+            with tempfile.NamedTemporaryFile(dir=folder):
+                pass
+        except OSError:
+            pass
+        else:
+            self.skipTest("this user can write to a read-only folder (root)")
+
+    def ignore(self, pattern):
+        with open(self.repo / ".git" / "info" / "exclude", "a") as exclude:
+            exclude.write(pattern + "\n")
+
+    def half_removed(self, lock=None):
+        """Answer "Remove it" and run `cleanup-worktree` (with the folder `lock`
+        made read-only first), which git stops partway: exit 1, REFUSED, saying
+        so. Its output."""
+        self.removed()
+        self.next_3()
+        if lock:
+            self.read_only(lock)
+        r = self.autodev("cleanup-worktree", "--dir", self.dir, cwd=self.repo)
+        shown = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, shown)
+        self.assertIn("REFUSED", shown)
+        self.assertIn("git removed part of", shown)
+        self.assertIn("unregistered it", shown)
+        return shown
+
+    def test_a_removal_git_left_half_done_names_what_is_left(self):
+        # git stops at the first entry it can't delete, in the order the
+        # filesystem lists them: .auto-dev/ may go before build/ or stay.
+        self.to_the_worktree_question()
+        self.ignore("build/")
+        folder = self.worktree / "build" / "ro"
+        folder.mkdir(parents=True)
+        (folder / "out.bin").write_text("built\n")
+        self.read_only(folder)
+        shown = self.half_removed()
+        self.assertIn("build", shown)  # what is left
+        if (self.dir / "state.json").exists():
+            self.assertIn("(.auto-dev/) is still there", shown)
+            self.assertNotIn("its run state with it", shown)
+            self.assertEqual(self.state()["gates"][-1]["choice"], "keep")
+        else:
+            self.assertIn("its run state with it", shown)
+            self.assertIn("Nothing was recorded", shown)
+            self.assertFalse(self.dir.exists() and any(self.dir.iterdir()))
+
+    def test_a_half_done_removal_that_left_the_state_ends_the_run(self):
+        # .auto-dev/ takes no deletion, so state.json stays whatever the order.
+        self.to_the_worktree_question()
+        self.ignore("build/")
+        folder = self.worktree / "build" / "ro"
+        folder.mkdir(parents=True)
+        (folder / "out.bin").write_text("built\n")
+        self.read_only(folder)
+        shown = self.half_removed(lock=self.dir)
+        self.assertNotIn("its run state with it", shown)
+        self.assertIn("(.auto-dev/) is still there", shown)
+        self.assertIn(".auto-dev", shown.split("what is left:")[1])
+        self.assertTrue((self.dir / "state.json").is_file())
+        gate = self.state()["gates"][-1]
+        self.assertEqual((gate["gate"], gate["choice"]), ("cleanup", "keep"))
+        action, _ = self.next_3()
+        self.assertEqual(action, self.DONE)
+        self.assertNotIn("cleanup-worktree", action)
+
+    def test_a_half_done_removal_lists_ten_entries_and_how_many_more(self):
+        # In a read-only worktree folder git deletes no top-level entry.
+        self.to_the_worktree_question()
+        self.ignore("extra-*")
+        for i in range(12):
+            (self.worktree / f"extra-{i:02}").write_text("left\n")
+        entries = len(list(self.worktree.iterdir()))
+        self.assertGreater(entries, 10)
+        shown = self.half_removed(lock=self.worktree)
+        self.assertIn(f" and {entries - 10} more in {self.worktree}", shown)
+
+    def test_resume_of_a_pending_cleanup_reads_the_ship_runbook(self):
+        self.to_the_worktree_question()
+        self.removed()
+        self.next_3()
+        out = self.resume()
+        self.assertTrue(out.startswith("RESUME"), out)
+        lines = [ln.strip() for ln in out.splitlines()]
+        self.assertIn("runbook: references/ship.md", lines, out)
+        self.assertIn("stage: Ship", lines, out)
+        self.assertEqual(self.state()["stage"], "ship")
+
+    def test_keeping_the_worktree_after_an_unsaved_copy_ends_the_run(self):
+        self.to_the_worktree_question()
+        blocker = self.tmp / "not-a-folder"
+        blocker.write_text("a regular file\n")
+        self.env["AUTO_DEV_METRICS_DIR"] = str(blocker)
+        self.removed()
+        action, _ = self.next_3()
+        self.assert_unsaved_action(action)
+        keep = re.search(r"`([^`]*gate cleanup keep[^`]*)`", action)
+        self.assertIsNotNone(keep, action)
+        r = subprocess.run(keep.group(1), shell=True, capture_output=True, text=True,
+                           env=self.env, cwd=self.tmp, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.env["AUTO_DEV_METRICS_DIR"] = str(self.metrics_dir)  # the copy writes now
+        again, _ = self.next_3()
+        self.assertEqual(again, self.DONE)
+        self.assertTrue(self.worktree.is_dir())
+        self.assert_finished()
+
+
+class RiskDocsCase(unittest.TestCase):
+    """What the README, SKILL.md and `next --help` say about probes and mutation."""
+
+    HIGH = ("high-risk", "high risk", "high tier")
+
+    def texts(self):
+        r = subprocess.run([sys.executable, str(AUTODEV), "next", "--help"],
+                           capture_output=True, text=True, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        root = SCRIPTS.parents[2]
+        return {"README.md": (root / "README.md").read_text(encoding="utf-8"),
+                "SKILL.md": (root / "skills" / "auto-dev" / "SKILL.md").read_text(
+                    encoding="utf-8"),
+                "next --help": r.stdout}
+
+    def sentences(self, text):
+        return re.sub(r"\s+", " ", text).split(". ")
+
+
+class ProbeDocsTest(RiskDocsCase):
+    def test_no_description_ties_the_verifier_s_probe_to_a_high_risk_run(self):
+        texts = self.texts()
+        for name, text in texts.items():
+            for sentence in self.sentences(text):
+                low = sentence.lower()
+                if "probe" in low:
+                    self.assertFalse(any(w in low for w in self.HIGH), (name, sentence))
+        self.assertTrue(any("probe" in s.lower() and "every run" in s.lower()
+                            for s in self.sentences(texts["README.md"])))
+
+
+class MutationDocsTest(RiskDocsCase):
+    def test_every_description_still_keeps_mutation_to_a_high_risk_run(self):
+        for name, text in self.texts().items():
+            self.assertTrue(any("mutation" in s.lower() and any(w in s.lower() for w in self.HIGH)
+                                for s in self.sentences(text)), name)
+
+
+class CiFullRunDocsTest(unittest.TestCase):
+    """What the docs say about where the test suite runs in full."""
+
+    ROOT = SCRIPTS.parents[2]
+    PHRASE = "CI is the one full run of the test suite"
+
+    def read(self, rel):
+        return (self.ROOT / rel).read_text(encoding="utf-8")
+
+    def flat(self, text):
+        return " ".join(text.split())
+
+    def section(self, text, heading):
+        start = text.index(f"\n## {heading}\n")
+        end = text.find("\n## ", start + 1)
+        return text[start:end if end != -1 else len(text)]
+
+    def assert_says(self, text, said, where, present=True):
+        self.assertEqual(said in text, present,
+                         f"{where}: {'missing' if present else 'still holds'} {said!r}")
+
+    def test_the_docs_say_ci_is_the_one_full_run_of_the_test_suite(self):
+        readme = self.read("README.md")
+        for heading in ("How the build is verified", "Stack profiles"):
+            self.assert_says(self.flat(self.section(readme, heading)), self.PHRASE,
+                             f"README.md *{heading}*")
+        self.assert_says(self.flat(self.read("skills/auto-dev/references/build.md")),
+                         self.PHRASE, "references/build.md")
+        gates = self.section(readme, "Human gates & integrations")
+        bullets = [self.flat(b) for b in re.split(r"\n(?=- )", gates) if "CI" in b]
+        self.assertTrue(any("runs the whole test suite before the push" in b for b in bullets),
+                        "README.md *Human gates & integrations*: no CI bullet says it "
+                        "'runs the whole test suite before the push'")
+        scratch = self.section(readme, "The `.auto-dev/` scratch directory")
+        rows = [ln for ln in scratch.splitlines() if ln.startswith("| `tmp/`")]
+        self.assertEqual(len(rows), 1, "README.md: no single `tmp/` row in the scratch table")
+        self.assert_says(rows[0], "tmp/run/timings.json", "README.md's `tmp/` row")
+
+    def test_evals_expect_a_scoped_gate_with_ci_and_a_whole_gate_without(self):
+        evals = {e["id"]: e for e in json.loads(
+            self.read("skills/auto-dev/evals/evals.json"))["evals"]}
+        self.assertTrue([x for x in evals[1]["expectations"]
+                         if "quality gate" in x.lower() and "change's tests" in x],
+                        "eval 1 has no expectation that the quality gate ran the test check "
+                        "only on the change's tests")
+        self.assertTrue([x for x in evals[9]["expectations"]
+                         if "quality gate" in x.lower() and "every check whole" in x],
+                        "eval 9 has no expectation that the quality gate ran every check whole")
+
+    def test_stop_9_names_a_red_whole_re_run_after_ci_can_t_be_watched(self):
+        rows = [ln for ln in self.read("skills/auto-dev/references/tables.md").splitlines()
+                if ln.startswith("| 9 |")]
+        self.assertEqual(len(rows), 1, "references/tables.md: no single row for stop 9")
+        self.assert_says(rows[0], "run whole after CI can't be watched, is red",
+                         "references/tables.md stop 9")
+        self.assert_says(rows[0], "_I fixed it myself_ runs the gate again",
+                         "references/tables.md stop 9")
+
+    def test_profiles_md_says_the_coder_leaves_an_unscopable_test_check_to_ci(self):
+        text = self.flat(self.read("skills/auto-dev/references/profiles.md"))
+        self.assert_says(text, "a worker that wanted it scoped runs it whole",
+                         "references/profiles.md", present=False)
+        self.assert_says(text, "the coder leaves a test check with no scoped form to CI",
+                         "references/profiles.md")
+
+    SIGNED_OFF = ("A test check the user signed off failing at a red-gate stop counts as "
+                  "green for the rest of the run: it gets no such line")
+
+    def test_the_coder_gives_a_signed_off_test_check_no_run_line(self):
+        text = self.flat(self.read("agents/coder.md"))
+        self.assert_says(text, self.SIGNED_OFF, "agents/coder.md")
+        sentences = [x for x in re.split(r"(?<=\.)\s+", text)
+                     if x.startswith("In a correction, each test check the quality gate's "
+                                     "latest run found failing has a `run:` line")]
+        self.assertEqual(len(sentences), 1,
+                         "agents/coder.md: no single sentence giving a failing test check "
+                         "its run line in a correction")
+        self.assert_says(sentences[0], "unless the user signed it off at a red-gate stop",
+                         "agents/coder.md's correction run-line sentence")
+
+    def test_profiles_md_gives_a_signed_off_test_check_no_run_line(self):
+        self.assert_says(self.flat(self.read("skills/auto-dev/references/profiles.md")),
+                         self.SIGNED_OFF, "references/profiles.md")
+
+    def test_the_one_full_run_is_tied_to_a_gate_with_one_test_check(self):
+        for rel in ("skills/auto-dev/references/profiles.md", "agents/coder.md"):
+            sentences = [x for x in re.split(r"(?<=[.:;])\s+", self.flat(self.read(rel)))
+                         if "one full run" in x]
+            self.assertTrue(sentences, f"{rel}: says nothing of the one full run")
+            for sentence in sentences:
+                self.assertTrue("one test check" in sentence
+                                or "one `kind: test` check" in sentence,
+                                f"{rel}: {sentence!r} doesn't tie it to one test check")
+
+    def test_the_docs_no_longer_say_the_gate_runs_every_check_whole(self):
+        self.assert_says(self.flat(self.read("README.md")),
+                         "runs every check whole through `run gate <n>`", "README.md",
+                         present=False)
+        self.assert_says(self.flat(self.read("skills/auto-dev/references/profiles.md")).lower(),
+                         "the quality gate runs every check, the test check included",
+                         "references/profiles.md", present=False)

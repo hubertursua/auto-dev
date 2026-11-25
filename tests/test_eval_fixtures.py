@@ -238,5 +238,35 @@ class NoProposalEvalsTest(unittest.TestCase):
                 self.assertIsNone(re.search(word, text), f"eval {e['id']}: {word}")
 
 
+class ProbeEvalsTest(unittest.TestCase):
+    """Every run's verifier probes; mutation alone needs a high-risk run."""
+
+    def eval_(self, n):
+        return next(e for e in EVALS["evals"] if e["id"] == n)
+
+    def flat(self, text):
+        return re.sub(r"\s+", " ", text.replace("`", ""))
+
+    def test_a_standard_risk_run_s_verifier_probes_each_checked_condition_without_mutants(self):
+        e = self.eval_(2)
+        expected = self.flat(e["expected_output"])
+        self.assertIn("no mutants", expected)
+        self.assertIn("probe of its own", expected)
+        self.assertIn("per condition with acceptance checks", expected)
+        self.assertTrue(any("probe" in x and "condition with acceptance checks" in x
+                            and "second Expected / Command / Result / Output group" in x
+                            and "no evidence/mutants.json" in x
+                            for x in map(self.flat, e["expectations"])), e["expectations"])
+
+    def test_the_high_risk_evals_give_mutation_alone_as_the_reason(self):
+        for n in (12, 28, 30):
+            setup = self.flat(self.eval_(n)["setup"])
+            self.assertNotIn("the verifier's probes", setup, n)
+            self.assertTrue(any("mutation" in s and "high-risk" in s and "only" in s
+                                for s in setup.split(". ")), (n, setup))
+        self.assertNotIn("(on this high-risk run) also runs its own probe",
+                         self.eval_(1)["expected_output"])
+
+
 if __name__ == "__main__":
     unittest.main()

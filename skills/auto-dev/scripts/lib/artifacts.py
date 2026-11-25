@@ -248,6 +248,30 @@ def header_line(text, prefix):
     return ""
 
 
+# A quality-gate report's statuses (lint/<REPORT>.md's first line), and the
+# start of the `Scope:` line of a test check run only on the change's tests.
+LINT_STATUSES = ("pass", "fail", "skipped")
+SCOPED_PREFIX = "the change's tests"
+
+
+def lint_report(path):
+    """A quality-gate report: {status: pass | fail | skipped | '' (missing or
+    not one of them), scope: the `Scope:` line's text ('' when it has none, as
+    a report from before scoped gates), command: the `Command:` line's command}."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    lines = text.splitlines()
+    first = lines[0].rstrip() if lines else ""
+    status = next((s for s in LINT_STATUSES if first.endswith(s)), "")
+    scope = header_line(text, "- **Scope:**")[len("- **Scope:**"):].strip()
+    command = header_line(text, "- **Command:**")[len("- **Command:**"):].strip()
+    if len(command) > 1 and command.startswith("`") and command.endswith("`"):
+        command = command[1:-1]
+    return {"status": status, "scope": scope, "command": command}
+
+
 # PLAN.md's `Review effort:` line: the effort the planner recommends for
 # the Phase 6 code reviewers (`record` requires it on a FITS plan; anything
 # else read there, after a fix at a stop say, means high).

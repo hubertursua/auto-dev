@@ -29,7 +29,7 @@ SLOT_RE = re.compile(r"\{\{([a-z_]+)\}\}")
 MODE_RE = re.compile(r"^## Mode: ([a-z-]+)\s*$", re.MULTILINE)
 
 AUTO = {"worktree", "artifact_dir", "skill_dir", "base", "branch", "task", "ticket",
-        "binding_rules", "test_command", "test_notes", "mutation_cap", "probes",
+        "binding_rules", "test_command", "test_runs", "test_notes", "mutation_cap",
         "gate_commands", "acceptance_paths", "survivors", "result_file",
         "symbol_lookup", "pass", "tree", "cut", "run", "pr", "triage_file", "checks_file",
         "answer_file", "blocked_file", "deviations_file", "spec_problem_file",
@@ -96,6 +96,18 @@ def agent_text(worker):
 
 def modes(worker):
     return MODE_RE.findall(agent_text(worker))
+
+
+def max_turns(worker):
+    """The turn cap the agent file's frontmatter sets (`maxTurns: <n>`), or
+    None when it sets none. A worker stopped at its cap returns with no last
+    turn, so it writes no result file."""
+    text = agent_text(worker)
+    front = re.match(r"---\n(.*?)\n---\n", text, re.DOTALL)
+    if not front:
+        return None
+    found = re.search(r"^maxTurns:\s*(\d+)\s*$", front.group(1), re.MULTILINE)
+    return int(found.group(1)) if found else None
 
 
 def slots(worker, mode=None):

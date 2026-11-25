@@ -1,7 +1,31 @@
 """autodev.py next — print the pipeline's one next action.
 
 Usage:
-    autodev.py next [--dir <artifact-dir>] [--explain] [--json]
+    autodev.py next [--dir <artifact-dir>] [--explain] [--reissue]
+                    [--max-wait SECONDS] [--json]
+    autodev.py next --repo <checkout> --task "<task>" [--ask "<restated ask>"]
+                    [--ticket KEY] [--ticket-url URL] [--ticket-text-file PATH]
+                    [--jira "<text>"] [--reissue] [--max-wait SECONDS] [--json]
+
+Before the run exists (Phase 1, setup), run it with --repo, the checkout you
+started in, and --task (the ticket key when there is a ticket; --ask and the
+ticket flags are needed on the first call only). --ask, the task restated in
+the user's words, is stored as the run's ask: the planner gets it when there
+is no ticket text, and a later --task naming it finds the run (here and in
+`resume`) as the task text does. It prints one step at a time, in the same
+shape as below: the lookup to spawn for a saved profile (whether
+each gate check's tool is adopted; when it finds one not adopted, the
+gate-check question, exit 5: keep the checks, leave them out of this run, or
+stop; when the repo's `.auto-dev.yml` sets `gate`, its gate replaces the
+saved one: no lookup, no question), or the profiler to spawn when there is
+no usable profile, then the profile question (exit 5); each question's AFTER lines run `autodev.py
+setup-answer`; then it creates the worktree, branch and
+run (`autodev.py init`, setup waited on for at most --max-wait seconds,
+default 90) and says to move into the worktree, with `next --dir` as AFTER. A
+`.auto-dev.yml` that sets both `setup` and `gate` needs no research. Run it
+again at any point: it waits for a worker with no result, and points to the
+run once it exists. Its files live in a private folder under the temp folder
+until then. --explain needs a run.
 
 Reads state.json (the workers' recorded results, the briefs issued, the
 gates, the marks and the Phase 6 fields) and the artifacts, and
@@ -11,8 +35,13 @@ command, then run `next` again. It never needs you to judge a file.
 It records the workers' results itself first: each issued brief whose result
 file exists and isn't recorded yet is recorded as `autodev.py record` would
 (one it can't accept is refused, its issues saved for the retry), so spawned
-workers need no `record` call. A brief with no result file is issued again as
-it is. Run `next` only once every agent of the last spawn returned.
+workers need no `record` call. A brief with no result file is waited for
+while its worker may still be running: the ACTION starts with `wait`, names
+it, and spawns nothing. Run `next` only once every agent of the last spawn
+returned; `next --reissue` sends such a brief out again, and is for when
+every agent the wait names returned without writing its result file. In a
+run it re-sends the same brief; before the run exists (--repo) it writes the
+brief again under a new number.
 
 It does the mechanical steps itself rather than asking you to: it writes the
 brief of the worker to spawn, spends a round of the budget before a plan
@@ -27,8 +56,9 @@ Once the build's quality gate is green, the change is committed, pushed and
 opened as a draft PR; the verifier and the review then run together, alongside
 CI. On a standard-risk run the review is one reviewer (code and security); a
 high-risk run adds the panel of three with the judge, the separate security
-reviewer, mutation and the verifier's own probes. One correction, one round,
-takes what a pass left open and red CI on the pushed commit together.
+reviewer and mutation. The verifier runs its own probes on every run. One
+correction, one round, takes what a pass left open and red CI on the pushed
+commit together.
 
 Workers never negotiate the contract between themselves. A coder that finds
 a plan step wrong builds it the way that works and lists the deviation
@@ -48,7 +78,17 @@ Everything else is free but bounded: the tester goes once more for gaps, a
 red quality gate gets one coder correction, a BLOCKED step one planner
 decision; the same again is a stop. With
 none left, `next` stops, except a correction in Phase 6 before the PR is marked
-ready: what is open goes to the ready-for-review gate instead.
+ready: what is open goes to the ready-for-review gate instead, which then
+offers "Add a round and fix it" (`budget raise --by 1`): the next `next` spends
+that round on the correction for what is open.
+
+A correction the review pass checked in the working tree and the user then
+committed (and pushed) by hand leaves `commit` nothing to commit: when HEAD
+holds exactly the checked code (a clean tree, the acceptance checks intact,
+check-fresh.py passing on HEAD) and was committed after the review pass
+settled, `next` records HEAD as the verified commit itself and goes on to the
+push. A commit made while the pass was out is one the pass never read: `next`
+re-checks everything since the verified commit in a new pass instead.
 
 Output lines (only the ones that apply):
     ACTION:   what to do, in one line
@@ -69,7 +109,8 @@ Output lines (only the ones that apply):
     REPORT:   what to tell the user (exits 4 and 6)
     AFTER:    a command to run once the action is done; for a question,
               `"<answer>" → <command>`, one per answer
-    RULE:     the rule that chose the action (--explain)
+    RULE:     the rule that chose the action (--explain; also when the quality
+              gate runs again, every check whole, because CI can't be watched)
     RECORDED: each worker result `next` recorded before deciding,
               `<worker>-<n>: <status> <next>`, or `<worker>-<n>: refused
               (<token>)` (it is then briefed again with the issues). Under
@@ -89,7 +130,8 @@ so the text needs no other escaping.
 Exit codes:
     0  an action to take
     2  could not run (no state.json, an artifact unreadable, a check that could
-       not run) — never a pass
+       not run; with --repo: no --task, an unreadable ticket text file, an
+       unsafe scratch folder) — never a pass
     3  the run is complete
     4  stop and report: tell the user the REPORT lines; with a QUESTION, ask
        how to go on and run the AFTER line for the answer (an `override`
@@ -98,6 +140,15 @@ Exit codes:
     5  ask the user: show SUMMARY, ask QUESTION, run the AFTER line for the answer
     6  a checkpoint: run the AFTER command, give the user its message, stop
 `next` never exits 1: a step it could not take is a stop (4) that says why.
+
+While Phase 1's setup is not done, `next --dir` runs `init --continue`
+itself: it waits on setup (exit 0 with `next --dir` as AFTER while it still
+runs), and after a failed setup the user came back to (`resume`, then
+`next`), runs it again from the profile the run was made from
+(`.auto-dev/profile-origin.json`: the saved file read again, less the checks
+dropped at creation; the run's own profile.yml; or .auto-dev.yml). A failed
+setup is a stop with no QUESTION, as is a setup stop before the run exists:
+the REPORT says how to go on.
 
 Checkpoint: once this session has written CHECKPOINT_EVENTS events to state.json
 (80, or `checkpoint_events` in .auto-dev.yml), `next` ends the session at the
@@ -110,14 +161,44 @@ instead. A new session says `auto-dev continue` and picks up where this one
 stopped; resuming after a checkpoint lifts no stop, since nothing was fixed in
 between.
 
-A brief issued but not yet recorded is re-issued as the same spawn (after a
-cut-off session, say); one `next` refused is re-issued as a new brief that
-carries the refused issues (as `brief --retry <n>` writes). Spawned three
-times with no usable result, it stops. A stop on a worker (blocked, failed
-twice, never returned) is lifted by `resume`: the next session spawns that
-worker again. A stop on a result (a red quality gate, an impossible spec)
+Metrics: whenever `next` (not --explain) exits 3 or 4 for a run, it writes
+.auto-dev/metrics.json from state.json: spawns per worker, rounds, stops by
+their number in references/tables.md (each counted once while `next` keeps
+reporting it), refused results, review findings kept and dropped, events and
+the build's diff size. `next --repo` writes it too when setup failed in the
+run it created (exit 4; that stop is not counted), and a step `next` could not
+take (exit 4) writes it from the run as saved. It writes the same file to
+<metrics-dir>/<repo folder>/<branch>.json, so it outlives the worktree;
+<metrics-dir> is $AUTO_DEV_METRICS_DIR, else $XDG_CONFIG_HOME/auto-dev/metrics,
+else ~/.config/auto-dev/metrics. A file it can't write is said on stderr and
+changes neither the output nor the exit code, with one exception: when the copy
+was not written, the worktree question and its 'Remove it' ACTION say so and
+name .auto-dev/metrics.json, so the user can save it before the worktree is
+removed, or keep it (the ACTION names `gate cleanup keep`). Until
+`cleanup-worktree` has removed it, a later `next` gives that ACTION again, and
+`resume` picks the run up (RESUME) for it; a removal git refuses records the
+worktree as kept, which finishes the run.
+
+A brief issued but not yet recorded is waited for while it was sent out in
+this session, after the latest retry at a stop and less than 3 hours ago
+(IN_FLIGHT_HOURS). It is re-issued as the same spawn after a new session (a
+cut-off session, say), after a retry at a stop (`override retry`, or a
+fixer's FIXED), once 3 hours have passed, or with `--reissue`; while any
+brief is waited for, nothing is re-issued. One `next` refused is re-issued
+as a new brief that carries the refused issues (as `brief --retry <n>`
+writes). Spawned three times with no usable result, it stops; a brief that
+stop ended is no longer waited for, so the stop is asked again. A worker whose
+agent file caps its turns (`maxTurns`: the coder, the acceptance tester) and
+that ended with no result file is instead re-issued once as a new brief whose
+previous_issues keeps the issues its last brief carried and tells it to keep
+its earlier edits and finish (a coder's also gets the deviations and blocked
+lists its earlier spawn wrote); ending with no result file again, since the
+last resume or lifting retry, stops (stop 7). A stop on a
+worker (blocked, failed twice, never returned) is lifted by `resume`: the
+next session spawns that worker again. A stop on a result (a red quality gate, an impossible spec)
 comes back until the user overrides it. Every stop but the budget's, a gate's
-Stop, a failed setup and a merge of unknown outcome prints a QUESTION and is
+Stop, a setup stop (before the run exists, or a failed setup) and a merge of
+unknown outcome prints a QUESTION and is
 saved as state["stop"]: `autodev.py override` records the answer (the fixer
 with the user's instruction, a retry, a sign-off where the stop allows one,
 talk, leave), and the next `next` acts on it, running only the step that
@@ -130,8 +211,10 @@ import copy
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import artifacts as art
@@ -140,9 +223,11 @@ from . import (
     cmd_checks,
     cmd_gate,
     cmd_review,
+    cmd_ship,
     cmd_tests,
     cmd_work,
     judgment,
+    metrics,
     overrides,
     tree_guard,
 )
@@ -165,6 +250,9 @@ from .proc import git, run
 SCRIPTS = Path(__file__).resolve().parent.parent
 AUTODEV = SCRIPTS / "autodev.py"
 MAX_EMITS = 3
+# A brief sent out this long ago with no result is sent out again unasked: a
+# backstop for a worker lost without a notification.
+IN_FLIGHT_HOURS = 3
 CHECKPOINT_EVENTS = 80  # about 35 workers; tune on the fixture repo
 SLOTS = ("R1", "R2", "R3")
 SECURITY = ("security-reviewer", "security-reviewer-sensitive")
@@ -176,15 +264,46 @@ ONLY_RE = re.compile(r"ONLY conditions ([^:]+):")
 ENTRY_POINT_SCOPE = "ALL CONDITIONS whose checks call an entry point the revised plan changed"
 GAP_NOTE = "the gaps check-manifest found:"
 HUMAN_SCOPE = "ONLY the conditions whose checks the PR comments in the report question"
+# The stop's number and whether it counts (metrics.json): main() reads it,
+# show() drops it.
+TALLY = "TALLY"
+# The ACTION to print instead when the metrics copy could not be written
+# (main_step's "Remove it"): main() swaps it in, show() drops it.
+UNSAVED = "UNSAVED"
+# The artifact dir of the run `next --repo` created and whose setup failed:
+# main() writes its metrics, show() drops it.
+RUN_DIR = "RUN_DIR"
+# Set on an action whose RULE is printed without --explain too, because it
+# says why a step runs again (the quality gate, every check whole, once CI
+# can't be watched): show() drops it.
+SHOW_RULE = "SHOW_RULE"
 FILL = ("replace each '<...>' placeholder, inside its single quotes, with text that "
         "holds no single quote (rephrase, or use the typographic apostrophe U+2019)")
 
 
 def add_arguments(parser):
     parser.add_argument("--dir", default=".auto-dev", help="the run's .auto-dev/")
+    parser.add_argument("--repo", help="before the run exists: the checkout to set it up "
+                                       "from (Phase 1); needs --task")
+    parser.add_argument("--task", help="with --repo: the task, one line (the ticket key "
+                                       "when there is a ticket)")
+    parser.add_argument("--ask", help="with --repo: the task restated in 1-2 sentences, "
+                                      "in the user's words")
+    parser.add_argument("--ticket", help="with --repo: the Jira key, when there is a ticket")
+    parser.add_argument("--ticket-url", help="with --repo: the ticket's link")
+    parser.add_argument("--ticket-text-file", metavar="PATH",
+                        help="with --repo: a file holding the ticket's summary and "
+                             "description, given to the planner verbatim")
+    parser.add_argument("--jira", help="with --repo: Jira availability, for profile.md")
+    parser.add_argument("--max-wait", type=int, default=90,
+                        help="seconds one call waits on the run's setup (default 90)")
     parser.add_argument("--explain", action="store_true",
                         help="print the action and the rule that chose it, changing "
                              "nothing")
+    parser.add_argument("--reissue", action="store_true",
+                        help="send out again every brief that has no result yet, even "
+                             "one sent out in this session: only once every agent it "
+                             "was sent to returned without writing its result file")
 
 
 def q(value):
@@ -216,6 +335,7 @@ class Ctx:
         self.quiet = False  # state["stop"] changed: saved, but not an event of its own
         self.recorded = []  # the RECORDED lines of the results this call recorded
         self.readonly = bool(getattr(args, "explain", False))
+        self.reissue = bool(getattr(args, "reissue", False))
         self.probing = False
         self.peeked = {}
         self.prev_stopped = None  # the budget stop the last `next` saved, if any
@@ -318,14 +438,17 @@ def action(text, rule, **lines):
 
 
 def stop(report, rule, retry=None, signoff=None, no_signoff=None, kind=None,
-         after_fix=None):
+         after_fix=None, number=None, count=True):
     """A stop. With `retry` (what `override retry` does: results to set aside,
     phase6 keys to clear, a stop to lift, a correction to reopen), the user can
     override it: `next` asks how (stop_point). `signoff` is what a sign-off
     does (a result to rewrite as passed, results to set aside, a correction id
-    to drop); with none, `no_signoff` says why it isn't offered."""
+    to drop); with none, `no_signoff` says why it isn't offered. `number` is
+    the stop condition's number in references/tables.md (None for one it
+    doesn't number), counted in metrics.json unless `count` is false (a
+    hold); show() never prints it."""
     result = {"code": NEXT_STOP, "ACTION": "stop and report to the user; do nothing more",
-              "REPORT": report, "RULE": rule}
+              "REPORT": report, "RULE": rule, TALLY: {"number": number, "count": count}}
     if retry is not None:
         result["OVERRIDE"] = {"retry": retry, "signoff": signoff, "kind": kind,
                               "no_signoff": None if signoff else (
@@ -369,10 +492,14 @@ def spawn_lines(agents, briefs_, prompts, rule, budget=None, efforts=None):
     """efforts, when any is set, parallels agents ("" for an agent spawned at its
     own effort). No AFTER line: the next `next` records what they return."""
     efforts = efforts if efforts and any(efforts) else None
-    what = (f"spawn {agents[0]} with the PROMPT" if len(agents) == 1 else
-            f"spawn these {len(agents)} agents in one message, in parallel, each "
-            "with its PROMPT")
-    what += "; once every agent returned, run `next` (it records their results)"
+    if len(agents) == 1:
+        what = (f"spawn {agents[0]} with the PROMPT, in the foreground (the Agent "
+                "tool's `run_in_background: false`); once it returned, run `next` "
+                "(it records its result)")
+    else:
+        what = (f"spawn these {len(agents)} agents in one message, in parallel, each "
+                "with its PROMPT; once every agent returned, run `next` (it records "
+                "their results)")
     if efforts:
         what += ", passing its EFFORT as the Agent tool's `effort` parameter"
     return action(what, rule, AGENT=agents, BRIEF=briefs_, PROMPT=prompts,
@@ -422,7 +549,7 @@ def exhausted(c, what, extra=""):
                  ("The user can add rounds and go on from this step: run "
                   f"`{c.cmd('budget', 'raise', '--by', '<n>')}` with the number they "
                   "give, then `next`. Or they leave the run here; the worktree stays."),
-                 f"State and artifacts: {c.ad}"], f"the budget is used up: {what}")
+                 f"State and artifacts: {c.ad}"], f"the budget is used up: {what}", number=11)
 
 
 # ---------------------------------------------------------------- overriding a stop
@@ -650,7 +777,19 @@ def undo_fix(c, brief, n):
 # ---------------------------------------------------------------- entry point
 
 def main(args):
+    if args.repo:
+        result = setup_before_run(args)
+        made = result.pop(RUN_DIR, None)
+        if made is not None and not args.explain and result["code"] == NEXT_STOP:
+            for error in metrics.write(made):  # the run as init left it: no stop counted
+                print(error, file=sys.stderr)
+        return show(result, args)
+    for flag in ("task", "ask", "ticket", "ticket_url", "ticket_text_file", "jira"):
+        if getattr(args, flag):
+            raise Fail(f"--{flag.replace('_', '-')} needs --repo (it sets a run up)",
+                       CANNOT_RUN, "ERROR")
     c = Ctx(args)
+    c.max_wait = args.max_wait
     try:
         result = decide(c)
     except Preview as exc:
@@ -670,20 +809,66 @@ def main(args):
         failed = stop([f"`next` could not take its step ({exc.token}): {exc}",
                        ("Tell the user; it is a broken artifact or an auto-dev bug. "
                         f"State and artifacts: {c.ad}")],
-                      f"a step failed: {exc.token}")
+                      f"a step failed: {exc.token}", count=False)
         if c.recorded:
             failed["RECORDED"] = c.recorded
+        if not c.readonly:
+            write_metrics(c)  # the run as saved: nothing of the step was
         return show(failed, args)
     result = stop_point(c, result)
+    if not c.readonly:
+        if result["code"] == NEXT_STOP:
+            changed = metrics.note_stop(c.state, result.get(TALLY) or {},
+                                        result.get("RULE", ""),
+                                        (st.first_open_phase(c.state) or (6, None))[0])
+        else:
+            changed = metrics.clear_stop(c.state)
+        if changed:
+            c.quiet = True  # saved, but not an event of its own (as state["stop"])
     c.save()
+    unsaved = result.pop(UNSAVED, None)
+    if not c.readonly and result["code"] in (NEXT_COMPLETE, NEXT_STOP):
+        copied = not any(e.startswith(metrics.COPY_NOT_WRITTEN) for e in write_metrics(c))
+    else:  # nothing written (--explain): whether it could be, decides the same
+        copied = not unsaved or metrics.copy_error(c.state) is None
+    if unsaved and not copied:
+        result["ACTION"] = unsaved
     return show(result, args)
+
+
+def write_metrics(c):
+    """metrics.json and its copy (lib/metrics.py); a file it can't write is
+    said on stderr and changes neither the output nor the exit code (but for
+    UNSAVED, in main()). The lines it printed."""
+    errors = metrics.write(c.dir)
+    for error in errors:
+        print(error, file=sys.stderr)
+    return errors
+
+
+def setup_before_run(args):
+    """`next --repo`: Phase 1, before the run exists (cmd_setup). A step it
+    could not take is a stop, as for a run, never exit 1."""
+    from . import cmd_setup
+    try:
+        return cmd_setup.run_setup(args)
+    except Fail as exc:
+        if exc.code == CANNOT_RUN:
+            raise
+        return stop([f"`next` could not take its setup step ({exc.token}): {exc}",
+                     "Tell the user; nothing more was created."],
+                    f"a setup step failed: {exc.token}")
 
 
 def show(result, args):
     code = result.pop("code")
-    if not args.explain:
+    result.pop(TALLY, None)
+    result.pop(UNSAVED, None)
+    result.pop(RUN_DIR, None)
+    show_rule = result.pop(SHOW_RULE, False)
+    if not show_rule and not args.explain:
         result.pop("RULE", None)
-    elif result.get("ACTION"):
+    if args.explain and result.get("ACTION"):
         result["ACTION"] = ("(--explain: nothing was done; run `next` to act) "
                             + result["ACTION"])
     if args.json:
@@ -733,7 +918,8 @@ def record_returns(c):
     """Record every issued brief whose result file exists and is not logged yet,
     as `autodev.py record` would: one it can't accept is refused and its issues
     saved for the retry `pending_briefs` writes. A brief with no result file is
-    left to `pending_briefs`, which issues it again as it is. One line per job.
+    left to `pending_briefs`, which waits for it while it is in flight and
+    otherwise issues it again as it is. One line per job.
     Under --explain it records nothing (recording a tester's result writes
     files): it says it would record them first, and stops there."""
     done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
@@ -763,6 +949,8 @@ def decide_step(c):
         return fix
     run_state = st.run_state(c.state)
     if run_state == "finished":
+        if st.cleanup_pending(c.state):  # "Remove it", and the worktree is still here
+            return remove_worktree(c)
         return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
                 "RULE": "every phase is done"}
     if run_state in ("stopped", "held"):
@@ -774,7 +962,9 @@ def decide_step(c):
     if bad:
         return bad
     if st.phase(c.state, 1)["status"] != "done":
-        return setup(c)
+        result = setup(c)
+        if result is not None:
+            return result
     if checkpoint_due(c):
         # Only at a clean point: a stop, a question or a boundary comes first.
         probe = c if c.readonly else c.probe()
@@ -783,10 +973,23 @@ def decide_step(c):
         except Preview:
             would = {"code": NEXT_ACTION}
         if would["code"] == NEXT_ACTION:
+            if probe is not c:
+                keep_pass_ends(c, probe)
             return checkpoint(c)
         if c.readonly:
             return would
     return phases(c)
+
+
+def keep_pass_ends(c, probe):
+    """Copy the end HEAD the checkpoint's probe stamped on a settled review
+    pass (pass_ended) onto the run's own pass: this `next` found it settled,
+    so a commit made before the next session's `next` reads as made after
+    the pass, not while it was out."""
+    for mine, seen in zip(c.p6.get("passes") or [], probe.p6.get("passes") or []):
+        if "end_head" in seen and "end_head" not in mine:
+            mine["end_head"] = seen["end_head"]
+            c.quiet = True  # saved, not an event of its own (as pass_ended)
 
 
 def phases(c):
@@ -813,7 +1016,12 @@ def ended(c, how):
     rows = [f"Phase {n} — {name}: {st.phase(c.state, n)['status']}"
             + (f" ({st.phase(c.state, n)['notes']})" if st.phase(c.state, n)["notes"] else "")
             for n, name in st.PHASES if st.phase(c.state, n)["status"] in ("stopped", "held")]
-    if how == "held":
+    if how == "held" and st.phase(c.state, 1)["status"] == "held":
+        from .cmd_init import setup_source
+        rows.append(f"Phase 1's setup failed. Tell the user to fix the cause in "
+                    f"{setup_source(c.ad, c.state)}, then say `auto-dev continue` in a new "
+                    "session: `next` runs setup again.")
+    elif how == "held":
         rows.append("The run is held. Saying `auto-dev continue` in a new session "
                     "re-asks the gate that held it.")
     elif c.state.get("size") == "OVERSIZED":
@@ -833,8 +1041,12 @@ def ended(c, how):
                     retry={"aside": [job_of(plan)], "oversized": True},
                     signoff={"rewrite": [plan["worker"], plan["n"], "FITS"],
                              "fits": True},
-                    kind="oversized", after_fix="fits")
-    return stop(rows, f"the run is {how}")
+                    kind="oversized", after_fix="fits", number=5)
+    # A hold is a pause the user chose, not a stop; a gate's Stop is #19, and a
+    # stopped OVERSIZED run whose planner result was set aside is still #5.
+    return stop(rows, f"the run is {how}", count=how != "held",
+                number=None if how == "held" else
+                5 if c.state.get("size") == "OVERSIZED" else 19)
 
 
 def size_check(c):
@@ -850,27 +1062,156 @@ def size_check(c):
     return ["The planner's size check (PLAN.md):", *lines]
 
 
+def issued(b):
+    """When brief entry `b` was last sent out: (UTC ISO time, event seq). A
+    re-issue stamps issued_at / issued_seq; the first issue is the entry's own
+    at / seq."""
+    return b.get("issued_at") or b.get("at"), b.get("issued_seq", b.get("seq", 0))
+
+
+def in_flight(c, b):
+    """Whether open brief `b`'s worker may still be running: sent out in this
+    session, after the latest retry that lifted a stop, less than
+    IN_FLIGHT_HOURS ago, with no result file, not refused, and not ended by the
+    "spawned 3 times" stop."""
+    if (c.ad / "returns" / f"{b['worker']}-{b['n']}.json").exists():
+        return False
+    if cmd_work.job(b["worker"], b["n"]) in c.state.get("refused", {}):
+        return False
+    at, seq = issued(b)
+    if b.get("stopped_seq", 0) > seq:
+        return False
+    if seq < max(c.state.get("session_seq", 0), c.state.get("lifted_seq", 0)):
+        return False
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(at)
+    except (ValueError, TypeError):  # unreadable, or a naive time: stale
+        return False
+    return age.total_seconds() < IN_FLIGHT_HOURS * 3600
+
+
+def wait_for(c, out):
+    """The answer while briefs `out` are in flight: spawn nothing, and wait."""
+    names = ", ".join(f"{b['worker']} #{b['n']} (sent out {issued(b)[0]})" for b in out)
+    return action(
+        f"wait: {names} {'has' if len(out) == 1 else 'have'} not returned yet and "
+        "may still be running. Spawn "
+        "nothing; once every agent you spawned has returned, run `next`. Run "
+        f"`{c.cmd('next', '--reissue')}` only once every agent this wait names has "
+        "returned and `next` still names it (it wrote no result file): it sends that "
+        "brief out again",
+        "a brief sent out in this session has no result yet: its worker may still "
+        "be running")
+
+
+def capped_reissue(c, b, cap, tries):
+    """Open brief `b` of a worker capped at `cap` turns, which ended with no
+    result file: (the new brief that sends it out once more, told to keep its
+    edits and finish (a stand-in under --explain), None), or, when `b` already
+    was that re-spawn since the last resume or lifting retry, (b, the stop).
+
+    A re-spawn issued at the lift's own seq counts as after it (as in_flight
+    has it): a fixer's FIXED lifts the stop in the same `next` that sends the
+    re-spawn out. A coder's re-spawn gets the deviations and blocked lists its
+    earlier spawn wrote (carry_lists), and keeps the issues the replaced brief
+    carried (cmd_work.write_brief)."""
+    worker = b["worker"]
+    if b.get("turn_retry") and issued(b)[1] >= c.resumed():
+        if not c.readonly and b.get("stopped_seq", 0) <= issued(b)[1]:
+            # The stop ends this spawn: it is not waited for, so the stop is
+            # asked again (after talk, leave, or a fixer's proposal).
+            b["stopped_seq"] = c.seq()
+            c.quiet = True
+        report = (f"{worker} #{b['n']} ended without writing its result file twice: once, "
+                  "then again after it was sent out once more and told to keep its edits "
+                  "and finish. It may be running out of turns (its agent file caps it at "
+                  f"{cap}). Its edits are still in the worktree; its brief is "
+                  f"{c.ad}/briefs/{worker}-{b['n']}.md. Tell the user; once the cause is "
+                  "fixed, `auto-dev continue` spawns it again.")
+        return b, stop([report], "a worker with a turn cap ended twice without a result "
+                       "file", retry={"lift": True}, number=7)
+    if c.readonly:  # --explain writes no brief
+        return {"worker": worker, "n": c.peek(worker)}, None
+    note = cmd_work.NO_RESULT_RETRY
+    if worker == "coder":
+        note += carry_lists(c, b["n"], cmd_work.next_number(c.ad / "briefs", worker))
+    cmd_work.write_brief(c.state, c.ad, worker, b.get("mode"), dict(b.get("sets", {})),
+                         retry=b["n"], note=note)
+    new = c.state["briefs"][-1]  # write_brief marked b retried_as it
+    new["turn_retry"] = True
+    new["emitted"] = tries
+    c.dirty = True
+    return new, None
+
+
+def carry_lists(c, old, n):
+    """Copy coder #`old`'s deviations and blocked lists, the ones it wrote, to
+    coder #`n`'s (its deviations_file and blocked_file), so `record`'s count
+    check, the gate summaries' deviations and the planner's blocked spawn read
+    them from the coder that returns; the note's words for them, or ""."""
+    copied = []
+    for sub, slot in (("deviations", "deviations_file"), ("blocked", "blocked_file")):
+        src = c.ad / sub / f"coder-{old}.md"
+        dst = c.ad / sub / f"coder-{n}.md"
+        if src.is_file() and not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            copied.append(f"your {slot} holds the lines that spawn wrote to {src.name}")
+    if not copied:
+        return ""
+    words = "; ".join(copied)
+    return (f" {words[0].upper()}{words[1:]}: keep those lines, and update them for "
+            "what you finish or stop.")
+
+
 def pending_briefs(c):
-    """Re-issue the briefs issued after the last recorded result and not recorded.
+    """Re-issue the briefs issued after the last recorded result and not recorded,
+    unless one is still in flight (sent out in this session, after the latest
+    lifting retry, less than IN_FLIGHT_HOURS ago): then wait, unless --reissue.
 
     A job `record` refused (MISSING, MALFORMED, MISMATCH) is re-spawned as
     `brief --retry <n>` would: a new brief whose previous_issues carries the
-    issues, replacing the old one."""
+    issues, replacing the old one.
+
+    A worker whose agent file caps its turns (briefs.max_turns) and that ended
+    with no result file may have run out of turns mid-job: it is sent out once
+    as a new brief whose previous_issues tells it to keep its earlier edits and
+    finish (cmd_work.NO_RESULT_RETRY); a second miss since the last resume or
+    lifting retry stops the run (stop 7)."""
     done = {(e["worker"], e["n"]) for e in c.state.get("log", [])}
-    issued = c.state.get("briefs", [])
-    open_ = [b for b in issued if (b["worker"], b["n"]) not in done
+    issued_ = c.state.get("briefs", [])
+    open_ = [b for b in issued_ if (b["worker"], b["n"]) not in done
              and not b.get("retried_as")]
     if not open_:
         return None
+    if not c.reissue:
+        out = [b for b in open_ if in_flight(c, b)]
+        if out:
+            return wait_for(c, out)
     refused = c.state.get("refused", {})
     for i, b in enumerate(open_):
         tries = b.get("emitted", 1) + 1
+        cap = None if cmd_work.job(b["worker"], b["n"]) in refused else \
+            briefs.max_turns(b["worker"])
+        if cap is not None:
+            open_[i], halt = capped_reissue(c, b, cap, tries)
+            if halt:
+                return halt  # its second miss
+            continue
         if tries > MAX_EMITS:
+            if not c.readonly:
+                # The stop ends these spawns: none is waited for, so the stop is
+                # asked again (after talk, leave, or a fixer's proposal).
+                for x in open_:
+                    if x.get("emitted", 1) >= MAX_EMITS and \
+                            x.get("stopped_seq", 0) <= issued(x)[1]:
+                        x["stopped_seq"] = c.seq()
+                        c.quiet = True
             return stop([(f"{b['worker']} #{b['n']} was spawned {MAX_EMITS} times and "
                          "never left a result that `next` accepts. Tell the user; its "
                          f"brief is {c.ad}/briefs/{b['worker']}-{b['n']}.md. Once the "
                          "cause is fixed, `auto-dev continue` spawns it again.")],
-                        "a worker failed to return three times", retry={"lift": True})
+                        "a worker failed to return three times", retry={"lift": True}, number=7)
         if c.readonly:  # --explain counts nothing and writes no retry brief
             if cmd_work.job(b["worker"], b["n"]) in refused:
                 open_[i] = {"worker": b["worker"], "n": c.peek(b["worker"])}
@@ -883,7 +1224,11 @@ def pending_briefs(c):
             open_[i] = new
         else:
             b["emitted"] = tries
-            cmd_work.fresh_tree(c.state, b)  # what changed since is not this spawn's
+            b["resent"] = b.get("resent", 0) + 1  # a spawn of its own (metrics.json)
+            b["issued_at"], b["issued_seq"] = st.now(), c.seq()
+            # What changed since is not this spawn's; it also re-dates the
+            # brief file, the start of this spawn (`run gate`'s attempt count).
+            cmd_work.fresh_tree(c.state, b)
         c.dirty = True
     agents = [f"auto-dev:{b['worker']}" for b in open_]
     paths = [c.ad / "briefs" / f"{b['worker']}-{b['n']}.md" for b in open_]
@@ -924,19 +1269,37 @@ def not_ok(c):
                      "said above its result block, and that the run is paused here: "
                      "once the cause is fixed, `auto-dev continue` spawns it again."),
                      f"State and artifacts: {c.ad}"],
-                    f"a worker returned status {latest['status']}", retry={"lift": True})
+                    f"a worker returned status {latest['status']}", retry={"lift": True}, number=6)
     return None  # failed or blocked once: the step re-spawns it
 
 
 def setup(c):
-    status = c.state["init"].get("setup")
-    if status in ("running", "pending"):
-        return action(f"run `python3 {q(AUTODEV)} init --continue {q(c.wt)}` (setup is "
-                      "still running)", "Phase 1's setup has not finished",
-                      AFTER=[c.cmd("next")])
-    return stop([(f"Phase 1 did not finish: {st.phase(c.state, 1)['notes'] or status}. "
-                 "Tell the user; fix the cause, then run init --continue.")],
-                "Phase 1 is not done")
+    """Phase 1's setup is not done: wait on it, or (after a failed setup the
+    user came back to) run it again from the profile the run was made from.
+    None once it is done, so the phases go on."""
+    from . import cmd_setup
+    c.would("wait for setup, or run it again (`init --continue`)",
+            "Phase 1's setup has not finished")
+    code, message = cmd_setup.finish_run(c.ad, c.state, getattr(c, "max_wait", 90))
+    if code == CANNOT_RUN or code not in (0, 1, 3):
+        raise Fail(f"init --continue could not run (exit {code}): {message}", CANNOT_RUN,
+                   "ERROR")
+    c.state = st.load(c.dir)  # init wrote it
+    c.p6 = c.state.setdefault("phase6", {})
+    # A setup attempt ran: a stop after it is a new one (metrics.json). Saved
+    # with whatever this call saves.
+    c.state.pop("stop_shown", None)
+    if code == 0:
+        cmd_setup.remove_scratch(c.state["repo"]["main_checkout"],
+                                 c.state["task"].get("text", ""))
+        return None
+    if code == 3:
+        return action("setup is still running; run AFTER (it waits for it again)",
+                      "Phase 1's setup has not finished", AFTER=[c.cmd("next")])
+    return stop([f"Phase 1's setup failed: {message}",
+                 ("Tell the user to fix the cause, then say `auto-dev continue` in a new "
+                  "session: `next` runs setup again. "
+                  f"State and artifacts: {c.ad}")], "Phase 1's setup failed", number=3)
 
 
 def runbook(c, stage):
@@ -1127,7 +1490,7 @@ def acceptance_step(c, after):
                           f"AMBIGUOUS.md) and the planner's choice ({c.ad}/PLAN.md).")],
                         "a condition still reads two ways after the planner's decision",
                         retry={"aside": [job_of(tester)]},
-                        no_signoff="a check of an ambiguous condition tests a guess")
+                        no_signoff="a check of an ambiguous condition tests a guess", number=22)
         if planner is None:
             return spawn(c, "planner", "revise", {
                 "ambiguous": f"conditions {ambiguous}; both readings, one line each, are "
@@ -1147,7 +1510,7 @@ def acceptance_step(c, after):
                           "try. Tell the user each one:"), *lines,
                          f"State and artifacts: {c.ad}"],
                         "check-manifest found gaps twice", retry={"aside": [job_of(tester)]},
-                        no_signoff="a condition with no check is not tested")
+                        no_signoff="a condition with no check is not tested", number=22)
         return spawn(c, "acceptance-tester", "write", {
             "scope": f"ONLY conditions {', '.join(ids)}: {GAP_NOTE} " + "; ".join(lines)},
             rule="check-manifest found gaps in the tester's return: it goes once more "
@@ -1195,7 +1558,7 @@ def tests_step(c):
             return stop([f"The acceptance checks could not be committed: {exc}",
                          "Tell the user; nothing was committed."],
                         "commit-tests refused", retry={},
-                        no_signoff="the build needs its checks committed first")
+                        no_signoff="the build needs its checks committed first", number=None)
         if token == "COMMITTED":
             # The commit is in git now: state.json says so at once, whatever
             # this `next` does after (the event is counted when it ends).
@@ -1273,10 +1636,11 @@ def gate_question(c, gate, answers, rule):
             return stale_again(c, str(exc))
         return stop([f"The {gate} gate's checks failed, so it can't be asked: {exc}"],
                     f"a {gate} gate precondition failed", retry={},
-                    no_signoff="the gate's checks protect what ships")
+                    no_signoff="the gate's checks protect what ships", number=None)
+    options = cmd_review.gate_options(c.state, gate)
     questions = [cmd_review.question("Gate", f"{gate} gate: how do you want to proceed?",
-                                     cmd_review.GATE_OPTIONS[gate])] + extra
-    pairs = [(label, answers[label]) for label in cmd_review.GATE_OPTIONS[gate]]
+                                     options)] + extra
+    pairs = [(label, answers[label]) for label in options]
     for triage in extra:  # one answer per pre-existing security finding
         for label, value in cmd_review.TRIAGE_VALUES.items():
             pairs.append((f"{triage['header']}: {label}",
@@ -1299,11 +1663,13 @@ def phase4(c):
     return result
 
 # The risk tier is re-checked from the diff once the quality gate is green
-# (the end of Phase 5), before anything is pushed or reviewed: a path that names a sensitive area,
-# or a large change, makes the run high-risk. The tier never goes down. A path
-# is split into whole words, at non-alphanumerics and camelCase humps
-# (`UserAuth.ts` is user, auth, ts; `author.ts` is author, ts), and each word
-# is looked up in SENSITIVE_WORDS. Lock files are left out of the line count.
+# (the end of Phase 5), before anything is pushed or reviewed: a path that names a
+# sensitive area or matches a glob the repo declares sensitive (settings'
+# sensitive_paths), a sensitive word on a line the build adds, or a large change
+# makes the run high-risk. The tier never goes down. A path or an added line is
+# split into whole words, at non-alphanumerics and camelCase humps (`UserAuth.ts`
+# is user, auth, ts; `author.ts` is author, ts), and each word is looked up in
+# SENSITIVE_WORDS. Lock files are left out of the line count and the word scan.
 SENSITIVE_WORDS = frozenset((
     "auth", "authn", "authz", "authentication", "authorization", "login", "logout",
     "signin", "signup", "session", "sessions", "password", "passwords", "passwd",
@@ -1320,19 +1686,35 @@ def risk_recheck(c):
     """Re-check the tier from the build's diff, once (state's risk_recheck)."""
     if "risk_recheck" in c.state or c.readonly:
         return  # --explain shows the step after it; the next `next` re-checks
-    paths, lines = build_diff(c)
+    paths, lines, added = build_diff(c)
+    # .get: a run started before 5.1 has no sensitive_paths in its settings.
+    declared = [glob_regex(g) for g in c.state["settings"].get("sensitive_paths") or []
+                if isinstance(g, str) and g.strip("/")]
     why = []
-    sensitive = [p for p in paths if sensitive_path(p)]
+    sensitive = [p for p in paths if sensitive_path(p) or declared_path(p, declared)]
     if sensitive:
-        why.append("it touches " + ", ".join(sensitive[:5])
+        why.append("it touches " + ", ".join(printable(p) for p in sensitive[:5])
                    + (f" and {len(sensitive) - 5} more" if len(sensitive) > 5 else ""))
+    hits = [(p, sorted(words)[:3]) for p, words in sorted(added.items())
+            if words and p not in sensitive]
+    if hits:
+        why.append("it adds lines naming a sensitive area: "
+                   + ", ".join(f"{printable(p)} ({', '.join(w)})" for p, w in hits[:5])
+                   + (f" and {len(hits) - 5} more" if len(hits) > 5 else ""))
     if len(paths) > LARGE_FILES or lines > LARGE_LINES:
         why.append(f"it is large ({len(paths)} files, {lines} lines changed)")
-    c.state["risk_recheck"] = {"seq": c.seq(), "high": bool(why), "why": why}
+    c.state["risk_recheck"] = {"seq": c.seq(), "high": bool(why), "why": why,
+                               "files": len(paths), "lines": lines}
     if why and not c.state.get("high_risk"):
         c.state["high_risk"] = True
         st.add_note(c.state, "risk raised to high after the build: " + "; ".join(why))
     c.dirty = True
+
+
+def printable(path):
+    """`path` as text the ledger can write: a byte that isn't UTF-8 (read with
+    surrogateescape) shows as `\\xe9`, so state.json and WORK_LOG.md save."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
 
 
 def path_words(path):
@@ -1352,16 +1734,127 @@ def lock_file(path):
     return bool(LOCK_FILE_RE.search(Path(path).name))
 
 
+def glob_regex(pattern):
+    """A declared glob as a regex to fullmatch against a repo path. A pattern
+    with a `/` anywhere is anchored at the repo root (a trailing `/` means
+    everything under it); one without matches a file name at any depth. `*` and
+    `?` stop at `/`; a whole `**` segment spans any number of folders, none
+    included. Anything else, `[` included, is literal."""
+    anchored = "/" in pattern
+    body = pattern.lstrip("/")
+    if body.endswith("/"):
+        body += "**"
+    segments = body.split("/")
+    out = []
+    for i, seg in enumerate(segments):
+        last = i == len(segments) - 1
+        if seg == "**":
+            out.append(".*" if last else "(?:[^/]+/)*")
+            continue
+        out.append("".join("[^/]*" if ch == "*" else "[^/]" if ch == "?"
+                           else re.escape(ch) for ch in seg))
+        if not last:
+            out.append("/")
+    return re.compile(("" if anchored else "(?:.*/)?") + "".join(out), re.DOTALL)
+
+
+def declared_path(path, regexes):
+    return any(r.fullmatch(path) for r in regexes)
+
+
+GIT_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13,
+               '"': 34, "\\": 92}
+
+
+def diff_name(text):
+    """The path in a `+++ b/<path>` header, as `git status` names it: one
+    trailing tab dropped (git adds it after a name holding a space), and a
+    C-quoted name unquoted. None for `/dev/null` (a deletion)."""
+    if text.endswith("\t"):
+        text = text[:-1]
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        raw, body, i = bytearray(), text[1:-1], 0
+        while i < len(body):
+            ch = body[i]
+            if ch == "\\" and i + 1 < len(body):
+                nxt = body[i + 1]
+                if re.fullmatch(r"[0-7]{3}", body[i + 1:i + 4]):
+                    raw.append(int(body[i + 1:i + 4], 8) & 0xFF)
+                    i += 4
+                    continue
+                if nxt in GIT_ESCAPES:
+                    raw.append(GIT_ESCAPES[nxt])
+                    i += 2
+                    continue
+            raw += ch.encode("utf-8", "surrogateescape")
+            i += 1
+        text = raw.decode("utf-8", "surrogateescape")
+    if text == "/dev/null" or not text.startswith("b/"):
+        return None
+    return text[2:]
+
+
+def line_words(line):
+    return {w for w in path_words(line) if w in SENSITIVE_WORDS}
+
+
+def added_words(c, base, untracked):
+    """{path: the SENSITIVE_WORDS on the lines the build adds}: the `+` lines of
+    the diff from `base` to the working tree, and every line of an untracked
+    file. Lock files, binary files and .auto-dev/ are left out."""
+    def counted(p):
+        return p and not p.startswith(".auto-dev/") and not lock_file(p)
+
+    found = {}
+    # The prefixes, colour, quoting, renames and submodule format are pinned, so
+    # the user's diff config (diff.noprefix, diff.mnemonicPrefix, diff.renames,
+    # diff.submodule) can't change the headers and lines parsed here. A moved
+    # file's lines count as added, as an untracked move's do.
+    code, text, _ = git(c.wt, "-c", "core.quotePath=false", "diff", "-U0", "--no-color",
+                        "--no-ext-diff", "--no-textconv", "--no-renames",
+                        "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/",
+                        base or "HEAD", check=False, errors="surrogateescape")
+    current, in_hunk = None, False
+    for line in (text.split("\n") if code == 0 else ()):
+        if line.startswith("diff --git "):
+            current, in_hunk = None, False
+        elif not in_hunk and line.startswith("+++ "):
+            name = diff_name(line[4:])
+            current = name if counted(name) else None
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and current and line.startswith("+"):
+            found.setdefault(current, set()).update(line_words(line[1:]))
+    for p in untracked:
+        if not counted(p):
+            continue
+        try:
+            body = (Path(c.wt) / p).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "\0" in body:
+            continue  # binary
+        words = set()
+        for line in body.splitlines():
+            words |= line_words(line)
+        found[p] = words
+    return found
+
+
 def build_diff(c):
-    """(changed paths outside .auto-dev/, lines changed) between the branch's
-    merge base and the working tree, untracked files included."""
+    """(changed paths outside .auto-dev/, lines changed, {path: the sensitive
+    words on its added lines}) between the branch's merge base and the working
+    tree, untracked files included."""
     def out(*args):
-        code, text, _ = git(c.wt, *args, check=False)
+        code, text, _ = git(c.wt, *args, check=False, errors="surrogateescape")
         return text if code == 0 else ""
 
+    # Names are read NUL-separated and unquoted, as `changed_paths` reads them,
+    # so a name git quotes (non-ASCII, `"`, `\`) is the same string everywhere.
     add, remove = changed_paths(c.wt)
-    base = out("merge-base", c.state["repo"]["base"], "HEAD").strip()
-    committed = out("diff", "--name-only", f"{base}..HEAD").splitlines() if base else []
+    base = cmd_work.base_commit(c.wt, c.state["repo"]["base"])
+    committed = out("-c", "core.quotePath=false", "diff", "--name-only", "-z",
+                    "--no-renames", f"{base}..HEAD").split("\0") if base else []
     paths = sorted({p for p in add + remove + committed
                     if p and not p.startswith(".auto-dev/")})
     lines = 0
@@ -1370,7 +1863,7 @@ def build_diff(c):
         if len(cells) == 3 and not cells[2].startswith(".auto-dev/") and \
                 not lock_file(cells[2]):
             lines += sum(int(n) for n in cells[:2] if n.isdigit())
-    tracked = set(out("ls-files").splitlines())
+    tracked = set(out("ls-files", "-z").split("\0"))
     for p in add:
         if p not in tracked and not lock_file(p):
             try:
@@ -1378,7 +1871,7 @@ def build_diff(c):
                                                           errors="replace").splitlines())
             except OSError:
                 pass
-    return paths, lines
+    return paths, lines, added_words(c, base, [p for p in add if p not in tracked])
 
 
 # ---------------------------------------------------------------- the change loop
@@ -1454,9 +1947,11 @@ def gate_step(c, start):
                      f"it; never ship a red build. Tell the user which checks fail: "
                      f"{reports}.")], "the quality gate is red after its correction",
                     retry={"gate": True},
-                    signoff={"reports": failing}, kind="red-gate")
+                    signoff={"reports": failing}, kind="red-gate", number=9)
+    # A report the user signed off counts as green for the rest of the run.
+    to_fix = ", ".join(f"{c.ad}/lint/{r}" for r in failing if r not in signed)
     return spawn(c, "coder", "correction", {
-        "corrections_file": f"the failing quality-gate checks: {reports} (each report's "
+        "corrections_file": f"the failing quality-gate checks: {to_fix} (each report's "
                             f"output tail says what fails; the whole output is under "
                             f"{c.ad}/tmp/run/)"},
         rule="the quality gate is red: the coder makes it green (no round; red again "
@@ -1466,9 +1961,14 @@ def gate_step(c, start):
 GATE_ASKS = 3  # the gate asked for this many times on one tree, with no run recorded
 
 
-def ask_gate(c, tree):
+GATE_RULE = ("the code changed since the quality gate last ran: `next` confirms it "
+             "before anything is pushed (no worker)")
+
+
+def ask_gate(c, tree, rule=GATE_RULE, show_rule=False):
     """Ask the orchestrator to run the quality gate; a stop once it was asked
-    GATE_ASKS times on this tree and no run was recorded (it never finishes)."""
+    GATE_ASKS times on this tree and no run was recorded (it never finishes).
+    With `show_rule`, the rule is printed without --explain too."""
     asked = c.state.setdefault("gate_asked", {})
     if asked.get(tree, 0) >= GATE_ASKS:
         return stop([(f"The quality gate was asked for {GATE_ASKS} times on this code and "
@@ -1478,17 +1978,18 @@ def ask_gate(c, tree):
                      "the background, or the profile's slow check made faster), "
                      "`auto-dev continue` asks for it again.")],
                     "the quality gate never finished", retry={"gate": True},
-                    no_signoff="nothing says the gate is green")
+                    no_signoff="nothing says the gate is green", number=9)
     if not c.readonly:
         asked[tree] = asked.get(tree, 0) + 1
         c.dirty = True
-    return action(f"run the quality gate: `{c.cmd('quality-gate')}`. It runs every check "
-                  "of the profile's gate and writes their reports. Run it with the Bash "
-                  "tool's timeout at 600000 ms; if the gate can take longer than that, "
-                  "run it in the background and wait for it to finish. Then run AFTER "
-                  "whatever it exits", "the code changed since the quality gate last "
-                  "ran: `next` confirms it before anything is pushed (no worker)",
-                  AFTER=[c.cmd("next")])
+    return action(f"run the quality gate: `{c.cmd('quality-gate')}`. It runs every "
+                  "non-test check whole, and the gate's one test check only on the "
+                  "change's tests when CI is watched (every check whole when it isn't, "
+                  "or when the gate has two or more test checks), and writes their "
+                  "reports. Run it with the Bash tool's timeout at 600000 ms; if "
+                  "the gate can take longer than that, run it in the background and "
+                  "wait for it to finish. Then run AFTER whatever it exits", rule,
+                  AFTER=[c.cmd("next")], **({SHOW_RULE: True} if show_rule else {}))
 
 
 def settle_change(c, start, first):
@@ -1522,7 +2023,7 @@ def blocked_step(c, coder, start):
                       f"the first. Tell the user the steps it stopped ({listed}) and what "
                       f"the planner decided ({c.ad}/PLAN.md).")],
                     "the coder returned BLOCKED again", retry={"aside": [job_of(coder)]},
-                    no_signoff="the stopped steps aren't built")
+                    no_signoff="the stopped steps aren't built", number=22)
     if planner is None:
         listed = c.ad / "blocked" / f"coder-{coder['n']}.md"
         return spawn(c, "planner", "blocked", {"blocked": f"the steps listed in {listed}"},
@@ -1532,7 +2033,8 @@ def blocked_step(c, coder, start):
                      f"the user its reasons (its reply, and {c.ad}/PLAN.md).")],
                     "the planner returned SPEC_IMPOSSIBLE",
                     retry={"aside": [job_of(planner)]},
-                    no_signoff="the plan has no way to meet the spec; say how to change it")
+                    no_signoff="the plan has no way to meet the spec; say how to change it",
+                    number=8)
     if planner["data"].get("entry_points_changed") == "yes" and \
             c.last("acceptance-tester", after=planner["seq"]) is None:
         return spawn(c, "acceptance-tester", "repair", {
@@ -1622,7 +2124,7 @@ def spec_stop(c, recs, where, review_pass=None):
                 signoff={"rewrites": [[r["worker"], r["n"], r["next"], {"spec_problems": "0"}]
                                       for r in found],
                          "kept": kept},
-                kind="spec-problem")
+                kind="spec-problem", number=20)
 
 
 def disputed_stop(c, tester, who, where):
@@ -1641,7 +2143,7 @@ def disputed_stop(c, tester, who, where):
                 retry={"aside": [job_of(tester)]},
                 signoff={"rewrite": [tester["worker"], tester["n"], "STANDS"],
                          "kept": ids or [where]},
-                kind="disputed-check")
+                kind="disputed-check", number=21)
 
 
 def only_ids(scope):
@@ -1721,6 +2223,7 @@ def phase6(c):
         review = review_step(c, p6["passes"][-1])
         if review is not None:
             return review
+        pass_ended(c, p6["passes"][-1])
     head = publish_step(c)
     if head is not None:
         return head
@@ -1770,16 +2273,29 @@ def open_correction(c):
     if not corr["after_commit"]:
         return None  # before the first commit: the first pass reviews the whole change
     sha = c.p6.get("verified_sha")
-    if tests_only_since(c, sha):
-        # A repair or a fix was committed as a tests commit on top of the
-        # verified one: a working-tree pass would see nothing of it, and with a
-        # clean tree `commit` would find nothing to commit. `commit` verifies
-        # HEAD instead, and the pass reviews everything since `sha`.
+    past = past_by(c, sha)
+    if past:
+        # HEAD is past the verified commit: a repair or a fix committed as a
+        # tests commit on top of it, or commits the run did not make (a base
+        # merged in by hand while the correction ran, as a CONFLICT line says,
+        # or the branch rebased onto it). A working-tree pass would see nothing
+        # of them, and with a clean tree `commit` would find nothing to commit.
+        # `commit` verifies HEAD instead (or commits the correction on top), and
+        # the pass reviews everything since `sha`. HEAD is recorded with an edit
+        # on top too: the pass reviews it, so a PR branch pushed to it is no new
+        # outside push for moved_head while the pass's own findings are open.
+        tests = past == "tests"
         add, remove = changed_paths(c.wt)
         head = git(c.wt, "rev-parse", "HEAD").strip()
-        if not add and not remove and c.p6.get("unverified_commit") != head:
-            c.would("have `commit` verify the tests commit on top of the verified one",
-                    "the correction was committed as a tests commit")
+        if c.p6.get("unverified_commit") != head:
+            what = "tests commit" if tests else "commits"
+            c.would(f"have `commit` verify the {what} on top of the verified one"
+                    if not add and not remove else
+                    f"record the {what} on top of the verified one as under re-check, "
+                    "the correction to be committed on top of them",
+                    "the correction was committed as a tests commit" if tests else
+                    "HEAD moved past the verified commit through commits the run did "
+                    "not make")
             c.p6["unverified_commit"] = head
             c.dirty = True
         if not reviewed_whole(c):
@@ -1788,9 +2304,11 @@ def open_correction(c):
             cmd_checks.git_add_intent(c.wt)
         files = [f for f in git(c.wt, "diff", "--name-only", sha).splitlines()
                  if f and not f.startswith(".auto-dev/")]
-        return start_pass(c, "outside", files, "the correction's tests commit is on top "
-                          "of the verified commit: the pass checks everything since it",
-                          since=sha)
+        return start_pass(c, "outside", files, (
+            "the correction's tests commit is on top of the verified commit"
+            if tests else "commits the run did not make are past the verified commit "
+            "(a base merged in by hand, say)") + ": the pass checks everything "
+            "since it", since=sha)
     if unchanged(c):  # nothing to review or commit: the verified commit stands
         mark_committed(c, "the correction changed nothing")
         return None
@@ -1834,13 +2352,18 @@ def unchanged(c):
     return not add and not remove and git(c.wt, "rev-parse", "HEAD").strip() == sha
 
 
-def tests_only_since(c, sha):
-    """Whether HEAD is past `sha` by recorded tests commits alone."""
+def past_by(c, sha):
+    """How HEAD is past `sha`: None when no commit is (`rev-list sha..HEAD` is
+    empty), "tests" when by recorded tests commits alone, else "outside": the
+    commits include one the run did not make (a base merged in by hand, or the
+    branch rebased onto it or amended, when `sha` is no ancestor of HEAD)."""
     if not sha:
-        return False
+        return None
     code, out, _ = git(c.wt, "rev-list", f"{sha}..HEAD", check=False)
     revs = out.split() if code == 0 else []
-    return bool(revs) and set(revs) <= set(cmd_work.tests_shas(c.state))
+    if not revs:
+        return None
+    return "tests" if set(revs) <= set(cmd_work.tests_shas(c.state)) else "outside"
 
 
 def mark_committed(c, why):
@@ -1923,8 +2446,11 @@ def start_pass(c, scope, files, rule, since=None):
     if scope == "first":
         files = first_pass_files(c)
     effort = plan_effort(c)
+    # HEAD as the pass starts: committed_by_hand compares the HEAD it ends at
+    # with it, so only a commit made while the pass was out reads as one.
     p = {"n": n, "scope": scope, "files": files or [], "tree": tree, "seq": c.seq(),
-         "effort": effort, "lane": "high" if high else "standard"}
+         "effort": effort, "lane": "high" if high else "standard",
+         "start_head": git(c.wt, "rev-parse", "HEAD").strip()}
     if since:
         p["since"] = since
     c.p6["passes"].append(p)
@@ -2026,9 +2552,10 @@ def review_step(c, p):
     if p.get("lane") == "standard":
         return solo_step(c, p, vjobs, vrec)
     if vjobs:  # the panel waits for the verifier (mutation plants code in the tree)
-        return spawn_many(c, vjobs, "the verifier goes first on a high-risk run: it gets "
-                          "one re-spawn" if c.recs("verifier", after=p["seq"], ok=False)
-                          else "the verifier goes first on a high-risk run")
+        return out_again(c, p, spawn_many(
+            c, vjobs, "the verifier goes first on a high-risk run: it gets one re-spawn"
+            if c.recs("verifier", after=p["seq"], ok=False)
+            else "the verifier goes first on a high-risk run"))
     reviews = c.recs("code-reviewer", after=p["seq"], mode="review", ok=False)
     respawn, usable = [], []
     for slot in SLOTS:
@@ -2048,15 +2575,16 @@ def review_step(c, p):
         # written anything: its leads reach a later run (unreviewed_leads).
         leads = last.get("leads") if secs else "none"
         first = not secs and not reviews
-        return spawn_security(c, jobs, leads or "none",
-                              "the verifier is done: the panel and the security reviewer "
-                              "review the same tree" if first else
-                              "a worker of the pass failed: it gets one re-spawn"
-                              if secs or jobs else
-                              "the security review covers the whole change",
-                              focus=last.get("focus") or focus_text(p))
+        return out_again(c, p, spawn_security(
+            c, jobs, leads or "none",
+            "the verifier is done: the panel and the security reviewer review the same "
+            "tree" if first else
+            "a worker of the pass failed: it gets one re-spawn" if secs or jobs else
+            "the security review covers the whole change",
+            focus=last.get("focus") or focus_text(p)))
     if jobs:
-        return spawn_many(c, jobs, "a code reviewer failed: it gets one re-spawn")
+        return out_again(c, p, spawn_many(c, jobs,
+                                          "a code reviewer failed: it gets one re-spawn"))
     sec = secs[-1]
     data = sec["data"]
     verify = _int(data.get("must_fix")) or _int(data.get("pre_existing"))
@@ -2067,24 +2595,26 @@ def review_step(c, p):
             return stop([("No code reviewer wrote a usable report, twice. Tell the user; "
                          f"see {c.ad}/review/pass-{p['n']}/.")], "the panel produced nothing",
                         retry={"aside": [job_of(r) for r in reviews]},
-                        no_signoff="no review was written to accept")
+                        no_signoff="no review was written to accept", number=13)
         if not c.readonly:  # the panel's findings, merged for the judge
             judgment.write_findings(c.ad, p["n"], usable)
         jobs = [("review-judge", "consolidate", {
             "reviewers": ", ".join(usable), "scope": scope_text(p), "tree": p["tree"]})]
         if verify and verified is None:
             jobs.append(("review-judge", "security-verify", {}))
-        return spawn_many(c, jobs, "the panel and the security review are done: the "
-                          "judge consolidates the panel's reports" +
-                          (", and in parallel verifies every High or Medium security "
-                           "finding" if len(jobs) > 1 else ""))
+        return out_again(c, p, spawn_many(
+            c, jobs, "the panel and the security review are done: the judge "
+            "consolidates the panel's reports" +
+            (", and in parallel verifies every High or Medium security finding"
+             if len(jobs) > 1 else "")))
     if judge["next"] == "REVOTE":
         result = revotes(c, p, judge)
         if result is not None:
             return result
     if verify and verified is None:
-        return spawn(c, "review-judge", "security-verify",
-                     rule="the judge verifies every High or Medium security finding")
+        return out_again(c, p, spawn(
+            c, "review-judge", "security-verify",
+            rule="the judge verifies every High or Medium security finding"))
     # With no round left before the ready-for-review gate, open findings go to
     # that gate. After it, that covers only the passes the user marked the PR
     # ready with: once they add rounds, a later pass's findings get their
@@ -2092,6 +2622,7 @@ def review_step(c, p):
     spent_out = spent_before(c, p)
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(verify) and bool(confirmed_security(c))
+    pass_ended(c, p)  # every worker of the pass has returned: before any stop
     spec = spec_stop(c, [vrec, judge] + c.recs(SECURITY, after=p["seq"]),
                      f"in review pass {p['n']}", review_pass=p["n"])
     if spec is not None:
@@ -2103,8 +2634,9 @@ def review_step(c, p):
     # run: a lead nobody checked is not something the gate can name.
     leads = unreviewed_leads(c, p)
     if leads:
-        return spawn_security(c, [], leads, "the panel passed the security review leads "
-                              "it had not seen: it checks them", focus=LEADS_FOCUS)
+        return out_again(c, p, spawn_security(
+            c, [], leads, "the panel passed the security review leads it had not seen: "
+            "it checks them", focus=LEADS_FOCUS))
     return None
 
 
@@ -2112,7 +2644,9 @@ def spent_before(c, p):
     """Whether no round was left for pass p's correction before the
     ready-for-review gate: its open findings go to that gate. After it, that
     covers only the passes the user marked the PR ready with: once they add
-    rounds, a later pass's findings get their correction."""
+    rounds, a later pass's findings get their correction. A round added at
+    the gate ("Add a round and fix it") clears phase6.exhausted, so the pass's
+    findings get their correction then."""
     ready = marked_ready(c)
     return bool(c.p6.get("exhausted")) and (ready is None or p["seq"] < ready.get("seq", 0))
 
@@ -2130,7 +2664,7 @@ def verifier_part(c, p):
                                  "the verifier returned MUTATION_LEFT_CHANGES",
                                  retry={"aside": [job_of(rec)]},
                                  no_signoff="the tree may hold a planted change; check "
-                                            "it, then retry")
+                                            "it, then retry", number=10)
         return [], rec, None
     twice = failed_twice(c, recs, "verifier")
     if twice is not None:
@@ -2151,7 +2685,7 @@ def failed_twice(c, recs, who):
                  "once the cause is fixed, `auto-dev continue` spawns it again."),
                  f"State and artifacts: {c.ad}"],
                 f"the pass's {who} returned status {last['status']} twice",
-                retry={"lift": True})
+                retry={"lift": True}, number=13)
 
 
 def solo_step(c, p, vjobs, vrec):
@@ -2166,10 +2700,11 @@ def solo_step(c, p, vjobs, vrec):
             return twice
         rjobs = [("reviewer", None, solo_sets(c, p))]
     if vjobs or rjobs:
-        return spawn_many(c, vjobs + rjobs, "a worker of the pass failed: it gets one "
-                          "re-spawn")
+        return out_again(c, p, spawn_many(c, vjobs + rjobs, "a worker of the pass "
+                                          "failed: it gets one re-spawn"))
     rows = open_must_fix(art.read(c.ad / "CODE_REVIEW.md"))
     security_open = bool(confirmed_security(c))
+    pass_ended(c, p)  # every worker of the pass has returned: before any stop
     spec = spec_stop(c, [vrec, rec], f"in review pass {p['n']}")
     if spec is not None:
         return spec
@@ -2198,14 +2733,25 @@ def settle_pass(c, p, vrec, rows, sec, spent_out):
 def ci_fold(c):
     """(an action or stop to take first, or None; the CI triage to fold into
     the correction, or None). Before a pass's correction, CI settles on the
-    pushed commit, so one correction takes red CI too."""
+    pushed commit, so one correction takes red CI too; not while a PR head
+    pushed outside the run is under re-check, and a newly moved head is
+    re-checked (moved_head) before any wait."""
     if c.state["settings"].get("ci", "none") == "none":
         return None, None
+    outside = next((k for k in reversed(c.p6["corrections"]) if k["entry"] == "outside"),
+                   None)
+    if outside and outside.get("since") and outside["seq"] > c.p6.get("commit_seq", 0):
+        # A moved PR head is under re-check: CI on the old commit never reports,
+        # and the new head is watched once `commit` verifies it.
+        return None, None
     sha = c.p6.get("verified_sha")
+    moved = moved_head(c, sha)
+    if moved:
+        return moved, None
     ci = c.p6.get("ci") or {}
     if ci.get("sha") != sha or ci.get("status") == "pending":
         return ci_watch(c, "findings are open: CI settles on the pushed commit first, so "
-                        "one correction takes red CI too"), None
+                        "one correction takes red CI too", sha), None
     if ci.get("status") != "red":
         return None, None
     triage = c.last("triager", after=ci["seq"], mode="ci")
@@ -2360,15 +2906,19 @@ def revotes(c, p, judge):
                              for r in rows)
         jobs.append(("code-reviewer", "re-vote", {"reviewer": slot, "findings": findings}))
     if jobs:
-        return spawn_many(c, jobs, "lone findings go to the other reviewers for a re-vote")
+        return out_again(c, p, spawn_many(c, jobs, "lone findings go to the other "
+                                          "reviewers for a re-vote"))
     if gave_up:
         return stop([("The code-review re-vote can't finish: re-voter "
                      f"{'; '.join(gave_up)}. The lone findings stay pending in "
                      f"{c.ad}/CODE_REVIEW.md. Tell the user; once the cause is fixed, "
                      "`auto-dev continue` spawns those re-voters again.")],
                     "a re-voter gave no usable vote twice", retry={"lift": True},
-                    no_signoff="a lone finding's vote is still open")
+                    no_signoff="a lone finding's vote is still open", number=None)
     if pending:  # with no plan (under two usable reports) each stays advisory
+        # Every re-voter has returned: stamped before the preview, so a
+        # checkpoint's probe stamps it too (keep_pass_ends).
+        pass_ended(c, p)
         c.would("apply the re-votes to CODE_REVIEW.md", "every re-voter has voted")
         cmd_review.apply_vote_files(c.ad / "CODE_REVIEW.md", text, pass_dir, pending,
                                     votes_expected=bool(plan))
@@ -2411,7 +2961,7 @@ def must_fix(c, file, tag, rule, checks=None, coder=True, security=False, also=N
                     retry={"reopen": spend_id},
                     signoff=None if security else {"drop": spend_id},
                     no_signoff="a confirmed security finding is open" if security else None,
-                    kind="open-findings")
+                    kind="open-findings", number=None)
     return start_correction(c, "review", file if coder else None, spend_id,
                             rule, checks=checks, also=also)
 
@@ -2464,6 +3014,100 @@ def scope_text(p):
 
 # ---------------------------------------------------------------- Phase 6: shipping
 
+def pass_ended(c, p):
+    """Stamp HEAD on pass p the first time `next` finds every worker of it
+    returned (saved, not an event of its own): committed_by_hand reads whether
+    the pass's workers read the correction against the verified commit, with
+    HEAD still there. review_step stamps it before any step that can preview
+    or stop (the re-votes' apply, a spec-problem stop), so a checkpoint's
+    probe stamps it too and a commit made during a stop reads as made after
+    the pass."""
+    if "end_head" not in p:
+        p["end_head"] = git(c.wt, "rev-parse", "HEAD").strip()
+        c.quiet = True
+
+
+def out_again(c, p, result):
+    """`result`, a spawn of a worker of pass p, with the pass's end stamp
+    dropped (a retry set a result aside, or a step after the stamp sends a
+    worker out): a commit made while that worker is out is still re-checked."""
+    if p.pop("end_head", None) is not None:
+        c.dirty = True
+    return result
+
+
+def pass_start(p, sha):
+    """The HEAD pass p started at (start_pass stamps it): the verified commit
+    `sha` for an after-commit pass, the commit under re-check for an outside
+    one. A pass from before the stamp: `sha` for an after-commit pass, and for
+    an outside one its end HEAD (no commit made during it can be told)."""
+    if p.get("start_head"):
+        return p["start_head"]
+    return p.get("end_head") if p.get("since") else sha
+
+
+def correction_pass(c, fix):
+    """The review pass of correction `fix` (the last one after the commit), or
+    None when it has none yet (a fix at a stop before the first pass)."""
+    passes = c.p6.get("passes") or []
+    return passes[-1] if passes and passes[-1]["seq"] >= fix["seq"] else None
+
+
+def moved_in_pass(c, sha, head):
+    """The step for HEAD `head`, past verified commit `sha` and holding the
+    checked code, when it was committed while the correction's review pass
+    was out (before `next` found the pass settled): that pass read the working
+    tree against HEAD, so it saw none of what the commit holds. As for commits
+    past the verified commit in open_correction, HEAD is recorded as under
+    re-check (`commit` verifies it later) and a pass checks everything since
+    `sha`, never recording HEAD as reviewed, and never asking `commit` to
+    commit nothing."""
+    c.would("record HEAD as under re-check and start a review pass on everything since "
+            "the verified commit", "HEAD moved past the verified commit while the "
+            "correction's review pass was out: the pass read none of the commits")
+    c.p6["unverified_commit"] = head
+    c.dirty = True
+    cmd_checks.git_add_intent(c.wt)
+    files = [f for f in git(c.wt, "diff", "--name-only", sha).splitlines()
+             if f and not f.startswith(".auto-dev/")]
+    return start_pass(c, "outside", files, "the correction was committed outside the "
+                      "pipeline while its review pass was out, so the pass read none of "
+                      "it: the pass checks everything since the verified commit", since=sha)
+
+
+def committed_by_hand(c, sha, fix):
+    """(HEAD's id, None) when correction `fix` after verified commit `sha` was
+    committed outside the pipeline and HEAD already holds the code every
+    result checked: the tree is clean, HEAD is neither `sha` nor a commit under
+    re-check, the committed acceptance checks are intact (the guard `commit`
+    applies) and check-fresh.py passes on HEAD. It is recorded as the verified
+    commit, as `commit` would, since `commit` would find nothing to commit.
+    When the correction's review pass settled with HEAD no longer where the
+    pass started (pass_start: the commit was made while the pass was out),
+    (None, moved_in_pass's step) instead. Else (None, None)."""
+    add, remove = changed_paths(c.wt)
+    if add or remove:
+        return None, None
+    head = git(c.wt, "rev-parse", "HEAD").strip()
+    if head in (sha, c.p6.get("unverified_commit")):
+        return None, None
+    if cmd_ship.changed_checks(c.state):
+        return None, None
+    if check_fresh(c, "--ref", head, *cmd_ship.fresh_phase(c.state)):
+        return None, None
+    p = correction_pass(c, fix)
+    if p is not None and p.get("end_head") != pass_start(p, sha):
+        return None, (moved_in_pass(c, sha, head) if past_by(c, sha) else None)
+    c.would(f"record HEAD {head[:12]} as the verified commit: it already holds the "
+            "checked code", "a correction was committed outside the pipeline")
+    cmd_ship.record_verified(c.state, head)
+    st.add_note(c.state, f"HEAD {head} already holds the code every result checked "
+                "(committed outside the pipeline): recorded as the verified commit; "
+                "nothing to commit")
+    c.dirty = True
+    return head, None
+
+
 def publish_step(c):
     """Commit what is verified (and, after a correction, reviewed), push it, and
     publish the PR's description for it: a draft PR on the first publish. None
@@ -2475,6 +3119,12 @@ def publish_step(c):
     if needs_commit and sha and unchanged(c):
         mark_committed(c, "the correction after the commit changed nothing")
         needs_commit = False
+    if needs_commit and sha:
+        head, moved = committed_by_hand(c, sha, last_fix)
+        if moved is not None:
+            return moved
+        if head:  # the push, the description and CI go on with that commit
+            sha, needs_commit = head, False
     if needs_commit:
         if sha is None and c.state["settings"].get("open_pr_gate"):
             # Asked again after a re-check changed the code it was asked on.
@@ -2483,6 +3133,11 @@ def publish_step(c):
                 return open_pr_gate(c)
         return commit_step(c)
     if (c.mark("pushed") or {}).get("value") != sha:
+        # A pushed value the run didn't record may be a head someone else
+        # pushed: re-check it rather than push and record `sha` again.
+        moved = moved_head(c, sha)
+        if moved:
+            return moved
         return action(f"push the branch: `git -C {q(c.wt)} push -u origin HEAD` (never "
                       "--force)", "the verified commit is not pushed yet",
                       AFTER=[c.cmd("mark", "pushed", "--value", sha)])
@@ -2502,7 +3157,11 @@ def reviewed_pass(c):
 def ship_step(c, sha):
     """After the reviews: CI on the draft, the ready-for-review gate, the PR
     marked ready, Jira In Review, CI once more, people's comments, the main gate
-    and the merge."""
+    and the merge. A commit pushed to the PR branch outside the run is
+    re-checked (or stops the run) before any of them."""
+    moved = moved_head(c, sha)
+    if moved:
+        return moved
     p6 = c.p6
     ready = marked_ready(c)
     if not ready:
@@ -2527,7 +3186,8 @@ def ship_step(c, sha):
     if c.state["settings"].get("ci", "none") != "none" and \
             (p6.get("ci") or {}).get("seq", 0) < ready["seq"]:
         # Workflows that skip drafts run only now: watch CI once more.
-        return ci_watch(c, "the PR was marked ready: workflows that skip drafts run now")
+        return ci_watch(c, "the PR was marked ready: workflows that skip drafts run now",
+                        sha)
     ci = ci_step(c, sha)
     if ci is not None:
         return ci
@@ -2562,7 +3222,10 @@ def ready_gate(c):
     return gate_question(c, "ready", {
         "Mark ready for review": c.cmd("gate", "ready", "proceed"),
         "Hold (keep it a draft)": c.cmd("gate", "ready", "hold", "--reason", "<why>"),
-        "Stop": c.cmd("gate", "ready", "stop", "--reason", "<why>")},
+        "Stop": c.cmd("gate", "ready", "stop", "--reason", "<why>"),
+        # Offered only when a pass left findings open for want of a round
+        # (cmd_review.gate_options); `budget raise` lifts that at this gate.
+        cmd_review.ADD_ROUND: c.cmd("budget", "raise", "--by", "1")},
         "the reviews have settled on the draft: the ready-for-review gate")
 
 
@@ -2583,7 +3246,7 @@ def stale_twice(c, detail, since=None):
     return stop([("A report is stale again right after its own re-run: something "
                  "rewrites the code on every run. Tell the user:"), detail],
                 "stale twice running", retry={"lift": True},
-                no_signoff="a stale report says nothing about the code that ships")
+                no_signoff="a stale report says nothing about the code that ships", number=12)
 
 
 def stale_again(c, detail, since=None):
@@ -2607,7 +3270,7 @@ def commit_step(c):
         return stop([(f"The commit step failed ({attempt['result']}). Tell the user what "
                      "`autodev.py commit` printed; nothing was pushed.")],
                     "the commit failed", retry={"clear": ["commit_attempt"]},
-                    no_signoff="nothing was committed to go on with")
+                    no_signoff="nothing was committed to go on with", number=14)
     # A commit made but not yet checked (`unverified_commit`) leaves a clean tree:
     # `commit` checks it without committing again, so it is offered as usual.
     if not c.p6.get("verified_sha") and not c.p6.get("unverified_commit"):
@@ -2616,7 +3279,7 @@ def commit_step(c):
             return stop([("There is nothing to commit: the working tree holds no change "
                          "outside .auto-dev/. Tell the user; nothing was pushed.")],
                         "an empty change", retry={},
-                        no_signoff="there is no change to ship")
+                        no_signoff="there is no change to ship", number=14)
     first = not c.p6.get("verified_sha")
     return action(f"commit: run `{c.cmd('commit', '--message', '<type>(<scope>): <summary>')}`"
                   f", with a Conventional Commits subject you write for the change ({FILL})",
@@ -2657,7 +3320,7 @@ def body_step(c, sha):
                           "GitHub working again), `auto-dev continue` publishes it "
                           "again.")],
                         "pr publish was refused", retry={"lift": True},
-                        no_signoff="the PR description must pass its checks")
+                        no_signoff="the PR description must pass its checks", number=None)
         if "rewrite" not in body:
             body["rewrite"] = attempt["seq"]
             c.dirty = True
@@ -2685,8 +3348,24 @@ def write_body(c, body, rule, refused=None):
                                  if refused else ""), rule, AFTER=[c.cmd("pr", "publish")])
 
 
-def ci_watch(c, rule):
-    return action(f"watch CI: run `{c.cmd('ci-watch')}` (it waits up to 9 minutes), "
+def ci_watch(c, rule, sha=None):
+    """Watch CI on `sha`, the pushed commit, named so that a tests commit made
+    on top of it (and not pushed) doesn't stand in for it. A watch run since
+    `sha` was committed (and since the last resume or retry) that reported on
+    another commit stops the run, rather than asking for a watch that would
+    never settle on `sha`."""
+    ci = c.p6.get("ci") or {}
+    other = ci.get("sha")
+    if sha and other and other != sha and \
+            ci.get("seq", 0) > max(c.p6.get("commit_seq", 0), c.resumed()):
+        return stop([(f"CI is to settle on the pushed commit {sha[:12]}, but `ci-watch` "
+                      f"reported on {other[:12]} instead, so CI never reported on "
+                      f"{sha[:12]}. Tell the user; `auto-dev continue` watches "
+                      f"{sha[:12]} again.")],
+                    "CI reported on another commit", retry={"lift": True},
+                    no_signoff="CI never reported on the commit that ships")
+    watch = c.cmd("ci-watch", "--sha", sha) if sha else c.cmd("ci-watch")
+    return action(f"watch CI: run `{watch}` (it waits up to 9 minutes), "
                   "then run AFTER whatever it exits: `next` asks for another watch "
                   "while CI is still pending", rule, AFTER=[c.cmd("next")])
 
@@ -2698,9 +3377,11 @@ def ci_step(c, sha):
     rewatch = c.resumed() > ci.get("seq", 0)
     if ci.get("sha") != sha or ci.get("status") == "pending" or (rewatch and \
             ci.get("status") != "green"):
-        return ci_watch(c, "CI has not settled on the pushed commit")
+        return ci_watch(c, "CI has not settled on the pushed commit", sha)
+    if ci["status"] in cmd_gate.UNWATCHED_STATUS:
+        return whole_gate_step(c, ci["status"])  # the main gate says which
     if ci["status"] != "red":
-        return None  # green, timeout or unavailable: the main gate says which
+        return None  # green or a conflict: the main gate says which
     triage = c.last("triager", after=ci["seq"], mode="ci")
     if triage is None:
         return spawn(c, "triager", "ci", {"failing": "\n".join(ci.get("failing", []))
@@ -2715,7 +3396,7 @@ def ci_step(c, sha):
                          f"triager found ({triage_file(c, triage)}); never merge over it.")],
                         "a CI correction changed nothing",
                         retry={"reopen": f"ci-{triage['n']}"},
-                        no_signoff="never merge over red CI")
+                        no_signoff="never merge over red CI", number=None)
         return start_correction(c, "ci", triage_file(c, triage), f"ci-{triage['n']}",
                                 "CI is red because of the code (a round)",
                                 why=f"Red checks: {red}.")
@@ -2725,7 +3406,7 @@ def ci_step(c, sha):
                      f"({triage_file(c, triage)}). Once the secret is fixed and CI re-run, "
                      "`auto-dev continue` watches it again.")],
                     "the triager returned SECRET", retry={"lift": True},
-                    no_signoff="never merge over red CI")
+                    no_signoff="never merge over red CI", number=15)
     # INFRA, FLAKY or UNKNOWN: not the coder's to fix. Stop here, before Jira
     # moves on a red build; a resume watches CI again.
     return stop([(f"CI is red, and the triager classed it {kind}: not something the code "
@@ -2733,7 +3414,38 @@ def ci_step(c, sha):
                  f"found ({triage_file(c, triage)}). The run stops here; once CI is fixed "
                  "or re-run, `auto-dev continue` watches it again.")],
                 f"the triager returned {kind}", retry={"lift": True},
-                no_signoff="never merge over red CI")
+                no_signoff="never merge over red CI", number=15)
+
+
+def whole_gate_step(c, status):
+    """CI turned out not to be watched (its watch ended `status`): when the
+    newest quality gate ran a test check only on the change's tests or left one
+    to CI, the gate runs again, every check whole, before the PR goes on; None
+    once such a run is green (or fails only on checks the user signed off)."""
+    runs = c.state.get("gate_runs") or []  # set aside or not: a retry asks again
+    # The newest run made while CI was watched; one from before scoped gates
+    # (no `ci_watched` key), or one that ran every check whole, owes nothing.
+    owed = next((g for g in reversed(runs) if g.get("ci_watched")), None)
+    if owed is None or not (owed.get("scoped") or owed.get("skipped")):
+        return None
+    now = cmd_review.print_tree(c.wt)
+    key = cmd_gate.gate_key(c.state)
+    later = [g for g in runs if g.get("seq", 0) > owed.get("seq", 0) and not g.get("aside")
+             and g.get("ci_watched") is False and g["tree"] == now and g.get("gate") == key]
+    if not later:
+        return ask_gate(c, now, rule=f"CI can't be watched ({status}): the quality gate "
+                                     "runs every check whole before the PR goes on",
+                        show_rule=True)
+    latest = later[-1]
+    failing = latest.get("failing") or []
+    if latest["result"] == "GREEN" or (failing and set(failing) <= overrides.signed_reports(
+            c.state)):
+        return None
+    reports = ", ".join(f"{c.ad}/lint/{r}" for r in failing)
+    return stop([("CI can't be watched and the quality gate, run whole, is red: never ship "
+                 f"a red build. Tell the user which checks fail: {reports}.")],
+                "the quality gate run whole is red", retry={"gate": True},
+                signoff={"reports": failing}, kind="red-gate", number=9)
 
 
 def triage_file(c, triage, key="triage_file"):
@@ -2807,7 +3519,7 @@ def main_step(c, sha):
             return stop([(f"`merge-pr` merged PR #{pr} but could not read its state, and "
                          "it still can't be read as MERGED. Never merge again: tell the "
                          f"user to check `gh pr view {q(pr)} --json state` and report "
-                         "what it says.")], "a merge whose outcome is unknown")
+                         "what it says.")], "a merge whose outcome is unknown", number=None)
         p6["merged"] = attempt.get("sha") or sha
         st.add_note(c.state, f"PR #{pr} is merged (read back after an unknown merge)")
         c.dirty = True
@@ -2829,13 +3541,13 @@ def main_step(c, sha):
             return stop([(f"GitHub did not merge the PR ({attempt['result']}). Tell the "
                          "user what `merge-pr` printed; Jira stays as it is.")],
                         "merge-pr did not merge", retry={"clear": ["merge_attempt"]},
-                        no_signoff="the PR is not merged")
+                        no_signoff="the PR is not merged", number=18)
         ci = p6.get("ci") or {}
         if ci.get("status") == "red":
             return stop(["CI is red on the PR; never merge over it. Tell the user each "
                          "red check: " + "; ".join(ci.get("failing", []))],
                         "red CI at the main gate", retry={"lift": True},
-                        no_signoff="never merge over red CI")
+                        no_signoff="never merge over red CI", number=17)
         return action(f"merge: run `{c.cmd('merge-pr', '--pr', p6.get('pr'), '--sha', sha)}`",
                       "the main gate said proceed", AFTER=[c.cmd("next")])
     if not c.mark("main-ci"):
@@ -2864,8 +3576,15 @@ def main_step(c, sha):
                 "RULE": "the run used the user's own worktree, which stays"}
     gate = c.gate("cleanup")
     if gate is None:
-        return ask(c, "the worktree", [(f"The run is finished. Remove the worktree {c.wt}? "
-                                       "That deletes .auto-dev/ too.")],
+        saved, inside = metrics.saved_path(c.state), c.ad / metrics.FILE
+        if metrics.copy_error(c.state) is None:
+            told = f"That deletes .auto-dev/ too; its metrics.json stays at {saved}."
+        else:
+            told = ("That deletes .auto-dev/ too, and the run's metrics with it: the "
+                    f"metrics copy could not be written to {saved}, so {inside}, written "
+                    "when you answer, is their only copy; save it first if you want them.")
+        return ask(c, "the worktree", [f"The run is finished. Remove the worktree {c.wt}? "
+                                       + told],
                    [cmd_review.question("Cleanup", f"Remove the worktree {c.wt}?",
                                         ["Remove it", "Keep it"])],
                    [("Remove it", c.cmd("gate", "cleanup", "proceed")),
@@ -2873,25 +3592,126 @@ def main_step(c, sha):
                    "the final report is written")
     c.finish(6, f"merged PR #{p6.get('pr')}")
     if gate["choice"] == "proceed":
-        return {"code": NEXT_COMPLETE, "RULE": "the user chose to remove the worktree",
-                "ACTION": (f"run `{c.cmd('cleanup-worktree')}` from "
-                           f"{q(c.state['repo']['main_checkout'])}; then the run is "
-                           "complete (its state goes with the worktree)")}
+        return remove_worktree(c)
     return {"code": NEXT_COMPLETE, "ACTION": "the run is complete; nothing more to do",
-            "RULE": "the user kept the worktree"}
+            "RULE": "the worktree stays: " + (gate.get("reason") or "the user kept it")}
+
+
+def remove_worktree(c):
+    """The user answered the worktree question "Remove it": the
+    `cleanup-worktree` command (UNSAVED, the ACTION main() prints instead when
+    the metrics copy could not be written, which also names `gate cleanup keep`
+    for a user who keeps the worktree after all). Given again by every `next`
+    until the worktree is gone or recorded as kept, as `cleanup-worktree` does
+    when git refuses (st.cleanup_pending, which counts only a removal a
+    `next` gave: state["cleanup_given"], never saved under --explain)."""
+    if not c.readonly and not c.state.get("cleanup_given"):
+        c.state["cleanup_given"] = True
+        c.dirty = True
+    saved, inside = metrics.saved_path(c.state), c.ad / metrics.FILE
+    cleanup, home = c.cmd("cleanup-worktree"), q(c.state["repo"]["main_checkout"])
+    keep = c.cmd("gate", "cleanup", "keep")
+    return {"code": NEXT_COMPLETE, "RULE": "the user chose to remove the worktree",
+            "ACTION": (f"run `{cleanup}` from {home}; then the run is complete (its "
+                       "state goes with the worktree; its metrics stay at "
+                       f"{saved})"),
+            UNSAVED: (f"the metrics copy could not be written to {saved}: tell the "
+                      f"user that {inside} is the run's only metrics file and goes "
+                      f"with the worktree, and run `{cleanup}` from {home} only once "
+                      "they have saved it or said to go on; then the run is complete "
+                      "(its state and metrics go with the worktree). If they decide to "
+                      f"keep the worktree instead, run `{keep}`: then the run is complete "
+                      "and the worktree stays")}
+
+
+def moved_head(c, sha):
+    """The step for a PR branch moved to a commit the run did not make (see
+    outside_push), or None. Fetches the branch (also when probing for a
+    checkpoint; a fetch that can't reach origin uses the last one fetched) and
+    compares commits, not trees: during a correction the reports describe the
+    corrected working tree, which is no outside push. None before the run's
+    first recorded push and when origin has no such branch (a tracking ref left
+    from an earlier branch of that name is no PR's head), when the branch is at
+    `sha` or at the commit under re-check, behind `sha` (the run's own commit
+    not pushed yet), or past it by the run's own tests commits alone. A branch
+    still at the commit the run verified and recorded as pushed, which `sha`
+    doesn't descend from, is no outside push either: the worktree's branch was
+    rewritten (see rewritten_push)."""
+    pushed = (c.mark("pushed") or {}).get("value")
+    if not sha or not pushed:
+        return None
+    branch = c.state["branch"]
+    if not c.readonly or c.probing:
+        code, _, _ = git(c.wt, "fetch", "-q", "origin", branch, check=False)
+        if code != 0:
+            # ls-remote exits 2 when origin answers without the branch (deleted
+            # on GitHub, say), and otherwise when origin can't be reached.
+            code, _, _ = git(c.wt, "ls-remote", "--exit-code", "origin",
+                             f"refs/heads/{branch}", check=False)
+            if code == 2:
+                return None
+    code, out, _ = git(c.wt, "rev-parse", "--verify", "--quiet",
+                       f"origin/{branch}^{{commit}}", check=False)
+    remote = out.strip() if code == 0 else ""
+    if not remote or remote in (sha, c.p6.get("unverified_commit")):
+        return None
+    code, _, _ = git(c.wt, "merge-base", "--is-ancestor", remote, sha, check=False)
+    if code == 0:
+        return None
+    code, out, _ = git(c.wt, "rev-list", f"{sha}..{remote}", check=False)
+    revs = out.split() if code == 0 else []
+    if revs and set(revs) <= set(cmd_work.tests_shas(c.state)):
+        return None
+    if remote == pushed and pushed in (c.p6.get("verified_shas") or []):
+        return rewritten_push(c, sha, remote)
+    # From the merge base: when the run's own unpushed commit and the outside
+    # commits diverged, only what the outside commits changed.
+    _, out, _ = git(c.wt, "diff", "--name-only", f"{sha}...{remote}", check=False)
+    files = [f for f in out.splitlines() if f and not f.startswith(".auto-dev/")]
+    detail = (f"the PR's branch is at {remote[:12]}, past the checked commit {sha[:12]}; "
+              "files changed on it: " + (", ".join(files) or "none"))
+    return outside_push(c, sha, detail)
+
+
+def rewritten_push(c, sha, remote):
+    """The PR's branch is still at `remote`, the commit the run pushed, but
+    `sha` doesn't descend from it: the user rebased or amended the branch in
+    the worktree and didn't push it. No one else pushed, so stop 16's merge
+    would bring the old commits back over the rewrite; the push needs a force,
+    which the run never uses, so the user pushes it."""
+    wt = q(c.wt)
+    branch = c.state["branch"]
+    # The lease names the commit the run pushed, so a push someone makes after
+    # the last fetch makes the force-push fail instead of being overwritten.
+    lease = q(f"--force-with-lease={branch}:{remote}")
+    return stop([(f"The PR's branch is still at {remote[:12]}, the commit the run "
+                  "pushed, but the branch in the worktree was rewritten since (rebased, "
+                  f"amended or reset there), so its head {sha[:12]} doesn't build on "
+                  "that commit and a plain push would be refused. As of the last fetch, "
+                  "no one else pushed to the PR. The run never force-pushes. Tell the "
+                  "user: to ship the rewritten branch, they push it themselves with "
+                  f"`git -C {wt} push {lease} origin HEAD` (it fails if anyone pushed "
+                  "since) and say `auto-dev continue`; the run then goes on from the "
+                  "push.")],
+                "the worktree's branch was rewritten", retry={},
+                no_signoff="the run never force-pushes", number=16)
 
 
 def outside_push(c, sha, stale):
-    """The PR's branch moved past the verified commit. Once the user has brought
-    those commits into the worktree, they are re-checked like any outside
-    change (the quality gate, the verifier, then a review pass on what they
-    changed since `sha`), and `commit` then verifies HEAD, or commits the
-    re-check's edits on top."""
+    """The PR's branch moved past the verified commit: seen by moved_head before
+    a CI watch, a push or a gate, and by the main gate's freshness check. Once
+    the user has brought those commits into the worktree (HEAD is the PR's
+    head), they are re-checked like any outside change (the quality gate, the
+    verifier, then a review pass on what changed since `sha`, the working tree
+    with it: a correction the run left uncommitted is reviewed with them), and
+    `commit` then verifies HEAD, or commits the re-check's edits on top.
+    With such a correction in the worktree, the report has the user stash it
+    around the merge, which git would otherwise refuse. `stale` names what
+    changed."""
     branch = c.state["branch"]
     head = git(c.wt, "rev-parse", "HEAD").strip()
     code, remote, _ = git(c.wt, "rev-parse", f"origin/{branch}", check=False)
-    add, remove = changed_paths(c.wt)
-    if code == 0 and remote.strip() == head and head != sha and not add and not remove:
+    if code == 0 and remote.strip() == head and head != sha:
         twice = stale_twice(c, stale, since=sha)  # before c.would: --explain shows it
         if twice:
             return twice
@@ -2900,13 +3720,39 @@ def outside_push(c, sha, stale):
         c.p6["unverified_commit"] = head  # a clean `commit` verifies it, no new commit
         c.dirty = True
         return stale_again(c, stale, since=sha)
+    ref = q("origin/" + branch)
+    behind = code == 0 and git(c.wt, "merge-base", "--is-ancestor", "HEAD",
+                               f"origin/{branch}", check=False)[0] == 0
+    wt = q(c.wt)
+    if code != 0 or behind:
+        bring = f"`git -C {wt} merge --ff-only {ref}`"
+    else:
+        # The run's own unpushed commit and the outside commits diverged: a
+        # fast-forward can't take them, a merge pushed to the branch can.
+        bring = (f"`git -C {wt} merge {ref}` (resolving any conflict and "
+                 f"committing the merge), then push it with `git -C {wt} push "
+                 "origin HEAD`,")
+    add, remove = changed_paths(c.wt)
+    if add or remove:
+        # git refuses a merge that would overwrite the uncommitted correction.
+        # Staged first, a file the correction added comes back from the stash
+        # as a merge, not as an untracked file the pop refuses to restore.
+        paths = sorted(printable(p) for p in add + remove)
+        named = ", ".join(paths[:5]) + (f" and {len(paths) - 5} more"
+                                        if len(paths) > 5 else "")
+        how = (f"the run's correction is uncommitted ({named}), so to ship those "
+               f"commits they first set it aside with `git -C {wt} add -A` and "
+               f"`git -C {wt} stash push --include-untracked`, bring the commits "
+               f"into the worktree with {bring.rstrip(',')}, then bring the "
+               f"correction back with `git -C {wt} stash pop`, resolving any "
+               "conflict it reports,")
+    else:
+        how = f"to ship them, they bring them into the worktree with {bring}"
     return stop([("The PR's branch holds commits the pipeline did not check (someone "
-                  "pushed to it). Tell the user: to ship them, they bring them into the "
-                  f"worktree with `git -C {q(c.wt)} merge --ff-only "
-                  f"{q('origin/' + branch)}` and say `auto-dev continue`; the pipeline "
-                  "then re-checks them (quality gate, verifier, review) and asks the "
-                  "main gate again:"), stale], "the PR head moved", retry={},
-                no_signoff="the pipeline never ships commits it did not check")
+                  f"pushed to it). Tell the user: {how} and say `auto-dev continue`; "
+                  "the pipeline then re-checks them (quality gate, verifier, review) "
+                  "before it goes on:"), stale], "the PR head moved", retry={},
+                no_signoff="the pipeline never ships commits it did not check", number=16)
 
 
 def fetch_and_check(c):

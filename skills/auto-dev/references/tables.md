@@ -29,10 +29,14 @@ or for red CI alone.
 When none is left, `next` stops and its `REPORT` names what is still open, one
 item at a time, and `autodev.py budget raise --by <n>`. One exception: a review
 pass's correction with no round left before the PR is marked ready goes on to
-the ready-for-review gate, whose summary names every open must-fix finding. Run `budget raise` only when
-the user asks for more rounds and gives the number (1 to 10; it is refused
-unless `next` just stopped on the budget). Then `next` takes the step that
-stopped, spending the new rounds as usual.
+the ready-for-review gate, whose summary names every open must-fix finding.
+That gate then offers a fourth answer, "Add a round and fix it": its `AFTER`
+line, `budget raise --by 1`, adds one round there, and `next` spends it on the
+correction for what is open (the gate comes again after it). Run `budget raise`
+only when the user asks for more rounds and gives the number (1 to 10; it is
+refused unless `next` just stopped on the budget, or the ready-for-review gate
+is open with findings left for want of a round and the PR not marked ready).
+Then `next` takes the step that stopped, spending the new rounds as usual.
 
 Free (no round), but bounded: the acceptance tester's one more go for gaps
 (gaps again stop) and its rewrite for the other reading of an ambiguous
@@ -49,33 +53,41 @@ correction, paid as usual.
 
 Each one ends with `next` exiting 4 (or the command named exiting 1). Tell the
 user the `REPORT` lines. The worktree and `.auto-dev/` stay. Every stop `next`
-reports, except #11, #19 and a merge whose outcome is unknown, comes with a
-`QUESTION`: the user can override it (_Overriding a stop_, below).
+reports, except #1–#3 (setup: the `REPORT` says how to go on), #11, #19 and a
+merge whose outcome is unknown, comes with a `QUESTION`: the user can override
+it (_Overriding a stop_, below).
 
 | # | Condition | Detected by |
 |---|---|---|
-| 1 | `gh` missing or signed out, `origin` not on GitHub, python3 < 3.9 or no PyYAML | `init` exit 1 |
-| 2 | invalid `.auto-dev.yml` or saved profile, no test command in the quality gate | `init` exit 1 |
-| 3 | worktree path taken, a seeded file not gitignored, a setup command missing or failing; in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `init` exit 1 |
+| 1 | `gh` missing or signed out, `origin` not on GitHub, python3 < 3.9 or no PyYAML | `next` (setup) exit 4 |
+| 2 | invalid `.auto-dev.yml`, the profiler leaving no usable draft twice running (not ok, an invalid draft, or one of each), no test command in the quality gate, the user's Stop at the profile question or the gate-check question, a setup worker that never returned | `next` (setup) exit 4 |
+| 3 | a seeded file not gitignored, a setup command missing or failing (the run is kept: once the file the `REPORT` names is fixed, `auto-dev continue` runs setup again); in a worktree the user made, uncommitted changes, another task's run or a stray `.auto-dev/` there, or no `origin/<base>` it shares history with | `next` (setup) exit 4 |
 | 4 | the run was started on auto-dev 3.x or 4.x | `resume` prints `OLD-VERSION` |
 | 5 | the task is too big for one PR | the planner returns `OVERSIZED` |
 | 6 | a worker did not return ok twice running: it stopped on purpose, failed, or one of each (lifted by `auto-dev continue`) | `next` records a second result that is not ok |
-| 7 | a worker was spawned three times and never left a result `next` accepts (lifted by `auto-dev continue`) | `next` |
+| 7 | a worker was spawned three times and never left a result `next` accepts; or a worker with a turn cap (`maxTurns`: the coder 150 turns, the acceptance tester 120) ended without writing its result file twice: after the first miss `next` sends it out once more, as a new brief that tells it to keep its edits and finish (lifted by `auto-dev continue`, which gives it that one more go again) | `next` |
 | 8 | the planner judged the conditions impossible to meet | planner returns `SPEC_IMPOSSIBLE` |
-| 9 | the quality gate is still red after the coder's correction for it, or a check rewrites the code on every run, or `next` asked for the gate 3 times on the same code and no run was recorded (it never finished: run it in the background). _I fixed it myself_ runs the gate again; a sign-off (not for a gate that never finished) counts the failing checks green for the rest of the run | `autodev.py quality-gate` exit 1, then `next` |
+| 9 | the quality gate is still red after the coder's correction for it, or the quality gate, run whole after CI can't be watched, is red, or a check rewrites the code on every run, or `next` asked for the gate 3 times on the same code and no run was recorded (it never finished: run it in the background). _I fixed it myself_ runs the gate again; a sign-off (not for a gate that never finished) counts the failing checks green for the rest of the run | `autodev.py quality-gate` exit 1, then `next` |
 | 10 | the mutation step (high risk only) may have left a planted change in the source | verifier returns `MUTATION_LEFT_CHANGES` |
-| 11 | the budget ran out (a review pass's correction before the PR is marked ready goes to the ready-for-review gate instead). Lifted when the user adds rounds (`budget raise`, above) | `next` |
+| 11 | the budget ran out (a review pass's correction before the PR is marked ready goes to the ready-for-review gate instead, which offers "Add a round and fix it"). Lifted when the user adds rounds (`budget raise`, above) | `next` |
 | 12 | a report is stale again right after its own re-run (lifted by `auto-dev continue`) | `check-fresh`, inside `next` |
 | 13 | no code reviewer of the panel wrote a usable report, twice; or the pass's verifier or reviewer did not return ok twice running (lifted by `auto-dev continue`) | `next` |
 | 14 | the commit failed, or does not carry the checked code | `commit` exit 1 or 3, then `next` |
 | 15 | CI is red for a reason the code can't fix: a secret or credential (`SECRET`), infrastructure (`INFRA`), a flaky test (`FLAKY`) or no clear cause (`UNKNOWN`). Reported before Jira moves to In Review. Lifted by `auto-dev continue` once the cause is fixed and CI re-run: CI is watched again | triager's CI mode |
-| 16 | someone pushed commits to the PR branch the pipeline didn't check. Lifted once the user fast-forwards the worktree to `origin/<branch>` (`git merge --ff-only`, which the report names) and says `auto-dev continue`: the commits are re-checked, then the main gate is asked again | `check-fresh --ref`, inside `next` |
+| 16 | someone pushed commits to the PR branch the pipeline didn't check, seen before a CI watch, a push or a gate (and at the main gate). Lifted once the user brings `origin/<branch>` into the worktree with the command the report names (`git merge --ff-only`; a `git merge` and a push when the run's own unpushed commit diverged from it; with an uncommitted correction set aside in a stash first and popped after) and says `auto-dev continue`: the commits are re-checked, an uncommitted correction with them, then the run goes on. A head pushed from the worktree is re-checked with no stop. When no one pushed but the user rebased or amended the branch in the worktree and didn't push it (the PR branch still at the commit the run verified and pushed), the report instead asks the user to push the rewritten branch themselves (`git push --force-with-lease`; the run never force-pushes) and say `auto-dev continue`: the run goes on from the push | `next` (the PR branch fetched; `check-fresh --ref` at the main gate) |
 | 17 | CI is red at the main gate | `next` |
 | 18 | GitHub refused or only queued the merge | `merge-pr` exit 3 or 4, then `next` |
 | 19 | the user chose Stop at a gate or pause | `gate … stop` |
 | 20 | a later worker found a PLAN.md condition or criterion wrong or missing (the verifier, the reviewer, the review judge, a security reviewer, or the triager from a PR comment): the report names each item from `spec-problems/<worker>-<n>.md`. Workers never change the plan's conditions; the user decides, and a sign-off keeps it as written | `next`, on a result with `spec_problems` |
 | 21 | the acceptance tester ruled a check right as written (STANDS) that the verifier, a review finding or a PR comment called wrong: the report names both sides. A sign-off keeps the check as written | `next` |
 | 22 | a free step came round a second time: the acceptance checks still have gaps after the tester's one more go, a condition still reads two ways after the planner's decision, or the coder stopped a step again after the planner's decision in the same change | `next` |
+| 23 | a CI watch run since the pushed commit was made reported on another commit (`ci-watch` run without `--sha`, so it watched an unpushed tests commit on top), so CI never reported on the commit that ships. The report names both commits. Lifted by `auto-dev continue` or _I fixed it myself_: CI is watched on the pushed commit again. No sign-off | `next` |
+
+`next` counts each stop it reports by this number in `.auto-dev/metrics.json`
+(`none` for a stop the table doesn't number), once while it keeps reporting
+the same stop: an answer to the stop other than talk or leave, a setup run
+again, or any other step makes the next stop count again. A hold is not a
+stop, and neither is a step `next` could not take.
 
 ## Hold and Stop
 
@@ -93,10 +105,10 @@ They are different states.
 Every other stop (exit 4) leaves the phase open, and `next` decides again in
 the next session:
 
-- A stop on a **worker** (#6, #7), a refused `pr publish`, and a red CI run the
-  code can't fix (#15) are lifted when the user fixes the cause and says
-  `auto-dev continue`: the worker is spawned again, the PR published again, or
-  CI watched again. A session that ended at a checkpoint (`handoff
+- A stop on a **worker** (#6, #7), a refused `pr publish`, a red CI run the
+  code can't fix (#15) and a CI watch on another commit (#23) are lifted when
+  the user fixes the cause and says `auto-dev continue`: the worker is spawned
+  again, the PR published again, or CI watched again. A session that ended at a checkpoint (`handoff
   --checkpoint`) lifts nothing: it ended at a clean point, with no stop to
   lift, so a worker that failed once before it and once after still stops.
 - A stop on a **result** (a red quality gate #9, an impossible spec #8, a
@@ -104,7 +116,8 @@ the next session:
   check #21, …) comes back in a resumed run,
   since the result is still there. The user overrides it, in the same session
   or a new one (below). The budget stop (#11) is lifted only when the user
-  adds rounds: `budget raise`, then `next` takes the step that stopped.
+  adds rounds: `budget raise`, then `next` takes the step that stopped. The
+  ready-for-review gate's "Add a round and fix it" adds one the same way.
 
 ## Overriding a stop
 
@@ -117,7 +130,7 @@ correction its new result calls for is paid as usual.
 |---|---|---|
 | a typed instruction | `override fix --text "<the user's words>"` | the **fixer** is spawned with the words, its consent. It does what they say and nothing more: in the code, the tests, or the run's PLAN.md or acceptance checks when they name them. `FIXED`: the step that stopped runs again, and so does what depends on what changed (the quality gate on changed code; in Phase 6, a pass, the verifier and the review, on the changed files, the verifier's first pass when PLAN.md changed). `record` refuses a report that leaves out a path the fixer changed. A check the fixer edits in the worktree is committed as a new tests commit once its fix is recorded, and `check-tests.py` guards it from then on; for a change to MANIFEST.md's rows it runs `autodev.py amend-checks`, which works only while its fix is open. `record` refuses a dropped test still in its file, a condition left with no check and no Not automatable row, and `FIXED` with a status other than ok. A change to the run's settings in `state.json` (a gate check's command) counts as a changed path: kept with `FIXED`, put back otherwise. Auto mode can refuse an agent's own edit of those files as test removal. `NEEDS_CONSENT` (the fix needs more than the words allow) or `CANNOT_FIX`: whatever it changed is put back, and the question comes again, with its proposal or its reason |
 | Approve the fixer's proposal | `override approve` | the fixer runs again, told to do what it proposed |
-| I fixed it myself | `override retry` | the result that stopped is set aside and its step runs again; a worker that failed twice, a refused `pr publish` or red CI (#6, #7, #12, #15, #17) get what `auto-dev continue` gives them |
+| I fixed it myself | `override retry` | the result that stopped is set aside and its step runs again; a worker that failed twice, a refused `pr publish`, red CI or a CI watch on another commit (#6, #7, #12, #15, #17, #23) get what `auto-dev continue` gives them |
 | Sign off and go on | `override signoff --text "<why>"` | the result is accepted as if it had passed: a red gate as green (for the rest of the run, while only the checks signed off fail), a disputed check as standing and a wrong criterion as written (each later worker that judges it is told the user kept it, `checks_kept` or `spec_kept` in its brief), open findings as known (the ready-for-review gate names them), an `OVERSIZED` task as fitting. Named in `WORK_LOG.md`, the ready-for-review gate's summary and the PR body. Never offered on red CI, a confirmed security finding, a mutation that may have left changes, a stale report, impossible conditions or commits the pipeline didn't check |
 | Let's talk it through | `override talk` (records nothing) | talk it over with the user, sending a `lookup` for any fact about the code; then `next` asks again |
 | Leave it stopped | `override leave` | the stop is reported without the question for the rest of the session; `auto-dev continue` asks again |
@@ -147,6 +160,7 @@ what they said, then run `next`.
 | Ready for review (Phase 6, once the reviews on the draft PR settle and CI on it was watched) | Mark ready for review | `gate ready proceed` | `gh pr ready`, then Jira In Review, CI once more, people's comments, the main gate |
 | | Hold (keep it a draft) | `gate ready hold --reason "<why>"` | the run is held; the PR stays a draft |
 | | Stop | `gate ready stop --reason "<why>"` | the run stops; the draft PR stays open |
+| | Add a round and fix it (only when a review pass left must-fix findings open for want of a round, before the PR is marked ready) | `budget raise --by 1` | one round is added; `next` spends it on the correction for what is open, then the review pass and the commit, and asks this gate again |
 | Main (Phase 6, once CI and human comments are settled) | Merge PR to main | `gate main proceed` | `merge-pr`, then Jira Done and the final report |
 | | Hold | `gate main hold --reason "<why>"` | the run is held at the main gate |
 | | Stop | `gate main stop --reason "<why>"` | the run stops; the PR stays open |
@@ -161,7 +175,26 @@ run the one for each answer the user gave. A `separate` finding is listed in
 the PR body (published again before the PR is marked ready) and the final
 report as a follow-up for its own PR; the pipeline doesn't open that PR.
 
-The profile confirmation (Phase 1) has its own options: `plan.md`, step 4.
+The profile question (Phase 1, exit 5 from `next --repo`) has its own options:
+`Looks right — save it for this repo` · `Looks right — use it for this run
+only` · `Change something (tell me what)` · `Stop`. Each answer's `AFTER` line is
+`autodev.py setup-answer save|run-only|change|stop --repo <repo> --task
+"<task>"` (`change` with `--text` holding the user's words); the next `next
+--repo` acts on it: save writes the saved profile, change has the profiler redo
+the draft and asks again, Stop ends setup with nothing created (the ticket details
+and the ask given on the first call are kept for the start-over command).
+
+The gate-check question (Phase 1, exit 5 from `next --repo`, asked when a saved
+profile's lookup finds a gate check's tool not adopted) has its own options:
+`Keep them` · `Leave them out of this run` · `Stop`. Each answer's `AFTER` line is
+`autodev.py setup-answer keep|drop|stop --repo <repo> --task "<task>"`; the next
+`next --repo` acts on it: keep creates the run with every saved check (a kept check
+that fails is first handed to the coder to make green, which may change the repo;
+if it is still red, the run stops at the quality gate, stop 9, where the user can
+sign it off), drop creates it without the flagged checks (the saved file is unchanged, so
+the next run asks again), Stop ends setup with nothing created. When leaving them
+out would leave no test check, only `Keep them` and `Stop` are offered, and a `drop`
+answer is refused.
 
 ## Freshness: when a report no longer matches the code
 
@@ -174,7 +207,7 @@ points; you never run it yourself.
 | Start of Phase 6, nothing committed yet | the code changed outside the pipeline since the Build stage | the quality gate runs again before the first commit; the verifier and the review then run on the draft PR |
 | `commit` | the code changed after its checks | re-checked as above, then committed |
 | The ready-for-review gate | the code changed after the reviews | the quality gate runs again, then a pass (the verifier and the review) on the change; it is committed on top and the gate is asked again |
-| Before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#16); once the user brings the commits into the worktree, the quality gate runs again, a pass (the verifier and the review) covers what they changed, `commit` verifies the new head, or commits the re-check's edits on top, and the main gate is asked again |
+| Before a CI watch, a push or a gate (the PR branch's head), and before the main gate (`--ref origin/<branch>`) | someone pushed to the PR branch | stop (#16), or no stop when the worktree's HEAD is that head already; once the commits are in the worktree, the quality gate runs again, a pass (the verifier and the review) covers what they changed, `commit` verifies the new head, or commits the re-check's edits on top, and the run goes on: CI is watched on the new head and the gate is asked again. When the branch is still at the commit the run verified and pushed and only the worktree's branch was rewritten (a rebase or amend not pushed), stop (#16) asking the user to force-push it |
 | The same check, stale twice running | the re-run didn't settle it | stop (#12) |
 
 ## Lookups

@@ -95,8 +95,10 @@ record <worker> <n>
     printed). Either way the issues are saved in state.json for job
     <worker>-<n>: run `autodev.py next`, which re-spawns it with a brief whose
     `previous_issues` carries them (as `brief <worker> --retry <n>` writes). A
-    later RECORDED for <worker>-<n> clears them. Recording a job again keeps
-    its place in the log. Don't guess.
+    later RECORDED for <worker>-<n> clears them. Each refused job is counted
+    once for metrics.json (by worker and token), even when it is recorded again
+    or its retry is accepted. Recording a job again keeps its place in the
+    log. Don't guess.
 
 check-artifact <file>
     Checks one artifact against its template before a worker returns it:
@@ -120,7 +122,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from datetime import datetime
@@ -129,6 +130,7 @@ from pathlib import Path
 from . import artifacts as art
 from . import (
     briefs,
+    cmd_gate,
     cmd_run,
     overrides,
     protected,
@@ -365,20 +367,35 @@ def cut_commit(worktree, base):
     return cut
 
 
+def base_commit(worktree, base):
+    """`cut_commit`, or '' where that fails: measured against origin/<base>,
+    never the main checkout's local base branch, which can lag far behind
+    (every commit merged since would count as the run's). The local branch
+    is read only when origin's can't be: it can only reach back further."""
+    for ref in (f"origin/{base}", base):
+        out = subprocess.run(["git", "-C", str(worktree), "merge-base", ref, "HEAD"],
+                             capture_output=True, text=True, check=False)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    return ""
+
+
 def issues_text(issues):
     return "\n".join(f"- {i}" for i in issues)
 
 
 def auto_values(worker, n, state, ad, mode):
-    """Every AUTO slot's value for this run (some depend on the worker)."""
+    """Every AUTO slot's value for this run (some depend on the worker). In a
+    coder correction, each test check the quality gate's latest run lists as
+    failing (and the user didn't sign off) gets its run line in the gate list."""
     s = state["settings"]
-    # As the gate runs them: a command's <args> is for `run … -- <arg>`.
-    test = next((cmd_run.with_args(c["command"], ()) for c in s.get("gate", [])
-                 if c.get("kind") == "test"), "")
-    run = f"python3 {shlex.quote(str(SCRIPTS / 'autodev.py'))} run gate"
-    gate = "\n".join(f"{i}. `{cmd_run.with_args(c['command'], ())}`\n"
-                     f"   run: `{run} {i} --dir {shlex.quote(str(ad))}`"
-                     for i, c in enumerate(s.get("gate", []), 1))
+    found = cmd_run.test_check(s.get("gate", []))
+    # As the gate runs it: a command's <args> is for `run … -- <arg>`.
+    test = cmd_run.with_args(str(found[1].get("command") or ""), ()) if found else ""
+    failing = (failing_test_checks(s.get("gate", []), state)
+               if worker == "coder" and mode == "correction" else None)
+    watched = cmd_gate.ci_watched(state)
+    gate = gate_lines(s.get("gate", []), ad, worker, failing, watched)
     phase6 = state.get("phase6", {})
     values = {
         "worktree": state["worktree"], "artifact_dir": str(ad), "skill_dir": str(SKILL_DIR),
@@ -388,13 +405,15 @@ def auto_values(worker, n, state, ad, mode):
         "ticket": st.ticket_line(state["task"]).split(" — ")[0],
         "binding_rules": BINDING_RULES.format(artifact_dir=ad),
         "test_command": test or "none", "test_notes": s.get("test_notes") or "none",
-        # Mutation and the verifier's own probes run on a high-risk run only.
+        # Mutation runs on a high-risk run only (the verifier's probes run on
+        # every run: agents/verifier.md).
         "mutation_cap": (str(s.get("mutation_max", 20))
                          if state.get("high_risk") and s.get("mutation_max", 20) else
                          "0 (off)" if state.get("high_risk") else
                          "0 (off: a standard-risk run)"),
-        "probes": "on" if state.get("high_risk") else "off (a standard-risk run)",
         "gate_commands": gate or "none",
+        "test_runs": (test_runs(found[1], ad, worker, s.get("gate", []), watched)
+                      if found else "none"),
         "result_file": str(ad / "returns" / f"{worker}-{n}.json"),
         "pr": str(phase6.get("pr") or "none"),
         "pass": str(phase6.get("review_pass") or 1),
@@ -409,6 +428,127 @@ def auto_values(worker, n, state, ad, mode):
         "fix_report": str(ad / overrides.FIX_DIR / f"fixer-{n}.md"),
     }
     return values
+
+
+# After every `run` line a brief gives: the Bash tool's default 120 s would cut
+# a check short (a call still running at 180 s moves to the background, where
+# `run wait` waits for it; `run` ends a hung check at its own timeout).
+BASH = " with that Bash call's timeout set to 300000 ms"
+
+
+def whole_runner(gate, watched=True):
+    """Who runs the gate's test checks whole, for the coder's brief: (who, what
+    it does with a check the coder doesn't run, why). CI when the gate has one
+    `kind: test` check and CI is watched (the quality gate scopes it to the
+    change), else the quality gate, which runs every check whole when the gate
+    has two or more test checks or CI isn't watched (cmd_gate.plan_checks)."""
+    if sum(c.get("kind") == "test" for c in gate) > 1:
+        why = "with two or more test checks it runs each one whole"
+    elif not watched:
+        why = "CI isn't watched, so it runs the test check whole"
+    else:
+        return "CI", "left to CI", "CI is the one full run of the test suite"
+    return "the quality gate", "the quality gate runs it whole", why
+
+
+def failing_test_checks(gate, state):
+    """The numbers of the `kind: test` checks the quality gate's latest run (the
+    newest one no retry set aside, as `next` reads it) lists as failing, less
+    the reports the user signed off (counted green for the rest of the run).
+    Only the gate's own result counts: no correction text is read, so a check
+    red in CI or in the verifier's or a reviewer's corrections gets no extra
+    line."""
+    runs = [g for g in state.get("gate_runs") or [] if not g.get("aside")]
+    failing = set(runs[-1].get("failing") or []) if runs else set()
+    failing -= overrides.signed_reports(state)
+    return {i for i, c in enumerate(gate, 1)
+            if c.get("kind") == "test" and c.get("report") in failing}
+
+
+FAILING_HEAD = ("(a test check the quality gate's latest run found failing: run it only "
+                "with the line below, to check your fix)")
+
+
+def gate_lines(gate, ad, worker, failing=None, watched=True):
+    """The gate_commands slot: each check with the `run:` line that runs it
+    whole; for the coder, the test check `run test` uses only scoped (no line
+    for one with no scoped form) and every other test check with no line, since
+    CI (one test check, CI watched) or the quality gate (two or more, or CI not
+    watched) runs them whole. In a
+    correction, a test check in `failing` (one the quality gate's latest run
+    lists as failing, minus any the user signed off) gets its `--files` line
+    when it has a `files` form, else its whole line."""
+    found = cmd_run.test_check(gate)
+    chosen = found[0] if found else None
+    who, whole, _why = whole_runner(gate, watched)
+    failing = failing or set()
+    entries = []
+    for i, c in enumerate(gate, 1):
+        invocation = f"run gate {i}"
+        shown = cmd_run.with_args(str(c.get("command") or ""), ())  # as the gate runs it
+        if worker != "coder" or c.get("kind") != "test":
+            entries.append(f"{i}. `{shown}`\n"
+                           f"   run: `{cmd_run.run_line(ad, invocation)}`{BASH}")
+            continue
+        if i in failing and not cmd_run.has_form(c, "files"):
+            # No file form: its whole line, and (for the check `run test`
+            # uses) its test-ID line too.
+            lines = [cmd_run.run_line(ad, invocation)]
+            if i == chosen:
+                lines += [line for line, _ in cmd_run.scoped_runs(ad, c, invocation,
+                                                                    ("tests",))]
+            entries.append("\n".join([f"{i}. `{shown}` {FAILING_HEAD}"]
+                                     + [f"   run: `{line}`{BASH}" for line in lines]))
+            continue
+        if i in failing and i != chosen:
+            line = cmd_run.scoped_runs(ad, c, invocation, ("files",))[0][0]
+            entries.append(f"{i}. `{shown}` {FAILING_HEAD}\n"
+                           f"   run: `{line}`{BASH}")
+            continue
+        if i != chosen:
+            entries.append(f"{i}. `{shown}` (a test check `run test` doesn't use: "
+                           f"{whole}; don't run it)")
+            continue
+        runs = cmd_run.scoped_runs(ad, c, invocation)
+        if not runs:
+            entries.append(f"{i}. `{shown}` (a test check with no scoped form: "
+                           f"{whole}; don't run it, and name it in one line above your "
+                           "result block)")
+            continue
+        head = (f"{i}. `{shown}` (a test check: run it only scoped, on your "
+                f"tests; never whole — {who} runs it whole)")
+        entries.append("\n".join(
+            [head] + [f"   run: `{line}`{BASH}" + (f" ({note})" if note else "")
+                      for line, note in runs]))
+    return "\n".join(entries)
+
+
+def test_runs(check, ad, worker=None, gate=(), watched=True):
+    """The test_runs slot: the run's scoped test commands, filled in and ready to
+    copy, and that a whole run of the test check is for the quality gate only;
+    for a check with no scoped form, the one line that runs it whole (the
+    coder's: no line, since CI or the quality gate runs it, as `gate` says)."""
+    runs = cmd_run.scoped_runs(ad, check)
+    if not runs and worker == "coder":
+        who = whole_runner(gate or [check], watched)[0]
+        whole = "that is left to CI" if who == "CI" else "the quality gate runs it whole"
+        shown = cmd_run.with_args(str(check.get("command") or ""), ())
+        return (f"No line: the test check (`{shown}`) has no scoped "
+                f"form, so it runs only whole, and {whole}: don't run it, and "
+                "name it in one line above your result block.")
+    if not runs:
+        return (f"- `{cmd_run.run_line(ad)}`{BASH}\n"
+                "The test check has no scoped form, so it only runs whole: this line "
+                "is the way to run its tests.")
+    lines = [f"- `{line}`{BASH}" + (f" ({note})" if note else "") for line, note in runs]
+    if not cmd_run.has_form(check, "tests"):
+        lines.append("- no test-ID form: scope by file")
+    # Who runs it whole depends on the gate and CI alone, so every worker gets
+    # the same text.
+    why = whole_runner(gate or [check], watched)[2]
+    lines.append(f"A whole run of the test check is for the quality gate only ({why}); "
+                 "never run `run test` with neither flag to test your change.")
+    return "\n".join(lines)
 
 
 def job(worker, n):
@@ -450,6 +590,18 @@ REFUSED_RETRY = ("`record` refused your last return for this job, and the files 
                  "say to start clean or from scratch. If they are missing, partial or "
                  "from an earlier pass, do the job as your instructions say.")
 NO_RESULT = "you wrote no result file at"  # MISSING: nothing returned to fix up
+# The note a worker with a turn cap gets when its last spawn ended with no
+# result file (next's pending_briefs): it may have run out of turns mid-job.
+NO_RESULT_RETRY = ("Your last spawn for this job ended without writing its result file "
+                   "(it may have run out of turns). What it changed is still in the "
+                   "worktree: keep those edits, don't revert them or start over. Check "
+                   "them against your instructions, finish what is left, and write your "
+                   "result file. This is your one re-spawn for that: ending without a "
+                   "result file again stops the run.")
+# After the issues the replaced brief carried (a refusal's, BLOCKED_ONCE): they
+# still stand, and one that says to undo an edit wins over "keep those edits".
+NO_RESULT_AFTER = ("Fix each issue above too: where one says to undo an edit, undo it, "
+                   "and keep the rest.")
 
 
 def saved_issues(state, worker, retry):
@@ -499,13 +651,17 @@ def prompt_for(path):
     return f"Your brief is at {path}. Read it first."
 
 
-def write_brief(state, where, worker, mode, given, retry=None):
+def write_brief(state, where, worker, mode, given, retry=None, note=None):
     """Write briefs/<worker>-<n>.md and log it in `state` (the caller saves).
 
     `where` is the artifact dir, or with no run (state None: the profiler, a
     lookup before init) the folder to write into. `retry` re-spawns job
     <worker>-<retry>, which record refused: its saved issues fill
-    previous_issues. Returns (path, the slot values)."""
+    previous_issues. With `note` (and `retry`), `record` need not have refused
+    the job: previous_issues is the issues the brief of job <worker>-<retry>
+    carried (its `carried` text: a refusal's issues, BLOCKED_ONCE), when it
+    carried any, followed by the note; `next` re-spawns a worker that ended
+    with no result file this way. Returns (path, the slot values)."""
     if worker not in briefs.RESULTS:
         raise Fail(f"unknown worker {worker!r}; one of {', '.join(sorted(briefs.RESULTS))}",
                    CANNOT_RUN, "ERROR")
@@ -516,7 +672,7 @@ def write_brief(state, where, worker, mode, given, retry=None):
     if not worker_modes and mode:
         raise Fail(f"{worker} has no modes", FAILED, "REFUSED")
     if state is None:
-        ad, directory, previous = None, where, None
+        ad, directory, previous, carried = None, where, None, None
         n = next_number(directory, worker)
         auto = {"skill_dir": str(SKILL_DIR),
                 "result_file": str(where / f"{worker}-{n}.json"),
@@ -530,9 +686,16 @@ def write_brief(state, where, worker, mode, given, retry=None):
         directory = ad / "briefs"
         n = next_number(directory, worker)
         auto = auto_values(worker, n, state, ad, mode)
-        previous = saved_issues(state, worker, retry)
-        if previous is None and blocked_last(state, worker, mode):
-            previous = BLOCKED_ONCE
+        if note is not None:
+            # The replaced brief's issues still stand: the note goes after them.
+            replaced = next((b for b in state.get("briefs") or []
+                             if b["worker"] == worker and b["n"] == retry), {})
+            carried = replaced.get("carried")
+            previous = f"{carried}\n{note} {NO_RESULT_AFTER}" if carried else note
+        else:
+            carried = previous = saved_issues(state, worker, retry)
+            if previous is None and blocked_last(state, worker, mode):
+                carried = previous = BLOCKED_ONCE
     needed = briefs.slots(worker, mode)
     values, missing = {}, []
     for slot in sorted(needed):
@@ -570,6 +733,9 @@ def write_brief(state, where, worker, mode, given, retry=None):
     if state is not None:
         entry = {"worker": worker, "n": n, "mode": mode, "sets": given, "at": st.now(),
                  "retry": retry, "seq": st.seq(state)}
+        if carried and briefs.max_turns(worker):
+            # A capped re-spawn of this brief carries them on (`note`).
+            entry["carried"] = carried
         watch_spec(state, ad, worker, retry, entry)
         if retry is None and worker == "coder":
             # A check line broken already is not this worker's doing.
@@ -622,7 +788,15 @@ def digest(path):
 def fresh_tree(state, issued):
     """A brief `next` sends out again (no result came back) is held to the tree
     and PLAN.md as they are now: what changed while no worker was out is not
-    this spawn's."""
+    this spawn's. The brief file is re-dated first: its mtime is when this
+    spawn started (`run gate`'s attempt count starts again from there), and
+    `setup_running` measures setup against it, so it must be no later than
+    the new snapshot."""
+    try:
+        os.utime(Path(state["artifact_dir"]) / "briefs"
+                 / f"{issued['worker']}-{issued['n']}.md")
+    except OSError:
+        pass
     if issued.get("tree"):
         issued["tree"] = tree_guard.snapshot(state["worktree"], state["artifact_dir"])
     if issued.get("spec"):
@@ -1360,6 +1534,9 @@ def record_job(state, worker, n):
             raise Refused("MISMATCH", "the return and the artifacts disagree", issues)
     except Refused as exc:
         token, message, issues = exc.args
+        if job(worker, n) not in state.get("refused", {}):  # not the same return again
+            state.setdefault("refusals", []).append(
+                {"worker": worker, "n": n, "token": token, "seq": st.seq(state)})
         state.setdefault("refused", {})[job(worker, n)] = issues
         st.add_note(state, f"{worker} #{n} refused ({token})")
         return token, message, issues, data
@@ -1414,17 +1591,30 @@ def writer_out(state, issued):
 
 def setup_running(state, ad, issued):
     """Whether init's setup commands were still running when `issued` was
-    briefed: they write setup.json when they end."""
+    briefed: they write setup.json when they end.
+
+    The brief file's mtime is when it was briefed (`fresh_tree` re-dates it
+    when the brief goes out again): file time against file time, to the
+    nanosecond, since the entry's `at` keeps whole seconds only and setup
+    ending earlier in that second would read as still running. A tie counts
+    as running. With no brief file, fall back to `at`: setup within its
+    second may have ended after the brief, so only setup from an earlier
+    second counts as ended. With `at` unreadable too, it counts as running."""
     if not (state.get("init") or {}).get("setup_pid"):
         return False
     done = ad / "setup.json"
     if not done.is_file():
         return True
     try:
+        brief = ad / "briefs" / f"{issued['worker']}-{issued['n']}.md"
+        return done.stat().st_mtime_ns >= brief.stat().st_mtime_ns
+    except (KeyError, OSError):
+        pass  # no brief file: the entry's whole-second time stands in
+    try:
         briefed = datetime.fromisoformat(issued["at"]).timestamp()
     except (KeyError, TypeError, ValueError):
         return True
-    return done.stat().st_mtime > briefed
+    return done.stat().st_mtime >= briefed
 
 
 def record_ok(state, ad, worker, n, data):

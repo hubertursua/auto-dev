@@ -49,7 +49,9 @@ that a script can check, add it there.
   `autodev.py init`, which reads YAML, may use PyYAML). Users run these with
   whatever `python3` they have.
 - **Shared code goes in `scripts/lib/`**, imported by `autodev.py` (and by
-  `check-tests.py`, which shares `lib/protected.py` and `lib/testfiles.py`). Modules
+  `check-tests.py`, which shares `lib/protected.py` and `lib/testfiles.py`, and
+  `validate-config.py`, which checks a form's placeholder with
+  `lib/cmd_run.py`'s `quoted_placeholder`, the rule `run` applies). Modules
   there aren't run directly, so they need no shebang, no executable bit and no
   README mention. A new subcommand's docstring is its `--help`, as for a script.
 - **Keep the CLI contract.** Each script's docstring is its `--help` and lists
@@ -178,10 +180,13 @@ wrong about something? If yes, fix the README.
 
 - **Models.** The worker table in `SKILL.md` (_Spawning a worker_), the
   table in `README.md` (_Models and effort_), and each `agents/<name>.md`
-  frontmatter must agree.
+  frontmatter must agree on the model, the effort and the turn cap
+  (`maxTurns`, `—` in the tables when an agent sets none);
+  `tools/check-repo.py` checks all three.
 - **Version.** Bump `.claude-plugin/plugin.json` as _Branches, commits and
-  PRs_ says. An *Upgrading from X.Y* section in `UPGRADING.md` (newest first)
-  says what changed and whether a run in flight can resume on the new version.
+  PRs_ says (a PR into a release branch doesn't: see **Versioning** there). An
+  *Upgrading from X.Y* section in `UPGRADING.md` (newest first) says what
+  changed and whether a run in flight can resume on the new version.
 - **Descriptions.** `plugin.json` and `marketplace.json` carry the same plugin
   description.
 - **Evals.** When behavior changes, update the expectations in
@@ -199,6 +204,9 @@ wrong about something? If yes, fix the README.
   it there; `MODE_RESULTS` narrows them per mode, as the agent file's prose
   says. `tools/check-repo.py` checks the slots and `RESULTS`, and that every
   template a script parses or an agent names exists.
+- **Panel lenses.** `agents/code-reviewer.md` gives each panel slot in
+  `skills/auto-dev/scripts/lib/cmd_next.py` `SLOTS` one lens of its own;
+  `tools/check-repo.py` checks it.
 - **The spawn budget.** A default-lane happy path (standard risk, the critic
   approves, every worker ok the first time) takes at most 5 worker spawns to
   the first push and 7 to ready-for-review; today 4 and 6: the planner, the
@@ -279,6 +287,15 @@ Bring in `main` by merging it, not rebasing, once a review has started.
 **Versioning.** The version in `.claude-plugin/plugin.json` follows the bump in
 the types table, in the same PR. A minor or major bump also adds an
 *Upgrading from X.Y* section to `UPGRADING.md`.
+
+The one exception is a PR into a release branch (`feat/release-<x>-<y>-<z>`,
+which gathers several PRs into one release): it doesn't bump `plugin.json` or
+edit `UPGRADING.md`. The release branch carries the version, and its upgrade
+notes are written once, in the release PR, so parallel PRs don't collide in
+`UPGRADING.md`. When the change needs an upgrade note, the PR's Summary carries
+its text on an `Upgrade note:` line, for the release PR to collect. The release
+PR itself, into `main` and naming the version in its title, bumps the version
+and writes the *Upgrading from X.Y* section as above.
 
 ## Writing style
 

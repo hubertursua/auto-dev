@@ -54,8 +54,8 @@ post-plan gate. The planner proposes the risk tier, the critic can raise it,
 and `next` re-checks it from the diff once the quality gate is green, before
 anything is pushed; it never goes down. A standard-risk run gets one verifier
 and one reviewer (code and security); a high-risk run adds the review panel
-with its judge, the separate security reviewer, mutation and the verifier's
-own probes.
+with its judge, the separate security reviewer and mutation. The verifier
+runs its own probes on every run.
 
 ## Paths
 
@@ -92,7 +92,7 @@ repo. Below, `autodev.py` means `python3 <skill-dir>/scripts/autodev.py`.
 | Prints | Do |
 |---|---|
 | `FRESH` | a new run: follow `references/plan.md` from step 1 |
-| `RESUME <tree>` | read the runbook its `runbook:` line names (`references/plan.md`, `build.md` or `ship.md`). IF it also printed an `action:` line (setup is not done), run that `init --continue` command first, as `plan.md` says. Then go to **The loop** |
+| `RESUME <tree>` | read the runbook its `runbook:` line names (`references/plan.md`, `build.md` or `ship.md`), `cd <tree>`, then go to **The loop**. An `action:` line (setup is not done, or the worktree the user chose to remove is still there) needs nothing more: the first `next` finishes setup, runs it again, or gives the `cleanup-worktree` command |
 | `ASK` | show the user the `candidates` lines and ask which run is theirs, or whether to start fresh. Then run `resume` again with `--task` set to the chosen run's task, or follow `plan.md` for a fresh one |
 | `FINISHED <tree>` | tell the user that run already finished or was stopped; ask whether to start a fresh one |
 | `OLD-VERSION <tree>` | tell the user: "This run was started on an older auto-dev (its `action` line names the version, 3.x or 4.x, and the release to finish it on). Finish it there, or remove its worktree (`git worktree remove <tree>`) and start again." Then stop |
@@ -105,7 +105,9 @@ user what to work on; never start a run unasked.
 
 From inside the worktree, repeat:
 
-1. Run `autodev.py next --dir <artifact-dir>`.
+1. Run `autodev.py next --dir <artifact-dir>`. Before the run exists (Phase 1),
+   it is the `autodev.py next --repo <repo> --task "<task>"` command
+   `references/plan.md` gives, run from the checkout you started in.
 2. Do what its `ACTION` line says, using the lines below it.
 3. Run each `AFTER` command, in order (for a question, only the one for the
    user's answer).
@@ -115,7 +117,7 @@ Its exit code says what kind of step it is:
 
 | Exit | Meaning | Do |
 |---|---|---|
-| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned (not on the first agent's notification). A command in backticks: run it. Then the `AFTER` lines |
+| 0 | an action | Do it. Spawn each `AGENT` with its `PROMPT` (and its `EFFORT`, rule 3): a single `AGENT` in the foreground (the Agent tool's `run_in_background: false`); several `AGENT` lines go in **one message**, in parallel, and you run `next` again only once every one has returned (not on the first agent's notification). An `ACTION` that starts with `wait`: a worker is still out; spawn nothing, and run `next` once every agent you spawned has returned. Only once every agent the wait names has returned and `next` still names it, run the `next --reissue` command it names; while any of them is still running, never. A command in backticks: run it. Then the `AFTER` lines |
 | 2 | could not run | Tell the user the `ERROR` line and stop. Don't work around it |
 | 3 | the run is complete | Do the `ACTION` if it names a command, then stop |
 | 4 | stop and report | Tell the user every `REPORT` line, in your own words if needed. With a `QUESTION`, the user decides how to go on (_A stop_, below); without one, stop. Do nothing more (one exception: more rounds after a budget stop, below) |
@@ -169,27 +171,32 @@ runbook of the stage you are in.
 available agents list: `auto-dev:auto-dev-<worker>` (plugin install),
 `auto-dev:<worker>`, or `auto-dev-<worker>` (agents symlinked into
 `~/.claude/agents/`). If none exists, stop and tell the user to install the
-plugin. Each worker's model and tools are fixed by its agent file:
+plugin. A spawn of one agent (a lookup too) goes in the foreground
+(`run_in_background: false`), so you hear back before your next step. Each
+worker's model and tools are fixed by its agent file:
 
-| Worker | Agent type | Model · effort |
-| ------ | ---------- | -------------- |
-| Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high |
-| Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · high |
-| Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high |
-| Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `opus` · high |
-| Coder: the build and every correction | `auto-dev:coder` | `opus` · high |
-| Verifier (Phase 6, with the review on every pass; first, on a high-risk run) | `auto-dev:verifier` | `opus` · high |
-| Reviewer (Phase 6, standard risk: code and security) | `auto-dev:reviewer` | `opus` · high |
-| Code reviewer, ×3 panel + re-votes (Phase 6, high risk) | `auto-dev:code-reviewer` | `opus` · high |
-| Review judge (Phase 6, high risk) | `auto-dev:review-judge` | `opus` · high |
-| Security reviewer (Phase 6, high risk) | `auto-dev:security-reviewer` | `opus` · high |
-| Security reviewer, sensitive paths (Phase 6, high risk) | `auto-dev:security-reviewer-sensitive` | `opus` · high |
-| Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high |
-| Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium |
-| Fixer: the user's instruction at a stop | `auto-dev:fixer` | `opus` · high |
+| Worker | Agent type | Model · effort | Turn cap |
+| ------ | ---------- | -------------- | -------- |
+| Profiler (Phase 1, only with no saved profile) | `auto-dev:profiler` | `sonnet` · high | — |
+| Planner (Phase 2; settles a step the coder stopped) | `auto-dev:planner` | `opus` · high | — |
+| Plan critic (Phase 2) | `auto-dev:plan-critic` | `opus` · high | — |
+| Acceptance tester (Phase 3; repairs a check in Phases 4–6) | `auto-dev:acceptance-tester` | `sonnet` · high | 120 |
+| Coder: the build and every correction | `auto-dev:coder` | `opus` · medium | 150 |
+| Verifier (Phase 6, with the review on every pass; first, on a high-risk run) | `auto-dev:verifier` | `opus` · high | — |
+| Reviewer (Phase 6, standard risk: code and security) | `auto-dev:reviewer` | `opus` · high | — |
+| Code reviewer, ×3 panel + re-votes (Phase 6, high risk) | `auto-dev:code-reviewer` | `opus` · high | — |
+| Review judge (Phase 6, high risk) | `auto-dev:review-judge` | `opus` · high | — |
+| Security reviewer (Phase 6, high risk) | `auto-dev:security-reviewer` | `opus` · high | — |
+| Security reviewer, sensitive paths (Phase 6, high risk) | `auto-dev:security-reviewer-sensitive` | `opus` · high | — |
+| Triager: red CI, human PR comments (Phase 6) | `auto-dev:triager` | `sonnet` · high | — |
+| Your read-and-answer lookups | `auto-dev:lookup` | `haiku` · medium | — |
+| Fixer: the user's instruction at a stop | `auto-dev:fixer` | `opus` · high | — |
 
-To change a worker's model, edit its `agents/<name>.md` frontmatter, this
-table and README.md's _Models and effort_ table together. The one per-run
+A worker with a turn cap (`maxTurns` in its frontmatter) that ends with no
+result file is sent out once more, told to keep its edits and finish; a
+second miss stops the run. To change a worker's model, effort or turn cap, edit
+its `agents/<name>.md` frontmatter, this table and README.md's _Models and
+effort_ table together. The one per-run
 override is the code reviewers' effort, which the plan sets (the `EFFORT`
 line of rule 3).
 
@@ -212,4 +219,4 @@ for the rest of the session.
 | `references/ship.md` | when `next` says the run enters the Ship stage, or a run resumed in it |
 | `references/tables.md` | to explain a stop or how to override one, a gate option, the budget or a stale report; to ask a lookup |
 | `references/gates-and-jira.md` | when `next` says to move a Jira ticket |
-| `references/profiles.md` | Phase 1, when resolving the profile |
+| `references/profiles.md` | Phase 1, for the permissions guidance the profile question shows, or when the user asks about profiles |

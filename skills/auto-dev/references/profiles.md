@@ -12,14 +12,22 @@ any clone or worktree of the same repo find it.
 
 - **Profile schema** — the keys a profile holds and what each means.
 - **Saved profiles** — where they live and how a run finds them.
-- **Permissions** — what the user allows so a run reads and saves the profile
+- **Permissions** — what the user allows so a run saves the profile and runs
   without prompts, and the guidance to show them.
 - **Monorepos, umbrellas, and multi-stack repos** — scoping the quality gate to
   the right package.
 - **Repo-local override — `.auto-dev.yml`** — every key a project can override.
 
-How a run finds, researches and confirms the profile is `references/plan.md`,
-step 4. `autodev.py init` then validates it, applies `.auto-dev.yml` over it,
+`autodev.py next --repo` finds, researches and confirms the profile
+(`references/plan.md`, step 2): it runs `profile-path.py` and
+`validate-config.py` itself, asks a lookup whether a saved profile's gate tools
+are adopted and, when one is not, asks the user the gate-check question (keep the
+checks, leave them out of this run, or stop) before the run exists (when the
+repo's `.auto-dev.yml` sets `gate`, its gate replaces the saved one: no lookup,
+no question), spawns the profiler when there is no usable profile, asks the user the profile question and
+writes the saved file on their `save` answer. A saved profile is never edited to
+leave a check out: the run gets its own copy without it. `autodev.py
+init`, which it runs, then validates the profile, applies `.auto-dev.yml` over it,
 refuses a quality gate with no test command, and writes `.auto-dev/profile.md`.
 
 ## Profile schema
@@ -43,7 +51,9 @@ setup:
 # Each check maps to a lint/<report>.md artifact.
 # kind is advisory (compile|format|lint|typecheck|test|build); `command` is
 # what actually runs; `report` is the .auto-dev/lint/ filename; optional
-# `files` is the check scoped to some files, with <files> where they go.
+# `files` is the check scoped to some files, with <files> where they go;
+# optional `tests` is the check scoped to some tests, with <tests> (a list of
+# test IDs) or <test> (one), and `tests_example` is one ID in the runner's syntax.
 gate:
   - { kind: typecheck, command: "npx tsc --noEmit",       report: "TYPECHECK.md" }
   - { kind: lint,      command: "npx eslint .",           report: "LINT.md",
@@ -51,7 +61,9 @@ gate:
   - { kind: format,    command: "npx prettier --check .", report: "FORMAT.md",
       files: "npx prettier --check <files>" }
   - { kind: test,      command: "npm test",               report: "TEST.md",
-      files: "npx vitest run --reporter=verbose <files>" }
+      files: "npx vitest run --reporter=verbose <files>",
+      tests: "npx vitest run --reporter=verbose <tests>",
+      tests_example: "src/todos/delete.test.ts:14" }
 # Optional: gitignored files copied from the main checkout into the run's worktree
 # before `setup` runs — env/config a suite needs but git does not track.
 worktree_files: [".env", ".env.test"]
@@ -62,6 +74,9 @@ test_notes: "…"
 symbol_lookup:
   definition: "<index-tool> definition <symbol>"
   references: "<index-tool> references <symbol>"
+# Optional: globs of files that hold sensitive code under paths that don't say so.
+# The risk re-check after the build treats a changed file matching one as sensitive.
+sensitive_paths: ["src/middleware.ts", "src/users/**"]
 # Optional: the CI provider Phase 6 watches (github-actions|circleci|gitlab|none).
 ci: github-actions
 ```
@@ -74,20 +89,80 @@ Fields:
 - **`gate`** (required) — the ordered quality-gate checks. Each is
   `{ kind, command, report }`, and one must be `kind: test`. The pipeline is
   only "green" when every `command` exits clean. A check may add `files`: the
-  same check run on only some files, with `<files>` where the paths go (quoted,
-  relative to the worktree). Workers run a check through `autodev.py run gate
-  <n>` (the test check: `run test`), which runs `command` in the worktree, or
-  `files` with `--files <path> …`. Words after `--` (`run test --files <path>
-  -- <arg> …`) are extra arguments, such as a test-name filter or a
-  `<path>:<line>` target: each is quoted as one argument and added where the
-  command (or its `files` form) has `<args>`, else at its end; with none,
-  `<args>` is removed. Put `<args>` in a command whose arguments must go
-  somewhere other than its end (example in TypeScript: `npm test -- <args>`).
-  The test check's `files` form must name every
-  test it runs and its result, since a base run and the verifier's acceptance
-  run read the names. Without a `files` form a check only runs whole: a
-  worker that wanted it scoped runs it whole and reads the lines about its
-  files.
+  same check run on only some files, with `<files>` where the paths go (`run`
+  fills in each path relative to the worktree, quoted). Write `<files>`
+  unquoted, as a word of its own, with no `$` before it:
+  `run` quotes each path itself, so the form's own quotes would let the shell
+  expand a file named `$(…)`, and both `validate-config.py` and `run` refuse a
+  quoted one. Workers run a check through `autodev.py run gate
+  <n>`, which runs `command` in the worktree, or `files` with `--files <path>
+  …`. The quality gate runs each non-test check whole this way. When CI is
+  watched and the gate has one `kind: test` check, it runs that check only on
+  the change's tests (its `files` form, on the test files the branch changed
+  and the acceptance check files), and leaves it to CI, naming it in its
+  summary, when it has no `files` form or the change has no test file: with
+  one test check, CI is the one full run of the test suite. When the gate has
+  two or more test checks, or CI isn't watched, the quality gate runs every
+  check whole, test checks too. The coder runs only the test check
+  `run test` uses (below), and only scoped. The one exception is a
+  coder correction after a quality gate that found a test check failing: the
+  coder's brief then gives each test check the gate's latest run lists as
+  failing its line, scoped when it has a `files` form, else whole. A test
+  check the user signed off failing at a red-gate stop counts as green for the
+  rest of the run: it gets no such line, and the quality gate's correction
+  doesn't list its report. A test
+  check red only in CI or in the verifier's or a reviewer's corrections gets
+  no line beyond the scoped ones the coder already has; with no scoped form it
+  runs nothing, and the push lets CI confirm the fix.
+  `run test` runs the test check scoped, with `--files` or `--tests` (below);
+  run with neither it runs whole and warns. When the gate has several test checks,
+  `run test`, the verifier's acceptance run and its mutation run use the first
+  one with a `files` form (else the first test check), so give that form to the
+  check that runs the test files. The test check's `files` form must name
+  every test it runs and its result, since a base run and the verifier's
+  acceptance run read the names. Without a `files` form a check only runs
+  whole: the coder leaves a test check with no scoped form to CI (or, beside
+  another test check, to the quality gate's whole run) and doesn't run it;
+  any other worker that wanted it scoped runs it whole and reads the lines
+  about its files.
+
+  A check may also add `tests`, its test-ID form: the same check run on only
+  some tests, with `<tests>` where a list of test IDs goes (each quoted as
+  one argument, for a runner that takes IDs such as `file:line` or a dotted
+  test path) or `<test>` where exactly one goes (for a runner whose only
+  selector is a single-value filter flag, such as a name or pattern), never
+  both. Write the placeholder unquoted, as a word of its own (`--grep=<test>`
+  is fine, `"<test>"` is not): `run` quotes each ID itself, so quotes around
+  it would reach the runner, and both `validate-config.py` and `run` refuse a
+  quoted one. Each form takes only its own placeholder: the `tests` form no
+  `<files>`, the `files` form no `<tests>` or `<test>`, since `run` would leave
+  the other one in the command for the shell to read as redirects; both
+  `validate-config.py` and `run` refuse it. `tests_example` is one ID in the runner's syntax, shown to workers
+  beside the form; it needs `tests`. Put `tests` on the same check as the
+  `files` form `run test` uses. `run gate <n> --tests <id> …` and `run test
+  --tests <id> …` run the test-ID form; an ID that is empty, starts with `-`
+  or holds a control character (or, on Windows, ends in a backslash or holds
+  `"`, `%` or `!`, also once fullwidth lookalikes are mapped to ASCII) is
+  refused, a repeated `--tests` adds its IDs, and a `<test>` form given a
+  second ID is refused rather than run on one. When the check has no `tests`
+  form, `--tests` falls back to the `files` form on the `--files` paths given
+  with it, else to the whole check. Every run prints a `scope:` line
+  (`tests`, `files` or `whole`, and why it fell back). A `run test` that ran
+  the check whole when it has a scoped form prints a `warning:` with the
+  filled-in scoped `run` lines and the example ID; the quality gate's own
+  `run gate <n>` never warns. Workers' briefs carry the same scoped lines.
+
+  Words after `--` (`run test --files <path> -- <arg> …`) are extra
+  arguments, such as a test-name filter or a `<path>:<line>` target: each is
+  quoted as one argument and added where the command (or the `files` or
+  `tests` form that runs) has `<args>`, else at its end; with none, `<args>`
+  is removed. Put `<args>` in a command whose arguments must go somewhere
+  other than its end (example in TypeScript: `npm test -- <args>`). Write
+  `<args>` unquoted, as a word of its own, with no `$` before it, as for
+  `<files>`: `run` quotes each argument itself, so the profile's own quotes
+  would let the shell expand an argument `$(…)`, and both
+  `validate-config.py` and `run` refuse a quoted one, in `command` and in
+  each form.
 - **`worktree_files`** (optional) — gitignored paths seeded into the run's worktree
   before `setup` (in a worktree the user made, a copy already there is kept). A fresh worktree has no `.env`, and the resulting failure looks
   like broken code rather than missing config.
@@ -99,6 +174,19 @@ Fields:
   the tool is on PATH; otherwise, or when the profile has none, `profile.md`
   records `grep -n`. A code index answers with less noise than grep, which
   keeps the worker's answers short.
+- **`sensitive_paths`** (optional) — globs of files the repo declares
+  sensitive: sign-in, session, access-control, payment or secret-handling code
+  under a path whose words don't name the area (`src/middleware.ts`). Once the
+  build's quality gate is green, the risk re-check `next` runs makes the
+  run high-risk when a changed file matches one. A glob is matched, case-sensitively, against the path from the repo
+  root: a pattern with no `/` matches a file name at any depth; a pattern with
+  a `/` anywhere (leading, inner or trailing) is anchored at the repo root, so
+  unlike gitignore `users/` matches only the root `users/` directory (write
+  `**/users/` for any depth); a trailing `/` means everything under it; `*` and
+  `?` never cross a `/`; a whole `**` segment spans any number of folders, none
+  included. There are no character classes, braces or `!` negation (a `[` is
+  literal). The profiler proposes them; a glob that matches no file yet is not
+  an error. A list in `.auto-dev.yml` replaces the profile's whole list.
 - **`ci`** (optional) — the CI provider. When absent, Phase 1 reads the repo's CI
   config to find it.
 
@@ -117,8 +205,8 @@ to `~/.config/auto-dev/profiles/github.com/acme/web-app.yml`: lowercased, `.git`
 dropped, and a nested path (a GitLab subgroup) keeps every segment.
 `<profiles-dir>` is `$AUTO_DEV_PROFILES_DIR` if set, else
 `$XDG_CONFIG_HOME/auto-dev/profiles`, else `~/.config/auto-dev/profiles`.
-`scripts/profile-path.py` applies this convention; always use it rather than
-building the path by hand. A fork has its own `origin`, so it gets its own file.
+`scripts/profile-path.py` applies this convention (`next --repo` runs it);
+never build the path by hand. A fork has its own `origin`, so it gets its own file.
 
 The file is the user's: they can edit it, or delete it to have the next run
 research the profile again. Its commands run verbatim, like a profile's, so it
@@ -128,44 +216,27 @@ allow rules say.
 
 ## Permissions
 
-The saved profile lives outside the working directory, so Claude Code asks
-before reading or writing it, and the Bash sandbox (when the user has turned it
-on) blocks writes outside the working directory. A run also runs the helper
+The saved profile lives outside the working directory. `autodev.py` reads and
+writes it (the orchestrator never does), so no `Read` or `Edit` rule is
+needed for it; but the Bash sandbox (when the user has turned it on) blocks a
+script's writes outside the working directory. A run also runs the helper
 scripts and the profile's commands through Bash, in a worktree outside the
 working directory, and each new command or path can prompt. Show the user the
-guidance below at the profile confirmation, and again whenever a read or write
-of the saved profile is denied. Fill in the real `<profiles-dir>`,
-`<skill-dir>` and commands. **Never edit the user's settings
-files yourself**: the user decides what to allow.
+guidance below at the profile question, and again when saving the profile
+failed. Fill in the real `<profiles-dir>`, `<metrics-dir>`, `<skill-dir>` and
+commands (the profile question's `SUMMARY` names the paths). **Never edit the user's
+settings files yourself**: the user decides what to allow.
 
 Guidance to show (adapt the paths):
 
-> **Let auto-dev read and save this repo's profile without asking.** Add these
-> rules to `~/.claude/settings.json` (your user settings, which apply in every
-> repo), or run `/permissions` and add them there:
->
-> ```json
-> {
->   "permissions": {
->     "allow": [
->       "Read(~/.config/auto-dev/**)",
->       "Edit(~/.config/auto-dev/**)"
->     ]
->   }
-> }
-> ```
->
-> - `Edit(...)` also covers creating the file; there is no separate `Write` rule.
-> - If the profiles directory is not under `~/.config/auto-dev` (you set
->   `AUTO_DEV_PROFILES_DIR` or `XDG_CONFIG_HOME`), use that path: `~/…` for a
->   path in your home directory, `//…` for any other absolute path (for example
->   `Read(//opt/auto-dev/profiles/**)`).
-> - For one session only, start Claude Code with
->   `claude --add-dir ~/.config/auto-dev` (or run `/add-dir ~/.config/auto-dev`).
->   Reads there stop prompting; saving still asks unless you accept edits.
-> - If you use the Bash sandbox, also add
->   `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }`, so a
->   shell command can write there too.
+> **Let auto-dev save this repo's profile and each run's metrics.** `autodev.py`
+> writes both. If you use the Bash sandbox, add
+> `"sandbox": { "filesystem": { "allowWrite": ["~/.config/auto-dev"] } }` to
+> `~/.claude/settings.json` (your user settings, which apply in every repo), so
+> the script can write there: the profile, and the copy of each run's
+> `metrics.json` that outlives its worktree. If you moved either folder (you set
+> `AUTO_DEV_PROFILES_DIR`, `AUTO_DEV_METRICS_DIR` or `XDG_CONFIG_HOME`), allow
+> each moved folder instead: `<profiles-dir>` and `<metrics-dir>`.
 >
 > **Let the run's scripts and files go without asking.** Add these to the same
 > `~/.claude/settings.json`. Replace `<home>` with the absolute home folder (a
@@ -178,8 +249,6 @@ Guidance to show (adapt the paths):
 >     "allow": [
 >       "Read(~/.claude/plugins/cache/auto-dev-marketplace/auto-dev/**)",
 >       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/autodev.py *)",
->       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/profile-path.py *)",
->       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/validate-config.py *)",
 >       "Bash(python3 <home>/.claude/plugins/cache/auto-dev-marketplace/auto-dev/*/skills/auto-dev/scripts/check-fresh.py *)"
 >     ]
 >   }
@@ -191,7 +260,8 @@ Guidance to show (adapt the paths):
 >   the commands in the profile you confirmed, never one a worker writes. A
 >   worker can add arguments after `--`, each quoted as one argument: no
 >   shell syntax, though the command's own options (a config file, a setup
->   script) still reach its tool.
+>   script) still reach its tool. It covers setup too (`next --repo`), which
+>   finds, checks and saves the profile.
 > - One rule per script, so any can be left out. The `autodev.py` rule also
 >   covers the test-integrity audit and mutation testing: `autodev.py verify
 >   prep` runs `check-tests.py`, and `autodev.py mutants run` runs `mutate.py`,
@@ -210,7 +280,7 @@ Guidance to show (adapt the paths):
 >   too.
 >
 > **To run this repo's own commands yourself without prompts** (a run doesn't
-> need these: setup runs in `autodev.py init`, and workers run the gate
+> need these: setup runs in `autodev.py next`, and workers run the gate
 > through `autodev.py run`), add its setup and quality-gate commands to the
 > main checkout's `.claude/settings.local.json` (not committed; it applies
 > only to this repo):
@@ -283,6 +353,7 @@ worktree_files: [".env"]      # gitignored files to seed the run's worktree with
 symbol_lookup:                # code-index commands instead of grep; <symbol> is the name
   definition: "<index-tool> definition <symbol>"
   references: "<index-tool> references <symbol>"
+sensitive_paths: ["src/middleware.ts"]  # files the risk re-check treats as sensitive; replaces the profile's list
 security_docs:                # the security directives every worker must obey, used
   - "SECURITY.md"             # instead of the repo defaults; [] turns them off, and
   - "docs/security/authz.md"  # a listed path that doesn't exist is dropped with a warning

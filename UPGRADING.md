@@ -6,14 +6,219 @@ can resume on the new one. Newest first. The current version is in
 
 ## Upgrading from 5.0
 
+- **The test check is the one that runs the test files.** `autodev.py run
+  test`, `verify prep`'s acceptance run, `mutants run` and the briefs'
+  `{{test_command}}` used the gate's first `kind: test` check, so a profile
+  whose first test check had no scoped form (a repo-wide consistency check,
+  say) ran it for the acceptance checks, and its output named none of them.
+  They now use the first test check with a `files` form, else the first test
+  check. A saved profile whose first test check runs the unit tests unscoped,
+  with a later test check that has a `files` form, now runs that later check:
+  move the `files` form to the check that runs the test files, or reorder the
+  gate. `verify prep` also prints a `warning:` line when its run finished and
+  its output names none of the checks MANIFEST.md lists; the verifier then
+  runs them itself. A 5.0 run in flight resumes on it.
+- **The risk re-check reads declared globs and added lines.** A saved profile
+  or `.auto-dev.yml` can list `sensitive_paths`, globs of files that hold
+  sensitive code under paths that don't say so (`.auto-dev.yml`'s list
+  replaces the profile's); `validate-config.py` accepts the key, and a run
+  records it in `profile.md` (a `Sensitive paths` line) and `state.json`'s
+  `settings.sensitive_paths`. Once the quality gate is green, a changed file
+  matching one raises the tier, and so does a sensitive word on a line the
+  build adds (`it adds lines naming a sensitive area: …`). The profiler may
+  propose the globs when it researches a repo. It does not research a repo
+  that already has a saved profile, so there, add `sensitive_paths` to the
+  saved profile or to `.auto-dev.yml` yourself; the added-line scan applies at
+  once. A 5.0 run in flight resumes on it: a `state.json` without the key
+  reads as no globs, and a run past the re-check keeps its recorded result.
+- **Each run writes its metrics.** Whenever `next` completes or stops a run
+  (exit 3 or 4), it writes `.auto-dev/metrics.json`: spawns per worker, the
+  budget's rounds (spent, left, added), each stop counted once by its number in
+  `references/tables.md`, refused results, review findings kept and dropped,
+  events and the build's diff size. It writes the same file to
+  `~/.config/auto-dev/metrics/<repo>/<branch>.json` (or
+  `$AUTO_DEV_METRICS_DIR`, or `$XDG_CONFIG_HOME/auto-dev/metrics`), so it
+  outlives the worktree; the worktree question names it. A file it can't
+  write is said on stderr and changes nothing else, with one exception: when
+  the copy can't be written, the worktree question and its "Remove it" ACTION
+  say so and name `.auto-dev/metrics.json`, so the user can save it before the
+  worktree is removed (or keep it: the ACTION names `gate cleanup keep`).
+  Until `cleanup-worktree` runs, a later `next` gives that ACTION again and
+  `resume` picks the run up for it; a removal git refuses records the worktree
+  as kept, so the run is finished (one where git removed part of the worktree
+  before it failed names what is left, and records the worktree as kept only
+  when the run's state is still there). A 5.0 run that
+  finished with its worktree still there (git refused 5.0's
+  `cleanup-worktree`) stays finished: only a removal this version's `next`
+  gave is picked up again. A 5.0 run in flight
+  resumes on it; its metrics count only the stops and refused results after
+  the upgrade, and a diff checked before it has no file or line count.
+- **A worker still out is waited for, not spawned again.** `next` used to
+  send a brief with no result file out again on every call, so a `next` run
+  before a background worker returned started a second one in the same
+  worktree. Now it answers `wait` (naming the worker) while the brief was sent
+  out in this session, after the latest retry at a stop and less than 3 hours
+  ago, and sends it out again only after a new session, a retry at a stop, 3
+  hours, or `next --reissue` (once every agent the wait names returned
+  without a result). A lone agent is spawned in the foreground
+  (`run_in_background: false`). A 5.0 run in flight resumes on it: `resume`
+  starts a new session, so a brief from before it is sent out again as before.
+- **`next` sets the run up.** Phase 1 is now the Jira fetch and a loop on
+  `autodev.py next --repo <repo> --task "<task>"` (with the ticket flags on the
+  first call), in the same ACTION/AFTER shape as the rest of the run: it runs
+  `profile-path.py` and `validate-config.py` itself, prints the adopted-tool
+  lookup for a saved profile (when it finds a check's tool not adopted, the
+  new gate-check question asks you, before the run exists, to keep the check,
+  leave it out of this run, or stop; it is no longer left out without
+  asking; when the repo's `.auto-dev.yml` sets `gate`, its gate
+  replaces the saved one: no lookup, no question), or the profiler
+  and then the profile question (exit 5), whose AFTER lines run the new
+  `autodev.py setup-answer`; then it runs `init` and says to move into the
+  worktree. The orchestrator no longer runs `profile-path.py`,
+  `validate-config.py`, `init` or `brief`, edits a draft's YAML, or picks the
+  slug and base branch (they come from the task and the repo). `Change
+  something` has the profiler redo its draft with your words. `autodev.py`
+  writes the saved profile, so the permissions guidance drops the
+  `Read`/`Edit` rules for the profiles folder and the `profile-path.py` and
+  `validate-config.py` allow rules (the Bash sandbox's `allowWrite` line
+  stays). `init` gains `--note` and `--profile-origin`; a new run keeps
+  `.auto-dev/profile-origin.json`, so a failed setup is retried from the
+  profile it was made from. `resume`'s `action:` for a run whose setup is not
+  done now says to run `next`, which waits for setup or, after a failure the
+  user fixed, runs it again. A 5.0 run in flight resumes on it; one held in
+  Phase 1 after a failed setup is set up again by `next`, from the saved
+  profile's `setup` (read again) with the run's own gate.
+- **CI settles under a tests commit.** With review findings open, `next` waited
+  for CI on the pushed commit, but `ci-watch` watched the local HEAD, so a
+  tests commit made on top of it (a fixer's or tester's change to the checks,
+  not pushed yet) had `next` ask for the same watch forever. `ci-watch` gains
+  `--sha <commit>` (the commit to watch; without it, the local HEAD as before;
+  one that names no commit exits 2), and every watch `next` asks for names the
+  pushed commit. A watch run since that commit was made that reported on
+  another commit now stops the run (stop #23, lifted by `auto-dev continue` or
+  a retry). A 5.0 run in flight that is looping resumes on it. If you ended
+  its last session, `resume` starts a new session, so the stop doesn't fire
+  and `next` asks for `ci-watch --sha <the pushed commit>`. If its last
+  session ended at a checkpoint, `auto-dev continue` stops once at #23; `auto-dev
+  continue` again, or _I fixed it myself_, lifts the stop and watches the
+  pushed commit.
+- **Workers run targeted tests by test ID.** A gate check may carry a `tests`
+  form (`<tests>` for a list of IDs, `<test>` for exactly one) and a
+  `tests_example`. `run test|gate --tests <id> …` runs it; a check with no
+  `tests` form runs its `files` form on the `--files` paths given with it,
+  else the whole check. `run` prints a `scope:` line, and `run test` prints a
+  `warning:` when a worker runs the test check whole (`--json` adds `scope`
+  and `warning`). Test IDs are data only: quoted, and refused when empty,
+  starting with `-` or holding a control character (on Windows also `"`, `%`,
+  `!`, a trailing `\` and their fullwidth lookalikes, in `--files` paths too).
+  The coder, fixer and acceptance tester briefs print the filled-in scoped
+  lines.
 - **Workers can pass arguments to the profile's commands.** `autodev.py run
   gate|test … -- <arg> …` adds the words after `--` to the command, or to its
-  `files` form, each quoted as one argument: a test-name filter, a
+  `files` or `tests` form, each quoted as one argument: a test-name filter, a
   `<path>:<line>` target. They go where the command has `<args>`, else at its
   end; a command with `<args>` run with none has it removed. The coder, fixer
   and acceptance tester are told they can. A profile needs no change; add
-  `<args>` only to a command whose arguments must go before its end.
-- A run in flight resumes on 5.1.
+  `<args>` only to a command whose arguments must go before its end, and write
+  it unquoted.
+- **A quoted placeholder is refused.** A gate check whose `files` form puts
+  `<files>` inside quotes or `$` before it, whose `tests` form does the same
+  to `<tests>` or `<test>`, or whose command or either form does it to
+  `<args>`, is now refused by `validate-config.py` and at run time (exit 2),
+  because the shell would expand what the quoting produces. Unquote the
+  placeholder in the saved profile or `.auto-dev.yml`. A run in flight keeps
+  the gate it copied into `state.json` when it started, so editing the
+  profile doesn't reach it: with a quoted `<files>`, its scoped runs, `verify
+  prep` and (with CI watched) the quality gate exit 2. A quoted `<args>` in a
+  command stops every run of that check, whole ones too, but `<args>` is new
+  in 5.1, so no 5.0 run has one. Finish such a run before upgrading, or start
+  it again after fixing the profile.
+- **Local test runs are scoped to the change.** The coder runs non-test checks
+  whole but tests only through `run test`, scoped to the change's tests. It
+  runs a suite whole only in a correction after the quality gate found that
+  test check failing, when the check has no `files` form. With CI watched and
+  exactly one test check, the pre-push quality gate runs it only on the
+  change's test files and the acceptance checks; with more test checks, or CI
+  not watched, every check runs whole. A test check with no `files` form, or
+  with no changed test file, isn't run before the push at all: the PR body
+  says CI runs it, and if the first CI watch can't see CI, the gate runs again
+  with every check whole. With CI not watched, the coder's brief says the
+  quality gate runs the test check whole. A check signed off at a red-gate
+  stop counts as green. `run` now defaults `--timeout` to twice the last measured
+  whole run (at least 600 seconds) instead of running unbounded, and `run
+  gate` says when a check's third attempt failed.
+- **Workers wait on a backgrounded run with `run wait`.** `autodev.py run
+  wait` blocks up to 170 seconds on the last backgrounded `run test` or `run
+  gate` and replays its output (`RUNNING`, exit 4, while it is still going).
+  It reads only output under the run's `tmp/run/` or a path `run --out` may
+  write; a record pointing elsewhere, or a `tmp/` that links out of the
+  artifact dir, is refused. `mutants run` and `mutants wait` wait 170 seconds
+  by default (was 270), and every agent file says a command must stay under 3
+  minutes (was 5), except the verifier's `verify prep`, whose acceptance run
+  can take longer. The coder no longer writes its own
+  mutants or reverts code to prove a test.
+- **`verify prep --wait` defaults to 170 seconds** (was 270), so prep waits
+  no longer than `mutants wait` for a leftover mutation run before printing
+  `STILL_RUNNING`. The verifier waits for a backgrounded prep's notice instead
+  of polling.
+- **`next` recovers instead of dead-ending.** When the budget is spent and a
+  must-fix is still open, the ready-for-review gate offers a fourth answer
+  that adds a round to fix it. A correction committed outside the pipeline is
+  re-checked and recorded instead of looping on `commit`. The coder and the
+  acceptance tester stop at 150 and 120 turns (`maxTurns`); such a capped
+  spawn that returns with no result file is sent again once, told to keep its
+  edits, and a second miss stops the run (any other worker is sent the same
+  brief again, as before). `state.json` only gains optional keys.
+- **`next` takes a commit pushed from outside the run.** Before a CI watch, a
+  push or the ready gate, `next` fetches the PR branch. A head pushed from the
+  run's worktree (a base merged in by hand, say) is re-checked and CI is
+  watched on it; a head pushed from anywhere else stops the run. `ci-watch`
+  prints `CONFLICT` (exit 4) when the PR conflicts with its base and no check
+  has reported, and `phase6.ci.status` can read `conflict`. A rebase, amend or
+  reset that isn't pushed gets its own stop, which asks for a force-push with
+  a lease pinned to the run's pushed commit (`phase6.verified_shas` is new; a
+  run in flight gets the old stop on such a rewrite until it verifies again).
+- **The risk re-check measures against `origin/<base>`.** The re-check and the
+  adoption of a lost tests commit use the fetched `origin/<base>`, not the
+  local base branch, so a lagging local branch no longer counts other
+  people's commits as the build's. A run past the re-check keeps its tier.
+- **The security review is handed the change.** `/security-review` computes
+  its own diff from `origin/HEAD` in the session's working directory, whatever
+  it is told. The three reviewers that run it now write the change's own diff
+  (everything since the run's cut commit, new files included) to a file in
+  `.auto-dev/tmp/`, tell the skill that file is the whole change, and drop a
+  finding only when it is in code that diff neither changes nor reaches.
+- **Reviewers check each finding before reporting it.** The rubric's _Before
+  you report a finding_ section, which every reviewer and the judge read,
+  has each finding checked against the code first. `R<k>.md` findings may
+  carry a `Checked:` line; a report without it still parses. On a high-risk
+  run each of the three code reviewers also leads with its own lens: R1
+  correctness and edge cases, R2 tests and overfitting, R3 callers and
+  compatibility (a `Lens:` line in `R.md`). A lens orders the work, not what
+  gets reported.
+- **The verifier runs a probe on every tier.** On every risk tier the verifier
+  runs one probe of its own per condition that has acceptance checks, with an
+  input the checks don't use; mutation stays high-risk only. Verifier briefs
+  no longer have a `probes:` line.
+- **Correction entries stay small.** `templates/corrections.md` holds the rule
+  every writer of required changes points to: one entry per problem, `Where:`
+  names a file and symbol rather than line numbers, several cases are
+  described as a kind with at most three examples, and an entry comes to
+  about 800 characters (a guide, not a limit).
+- **A long PR description is cut, not refused.** Over 60,000 characters, `pr
+  publish` trims the longest quoted output blocks to their last 10 lines and
+  moves their full output to the PR's output comment, then moves whole blocks
+  if that isn't enough; it refuses only when the hand-written text alone is
+  too long. `merge-pr` now passes the description's
+  `## Summary` section as the squash body, never the whole description.
+- **New models and effort.** The coder runs at `medium` effort and the
+  acceptance tester on Sonnet. A run in flight uses them from its next spawn.
+- **Fixed:** the tree check no longer skips a worker's out-of-bounds change
+  when setup ends in the same second as the brief is written.
+- A run in flight resumes on 5.1, except one whose gate quotes a placeholder
+  (above). One small gap: a fixer still out when you upgrade is sent its 5.0
+  brief again, which has no line for running the change's tests, so it may
+  leave the tests to the quality gate that follows it.
 
 ## Upgrading from 4.27
 

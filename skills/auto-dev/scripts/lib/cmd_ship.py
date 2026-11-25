@@ -24,18 +24,29 @@ commit --message "<type>(<scope>): <summary>" [--body TEXT]
     staged-set check or the commit failed; 3 committed but NOT verified: do
     not push, stop and report.
     A refusal is recorded for `next` as `commit_attempt`, except "nothing to
-    commit" (`next` never asks for a commit with nothing changed) and exit 2.
+    commit" (`next` never asks for a commit with nothing changed: when a
+    correction was committed by hand and HEAD already holds the code every
+    result checked, `next` records HEAD as the verified commit itself) and
+    exit 2.
 
-ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
+ci-watch [--pr N] [--sha COMMIT] [--max-wait SECONDS] [--interval SECONDS]
+         [--grace SECONDS]
     Polls the PR's checks with `gh pr checks` (GitHub Actions, and CircleCI or
-    other CI that reports to GitHub). Gives up after --max-wait (default 540,
-    under the Bash tool's limit) and reports PENDING; the overall bound is
-    the profile's CI timeout, counted from the first watch of this commit (a
-    watch after a final result — green, red, timeout, unavailable — starts the
-    clock again). Checks count only once the PR's head on GitHub is the local
-    HEAD; until then the watch is pending. "No checks reported", or a PR head
+    other CI that reports to GitHub). Watches --sha (any id git resolves to a
+    commit in the worktree; the full id is recorded), or the local HEAD without
+    it: `next` names the pushed commit, so a tests commit made on top of it
+    and not yet pushed doesn't hide its checks. Gives up after --max-wait
+    (default 540; the Bash tool moves a call still running after 180 s to the
+    background and tells the orchestrator when it ends) and reports PENDING;
+    the overall bound is the profile's CI timeout, counted from the first watch of this
+    commit (a watch after a final result — green, red, timeout, unavailable,
+    conflict —
+    starts the clock again). Checks count only once the PR's head on GitHub is
+    the watched commit; until then the watch is pending. "No checks reported", or a PR head
     that is still another commit, is pending for --grace seconds (default 300),
-    then the watcher is unavailable. Once the PR is marked ready (`mark
+    then the watcher is unavailable. No check on the watched commit while GitHub
+    says the PR conflicts with its base is CONFLICT at once: GitHub runs no
+    pull_request workflow on a conflicting PR. Once the PR is marked ready (`mark
     pr-ready`), green counts only when a check started after the mark, or
     --grace seconds after it: workflows that skip drafts take a moment to
     register, and until then the draft's old checks still read green.
@@ -44,17 +55,25 @@ ci-watch [--pr N] [--max-wait SECONDS] [--interval SECONDS] [--grace SECONDS]
     with their links; 3 pending (PENDING: `next` watches again) or timed out
     (TIMEOUT: CI still running at the profile's CI timeout); 4 the watcher is
     unavailable (no checks after the grace period, or a provider gh cannot
-    see). Whatever
-    it exits, run `next`: it asks for `ci-watch` again only while CI is
-    PENDING, and after TIMEOUT or UNAVAILABLE the main gate shows CI as not
-    monitored. Never assume green.
+    see), or the PR conflicts with its base and no check reported (CONFLICT:
+    tell the user, who brings the base in, resolves and pushes; you only run
+    `next`); 2 could not run, as below, or --sha names no
+    commit. Whatever it exits, run `next`: it asks for `ci-watch` again only
+    while CI is PENDING, after TIMEOUT or UNAVAILABLE the gates show CI as not
+    monitored, and after CONFLICT as not run. Never assume green.
 
 merge-pr --pr N --sha <checked commit>
     `gh pr merge` with the repo's allowed method (squash first), locked with
     --match-head-commit, never --admin; then confirms the PR state is MERGED.
+    A squash or merge commit's body is the description's `## Summary` section
+    (read with `gh pr view N --json body`), up to the next `## ` heading,
+    trimmed, without any line holding a claude.ai session link: never the
+    whole description. With no Summary section the body is empty (the subject
+    is the PR title either way). A rebase merge passes no body.
     Exit: 0 merged; 1 the head moved (re-check the code and ask the main gate
     again); 2 could not run: gh missing, signed out, offline or too old, the
-    repo's merge methods unreadable, or the merge succeeded but the PR's state
+    repo's merge methods or the PR's description unreadable (nothing merged),
+    or the merge succeeded but the PR's state
     could not be read (it says so, and records the merge as `unknown`, so
     `next` never offers it again); 3 queued or auto-merge
     enabled, not merged (report and stop; don't move Jira); 4 refused (report
@@ -64,8 +83,16 @@ cleanup-worktree
     Removes the run's worktree from the main checkout with `git worktree
     remove` (never --force). Only after the final report: it deletes
     .auto-dev/. Refuses a worktree the user made (the run started in it).
-    Exit: 0 removed; 1 git refused (files are listed; leave it), or the
-    worktree is the user's own.
+    A removal git refuses is recorded as the worktree kept (the cleanup gate's
+    `keep`), so the run is finished and `next` no longer gives this command.
+    When git removed part of the worktree before it failed (it unregisters
+    the tree all the same), the REFUSED says so and names what is left, which
+    the user removes by hand. If the run's state.json is still there, it is
+    recorded as kept in the same way and the REFUSED says .auto-dev/ is still
+    there; if the state went with the tree, nothing is recorded.
+    Exit: 0 removed; 1 git refused (files are listed; leave it), git removed
+    part of the worktree (what is left is listed; the user removes it by
+    hand), or the worktree is the user's own.
 
 All of them exit 2 when they could not run (no state, git or gh missing, an
 unexpected error) — never a pass.
@@ -143,8 +170,11 @@ GH_BROKEN_RE = re.compile(
     re.IGNORECASE | re.MULTILINE)
 HEAD_MOVED_RE = re.compile(r"head (branch )?(was modified|has moved)|not the expected head|"
                            r"expected head (sha|oid)", re.IGNORECASE)
+# The squash commit's body: the description's Summary, up to the next `## `.
+SUMMARY_RE = re.compile(r"^## Summary[ \t]*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+SESSION_LINK_RE = re.compile(r"claude\.ai/code/session", re.IGNORECASE)
 # A stored CI status that ends a watch: watching the same commit again starts anew.
-FINAL_CI = ("green", "red", "unavailable", "timeout")
+FINAL_CI = ("green", "red", "unavailable", "timeout", "conflict")
 GH_MIN_WAIT, GH_MAX_WAIT = 10, 60  # seconds one gh call may take during a watch
 
 
@@ -155,6 +185,7 @@ def add_arguments(parser, name):
         parser.add_argument("--body", default="")
     elif name == "ci-watch":
         parser.add_argument("--pr", help="the PR number (default: from state)")
+        parser.add_argument("--sha", help="the commit to watch (default: the local HEAD)")
         parser.add_argument("--max-wait", type=int, default=540)
         parser.add_argument("--interval", type=int, default=30)
         parser.add_argument("--grace", type=int, default=300)
@@ -285,6 +316,21 @@ def fresh_phase(state):
     return () if state.get("phase6", {}).get("passes") else ("--phase", "5")
 
 
+def record_verified(state, sha):
+    """Record `sha`, checked to carry the checked code, as the verified commit
+    (in `state`, not saved). `next` uses it too, for a commit made by hand
+    that already holds that code (cmd_next.committed_by_hand)."""
+    phase6 = state.setdefault("phase6", {})
+    phase6.pop("unverified_commit", None)
+    phase6["verified_sha"] = sha
+    # Every commit the run verified: `next` tells the run's own pushed commit,
+    # rewritten in the worktree since, from a head someone else pushed.
+    verified = phase6.setdefault("verified_shas", [])
+    if sha not in verified:
+        verified.append(sha)
+    phase6["commit_seq"] = st.seq(state)
+
+
 def verify_commit(args, state, sha, paths):
     """Check the commit carries the checked code; record it as verified or not."""
     wt, ad = state["worktree"], state["artifact_dir"]
@@ -304,9 +350,7 @@ def verify_commit(args, state, sha, paths):
         emit(args.json, "NOT-VERIFIED", f"commit {sha} holds code no result checked: "
              "do not push; stop and report", detail=detail)
         return EXIT_NOT_VERIFIED
-    phase6.pop("unverified_commit", None)
-    phase6["verified_sha"] = sha
-    phase6["commit_seq"] = st.seq(state)
+    record_verified(state, sha)
     st.add_note(state, f"verified commit {sha}")
     st.save(args.dir, state)
     emit(args.json, "COMMITTED", sha, paths=paths,
@@ -326,10 +370,10 @@ def ci_watch(args):
     if provider == "none":
         emit(args.json, "SKIPPED", "CI: none — no CI to watch; say so at the gate")
         return 0
+    sha = watched_commit(wt, args.sha)
     if provider == "gitlab":
         state.setdefault("phase6", {})["ci"] = {
-            "sha": git(wt, "rev-parse", "HEAD").strip(), "status": "unavailable",
-            "failing": [], "seq": st.seq(state)}
+            "sha": sha, "status": "unavailable", "failing": [], "seq": st.seq(state)}
         st.save(args.dir, state)
         emit(args.json, "UNAVAILABLE", "ci-watch reads GitHub checks only; GitLab CI "
              "can't be watched here: run `next`; the main gate shows CI as not "
@@ -338,7 +382,6 @@ def ci_watch(args):
     pr = args.pr or state.get("phase6", {}).get("pr")
     if not pr:
         raise Fail("no PR number: pass --pr", CANNOT_RUN, "ERROR")
-    sha = git(wt, "rev-parse", "HEAD").strip()
     phase6 = state.setdefault("phase6", {})
     ci = phase6.get("ci") or {}
     if ci.get("sha") != sha or ci.get("status") in FINAL_CI:
@@ -359,13 +402,13 @@ def ci_watch(args):
         elapsed = time.time() - ci["started"]
         if status in ("none", "elsewhere") and elapsed > args.grace:
             status = "unavailable"
-        if status in ("green", "red", "unavailable") or elapsed > timeout:
+        if status in ("green", "red", "unavailable", "conflict") or elapsed > timeout:
             break
         left = deadline - time.monotonic()
         if left <= 0:
             break
         time.sleep(min(max(args.interval, 1), left))
-    if status not in ("green", "red", "unavailable") and elapsed > timeout:
+    if status not in ("green", "red", "unavailable", "conflict") and elapsed > timeout:
         status = "timeout"
     ci["status"] = "pending" if status in ("none", "elsewhere") else status
     ci["failing"], ci["seq"] = failing, st.seq(state)
@@ -384,6 +427,17 @@ def ci_watch(args):
              "run `next`; the main gate shows CI as not monitored — never assume green",
              detail=detail)
         return EXIT_UNAVAILABLE
+    if status == "conflict":
+        name = (state.get("repo") or {}).get("base")
+        base, ref = name or "its base", name or "<base>"
+        emit(args.json, "CONFLICT", f"PR #{pr} conflicts with its base {base}, so GitHub "
+             f"runs no pull_request checks on it and CI can't report on {sha[:12]}. "
+             "Tell the user: the PR conflicts with its base, and they bring the base in "
+             f"themselves in the worktree (fetch it first with `git fetch origin {ref}`: "
+             "the worktree's copy can predate the commit that conflicts; then `git merge "
+             f"origin/{ref}`, resolve, push). You only run `next`; the gates show CI as "
+             "not run — never assume green", detail=detail)
+        return EXIT_UNAVAILABLE
     if status == "timeout":
         emit(args.json, "TIMEOUT", f"CI still running for {sha[:12]} after "
              f"{timeout // 60} min: run `next`; the main gate shows CI as not monitored "
@@ -392,6 +446,19 @@ def ci_watch(args):
     emit(args.json, "PENDING", "CI still running: run `next`, which watches again", pending=failing,
          detail=detail)
     return EXIT_PENDING
+
+
+def watched_commit(wt, sha=None):
+    """The full id of the commit to watch: `sha`, or the local HEAD."""
+    if not sha:
+        return git(wt, "rev-parse", "HEAD").strip()
+    code, out = 1, ""
+    if not sha.startswith("-"):  # never read as one of git's options
+        code, out, _ = git(wt, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}",
+                           check=False)
+    if code != 0 or not out.strip():
+        raise Fail(f"--sha {sha} names no commit in the worktree", CANNOT_RUN, "ERROR")
+    return out.strip()
 
 
 def gh_poll(cwd, deadline, *args):
@@ -414,37 +481,46 @@ def epoch(stamp):
 
 
 def poll_checks(cwd, pr, sha, deadline, ready=None):
-    """('green'|'red'|'pending'|'none'|'elsewhere'|'stale-green', [lines], detail).
+    """('green'|'red'|'pending'|'none'|'conflict'|'elsewhere'|'stale-green', [lines],
+    detail).
 
     `gh pr checks` reports the PR's head on GitHub, so it counts only once that
     head is `sha`; until then the poll is 'elsewhere' (pending), never another
-    commit's result. With `ready` (when the PR was marked ready, in epoch
-    seconds), all-green checks none of which started after it are 'stale-green'.
+    commit's result. No check on `sha` is 'conflict' when GitHub says the PR
+    conflicts with its base (`mergeable` CONFLICTING), else 'none'. With `ready`
+    (when the PR was marked ready, in epoch seconds), all-green checks none of
+    which started after it are 'stale-green'.
     """
-    code, out, err = gh_poll(cwd, deadline, "pr", "view", str(pr), "--json", "headRefOid")
+    code, out, err = gh_poll(cwd, deadline, "pr", "view", str(pr), "--json",
+                             "headRefOid,mergeable")
     if code == 124:
         return "pending", [], "gh timed out; still waiting"
     try:
-        head = json.loads(out).get("headRefOid", "")
+        view = json.loads(out)
+        head, mergeable = view.get("headRefOid", ""), view.get("mergeable", "")
     except (ValueError, AttributeError):
         raise Fail(f"gh pr view {pr} failed (exit {code}): {(err or out).strip()}",
                    CANNOT_RUN, "ERROR") from None
     if head != sha:
         return "elsewhere", [], (f"the PR's head is {head[:12] or 'unknown'}, not the "
-                                 f"local HEAD {sha[:12]} (not pushed yet?)")
+                                 f"watched commit {sha[:12]} (not pushed yet, or another "
+                                 "commit pushed since?)")
     code, out, err = gh_poll(cwd, deadline, "pr", "checks", str(pr), "--json",
                              "name,state,bucket,link,startedAt")
     if code == 124:
         return "pending", [], "gh timed out; still waiting"
+    # GitHub runs no pull_request workflow on a PR that conflicts with its base,
+    # so no checks there is a conflict at once, not a wait for the grace period.
+    none = "conflict" if mergeable == "CONFLICTING" else "none"
     if "no checks reported" in (out + err).lower():
-        return "none", [], (out + err).strip()
+        return none, [], (out + err).strip()
     try:
         checks = json.loads(out)
     except ValueError:
         raise Fail(f"gh pr checks failed (exit {code}): {(err or out).strip()}",
                    CANNOT_RUN, "ERROR") from None
     if not checks:
-        return "none", [], "no checks"
+        return none, [], "no checks"
     buckets = {c.get("bucket", "") for c in checks}
     failed = [f"{c['name']} — {c.get('link', '')}"
               + (" (cancelled)" if c.get("bucket") == "cancel" else "")
@@ -492,12 +568,43 @@ def merge_method(cwd):
                "to the repo", CANNOT_RUN, "ERROR")
 
 
+def squash_body(description):
+    """The merge commit's body: `description`'s `## Summary` section, up to the
+    next `## ` heading, trimmed, with each line holding a claude.ai session link
+    dropped. Empty when there is no Summary: never the whole description."""
+    found = SUMMARY_RE.search(description.replace("\r\n", "\n"))
+    if not found:
+        return ""
+    lines = [line for line in found.group(1).splitlines()
+             if not SESSION_LINK_RE.search(line)]
+    return "\n".join(lines).strip()
+
+
+def pr_description(cwd, pr):
+    code, out, err = gh_json(cwd, "pr", "view", str(pr), "--json", "body")
+    text = (out + err).strip()
+    if code != 0:
+        gh_cannot_run(code, text, "gh pr view")
+    try:  # gh always answers `body` when asked: a reply without it is unreadable
+        body = json.loads(out)["body"] if code == 0 else None
+    except (ValueError, KeyError, TypeError):
+        body = None
+    if not isinstance(body, str):
+        raise Fail(f"could not read PR #{pr}'s description with `gh pr view` (exit "
+                   f"{code}), so the squash message can't be built; nothing was "
+                   f"merged: {text[-500:]}", CANNOT_RUN, "ERROR")
+    return body
+
+
 def merge_pr(args):
     state = load(args)
     wt = state["worktree"]
     method = merge_method(wt)
+    body = []
+    if method != "--rebase":  # a rebase merge writes no commit message
+        body = ["--body", squash_body(pr_description(wt, args.pr))]
     code, out, err = gh_json(wt, "pr", "merge", str(args.pr), method,
-                             "--match-head-commit", args.sha)
+                             "--match-head-commit", args.sha, *body)
     text = (out + err).strip()
     if code != 0:
         gh_cannot_run(code, text, "gh pr merge")  # could not run: not an attempt
@@ -547,7 +654,9 @@ def note_merge(args, state, result):
 def lint_body(text, state, checklist=True):
     """The problems in a PR description, which `pr publish` refuses: a strict
     section or the attribution line missing, `Checked at commit <sha>` not
-    naming the verified commit, over 60,000 characters, or holding a
+    naming the verified commit, over 60,000 characters (`pr publish` cuts the
+    quoted command output first, so only text written by hand is left to
+    shorten), or holding a
     `.auto-dev/` path, one of the run's own condition, finding or mutant IDs,
     "held-out" / "fail-to-pass" / "pass-to-pass", an evidence tier used as one,
     an absolute worktree or home path, or something that looks like a secret.
@@ -559,8 +668,10 @@ def lint_body(text, state, checklist=True):
     GitHub."""
     problems = []
     if len(text) > BODY_LIMIT:
-        problems.append(f"{len(text)} characters, over {BODY_LIMIT}: cut output blocks "
-                        "to their last 10 lines, then move them to one comment")
+        problems.append(f"{len(text)} characters, over {BODY_LIMIT} even with the quoted "
+                        "command output cut or moved to the output comment: shorten the "
+                        "sections written by hand (the Summary, the Assumptions, a "
+                        "template section; or text edited on GitHub)")
     for heading in STRICT_HEADINGS:
         if not re.search(rf"^{re.escape(heading)}\s*$", text, re.MULTILINE):
             problems.append(f"missing the strict heading `{heading}`")
@@ -643,6 +754,54 @@ def path_shown(text, path, whole=False):
     return re.search(rf"(?<![\w.~/-]){re.escape(path)}{end}", text) is not None
 
 
+REFUSED_REMOVAL = "git refused the removal"
+PARTIAL_REMOVAL = "git removed part of the worktree"
+
+
+def registered(main_checkout, wt):
+    """Whether `git worktree list` from the main checkout still names `wt`."""
+    code, out, _ = git(main_checkout, "worktree", "list", "--porcelain", check=False)
+    want = Path(wt).resolve()
+    return code == 0 and any(Path(line[len("worktree "):]).resolve() == want
+                             for line in out.splitlines() if line.startswith("worktree "))
+
+
+def left_in_place(main_checkout, wt):
+    """Whether a removal git refused left the worktree as it was: still
+    registered, with the run's state.json in it."""
+    return registered(main_checkout, wt) and (Path(wt) / ".auto-dev" / "state.json").is_file()
+
+
+def what_is_left(wt, shown=10):
+    """The top-level entries still at `wt`, or that nothing is."""
+    try:
+        names = sorted(p.name for p in Path(wt).iterdir())
+    except OSError:
+        return f"nothing at {wt}"
+    if not names:
+        return f"the empty folder {wt}"
+    more = f" and {len(names) - shown} more" if len(names) > shown else ""
+    return f"{', '.join(names[:shown])}{more} in {wt}"
+
+
+def record_kept(artifact_dir, state, reason):
+    """Record the cleanup gate `keep`: the run is finished (st.cleanup_pending),
+    so `next` no longer gives `cleanup-worktree`. Where git left a .auto-dev/
+    that takes no new file (it stopped there, at a read-only folder), state.json
+    is rewritten in place instead. The error when neither write worked, else None."""
+    state["gates"].append({"gate": "cleanup", "choice": "keep", "reason": reason,
+                           "at": st.now(), "seq": st.seq(state)})
+    try:
+        st.save(artifact_dir, state)
+    except OSError:
+        try:
+            st.path_of(artifact_dir).write_text(
+                json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError as exc:
+            return exc
+    return None
+
+
 def cleanup_worktree(args):
     state = load(args)
     main_checkout, wt = state["repo"]["main_checkout"], state["worktree"]
@@ -650,7 +809,32 @@ def cleanup_worktree(args):
         raise Fail(f"{wt} is the user's own worktree (the run started in it); "
                    "auto-dev never removes it", FAILED, "REFUSED")
     code, out, err = git(main_checkout, "worktree", "remove", wt, check=False)
+    if code != 0 and not left_in_place(main_checkout, wt):
+        # git deleted part of the tree (ignored files don't stop it), stopped at
+        # the first entry it could not delete and unregistered the tree.
+        gone = "" if registered(main_checkout, wt) else " and unregistered it"
+        detail, left = (err or out).strip(), what_is_left(wt)
+        if not st.path_of(args.dir).is_file():
+            # Saving state now would make .auto-dev/ again outside a worktree.
+            raise Fail(f"git removed part of {wt}{gone}, its run state with it; what "
+                       f"is left: {left}. Nothing was recorded: tell the user, who "
+                       f"removes what is left by hand:\n{detail}", FAILED, "REFUSED")
+        # git stopped before it deleted state.json: record the worktree kept
+        # there, or every later `next` gives this command again.
+        failed = record_kept(args.dir, state, PARTIAL_REMOVAL)
+        recorded = (f"but could not be updated ({failed}), so `next` gives this "
+                    "command again" if failed else "and now records the worktree as "
+                    "kept, so the run is finished")
+        raise Fail(f"git removed part of {wt}{gone}; the run's state "
+                   f"({Path(args.dir).name}/) is still there {recorded}; what is "
+                   f"left: {left}. Tell the user, who removes what is left by hand:"
+                   f"\n{detail}", FAILED, "REFUSED")
     if code != 0:
+        # The removal won't happen: the worktree is kept, so the run is finished
+        # (st.cleanup_pending) and `next` no longer gives this command.
+        state["gates"].append({"gate": "cleanup", "choice": "keep", "reason": REFUSED_REMOVAL,
+                               "at": st.now(), "seq": st.seq(state)})
+        st.save(args.dir, state)
         raise Fail(f"git refused to remove {wt}; leave it in place and report what is "
                    f"there:\n{(err or out).strip()}", FAILED, "REFUSED")
     emit(args.json, "REMOVED", wt)

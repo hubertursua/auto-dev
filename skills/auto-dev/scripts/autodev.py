@@ -9,7 +9,8 @@ Usage:
     python3 <skill-dir>/scripts/autodev.py <subcommand> --help
 
 Subcommands:
-    init      Phase 1: preflight, config, worktree, seeded files, setup, state
+    init      create the run: preflight, config, worktree, seeded files, setup,
+              state (`next --repo` runs it)
     resume    find the run to continue: FRESH, RESUME, ASK, FINISHED, OLD-VERSION
     show      print the run's state
     phase     set a phase's status
@@ -20,7 +21,7 @@ Subcommands:
     mark      record a step done outside autodev.py (a Jira move, the push)
     handoff   write HANDOFF.md and print the restart message (a checkpoint, or the user stops)
     commit    stage by name, check, commit, and verify the commit (Phase 6)
-    ci-watch  poll the PR's checks, bounded; green, red, pending or unavailable
+    ci-watch  poll the PR's checks, bounded; green, red, pending, unavailable or conflict
     merge-pr  merge the PR locked to the checked commit, never --admin
     pr        publish: open the one PR, or refresh its description in place
     cleanup-worktree   remove the worktree after the final report
@@ -35,10 +36,15 @@ Subcommands:
     record             check a worker's result against its artifacts; update state
     check-artifact     check an artifact against its template before returning it
     mutants   pick which mutants a verifier re-check runs again; record a finished pass
-    run       run one of the profile's gate or test commands in the worktree
-    quality-gate       run the whole quality gate and write its lint reports
+    run       run one of the profile's gate or test commands in the worktree, or
+              wait for one
+    quality-gate       run the quality gate (a lone test check scoped to the change
+                       when CI is watched) and write its lint reports
     verify    the verifier's routine steps: prep a pass, then compare the tree
-    next      print the pipeline's one next action (the orchestrator's loop)
+    next      print the pipeline's one next action (the orchestrator's loop); with
+              --repo, before the run exists, Phase 1's setup
+    setup-answer       record the user's answer to the profile or gate-check question
+                       (Phase 1)
     override  answer a stop: fix it as the user says, retry, sign off, talk, leave
 
 Every subcommand takes --json. Exit codes, the same for all:
@@ -67,6 +73,7 @@ from lib import (
     cmd_resume,
     cmd_review,
     cmd_run,
+    cmd_setup,
     cmd_ship,
     cmd_state,
     cmd_tests,
@@ -107,6 +114,7 @@ COMMANDS = {
     "quality-gate": (cmd_gate, cmd_gate.main),
     "verify": (cmd_verify, cmd_verify.main),
     "next": (cmd_next, cmd_next.main),
+    "setup-answer": (cmd_setup, cmd_setup.answer),
     "pr": (cmd_pr, cmd_pr.main),
     "override": (overrides, overrides.main),
 }

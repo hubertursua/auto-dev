@@ -30,7 +30,7 @@ The orchestrator's prompt names your brief file. Read it first. It holds one
 `name: value` line for each double-braced name below (a long value continues
 on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
-any single command under 5 minutes unless this file says otherwise.
+any single command under 3 minutes unless this file says otherwise.
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
 did not return a result the run could use: this says why, and what to do.
@@ -55,9 +55,27 @@ to a check can open a path anywhere), and carry every earlier row forward
 (step 5). Write the focused scope line, and `coverage: full` when
 the earlier runs covered the rest of the change.
 
-1. Run the /security-review skill with the Skill tool. Tell it the base branch
-   is {{base}}, and that uncommitted changes are part of the change. Its findings
-   are your starting point, not your answer.
+1. Run the /security-review skill with the Skill tool. It computes its own
+   diff and log (`origin/HEAD...`, in the session's working directory), which
+   can be another checkout's change, or take in commits merged before this run.
+   So first write this change's diff to a file:
+   `git -C {{worktree}} diff {{cut}} --output={{artifact_dir}}/tmp/security-review-cut.diff`.
+   Tell the skill that this file, {{artifact_dir}}/tmp/security-review-cut.diff,
+   is the whole change to review, and to set aside the diff and log it computes
+   itself. Tell it the change is everything since commit {{cut}}, where the
+   branch left origin/{{base}}, and that uncommitted changes are part of the
+   change. Never give it the local base branch by name: that branch can lag
+   behind origin, and the review would then take in commits merged before this
+   run. Its findings are your starting point, not your answer: judge every
+   security finding only against the cut diff. Drop one as not this change's
+   only when it is in code the cut diff neither changes nor reaches (neither
+   modifies, calls into nor exposes to new input), such as another checkout's
+   change. Code from a commit merged before this run is not dropped for that
+   reason alone: when the change calls into it, the cut diff reaches it. Classify
+   every other finding by its origin, as step 4 says: introduced when the
+   change adds or modifies the line or exposes old code to new untrusted
+   input, else pre-existing, and a pre-existing High or Medium one is listed
+   for the user.
 2. Then go further yourself. Read PLAN.md's Security/Compliance criteria
    ({{artifact_dir}}/PLAN.md), the security directives named in
    {{artifact_dir}}/profile.md, and the binding rules ({{binding_rules}}). Try to exploit:
@@ -66,7 +84,10 @@ the earlier runs covered the rest of the change.
    assignment, anything the directives name.
 3. Check each lead from the code review panel: {{leads}}. The panel runs
    alongside you, so its leads from this pass reach a later run.
-4. For every finding, say:
+4. Verify every finding as the rubric's _Before you report a finding_ says:
+   read every function its claim depends on, find the layer that may already
+   handle it (the auth, the validation or the escaping on its path), and try
+   to prove it wrong. For every finding you keep, say:
    - Origin: introduced (the vulnerable code is in lines this change adds or
      modifies, or the change exposes old code to new untrusted input) or
      pre-existing. Check with `git -C {{worktree}} diff` and `git -C {{worktree}} blame`.
@@ -82,8 +103,8 @@ the earlier runs covered the rest of the change.
    prints that hash, write it; if not, the code changed while you reviewed, so
    write `Tree: changed during the run`.
 
-The rubric: read the security findings and overall report confidence sections of
-`{{skill_dir}}/templates/rubric.md`.
+The rubric: read the before you report a finding, security findings and overall
+report confidence sections of `{{skill_dir}}/templates/rubric.md`.
 
 Write {{artifact_dir}}/SECURITY_REVIEW.md to the template at `{{skill_dir}}/templates/SECURITY_REVIEW.md` (strict): read
 it there and copy everything below its first comment line.

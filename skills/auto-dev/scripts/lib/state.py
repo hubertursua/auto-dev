@@ -25,7 +25,7 @@ STAGES = {1: "plan", 2: "plan", 3: "plan", 4: "build", 5: "build", 6: "ship"}
 STAGE_NAMES = {"plan": "Plan", "build": "Build", "ship": "Ship"}
 
 # `held` pauses the run where it is (resuming re-fires the gate that held it, or
-# for Phase 1 a failed setup, which `init --continue` runs again);
+# for Phase 1 a failed setup, which `next` runs again after `resume`);
 # `stopped` ends it (nothing resumes on its own).
 STATUSES = ("pending", "in-progress", "done", "n/a", "held", "stopped")
 COMPLETE = ("done", "n/a")
@@ -161,11 +161,27 @@ def run_state(state):
 
 
 def resumable(state):
-    """Whether a new session can pick the run up: it is open or held, or it
+    """Whether a new session can pick the run up: it is open or held, it
     stopped on a step the user can still override (state["stop"], saved by
-    `next`: an OVERSIZED task)."""
+    `next`: an OVERSIZED task), or it finished with its worktree removal still
+    to run (cleanup_pending)."""
     run = run_state(state)
-    return run in ("open", "held") or (run == "stopped" and bool(state.get("stop")))
+    return run in ("open", "held") or (run == "stopped" and bool(state.get("stop"))) \
+        or cleanup_pending(state)
+
+
+def cleanup_pending(state):
+    """Whether the run finished with the user's answer "Remove it" to the
+    worktree question, and its own worktree is still there: `next` gives the
+    `cleanup-worktree` command again. Only once a `next` of this version gave
+    that command (state["cleanup_given"]): a run that finished on 5.0, where a
+    removal git refused left the worktree in place, stays finished."""
+    if run_state(state) != "finished" or state["repo"].get("adopted") \
+            or not state.get("cleanup_given"):
+        return False
+    gates = [g for g in state.get("gates") or [] if g.get("gate") == "cleanup"]
+    return bool(gates) and gates[-1].get("choice") == "proceed" and \
+        Path(state["worktree"]).is_dir()
 
 
 def add_note(state, text):

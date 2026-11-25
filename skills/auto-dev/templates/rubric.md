@@ -1,5 +1,63 @@
-<!-- auto-dev: the review rubric, read by the code reviewers, the review judge and the security reviewer. -->
+<!-- auto-dev: the review rubric, read by the code reviewers, the reviewer, the review judge and the security reviewers. -->
 # The review rubric
+
+### Before you report a finding
+
+A short list of real defects is worth more than a long list of guesses. Each
+finding that doesn't hold costs a judge's trace or a correction round, and
+most findings that don't hold are claims about code the reviewer never read.
+Zero findings is a correct result for a clean change, once you have tried to
+break it.
+
+**Read before you judge.** Read each changed file in full as the scope has it,
+not only its hunks, and the binding rules (the repo's CLAUDE.md or AGENTS.md,
+CONTRIBUTING and coding-guideline docs, and the security directives
+`profile.md` names). Read
+the docs, comments and PLAN.md text the change touches: behavior they describe
+as intended is not a defect. A comment this change adds is the exception: it is
+the author's claim, to check like the code. Behavior PLAN.md asks for that you
+think is wrong is a spec problem, not a finding.
+
+**Verify every finding.** Before you report a finding, and before you confirm
+one as judge:
+
+1. **Read what the claim depends on.** Every function, method or command it
+   relies on: its definition, every branch, and its declared types or
+   signature. Never guess a return value, an error it raises, a default or a
+   retry: read it.
+2. **Find the layer that may already handle it.** Input validation, the
+   framework's or a middleware's guards, the type system, a schema or database
+   constraint, an early return, the callers. Grep for every caller. For a
+   tests finding, this layer is the test suite: search it for the case
+   (another test file, a parameterized or table-driven case, an acceptance
+   check) before you call the case untested.
+3. **Ask the repo, not your memory.** Check what the repo can answer: the code
+   itself (an option is often set where the code builds the object, not in a
+   config file), `git log`, the source of a dependency the repo vendors or has
+   installed, and schema or interface definitions. Never assume how a library
+   or service behaves when the repo shows it.
+4. **Name a path that real use takes.** The trigger path starts where normal
+   use starts: a real caller, a request, the command as users run it, a file
+   the code really reads. A finding that only old data, a hand edit or an
+   impossible state can reach is not a finding: leave it out (as judge,
+   `Holds: no`).
+5. **Try to prove it wrong.** If you can, or if you still aren't sure, leave
+   it out (as judge, `Holds: no`). A security finding is the one exception:
+   one you can't prove wrong but can't trace either is Low (_Security
+   findings_, below), listed as advisory rather than left out.
+
+A finding's `path:line` is a line that exists in the file as the scope has it:
+open the file to confirm it. A performance finding shows its cost from the code
+(a query inside a loop over every row, a whole file read for each item); "may
+be slow" or "profile it to be sure" is not a finding.
+
+**A required change you checked.** Whoever writes a finding's `Required change`
+(the judge, a security reviewer, or the reviewer that judges its own findings)
+checks it as they check the finding. Every name it uses (a function, file, option, key or
+command) must exist: grep for it. It must not add a failure the code doesn't
+have now: a new error raised, a case left unhandled, a crash on input the code
+handles today. When you can't check a fix, say what must hold and where,
+without code.
 
 ### Code review findings
 
@@ -23,9 +81,10 @@ value the plan says must be refused, not one of them per finding. Only cases a
 real caller can reach count (the trigger path rule, below), and the list holds
 the separate cases, not their combinations. The judge merges tests findings
 about the same changed behavior into one, and its `Test:` and
-`Required change:` lines ask for a test of every case on the list, so one
-correction closes the gap. A tests finding is `fixed` only when every case it
-lists has a test.
+`Required change:` lines ask for the whole class in one correction: they
+describe the kind of case, as `templates/corrections.md` says, not the list
+case by case. A tests finding is `fixed` only when every reachable case of
+the kind its `Test:` line describes has a test.
 
 A finding that breaks a binding rule (the repo's CLAUDE.md or AGENTS.md,
 CONTRIBUTING and coding-guideline docs, and the security directives
@@ -46,7 +105,9 @@ fix nothing.
 **Evidence: a trigger path.** A must-fix finding names a specific input or
 sequence, starting from a real caller or entry point (`file:line`), that leads
 to the failure. For a test finding, it names the changed behavior (`file:line`)
-and each input no test exercises. "This could fail" with no path is **noise**.
+and the kind of input no test exercises; the list of those inputs goes in
+the `Judge:` line, which the coder's entry leaves out. "This could fail" with
+no path is **noise**.
 The judge confirms each path by reading the code itself. A path the judge cannot
 confirm makes the finding noise, however many reviewers raised it.
 

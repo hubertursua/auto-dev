@@ -1,15 +1,15 @@
 # Plan stage (Phases 1–3)
 
-Phase 1 is the one part of the run you do by hand: steps 1–6 below. From step 7
-on, `autodev.py next` drives. `autodev.py` means `python3
+Phase 1 is the ticket (step 1) and a loop on `next --repo` (step 2), which
+finds or researches the repo's profile, creates the run and sets it up. From
+step 3 on, `next --dir` drives in the run's worktree. `autodev.py` means `python3
 <skill-dir>/scripts/autodev.py`; `<repo>` is the absolute path of the checkout
 you started in: the main checkout, or a worktree the user made for this task.
 
-On a run resumed in the Plan stage (`resume` printed `RESUME <tree>`), `cd <tree>`. IF
-`resume` also printed an `action:` line (setup is not done), run it
-(`autodev.py init --continue <tree>`, adding `--profile <file>` when the fix
-was in the profile) and act on its exit code as step 5's table says. Then skip
-to step 7.
+On a run resumed in the Plan stage (`resume` printed `RESUME <tree>`), `cd
+<tree>` and skip to step 3. IF `resume` also printed an `action:` line (setup
+is not done), the first `next` waits for setup, or runs it again now that the
+user fixed the cause.
 
 ## Phase 1 — Setup
 
@@ -27,179 +27,77 @@ to step 7.
      returned them, to a new file under `$TMPDIR` (`<ticket-text>`): the
      summary on the first line, a blank line, then the description. Don't
      shorten, reword or translate them. The planner and the plan critic have
-     no Jira access; `init` stores this file's text and gives it to them
+     no Jira access; the run stores this file's text and gives it to them
      verbatim as the task.
 - ELSE the task is the user's words.
 
-Write a one- or two-sentence restatement of the ask (`--ask` below).
+Write a one- or two-sentence restatement of the ask in the user's words
+(`--ask` below).
 
-### 2. The slug
-
-Make a kebab-case slug, 2–5 words, from the ticket key or task
-(`proj-123-due-dates`, `due-dates`). It names the branch and worktree; nothing
-renames it later. In a worktree the user made, the run keeps that worktree and
-its branch, and the slug names the branch only if HEAD is detached.
-
-### 3. The base branch
-
-Run `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` in
-`<repo>`. If `<repo>/.auto-dev.yml` sets `branches.base`, use that instead.
-
-### 4. The profile
-
-1. Run `python3 <skill-dir>/scripts/profile-path.py <repo>`. Keep both printed
-   paths (the profile path and `DIR:`).
-2. IF exit 0 (`FOUND`): run `python3 <skill-dir>/scripts/validate-config.py
-   --profile <path>`.
-   - exit 0 → use it. Tell the user "Using the saved profile at `<path>`".
-     Don't ask again. A saved profile can list a quality-gate check whose tool
-     the repo never adopted (it was saved before the repo dropped the tool), and
-     that check would never go green. You don't read repo files, so ask a
-     lookup: `autodev.py brief lookup --out <tmp> --set worktree=<repo> --set
-     question='for each of these quality-gate checks, has the repo adopted its
-     tool (a declared dependency or a config file)? <the command of each check>'`,
-     where `<tmp>` is a new folder under `$TMPDIR`. Keep the question in single
-     quotes, with no single quote inside (rephrase, or use ’). Spawn the agent
-     it prints with its prompt, and read the answer from its reply (no run
-     exists yet, so there is nothing to record).
-     - Its result is anything but `ANSWERED` (it failed, stopped, or called the
-       question out of scope) → keep the profile as saved: go to step 5 with
-       `--profile <path> --profile-source "saved profile <path>"`.
-     - Every tool adopted → go to step 5 with `--profile <path>
-       --profile-source "saved profile <path>"`.
-     - A check whose tool the repo never adopted → copy the profile to
-       `<tmp>/profile.yml` without that check, and go to step 5 with
-       `--profile <tmp>/profile.yml --profile-source "saved profile <path>,
-       without <check>"`. After step 6, record each dropped check with
-       `autodev.py note "dropped gate check <command>: the repo never adopted
-       its tool (saved profile <path>)"`, and tell the user, so they can fix
-       the saved file. A check whose tool is adopted stays, even when the
-       tool is missing from this machine: that is a setup problem for the user
-       to fix, never a reason to drop the check.
-   - exit 1 → show the user the errors, then research (3 below) and offer to
-     overwrite the file.
-   - exit 2 → stop: tell the user python3 3.9+ and PyYAML are required
-     (`pip install pyyaml`).
-3. IF exit 1 (`NOT FOUND`) or exit 2 (no path; leave out the save option):
-   - IF `<repo>/.auto-dev.yml` exists, run `python3
-     <skill-dir>/scripts/validate-config.py <repo>/.auto-dev.yml` and branch
-     on its result:
-     - exit 0 and its `VALID:` line lists both `setup` and `gate` → the repo
-       declares its own profile: skip research and go to step 5 with no
-       `--profile`.
-     - exit 0 with a partial file (`setup` or `gate` missing) → research (below);
-       `init` applies the file over the researched profile.
-     - exit 1 → stop and show the errors.
-     - exit 2 → stop: tell the user python3 3.9+ and PyYAML are required
-       (`pip install pyyaml`).
-   - IF there is no `.auto-dev.yml`, or it is partial, research:
-     1. `git -C <repo> fetch origin <base>`.
-     2. `autodev.py brief profiler --out <tmp> --set repo=<repo> --set
-        base=<base> --set draft_path=<tmp>/profile.yml`, where `<tmp>` is a new
-        folder under `$TMPDIR`.
-     3. Spawn the agent it prints with the prompt it prints.
-     4. Ask the user (AskUserQuestion), showing: the draft YAML, the evidence
-        line for each command, everything under NOT INSTALLED and QUESTIONS
-        (questions first), which keys `.auto-dev.yml` will override, the save
-        path, and the permissions guidance from `references/profiles.md`,
-        _Permissions_, with this run's paths and commands filled in. Options:
-        `Looks right — save it for this repo` · `Looks right — use it for this
-        run only` · `Change something (tell me what)` · `Stop`.
-     5. `Change something` → edit `<tmp>/profile.yml` as the user said and ask
-        again. `Stop` → stop; nothing was created.
-     6. `save it` → write the file to the path `profile-path.py` printed, with a
-        first-line comment naming the repo and today's date, then run
-        `validate-config.py --profile <path>` (exit 1: fix what it names). A
-        denied write never stops the run: show the permissions guidance and the
-        YAML so the user can save it, and go on.
-     7. Go to step 5 with `--profile <tmp>/profile.yml --profile-source
-        "researched by the profiler, confirmed by the user"`.
-
-### 5. Create the run
+### 2. Set the run up with `next --repo`
 
 Run, from `<repo>`:
 
 ```
-autodev.py init --repo <repo> --slug <slug> --task "<task, one line>" \
-  --ask "<restated ask>" [--ticket <KEY> --ticket-url <link> \
-  --ticket-text-file <ticket-text>] \
-  [--profile <file> --profile-source "<where it came from>"] \
+autodev.py next --repo <repo> --task "<the ticket key, or the task in one line>" \
+  --ask "<restated ask>" \
+  [--ticket <KEY> --ticket-url <link> --ticket-text-file <ticket-text>] \
   --jira "<available, cloudId <id> | unavailable: <why> | no ticket>"
 ```
 
-| Exit | Do |
-|---|---|
-| 0 | the worktree, state and setup are ready: go to step 6 |
-| 1 | stop: tell the user the `STOP:` reason (`references/tables.md`, stop conditions 1–3). Once they fix it: IF the reason names `init --continue` (a setup command failed or its runner died), run `autodev.py init --continue <worktree>` (with `--profile <file>` when the fix was in the profile). ELSE re-run the same `init` command |
-| 2 | could not run: tell the user the error |
-| 3 | setup is still running: run `autodev.py init --continue <worktree>` until it exits 0 or 1 |
-
+The ticket flags, `--ask` and `--jira` are needed on the first call only.
 Pass `--ticket-text-file` whenever step 1 wrote one: without it, the planner
-and the critic work from your restated ask alone. When `<repo>` is a worktree the user made
-(a linked worktree on a branch other than the base and the default branch),
-`init` runs the task in it instead of making a new one, and prints `adopted:
-yes`; it stops if the worktree has uncommitted changes. IF it also prints
-`ahead: <n>`, tell the user the <n> commits already on that branch will be part
-of the PR.
-`init` finds the security directives itself (`security_docs` in
-`.auto-dev.yml`, else `SECURITY.md`, `.github/SECURITY.md` and
-`docs/security/`).
+and the plan critic work from your restated ask. The run keeps the ask, so a
+later `resume` or `next --repo` given the user's own wording finds the run by
+it. Then follow **The loop** in `SKILL.md` with this same command (the `next
+--repo` line its `AFTER` lines name) in place of `next --dir`, until it says to
+move into the worktree. The steps that are yours:
 
-### 6. Move into the worktree
+- **A question before the run exists (exit 5)**, about a saved profile's gate
+  checks or a profile the `profiler` drafted: show the `SUMMARY`, ask the
+  `QUESTION` and run the `AFTER` line for the answer. For the profiler's
+  draft, also show the permissions guidance from `references/profiles.md`,
+  _Permissions_, with the `SUMMARY`'s paths and the draft's commands filled in.
+  `autodev.py` makes the run's profile from the answer and never changes a
+  saved file: never edit a profile yourself.
+- **The run is created:** tell the user its `SUMMARY` lines, then `cd
+  <worktree>` (the path it names; the one you are in when the run uses yours).
+  Every later step runs there, with the `next --dir` command its `AFTER` names.
 
-`cd <worktree>` (the path `INIT:` printed; the one you are in when `init`
-used yours). Every later step runs there.
+Exit 4 is a stop (`references/tables.md`, stop conditions 1–3): tell the user
+the `REPORT`; it says how to go on. A setup command that failed keeps the run:
+once the user fixed the file the `REPORT` names, they say `auto-dev continue`,
+and `next` runs setup again.
+
+Setup adopts a worktree the user made (and stops if it has uncommitted changes) and
+finds the security directives by itself: do neither by hand.
 
 ## Phases 2–3 — Plan and Tests, the loop
 
-### 7. Run the loop
+### 3. Run the loop
 
-Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. What you will
-see in the Plan stage, in order:
+Follow **The loop** in `SKILL.md` until `next` exits 3, 4 or 6. `next` names
+each worker to spawn and each question to ask. The steps that are yours:
 
-1. `planner` writes `PLAN.md`: the ask, the testable conditions, the
-   assumptions, the size check, the risk tier it proposes and the build steps,
-   from the ticket text `init` stored (else your `--ask`). `OVERSIZED` → exit 4:
-   tell the user the planner's reasons, the subsystems it found and its
-   suggested split lines, all in the `REPORT` (copied from PLAN.md's Size
-   check), then ask its `QUESTION` (`SKILL.md`, _A stop_): the user may sign it
-   off, or tell the fixer how to narrow it. Nothing else.
-2. With a ticket: the Jira question (exit 5). Read the ticket's status first
-   (`references/gates-and-jira.md`, _Asking first_): if it is in progress
-   already, don't ask, and run the `Already …` line. On `Move it`, a later exit 0
-   says to move the ticket: do it as `references/gates-and-jira.md`,
-   _Moving a ticket_ says, then run its `AFTER` line.
-3. `plan-critic`, a fresh reader with the ticket, PLAN.md and the repo. With
-   blockers, the `planner` revises once (a round), and the critic re-checks
-   only the revision. A blocker still open after that goes to the user at
-   the post-plan gate; the workers don't loop. The critic can raise the risk tier,
-   never lower it. You do nothing but spawn.
-4. The post-plan gate (exit 5) when the task is high-risk, the critic left
-   blockers open (the gate lists them), or the repo turns it on: before any
-   check is written, so a revision the user asks for never leaves one stale.
-5. `acceptance-tester`. It writes a check per condition as ordinary test files
-   in the worktree and shows each new-behavior check failing on the untouched
-   code. It may be spawned once more for gaps in what it wrote (a second set
-   of gaps stops), or send the `planner` a question about a condition that
-   reads two ways. Then `next` commits the
-   checks as their own commit (`test: acceptance checks for <task>`), before
-   any code, by itself: there is nothing to run. From then on `check-tests.py`
-   guards every line that commit added.
-   A worker whose result `next` refuses (a `RECORDED: … refused` line) is
-   briefed again by that `next`, with the refused issues.
-6. Once the tests are written, `next` says the run goes on to the Build stage in
-   this session: read `references/build.md`, as its `ACTION` says, then run `next`.
-   Don't stop or hand off.
-7. Exit 6, a checkpoint: run its `AFTER` command exactly as printed (`handoff
-   --checkpoint`), give the user its message, stop. A fresh session picks the
-   run up where it is.
+- **With a ticket, the Jira question (exit 5).** Read the ticket's status
+  first (`references/gates-and-jira.md`, _Asking first_): if it is in progress
+  already, don't ask, and run the `Already …` line. On `Move it`, a later exit 0
+  says to move the ticket: do it as `references/gates-and-jira.md`, _Moving a
+  ticket_ says, then run its `AFTER` line.
+- **Into the Build stage.** Once the acceptance checks are committed, `next`
+  says the run goes on to the Build stage in this session: read
+  `references/build.md`, as its `ACTION` says, then run `next`. Don't stop or
+  hand off.
 
 ### Stops in the Plan stage
 
 Every stop is exit 4 with its reason in `REPORT`, and most ask how to go on
-(`SKILL.md`, _A stop_). The full list is
-`references/tables.md`, _Stop conditions_. The usual ones here: OVERSIZED,
-no round left for the plan's revision (the user can add rounds: `SKILL.md`,
-_The loop_), a worker that didn't return ok twice, and the acceptance checks
-still having gaps after the tester's one more go, or a condition still reading
-two ways after the planner's decision (#22).
+(`SKILL.md`, _A stop_). The full list is `references/tables.md`, _Stop
+conditions_. The ones that need care:
+
+- **OVERSIZED (#5):** tell the user the planner's reasons, the subsystems it
+  found and its suggested split lines, all in the `REPORT` (copied from
+  PLAN.md's Size check), then ask its `QUESTION`: the user may sign it off, or
+  tell the fixer how to narrow it. Nothing else.
+- **No round left for the plan's revision (#11):** the user can add rounds
+  (`SKILL.md`, _The loop_).

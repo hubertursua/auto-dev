@@ -6,13 +6,28 @@ Usage:
                     [--ticket-text-file PATH]
                     [--profile <profile.yml>] [--profile-source "<text>"]
                     [--prefix feat] [--security-doc PATH ...] [--jira "<text>"]
-                    [--assumption "<text>" ...] [--max-wait SECONDS] [--json]
+                    [--assumption "<text>" ...] [--note "<text>" ...]
+                    [--profile-origin FILE] [--max-wait SECONDS] [--json]
     autodev.py init --continue <worktree> [--profile <profile.yml>]
                     [--max-wait SECONDS] [--json]
+
+`autodev.py next --repo <repo> --task "<task>"` runs this for the
+orchestrator (it researches or finds the profile, then creates the run), and
+`next --dir` runs `--continue` while setup is not done; call it directly only
+outside a run the orchestrator drives.
 
 `--ticket-text-file` names a file holding the ticket's summary and description
 as read from the tracker; it is stored in state.json and given to the planner
 verbatim as its task (without it, the planner gets --ask, else --task).
+
+`--note` records a decision in the new run's WORK_LOG.md (repeatable), as
+`autodev.py note` would. `--profile-origin` names a JSON file saying where the
+profile came from, `{"kind": "saved", "path": <saved file>, "dropped":
+[{"n": <check number>, "command": <command>}], "kept": [same]}` (the checks
+the user left out or kept at the gate-check question), `{"kind": "draft"}` or
+`{"kind": "override"}`; it is kept as `.auto-dev/profile-origin.json`, so a
+failed setup is retried from the same profile (for kind `draft`, `--profile`
+is kept as `.auto-dev/profile.yml`, the file to fix).
 
 Does, in order, stopping at the first failure:
  1. Preflight: python3 >= 3.9, PyYAML, git, gh installed and signed in, and an
@@ -50,7 +65,8 @@ branch are removed again, so the same command can run once the cause is fixed.
 In a worktree the user made, `.auto-dev/` and a branch init created are
 removed; the worktree and any `worktree_files` copied into it stay.
 
-A failed setup leaves the run open (Phase 1 `held`). `--continue` resumes a run
+A failed setup leaves the run open (Phase 1 `held`); the user fixes the cause
+and says `auto-dev continue`, and `next` runs setup again. `--continue` resumes a run
 whose `init` already got to step 8: it keeps waiting while setup runs, and when
 setup failed (or its runner died) it reads `setup` and `gate` again from
 `.auto-dev.yml` and `--profile` (when given; otherwise the run's own setup and
@@ -120,6 +136,11 @@ def add_arguments(parser):
     parser.add_argument("--jira", default="", help="Jira availability, for profile.md")
     parser.add_argument("--assumption", action="append", default=[],
                         help="an assumption for profile.md (repeatable)")
+    parser.add_argument("--note", action="append", default=[],
+                        help="a decision to record in WORK_LOG.md (repeatable)")
+    parser.add_argument("--profile-origin", metavar="FILE",
+                        help="JSON saying where the profile came from, kept as "
+                             ".auto-dev/profile-origin.json")
     parser.add_argument("--max-wait", type=int, default=540,
                         help="seconds to wait for setup (default 540)")
     parser.add_argument("--continue", dest="cont", metavar="WORKTREE",
@@ -145,6 +166,7 @@ def main(args):
             raise Fail(f"--{name} is required (or pass --continue <worktree>)",
                        CANNOT_RUN, "ERROR")
     args.ticket_text = read_ticket_text(args.ticket_text_file)
+    args.origin = read_origin(getattr(args, "profile_origin", None))
     if not SLUG_RE.match(args.slug):
         raise Fail(f"--slug {args.slug!r} must be lowercase words joined by "
                    "single hyphens", CANNOT_RUN, "ERROR")
@@ -303,6 +325,25 @@ def read_ticket_text(path):
     return text
 
 
+ORIGIN_KINDS = ("saved", "draft", "override")
+ORIGIN_FILE, RUN_PROFILE = "profile-origin.json", "profile.yml"
+
+
+def read_origin(path):
+    """--profile-origin's record, or None without it."""
+    if not path:
+        return None
+    try:
+        origin = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise Fail(f"cannot read --profile-origin {path}: {exc}", CANNOT_RUN,
+                   "ERROR") from None
+    if not isinstance(origin, dict) or origin.get("kind") not in ORIGIN_KINDS:
+        raise Fail(f"--profile-origin {path} must be a JSON object whose kind is one of "
+                   f"{', '.join(ORIGIN_KINDS)}", CANNOT_RUN, "ERROR")
+    return origin
+
+
 def same_task(task, args):
     """Whether --task (and --ticket, when given) name the run `task` holds."""
     if task.get("text", "").strip() != args.task.strip():
@@ -350,6 +391,8 @@ def create_run(repo, worktree, branch, config, args, base, prefix, seed_from=Non
         "test_notes": config.get("test_notes", ""),
         "setup": config.get("setup", []),
         "gate": config.get("gate", []),
+        # Globs the risk re-check treats as sensitive (5.1); [] when none.
+        "sensitive_paths": list(config.get("sensitive_paths") or []),
     }
     task = {"text": args.task, "ticket": args.ticket or "none",
             "ticket_url": args.ticket_url or "", "ask": args.ask or args.task}
@@ -366,9 +409,18 @@ def create_run(repo, worktree, branch, config, args, base, prefix, seed_from=Non
     if missing_docs:
         st.add_note(state, "security_docs not found in the worktree: "
                     + ", ".join(missing_docs))
+    for text in getattr(args, "note", None) or []:
+        st.add_note(state, text)
     (artifact_dir / "profile.md").write_text(
         render_profile(state, config, args, seeded, missing, missing_docs),
         encoding="utf-8")
+    origin = getattr(args, "origin", None)
+    if origin is not None:
+        # Where the profile came from: a failed setup is retried from it.
+        (artifact_dir / ORIGIN_FILE).write_text(json.dumps(origin, indent=2) + "\n",
+                                                encoding="utf-8")
+        if origin["kind"] == "draft" and args.profile:
+            shutil.copyfile(args.profile, artifact_dir / RUN_PROFILE)
     st.save(artifact_dir, state)
     return state
 
@@ -511,6 +563,11 @@ def symbol_lookup(config):
     return f"`{definition}` / `{lookup.get('references', '')}`"
 
 
+def sensitive_paths_text(settings):
+    globs = settings.get("sensitive_paths") or []
+    return ", ".join(f"`{g}`" for g in globs) or "none declared"
+
+
 def security_line(docs, missing_docs, config, args):
     if docs:
         text = ", ".join(docs)
@@ -544,6 +601,7 @@ def render_profile(state, config, args, seeded, missing, missing_docs=()):
         f"- **Mutation cap:** {mutation}",
         f"- **Worktree files seeded:** {seeded_text}",
         f"- **Symbol lookup:** {symbol_lookup(config)}",
+        f"- **Sensitive paths:** {sensitive_paths_text(s)}",
         f"- **`.auto-dev.yml`:** {override}",
         f"- **Post-plan gate:** {'on — gates.post_plan' if s['post_plan_gate'] else 'off'}",
         f"- **Open-the-PR gate:** {'on — gates.open_pr' if s.get('open_pr_gate') else 'off'}",
@@ -564,16 +622,35 @@ def setup_and_gate_lines(settings):
     lines = [SETUP_HEADING]
     lines += [f"{i}. `{cmd}`" for i, cmd in enumerate(settings["setup"], 1)] or ["none"]
     lines += ["", "## Quality gate — run in order, verbatim (the Definition of Done)",
-              ("Run check <n> with `autodev.py run gate <n> --dir <artifact dir>` (the "
-               "test check: `run test --dir <artifact dir>`); add `--files <path> …` to "
-               "run its scoped form."), "",
-              "| # | kind | command | report | scoped form |",
-              "|---|------|---------|--------|-------------|"]
+              ("The quality gate runs each non-test check whole with `autodev.py run "
+               "gate <n> --dir <artifact dir>`, and a gate's one test check only on the "
+               "change's tests when CI is watched: then CI is the one full run of the test "
+               "suite. When CI isn't watched, or the gate has two or more test checks, the "
+               "quality gate runs every check whole, test checks too. The coder runs only "
+               "the test check `run test` uses, and only scoped, except in a correction "
+               "after a quality gate that found a test check failing: its brief then gives "
+               "that check its run line, its `--files` line when it has a `files` form, else "
+               "whole; a "
+               "test check the user signed off failing at a red-gate stop gets no run "
+               "line. To run only some tests, use `autodev.py run test --dir <artifact dir>` "
+               "with `--files <path> …` (its scoped form) or `--tests <id> …` (its test-ID "
+               "form; one ID when the form holds `<test>`)."), "",
+              "| # | kind | command | report | scoped form | test-ID form |",
+              "|---|------|---------|--------|-------------|--------------|"]
     lines += [f"| {i} | {c.get('kind', '')} | `{c.get('command', '')}` | "
               f"`{c.get('report', '')}` | "
-              + (f"`{c['files']}` |" if c.get("files") else "none |")
+              + (f"`{c['files']}` | " if c.get("files") else "none | ")
+              + test_id_cell(c)
               for i, c in enumerate(settings["gate"], 1)]
     return lines
+
+
+def test_id_cell(check):
+    """A check's test-ID form and its example, as profile.md's table shows them."""
+    if not check.get("tests"):
+        return "none |"
+    example = check.get("tests_example")
+    return f"`{check['tests']}`" + (f" (e.g. `{example}`)" if example else "") + " |"
 
 
 def refresh_setup(artifact_dir, state, profile_path):
@@ -668,12 +745,14 @@ def runner_alive(pid, proc=None):
     return True
 
 
+RETRY = "say `auto-dev continue`: `next` runs setup again"
+
+
 def setup_failed(artifact_dir, state, reason, message):
     """Record a failed setup and stop. The run stays open (Phase 1 held), so
-    `resume` finds it and `init --continue` runs setup again."""
+    `resume` finds it and `next` runs setup again."""
     state["init"]["setup"] = "failed"
-    st.set_phase(state, 1, "held", f"{reason}; fix it, then run `autodev.py init "
-                                   f"--continue {state['worktree']}`")
+    st.set_phase(state, 1, "held", f"{reason}; fix it, then {RETRY}")
     st.save(artifact_dir, state)
     raise Fail(message)
 
@@ -697,7 +776,7 @@ def wait_for_setup(artifact_dir, state, args, proc=None):
             if not result_path.exists():  # it may have finished just now
                 setup_failed(artifact_dir, state, "setup runner died",
                              f"the setup runner stopped without a result; see {log}. "
-                             f"Run {cont} to start setup again")
+                             f"Once the cause is fixed, {RETRY}")
         else:
             emit(args.json, "SETUP-RUNNING",
                  f"setup is still running (log: {log}); run {cont}",
@@ -706,24 +785,40 @@ def wait_for_setup(artifact_dir, state, args, proc=None):
     result = json.loads(result_path.read_text(encoding="utf-8"))
     if result["status"] != "done":
         cmd, code = result.get("failed_command"), result.get("exit_code")
-        fix = ("Fix the cause (a setup command comes from the profile or "
-               f"{Path(state['repo']['main_checkout']) / '.auto-dev.yml'}; pass "
-               f"--profile <file> to use an edited profile), then run {cont}")
+        fix = (f"Fix the cause in {setup_source(artifact_dir, state)}, then {RETRY}")
         if result.get("error"):
             setup_failed(artifact_dir, state, "setup runner failed",
                          f"the setup runner failed: {result['error']}; see {log}. "
-                         f"Run {cont} to start setup again")
+                         f"Once the cause is fixed, {RETRY}")
         if code == 127:
             setup_failed(artifact_dir, state, f"setup failed: `{cmd}` not found",
                          f"setup command `{cmd}` was not found (exit 127): the "
-                         "stack's toolchain is not installed. Install it, then run "
-                         f"{cont}; do not drop gate checks")
+                         f"stack's toolchain is not installed. Install it, then {RETRY}; "
+                         "do not drop gate checks")
         setup_failed(artifact_dir, state, f"setup failed: `{cmd}` exited {code}",
                      f"setup command `{cmd}` exited {code}; see {log}. {fix}")
     state["init"]["setup"] = "done"
     st.set_phase(state, 1, "done", "")
     st.save(artifact_dir, state)
     return report_ready(state, args)
+
+
+def setup_source(artifact_dir, state):
+    """The file a failed setup command is fixed in: the one the run's profile
+    came from (profile-origin.json), else the profile or `.auto-dev.yml`."""
+    override = Path(state["repo"]["main_checkout"]) / ".auto-dev.yml"
+    try:
+        origin = json.loads((artifact_dir / ORIGIN_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        origin = None
+    if not isinstance(origin, dict):
+        return f"the saved profile or {override}"
+    if origin.get("kind") == "saved" and origin.get("path"):
+        return f"the saved profile {origin['path']} (or {override}, which overrides it)"
+    if origin.get("kind") == "draft":
+        return (f"{artifact_dir / RUN_PROFILE}, the profile confirmed for this run "
+                f"(or {override}, which overrides it)")
+    return str(override)
 
 
 def report_ready(state, args):

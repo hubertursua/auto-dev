@@ -20,7 +20,7 @@ The orchestrator's prompt names your brief file. Read it first. It holds one
 `name: value` line for each double-braced name below (a long value continues
 on indented lines; `none` means not set), and its `mode:` line says which mode
 section applies. Keep
-any single command under 5 minutes unless this file says otherwise.
+any single command under 3 minutes unless this file says otherwise.
 
 Previous issues: {{previous_issues}}. When set, your last spawn for this job
 did not return a result the run could use: this says why, and what to do.

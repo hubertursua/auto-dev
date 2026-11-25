@@ -9,7 +9,8 @@ Checks:
 - plugin.json and marketplace.json agree on the plugin's name and description;
 - every helper script is executable and starts with a python3 shebang;
 - every agent file has name, model, effort and tools in its frontmatter, and its
-  model and effort match the worker tables in SKILL.md and README.md;
+  model, effort and turn cap (`maxTurns`, `—` when it sets none) match the
+  worker tables in SKILL.md and README.md;
 - every file path SKILL.md and README.md name under references/, scripts/ or
   templates/ exists, and README.md names every helper script;
 - every agent file's {{slots}} are slots `autodev.py brief` knows (AUTO, CALLER
@@ -21,10 +22,16 @@ Checks:
   or (outside profiler, lookup and triager, whose reply is read) to end with a
   prose summary (`Return: …`, `Say what you changed`), which nothing reads: a
   worker's reply is its result block;
+- agents/code-reviewer.md gives each panel slot in scripts/lib/cmd_next.py
+  SLOTS one lens of its own (a `- **R<k> — <lens>.**` line), and no lens to a
+  slot the panel lacks;
 - every template a script parses exists in templates/;
 - every evals/files/ path a string in evals/evals.json names exists (the
   setup and expectations as well as each eval's `files`);
 - SKILL.md's description fits Claude Code's 1024-character limit;
+- references/plan.md and SKILL.md never tell the orchestrator to run Phase 1's
+  setup by hand (profile-path.py, validate-config.py, `autodev.py init`,
+  `init --continue`, `brief profiler`, `brief lookup`): `next --repo` does it;
 - no file names a path from one person's machine: a home directory such as
   /Users/<name>, /home/<name> or C:\\Users\\<name>, or a folder of their own
   under ~ or $HOME (such a path must start with a dot directory, like
@@ -99,21 +106,24 @@ def frontmatter(path):
     return fields
 
 
-# A worker-table row: | ... | `auto-dev:<x>` | `<model>` · <effort> |
-ROW = re.compile(r"\|\s*`auto-dev:([a-z-]+)`\s*\|\s*`([a-z]+)`\s*·\s*([a-z]+)\s*\|")
+# A worker-table row: | ... | `auto-dev:<x>` | `<model>` · <effort> | <turn cap> |
+# (the turn cap: digits, or `—` for none; None when the row has no such cell).
+ROW = re.compile(r"\|\s*`auto-dev:([a-z-]+)`\s*\|\s*`([a-z]+)`\s*·\s*([a-z]+)\s*\|"
+                 r"(?:[ \t]*([^|\n]*?)[ \t]*\|)?")
+NO_CAP = "—"
 
 
 def table_rows(path):
-    return {m.group(1): (m.group(2), m.group(3))
+    return {m.group(1): (m.group(2), m.group(3), m.group(4))
             for m in ROW.finditer(path.read_text(encoding="utf-8"))}
 
 
-def check_agents():
-    tables = {SKILL.relative_to(ROOT): table_rows(SKILL),
-              README.relative_to(ROOT): table_rows(README)}
+def check_agents(agents_dir=ROOT / "agents", tables=None):
+    tables = {(t.relative_to(ROOT) if t.is_relative_to(ROOT) else t): table_rows(t)
+              for t in (tables or (SKILL, README))}
     agents = {}
-    for path in sorted((ROOT / "agents").glob("*.md")):
-        rel = path.relative_to(ROOT)
+    for path in sorted(agents_dir.glob("*.md")):
+        rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
         fm = frontmatter(path)
         if fm is None:
             fail(f"{rel}: no frontmatter")
@@ -124,14 +134,24 @@ def check_agents():
             continue
         if fm["name"] != f"auto-dev-{path.stem}":
             fail(f"{rel}: name is {fm['name']!r}, expected 'auto-dev-{path.stem}'")
-        agents[path.stem] = (fm["model"], fm["effort"])
+        cap = fm.get("maxTurns")
+        if cap is not None and not cap.isdigit():
+            fail(f"{rel}: maxTurns is {cap!r}, not a whole number")
+        agents[path.stem] = (fm["model"], fm["effort"], cap or NO_CAP)
     for table, rows in tables.items():
         for agent, setting in agents.items():
             if agent not in rows:
                 fail(f"{table}: worker table has no row for auto-dev:{agent}")
-            elif rows[agent] != setting:
-                fail(f"{table}: auto-dev:{agent} is {rows[agent][0]} · {rows[agent][1]}, "
+                continue
+            row = rows[agent]
+            if row[:2] != setting[:2]:
+                fail(f"{table}: auto-dev:{agent} is {row[0]} · {row[1]}, "
                      f"but agents/{agent}.md says {setting[0]} · {setting[1]}")
+            if row[2] != setting[2]:
+                fail(f"{table}: auto-dev:{agent}'s Turn cap is "
+                     f"{row[2] if row[2] else 'missing'}, but agents/{agent}.md says "
+                     f"{setting[2]}" + (" (no maxTurns)" if setting[2] == NO_CAP else
+                                        " (maxTurns)"))
         for agent in rows.keys() - agents.keys():
             fail(f"{table}: worker table names auto-dev:{agent}, which has no agents/ file")
 
@@ -221,6 +241,51 @@ def check_briefs(agents_dir=ROOT / "agents"):
             fail(f"templates/{name} is missing: a script parses it")
 
 
+
+# A panel reviewer's lens in agents/code-reviewer.md: `- **R1 — <lens>.** …`.
+LENS_LINE = re.compile(r"^[ \t]*- \*\*(R\d+) — (.+?)\.?\*\*", re.MULTILINE)
+
+
+def panel_lenses(text):
+    """The (slot, lens) pairs an agent file's lens lines give, in file order."""
+    return [(slot, lens.strip()) for slot, lens in LENS_LINE.findall(text)]
+
+
+def load_panel_slots():
+    sys.path.insert(0, str(SKILL_DIR / "scripts"))
+    from lib import cmd_next  # the scripts dir is only on sys.path from here
+    return cmd_next.SLOTS
+
+
+def check_panel_lenses(agents_dir=ROOT / "agents", slots=None):
+    rel = "agents/code-reviewer.md"
+    slots = tuple(load_panel_slots() if slots is None else slots)
+    try:
+        text = (Path(agents_dir) / "code-reviewer.md").read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"{rel}: unreadable, so the panel's lenses can't be checked: {exc}")
+        return
+    lenses = {}
+    for slot, lens in panel_lenses(text):
+        lenses.setdefault(slot, []).append(lens)
+    for slot in slots:
+        given = lenses.get(slot, [])
+        if not given:
+            fail(f"{rel}: panel slot {slot} has no lens (a `- **{slot} — <lens>.**` line)")
+        elif len(given) > 1:
+            fail(f"{rel}: panel slot {slot} has {len(given)} lenses: {'; '.join(given)}")
+    for slot in sorted(set(lenses) - set(slots)):
+        fail(f"{rel}: gives a lens to {slot}, which is not a panel slot "
+             f"(scripts/lib/cmd_next.py SLOTS: {', '.join(slots)})")
+    owners = {}
+    for slot in slots:
+        for lens in lenses.get(slot, []):
+            owners.setdefault(lens.lower(), []).append(slot)
+    for lens, shared in sorted(owners.items()):
+        if len(set(shared)) > 1:
+            fail(f"{rel}: panel slots {', '.join(sorted(set(shared)))} share the lens "
+                 f"{lens!r}; give each its own")
+
 # An eval fixture path, wherever it appears in evals.json. It ends on a name
 # character, so a sentence's closing period isn't part of it. A path with a
 # placeholder or glob (`<slug>`, `*`) is checked only up to that character.
@@ -306,6 +371,20 @@ def check_skill_description(path=SKILL):
              f"the limit is {DESCRIPTION_LIMIT}")
 
 
+# Phase 1's steps `next --repo` runs: the runbook must not hand them back.
+RUNBOOK_SETUP = re.compile(r"profile-path\.py|validate-config\.py|autodev\.py init\b"
+                           r"|init --continue|brief profiler|brief lookup")
+
+
+def check_runbook_setup(paths=(SKILL_DIR / "references" / "plan.md", SKILL)):
+    for path in paths:
+        for n, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+            match = RUNBOOK_SETUP.search(line)
+            if match:
+                fail(f"{Path(path).name}:{n}: names `{match.group()}`, a setup step "
+                     "`next --repo` runs; tell the orchestrator to run `next --repo` instead")
+
+
 # A path only one person's machine has. ~/.claude, ~/.config and ~/… are fine:
 # a tool fixes those, not the user's own folder layout.
 PERSONAL_PATH = re.compile(r"(?<![\w.-])(?:/(?:Users|home)/|[A-Za-z]:[\\/]Users[\\/]"
@@ -339,8 +418,10 @@ def main():
     check_agent_commands()
     check_paths()
     check_briefs()
+    check_panel_lenses()
     check_eval_paths()
     check_skill_description()
+    check_runbook_setup()
     check_personal_paths()
     for msg in errors:
         print(f"FAIL {msg}")
