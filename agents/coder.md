@@ -69,11 +69,12 @@ has a scoped form, and saves its output; `--tests` runs only the named tests,
 and `run` says which form ran on its `scope:` line. To narrow a run further,
 add the runner's own arguments after `--` at the end of its command (a test-name
 filter, a `<path>:<line>` target): `… --files <test file> -- <arg> …`. Never run a test check
-whole: when the gate has one test check, CI runs the whole suite
-({{test_command}}) and is the one full run of it; with two or more, the
-quality gate runs each one whole. Run your tests only through these lines, the test check `run test` uses,
-and run no other test check. A test check with no scoped form is left to CI
-(or, beside another test check, to the quality gate's whole run): don't run
+whole: when the gate has one test check and CI is watched, CI runs the whole
+suite ({{test_command}}) and is the one full run of it; with two or more, or
+when CI isn't watched, the quality gate runs each one whole. The gate list
+below says which. Run your tests only through these lines, the test check `run test` uses,
+and run no other test check. A test check with no scoped form is left to
+that whole run, as its entry in the gate list says: don't run
 it, and name it in one line above the result block. The one exception is a
 correction after a quality gate that found a test check failing: the gate
 list below then gives that check a `run:` line, and that line wins over the
@@ -105,7 +106,7 @@ line), unless the user signed it off at a red-gate stop: run that check only
 with that line, to see your fix pass. A test check with
 no `run:` line (one with no scoped form, or another test check) you don't run:
 it is left to CI, or to the quality gate's whole run when the gate has two or
-more test checks, as its entry says; name it in one line above the result
+more test checks or CI isn't watched, as its entry says; name it in one line above the result
 block. Once the Bash tool moves a run to the background it is waited
 for with `run wait`, as the rule at the top says. Fix what it reports in your
 code; a check's final run must come after your last edit. `run gate` counts

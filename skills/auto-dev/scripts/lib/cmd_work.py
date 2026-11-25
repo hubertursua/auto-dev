@@ -130,6 +130,7 @@ from pathlib import Path
 from . import artifacts as art
 from . import (
     briefs,
+    cmd_gate,
     cmd_run,
     overrides,
     protected,
@@ -393,7 +394,8 @@ def auto_values(worker, n, state, ad, mode):
     test = cmd_run.with_args(str(found[1].get("command") or ""), ()) if found else ""
     failing = (failing_test_checks(s.get("gate", []), state)
                if worker == "coder" and mode == "correction" else None)
-    gate = gate_lines(s.get("gate", []), ad, worker, failing)
+    watched = cmd_gate.ci_watched(state)
+    gate = gate_lines(s.get("gate", []), ad, worker, failing, watched)
     phase6 = state.get("phase6", {})
     values = {
         "worktree": state["worktree"], "artifact_dir": str(ad), "skill_dir": str(SKILL_DIR),
@@ -410,8 +412,8 @@ def auto_values(worker, n, state, ad, mode):
                          "0 (off)" if state.get("high_risk") else
                          "0 (off: a standard-risk run)"),
         "gate_commands": gate or "none",
-        "test_runs": (test_runs(found[1], ad, worker, s.get("gate", [])) if found
-                      else "none"),
+        "test_runs": (test_runs(found[1], ad, worker, s.get("gate", []), watched)
+                      if found else "none"),
         "result_file": str(ad / "returns" / f"{worker}-{n}.json"),
         "pr": str(phase6.get("pr") or "none"),
         "pass": str(phase6.get("review_pass") or 1),
@@ -434,13 +436,19 @@ def auto_values(worker, n, state, ad, mode):
 BASH = " with that Bash call's timeout set to 300000 ms"
 
 
-def whole_runner(gate):
-    """Who runs the gate's test checks whole, for the coder's brief: CI when the
-    gate has one `kind: test` check (the quality gate scopes it to the change),
-    the quality gate when it has two or more (it runs them all whole)."""
-    several = sum(c.get("kind") == "test" for c in gate) > 1
-    return (("the quality gate", "the quality gate runs it whole") if several
-            else ("CI", "left to CI"))
+def whole_runner(gate, watched=True):
+    """Who runs the gate's test checks whole, for the coder's brief: (who, what
+    it does with a check the coder doesn't run, why). CI when the gate has one
+    `kind: test` check and CI is watched (the quality gate scopes it to the
+    change), else the quality gate, which runs every check whole when the gate
+    has two or more test checks or CI isn't watched (cmd_gate.plan_checks)."""
+    if sum(c.get("kind") == "test" for c in gate) > 1:
+        why = "with two or more test checks it runs each one whole"
+    elif not watched:
+        why = "CI isn't watched, so it runs the test check whole"
+    else:
+        return "CI", "left to CI", "CI is the one full run of the test suite"
+    return "the quality gate", "the quality gate runs it whole", why
 
 
 def failing_test_checks(gate, state):
@@ -461,17 +469,18 @@ FAILING_HEAD = ("(a test check the quality gate's latest run found failing: run 
                 "with the line below, to check your fix)")
 
 
-def gate_lines(gate, ad, worker, failing=None):
+def gate_lines(gate, ad, worker, failing=None, watched=True):
     """The gate_commands slot: each check with the `run:` line that runs it
     whole; for the coder, the test check `run test` uses only scoped (no line
     for one with no scoped form) and every other test check with no line, since
-    CI (one test check) or the quality gate (two or more) runs them whole. In a
+    CI (one test check, CI watched) or the quality gate (two or more, or CI not
+    watched) runs them whole. In a
     correction, a test check in `failing` (one the quality gate's latest run
     lists as failing, minus any the user signed off) gets its `--files` line
     when it has a `files` form, else its whole line."""
     found = cmd_run.test_check(gate)
     chosen = found[0] if found else None
-    who, whole = whole_runner(gate)
+    who, whole, _why = whole_runner(gate, watched)
     failing = failing or set()
     entries = []
     for i, c in enumerate(gate, 1):
@@ -514,14 +523,14 @@ def gate_lines(gate, ad, worker, failing=None):
     return "\n".join(entries)
 
 
-def test_runs(check, ad, worker=None, gate=()):
+def test_runs(check, ad, worker=None, gate=(), watched=True):
     """The test_runs slot: the run's scoped test commands, filled in and ready to
     copy, and that a whole run of the test check is for the quality gate only;
     for a check with no scoped form, the one line that runs it whole (the
     coder's: no line, since CI or the quality gate runs it, as `gate` says)."""
     runs = cmd_run.scoped_runs(ad, check)
     if not runs and worker == "coder":
-        who = whole_runner(gate or [check])[0]
+        who = whole_runner(gate or [check], watched)[0]
         whole = "that is left to CI" if who == "CI" else "the quality gate runs it whole"
         shown = cmd_run.with_args(str(check.get("command") or ""), ())
         return (f"No line: the test check (`{shown}`) has no scoped "
@@ -534,10 +543,9 @@ def test_runs(check, ad, worker=None, gate=()):
     lines = [f"- `{line}`{BASH}" + (f" ({note})" if note else "") for line, note in runs]
     if not cmd_run.has_form(check, "tests"):
         lines.append("- no test-ID form: scope by file")
-    # Who runs it whole depends on the gate alone, so every worker gets the same text.
-    why = ("with two or more test checks it runs each one whole"
-           if whole_runner(gate or [check])[0] == "the quality gate" else
-           "CI is the one full run of the test suite when it is watched")
+    # Who runs it whole depends on the gate and CI alone, so every worker gets
+    # the same text.
+    why = whole_runner(gate or [check], watched)[2]
     lines.append(f"A whole run of the test check is for the quality gate only ({why}); "
                  "never run `run test` with neither flag to test your change.")
     return "\n".join(lines)

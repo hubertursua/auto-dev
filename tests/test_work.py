@@ -89,6 +89,14 @@ class WorkCase(RunCase):
 
 
 class BriefTest(WorkCase):
+    def setUp(self):
+        super().setUp()
+        # A watched CI, as most runs have: who runs a test check whole depends
+        # on it (test_with_ci_not_watched_… covers the rest).
+        state = self.state()
+        state["settings"]["ci"] = "github-actions"
+        self.write_state(state)
+
     def test_planner_brief_fills_its_slots_from_state(self):
         r = self.cmd("brief", "planner", "--mode", "write")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -739,6 +747,47 @@ class BriefTest(WorkCase):
                        "files": "npx vitest run <files>"})
         _, coder = self.brief_of("coder", "--mode", "build")
         self.assertIn("CI is the one full run of the test suite", coder)
+
+    def set_ci(self, ci):
+        state = self.state()
+        state["settings"]["ci"] = ci
+        self.write_state(state)
+
+    def test_with_ci_not_watched_the_coder_s_brief_says_the_quality_gate_runs_it(self):
+        # With one test check, the quality gate runs it whole unless CI is
+        # watched (cmd_gate.plan_checks), so the brief never says CI does then.
+        scoped = {"kind": "test", "command": "npm test", "report": "TEST.md",
+                  "files": "npx vitest run <files>"}
+        unscoped = {"kind": "test", "command": "npm test", "report": "TEST.md"}
+        for ci in ("none", "gitlab"):
+            self.set_ci(ci)
+            self.set_gate(scoped)
+            gate, runs = self.brief_of("coder", "--mode", "build")
+            self.assertIn("never whole — the quality gate runs it whole",
+                          self.entry(gate, 1))
+            self.assertIn("A whole run of the test check is for the quality gate only "
+                          "(CI isn't watched, so it runs the test check whole)", runs)
+            self.set_gate(unscoped)
+            gate, runs = self.brief_of("coder", "--mode", "build")
+            self.assertIn("the quality gate runs it whole; don't run it", gate)
+            self.assertIn("and the quality gate runs it whole: don't run it", runs)
+            for text in (gate, runs):
+                self.assertNotIn("CI", text, ci)
+        # Watched, the same gate leaves the whole run to CI.
+        self.set_ci("github-actions")
+        self.set_gate(scoped)
+        gate, runs = self.brief_of("coder", "--mode", "build")
+        self.assertIn("never whole — CI runs it whole", self.entry(gate, 1))
+        self.assertIn("CI is the one full run of the test suite", runs)
+        self.set_gate(unscoped)
+        gate, runs = self.brief_of("coder", "--mode", "build")
+        self.assertIn("left to CI; don't run it", gate)
+        # A last watch that saw no CI run counts as not watched.
+        state = self.state()
+        state.setdefault("phase6", {})["ci"] = {"status": "unavailable"}
+        self.write_state(state)
+        gate, _ = self.brief_of("coder", "--mode", "build")
+        self.assertIn("the quality gate runs it whole; don't run it", gate)
 
     def sign_off(self, *reports):
         """The user signed off the quality gate failing on `reports` (stop 9)."""
